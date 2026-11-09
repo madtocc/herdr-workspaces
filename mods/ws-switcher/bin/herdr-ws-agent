@@ -1,0 +1,103 @@
+#!/bin/sh
+# Start an agent with its Herdr workspace's instructions.
+#
+#   herdr-ws-agent <agent> [args...]
+#
+# Finds the workspace whose root or folders hold the current folder (a herdr
+# worktree goes by its repo's name) and starts the agent with:
+#
+#   claude: --append-system-prompt <instructions> --add-dir <root, outside folders>
+#   codex:  -c developer_instructions=<instructions> --add-dir <...>
+#
+# The instructions are the workspace's AGENTS.md (or its "instructions" file)
+# without HTML comments; an empty one adds nothing. Any other agent, or a folder
+# outside every workspace, runs unchanged. The workspaces come from the index
+# the ws-switcher mod keeps in ~/.herdr/workspaces/.index while Herdr runs.
+#
+# Point Herdr's programs.json at it so the + menu starts agents this way:
+#   { "programs": { "claude": { "run": ["herdr-ws-agent", "claude"] },
+#                   "codex":  { "run": ["herdr-ws-agent", "codex", "--no-daemon"] } } }
+#
+# HERDR_WS_AGENT_DRY=1 prints the command, one word per line, instead of running it.
+
+[ $# -ge 1 ] || { echo "usage: herdr-ws-agent <agent> [args...]" >&2; exit 2; }
+agent=$1
+shift
+
+index=$HOME/.herdr/workspaces/.index
+trees=$HOME/.herdr/worktrees
+tab=$(printf '\t')
+cwd=$(pwd -P)
+
+# The folder as the file system sees it (a root may be a symlink).
+real() { (cd "$1" 2>/dev/null && pwd -P) || printf '%s' "$1"; }
+# $1 is $2 or inside it.
+holds() { case "$1/" in "$2"/*) return 0 ;; esac; return 1; }
+
+ws= root= instructions=
+if [ -r "$index" ]; then
+  # The most specific root or folder holding this folder.
+  best=-1
+  while IFS=$tab read -r kind id path _; do
+    [ "$kind" = dir ] || continue
+    path=$(real "$path")
+    if holds "$cwd" "$path" && [ ${#path} -gt $best ]; then ws=$id; best=${#path}; fi
+  done < "$index"
+  # A herdr worktree (~/.herdr/worktrees/<repo>/<branch>) goes by its repo.
+  if [ -z "$ws" ] && holds "$cwd" "$(real "$trees")"; then
+    repo=${cwd#"$(real "$trees")"/}
+    repo=${repo%%/*}
+    while IFS=$tab read -r kind id name _; do
+      if [ "$kind" = repo ] && [ "$name" = "$repo" ]; then ws=$id; break; fi
+    done < "$index"
+  fi
+  if [ -n "$ws" ]; then
+    while IFS=$tab read -r kind id path file; do
+      if [ "$kind" = ws ] && [ "$id" = "$ws" ]; then root=$path; instructions=$file; break; fi
+    done < "$index"
+  fi
+fi
+
+# Extra words go before the caller's: append them, then rotate the caller's to the end.
+given=$#
+name=${agent##*/}
+if [ -n "$ws" ] && { [ "$name" = claude ] || [ "$name" = codex ]; }; then
+  text=
+  if [ -r "$instructions" ]; then
+    # Without <!-- comments -->, and without blank lines at either end.
+    text=$(awk '{ s = s $0 "\n" } END {
+        while ((i = index(s, "<!--")) > 0) {
+          rest = substr(s, i + 4); j = index(rest, "-->")
+          s = substr(s, 1, i - 1) (j ? substr(rest, j + 3) : "")
+        }
+        sub(/^[ \t\r\n]+/, "", s); sub(/[ \t\r\n]+$/, "", s); printf "%s", s }' "$instructions")
+  fi
+  if [ -n "$text" ]; then
+    if [ "$name" = claude ]; then
+      set -- "$@" --append-system-prompt "$text"
+    else
+      # A TOML string: backslashes and quotes escaped, lines joined with \n.
+      toml=$(printf '%s\n' "$text" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\r$//' | awk 'NR > 1 { printf "\\n" } { printf "%s", $0 }')
+      set -- "$@" -c "developer_instructions=\"$toml\""
+    fi
+  fi
+  # The whole workspace is the agent's to read and edit, and its folders that live elsewhere.
+  realroot=$(real "$root")
+  [ -d "$root" ] && [ "$realroot" != "$cwd" ] && set -- "$@" --add-dir "$root"
+  while IFS=$tab read -r kind id path _; do
+    [ "$kind" = dir ] && [ "$id" = "$ws" ] && [ -d "$path" ] || continue
+    p=$(real "$path")
+    holds "$p" "$realroot" || [ "$p" = "$cwd" ] || set -- "$@" --add-dir "$path"
+  done < "$index"
+fi
+
+# Rotate: the caller's words (the first $given) move after the extras.
+i=0
+while [ $i -lt "$given" ]; do set -- "$@" "$1"; shift; i=$((i + 1)); done
+
+if [ -n "${HERDR_WS_AGENT_DRY:-}" ]; then
+  printf 'workspace: %s\n' "${ws:-none}"
+  printf '%s\n' "$agent" "$@"
+  exit 0
+fi
+exec "$agent" "$@"
