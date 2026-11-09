@@ -1,8 +1,9 @@
 Workspaces for Herdr
 
-mods/ws-spaces and mods/ws-agents are modified copies of the `spaces` and
-`agents` mods shipped with Herdr (herdr-app 0.1.14,
-https://github.com/herdrdev/herdr-app), licensed under the Apache License 2.0.
-The changes are described at the top of each file.
+mods/ws-spaces, mods/ws-agents and mods/ws-chrome are modified copies of the
+`spaces`, `agents` and `workspace-chrome` mods shipped with Herdr (herdr-app
+0.1.14, https://github.com/herdrdev/herdr-app), licensed under the Apache
+License 2.0. The changes are described at the top of each file, and
+mods/ws-chrome's icons are Herdr's own.
 
 The rest of this package is licensed under the Apache License 2.0 (LICENSE).

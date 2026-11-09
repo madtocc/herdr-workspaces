@@ -1,7 +1,7 @@
 #!/bin/sh
 # Start an agent with its Herdr workspace's instructions.
 #
-#   herdr-ws-agent <agent> [args...]
+#   herdr-ws-agent [--instructions FILE]... <agent> [args...]
 #
 # Finds the workspace whose root or folders hold the current folder (a herdr
 # worktree goes by its repo's name) and starts the agent with:
@@ -14,13 +14,27 @@
 # outside every workspace, runs unchanged. The workspaces come from the index
 # the ws-switcher mod keeps in ~/.herdr/workspaces/.index while Herdr runs.
 #
+# --instructions FILE adds a preset's instructions after the workspace's (its
+# body: front matter between --- lines and HTML comments left out), in or out of
+# a workspace, under a line naming the preset (the file's name without .md), so
+# the agent knows which one it is. The switcher and the board pass it when they
+# start a preset.
+#
 # Point Herdr's programs.json at it so the + menu starts agents this way:
 #   { "programs": { "claude": { "run": ["herdr-ws-agent", "claude"] },
 #                   "codex":  { "run": ["herdr-ws-agent", "codex", "--no-daemon"] } } }
 #
 # HERDR_WS_AGENT_DRY=1 prints the command, one word per line, instead of running it.
 
-[ $# -ge 1 ] || { echo "usage: herdr-ws-agent <agent> [args...]" >&2; exit 2; }
+usage="usage: herdr-ws-agent [--instructions FILE]... <agent> [args...]"
+presets=
+while [ "${1:-}" = --instructions ]; do
+  [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }
+  presets="$presets$2
+"
+  shift 2
+done
+[ $# -ge 1 ] || { echo "$usage" >&2; exit 2; }
 agent=$1
 shift
 
@@ -58,20 +72,42 @@ if [ -r "$index" ]; then
   fi
 fi
 
+# A file's instructions: without front matter (--- lines at the top), without
+# <!-- comments -->, and without blank lines at either end.
+told() {
+  awk 'NR == 1 && /^---[ \t\r]*$/ { head = 1; next }
+       head && /^---[ \t\r]*$/ { head = 0; next }
+       !head { s = s $0 "\n" }
+       END {
+         while ((i = index(s, "<!--")) > 0) {
+           rest = substr(s, i + 4); j = index(rest, "-->")
+           s = substr(s, 1, i - 1) (j ? substr(rest, j + 3) : "")
+         }
+         sub(/^[ \t\r\n]+/, "", s); sub(/[ \t\r\n]+$/, "", s); printf "%s", s }' "$1"
+}
+
 # Extra words go before the caller's: append them, then rotate the caller's to the end.
 given=$#
 name=${agent##*/}
-if [ -n "$ws" ] && { [ "$name" = claude ] || [ "$name" = codex ]; }; then
+if [ "$name" = claude ] || [ "$name" = codex ]; then
+  # The workspace's instructions, then each preset's, a blank line apart.
   text=
-  if [ -r "$instructions" ]; then
-    # Without <!-- comments -->, and without blank lines at either end.
-    text=$(awk '{ s = s $0 "\n" } END {
-        while ((i = index(s, "<!--")) > 0) {
-          rest = substr(s, i + 4); j = index(rest, "-->")
-          s = substr(s, 1, i - 1) (j ? substr(rest, j + 3) : "")
-        }
-        sub(/^[ \t\r\n]+/, "", s); sub(/[ \t\r\n]+$/, "", s); printf "%s", s }' "$instructions")
-  fi
+  [ -n "$ws" ] && [ -r "$instructions" ] && text=$(told "$instructions")
+  while IFS= read -r file; do
+    [ -n "$file" ] && [ -r "$file" ] || continue
+    more=$(told "$file")
+    [ -n "$more" ] || continue
+    # Named, so the agent can say which preset it is.
+    preset=${file##*/}
+    more="You are the \"${preset%.md}\" agent, started from the Herdr agent preset of that name ($file). Its instructions:
+
+$more"
+    text=${text:+$text
+
+}$more
+  done <<EOF
+$presets
+EOF
   if [ -n "$text" ]; then
     if [ "$name" = claude ]; then
       set -- "$@" --append-system-prompt "$text"
@@ -82,13 +118,15 @@ if [ -n "$ws" ] && { [ "$name" = claude ] || [ "$name" = codex ]; }; then
     fi
   fi
   # The whole workspace is the agent's to read and edit, and its folders that live elsewhere.
-  realroot=$(real "$root")
-  [ -d "$root" ] && [ "$realroot" != "$cwd" ] && set -- "$@" --add-dir "$root"
-  while IFS=$tab read -r kind id path _; do
-    [ "$kind" = dir ] && [ "$id" = "$ws" ] && [ -d "$path" ] || continue
-    p=$(real "$path")
-    holds "$p" "$realroot" || [ "$p" = "$cwd" ] || set -- "$@" --add-dir "$path"
-  done < "$index"
+  if [ -n "$ws" ]; then
+    realroot=$(real "$root")
+    [ -d "$root" ] && [ "$realroot" != "$cwd" ] && set -- "$@" --add-dir "$root"
+    while IFS=$tab read -r kind id path _; do
+      [ "$kind" = dir ] && [ "$id" = "$ws" ] && [ -d "$path" ] || continue
+      p=$(real "$path")
+      holds "$p" "$realroot" || [ "$p" = "$cwd" ] || set -- "$@" --add-dir "$path"
+    done < "$index"
+  fi
 fi
 
 # Rotate: the caller's words (the first $given) move after the extras.

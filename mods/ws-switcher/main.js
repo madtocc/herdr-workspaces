@@ -20,7 +20,7 @@
 // workspace's root or one of its folders (a herdr worktree goes by its repo's
 // name), or when it's made while that workspace is shown.
 
-import { View, div, svg } from "gpui-kit";
+import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input } from "gpui-base";
 import {
   spaces, panes, machines, run, theme, shared, setShared, props, openOverlay, closeOverlay,
@@ -115,13 +115,34 @@ async function loadDefs() {
       defs.push({
         id, dir: at, name: String(c.name || id), color: c.color ? String(c.color) : null, root, folders,
         children: root ? await subdirs(root) : [], instructions: told.startsWith("/") ? told : `${at}/${told}`,
+        board: c.board && typeof c.board === "object" ? c.board : null,
       });
     } catch (e) {
       defs.push({ id, dir: at, name: id, color: null, root: "", folders: [], children: [], instructions: "", error: String(e?.message ?? e) });
     }
   }
+  // Where each root and folder really is, when a symlink leads there (macOS's /tmp
+  // is /private/tmp): terminals report the real path. `real`: path -> real path.
+  const paths = [...new Set(defs.flatMap((d) => [d.root, ...d.folders]).filter(Boolean))];
+  let real = {};
+  if (paths.length && window()?.platform !== "windows") {
+    try {
+      const r = await exec("sh", ["-c", 'for p; do (cd "$p" 2>/dev/null && pwd -P) || printf "%s\\n" "$p"; done', "sh", ...paths]);
+      const out = r.stdout.split("\n");
+      paths.forEach((p, i) => { if (out[i] && out[i] !== p) real[p] = out[i]; });
+    } catch {}
+  }
+  for (const d of defs) d.real = Object.fromEntries([d.root, ...d.folders].filter((p) => real[p]).map((p) => [p, real[p]]));
   return defs;
 }
+
+// A folder of the workspace and, when a symlink leads there, where it really is.
+function realOf(def, path) {
+  if (def.real?.[path]) return def.real[path];
+  const root = def.real?.[def.root];
+  return root && path.startsWith(def.root + "/") ? root + path.slice(def.root.length) : null;
+}
+const inFolder = (def, at, folder) => under(at, folder) || under(at, realOf(def, folder));
 
 // What bin/herdr-ws-agent reads (a shell script can't read JSONC): one line per
 // fact, tab-separated. ws: id, root, instructions file. dir: id, a root or folder.
@@ -137,6 +158,100 @@ function indexText(defs) {
   }
   return lines.join("\n") + "\n";
 }
+
+// --- agent presets ---
+// herdr-core's templates are the global presets (`hc run <name> "<task>"` starts
+// one too); a workspace's own are ~/.herdr/workspaces/<id>/agents/<name>.md and
+// win by name. Same format as hc's: front matter `description` and `command` (a
+// shell line, values taken as written), instructions as the body.
+const templatesDir = () => `${home()}/.config/herdr-core/templates`;
+
+function parsePreset(name, file, text, scope) {
+  const t = text.replace(/\r\n/g, "\n");
+  const end = t.startsWith("---\n") ? t.indexOf("\n---", 3) : -1;
+  if (end < 0) return { name, file, scope, description: "", command: "", body: "", error: "no front matter (start the file with ---)" };
+  const fields = {};
+  for (const line of t.slice(4, end).split("\n")) {
+    const i = line.indexOf(":");
+    if (i > 0) fields[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+  }
+  const body = t.slice(end + 4).replace(/^\n/, "").replace(/<!--[\s\S]*?-->/g, "").trim();
+  return { name, file, scope, description: fields.description ?? "", command: fields.command ?? "", body, error: fields.command ? null : "no command" };
+}
+
+async function loadPresetDir(path, scope) {
+  let names = [];
+  try { names = (await fs.readdir(path)).filter((n) => n.endsWith(".md") && !n.startsWith(".")).sort(); } catch { return []; }
+  const out = [];
+  for (const n of names) {
+    const text = await readTextFile(`${path}/${n}`);
+    if (text !== null) out.push(parsePreset(n.slice(0, -3), `${path}/${n}`, text, scope));
+  }
+  return out;
+}
+
+// The presets a workspace offers: its own, then the global ones it doesn't override.
+function presetsFor(id) {
+  const p = shared("workspaces.presets") ?? {};
+  const own = (id && p.workspaces?.[id]) || [];
+  return [...own, ...(p.global ?? []).filter((g) => !own.some((o) => o.name === g.name))].filter((x) => !x.error);
+}
+
+// A shell line as words: quotes and backslashes as sh reads them.
+function words(line) {
+  const out = [];
+  let cur = null, q = null;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (q === "'") { if (c === "'") q = null; else cur += c; continue; }
+    if (q === '"') {
+      if (c === '"') q = null;
+      else if (c === "\\" && i + 1 < line.length && '"\\$`'.includes(line[i + 1])) cur += line[++i];
+      else cur += c;
+      continue;
+    }
+    if (/\s/.test(c)) { if (cur !== null) { out.push(cur); cur = null; } continue; }
+    cur ??= "";
+    if (c === "'" || c === '"') q = c;
+    else if (c === "\\" && i + 1 < line.length) cur += line[++i];
+    else cur += c;
+  }
+  if (cur !== null) out.push(cur);
+  return out;
+}
+
+// How Herdr starts a preset: { argv, task }. With the launcher, Claude and Codex
+// get the instructions as system instructions (--instructions) and the task as
+// the first message; other agents get both in the first message, as hc does.
+function presetLaunch(preset, task) {
+  let argv = words(preset.command);
+  // `VAR=x cmd` (or `env VAR=x cmd`): the assignments go first, before the launcher.
+  if (argv[0] === "env") argv = argv.slice(1);
+  const assigns = [];
+  while (argv[0] && /^[A-Za-z_][A-Za-z0-9_]*=/.test(argv[0])) assigns.push(argv.shift());
+  if (base(argv[0] ?? "") === "herdr-ws-agent") argv = argv.slice(1);
+  const agent = base(argv[0] ?? "");
+  const launcher = shared("workspaces.launcher") === true;
+  const system = launcher && (agent === "claude" || agent === "codex") && Boolean(preset.body);
+  if (launcher) argv = ["herdr-ws-agent", ...(system ? ["--instructions", preset.file] : []), ...argv];
+  if (assigns.length) argv = ["env", ...assigns, ...argv];
+  const told = preset.body && `You are the "${preset.name}" agent, started from the Herdr agent preset of that name (${preset.file}). Its instructions:\n\n${preset.body}`;
+  return { argv, task: system ? task : [told, task].filter(Boolean).join("\n\n") };
+}
+
+// Starts a preset as a tab named after it in the shown space (its focused
+// terminal's folder), else as a new space in the workspace's root. `prompt`:
+// the task for its first message, if any.
+function startPreset(preset, active, prompt = "") {
+  const shown = spaces().find((s) => s.active);
+  const { argv, task } = presetLaunch(preset, prompt);
+  if (shown) run("tab.new", { space: shown.id, name: preset.name, argv, ...(task ? { task } : {}) });
+  else run("space.new", { ...(active?.root ? { folder: active.root } : {}), tab: preset.name, argv, ...(task ? { task } : {}) });
+}
+
+// The Start dialog (ws-presets): the preset, where it runs, and a task box.
+const openStart = (name, active) => openOverlay({ mod: "ws-presets", kind: "dialog", width: 560, height: 430, props: { start: name, workspace: active?.id ?? null } });
+const openPresets = (active) => openOverlay({ mod: "ws-presets", kind: "dialog", width: 900, height: 640, props: { workspace: active?.id ?? null } });
 
 // Opens a folder in the first installed editor of EDITORS, else the system's opener.
 function openFolder(path) {
@@ -188,7 +303,7 @@ function placeOf(s, ps) {
 function match(path, defs) {
   let best = null, length = -1;
   for (const d of defs) for (const f of [d.root, ...d.folders]) {
-    if (under(path, f) && f.length > length) { best = d; length = f.length; }
+    if (inFolder(d, path, f) && f.length > length) { best = d; length = f.length; }
   }
   if (best) return best.id;
   const trees = `${home()}/.herdr/worktrees/`;
@@ -244,6 +359,9 @@ ${folders.map((f) => `    ${JSON.stringify(f)},`).join("\n")}
   // What every agent started here is told (claude, codex), on top of each
   // repo's own CLAUDE.md / AGENTS.md. Default: AGENTS.md next to this file.
   // "instructions": "AGENTS.md",
+  // The task board (ws-board). All optional; these are the defaults.
+  // "board": { "columns": ["backlog", "todo", "doing", "review", "done"],
+  //            "agent": "claude", "start": "doing", "finish": "review" },
 }
 `;
 }
@@ -278,6 +396,8 @@ export default class Workspaces extends View {
     this.shown = spaces().find((s) => s.active)?.id ?? null;
     this.loaded = false;
     this.asked = shared("workspaces.create") ?? null;
+    this.launchAsked = shared("workspaces.launch")?.at;
+    this.boardAsked = shared("workspaces.board")?.at;
     this.reload(cx);
     cx.spawn(async (cx) => {
       for (;;) {
@@ -286,8 +406,17 @@ export default class Workspaces extends View {
         this.reload(cx);
       }
     });
-    // A new space waits SETTLE for its folder; look again until it's decided.
-    cx.timer.every(500, (cx) => { if (spaces().some((s) => !this.known.has(s.id))) cx.notify(); });
+    // herdr-core's templates: the global presets. The folder may not exist yet.
+    cx.spawn(async (cx) => {
+      for (;;) {
+        try { await watchFolder(templatesDir()); }
+        catch { cx.timer.every(10000, (cx) => this.reloadPresets(cx)); return; }
+        this.reloadPresets(cx);
+      }
+    });
+    // Placing and following also run here: Herdr doesn't draw while its window is
+    // in the background, and a new space waits SETTLE for its folder.
+    cx.timer.every(500, (cx) => { this.sync(); this.requests(cx); if (spaces().some((s) => !this.known.has(s.id))) cx.notify(); });
   }
 
   reload(cx) {
@@ -301,8 +430,23 @@ export default class Workspaces extends View {
         const old = await readTextFile(index);
         if (old !== text) await writeTextFile(index, text, old);
       } catch {} // a stale snapshot: the next change writes it
+      await this.loadPresets(defs);
       cx.notify();
     });
+  }
+
+  reloadPresets(cx) {
+    cx.spawn(async (cx) => { await this.loadPresets(shared("workspaces.defs") ?? []); cx.notify(); });
+  }
+
+  // Publishes { global, workspaces: { id: [...] } } and whether the launcher is installed.
+  async loadPresets(defs) {
+    const presets = { global: await loadPresetDir(templatesDir(), "global"), workspaces: {} };
+    for (const d of defs) presets.workspaces[d.id] = await loadPresetDir(`${d.dir}/agents`, "workspace");
+    if (JSON.stringify(presets) !== JSON.stringify(shared("workspaces.presets") ?? null)) setShared("workspaces.presets", presets);
+    let launcher = false;
+    try { launcher = (await exec("sh", ["-c", "command -v herdr-ws-agent"])).code === 0; } catch {}
+    if (launcher !== shared("workspaces.launcher")) setShared("workspaces.launcher", launcher);
   }
 
   // Places new spaces, follows the shown space into its workspace, remembers it.
@@ -469,15 +613,7 @@ export default class Workspaces extends View {
     if (props()?.popup) return this.menu(t);
     if (props()?.dialog) return this.dialog(t);
     this.sync();
-    const ask = shared("workspaces.create") ?? null;
-    if (ask !== this.asked) {
-      this.asked = ask;
-      if (ask) cx.spawn(async (cx) => {
-        try { await this.create(); }
-        catch (e) { notify({ title: "Couldn't make the workspace", body: String(e?.message ?? e), level: "error" }); }
-        cx.notify();
-      });
-    }
+    this.requests(cx);
     const defs = shared("workspaces.defs") ?? [];
     const active = defs.find((d) => d.id === shared("workspaces.active")) ?? null;
     const assigned = shared("workspaces.assigned") ?? {};
@@ -502,7 +638,70 @@ export default class Workspaces extends View {
         .child(div().flex_1().min_w(0).truncate().font_medium().text_color(t.foreground).child(active?.name ?? "All spaces"))
         .when(Boolean(elsewhere), (el) => el.child(dot("ws-dot")))
         .child(div().flex_none().text_size(11.5).text_color(t.dim).child(String(count)))
-        .child(svg("mods/workspace-chrome/chevron-down.svg").size(11).flex_none().text_color(t.dim)));
+        .child(svg("mods/workspace-chrome/chevron-down.svg").size(11).flex_none().text_color(t.dim)))
+      .when(Boolean(active), (el) => el.child(div().id("ws-board").size(28).ml(2).flex_none().flex().items_center().justify_center()
+        .rounded(7).text_color(t.muted).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
+        .tooltip(`${active.name} board`).on_click((_e, cx) => this.openBoard(active.id, cx))
+        .child(svg("mods/ws-board/board.svg").size(15))));
+  }
+
+  // What the menu and dialogs ask this sidebar copy to do (their own tasks end when
+  // they close). From render and the 500ms timer: Herdr doesn't draw while in the
+  // background. A start asked for more than 15s ago is dropped, never run late.
+  requests(cx) {
+    const ask = shared("workspaces.create") ?? null;
+    if (ask !== this.asked) {
+      this.asked = ask;
+      if (ask) cx.spawn(async (cx) => {
+        try { await this.create(); }
+        catch (e) { notify({ title: "Couldn't make the workspace", body: String(e?.message ?? e), level: "error" }); }
+        cx.notify();
+      });
+    }
+    const launchAsk = shared("workspaces.launch") ?? null;
+    if (launchAsk?.at !== this.launchAsked) {
+      this.launchAsked = launchAsk?.at;
+      const preset = launchAsk && Date.now() - launchAsk.at < 15000 && presetsFor(launchAsk.workspace).find((x) => x.name === launchAsk.name);
+      if (preset) startPreset(preset, (shared("workspaces.defs") ?? []).find((d) => d.id === launchAsk.workspace), launchAsk.task ?? "");
+    }
+    const boardAsk = shared("workspaces.board") ?? null;
+    if (boardAsk?.at !== this.boardAsked) {
+      this.boardAsked = boardAsk?.at;
+      if (boardAsk && Date.now() - boardAsk.at < 15000) this.openBoard(boardAsk.id, cx);
+    }
+  }
+
+  // Shows the workspace's board tab: the one already open in one of its spaces,
+  // else a new one in the shown space (if it's in the workspace), its first space,
+  // or a new space in its root.
+  openBoard(id, cx) {
+    const def = (shared("workspaces.defs") ?? []).find((d) => d.id === id);
+    if (!def) return;
+    const assigned = shared("workspaces.assigned") ?? {};
+    const sp = spaces();
+    const spaceOfTab = (tab) => sp.find((s) => (s.tabs ?? []).some((c) => c.id === tab));
+    const open = panes().find((p) => p.mod === "ws-board" && assigned[spaceOfTab(p.tab)?.id] === id);
+    if (open) {
+      run("space.select", { id: spaceOfTab(open.tab).id });
+      run("tab.select", { id: open.tab });
+      return;
+    }
+    cx.spawn(async (cx) => {
+      try {
+        const mine = sp.filter((s) => assigned[s.id] === id);
+        let space = (mine.find((s) => s.active) ?? mine[0])?.id;
+        if (!space) {
+          const r = await exec("herdr-app", ["do", "space.new", JSON.stringify({ folder: def.root })]);
+          space = JSON.parse(r.stdout).space;
+          if (!space) throw new Error(r.stderr.trim() || "couldn't make a space");
+        }
+        run("space.select", { id: space });
+        run("tab.new", { space, name: "Board", mod: "ws-board", props: { workspace: id } });
+      } catch (e) {
+        notify({ title: `Couldn't open the ${def.name} board`, body: String(e?.message ?? e), level: "error" });
+      }
+      cx.notify();
+    });
   }
 
   menu(t) {
@@ -543,6 +742,32 @@ export default class Workspaces extends View {
           { tip: "Shows only under All spaces, and doesn't join a workspace by its folder" })]);
     }
 
+    // "New agent…": the workspace's presets, started as a tab in the shown space.
+    if (this.picking) {
+      const presets = presetsFor(active?.id);
+      const known = shared("new-menu.agents")?.[""] ?? [];
+      const iconOf = (preset) => {
+        const w = words(preset.command).filter((x) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(x) && x !== "env" && base(x) !== "herdr-ws-agent");
+        const program = known.find((k) => k.key === base(w[0] ?? ""));
+        if (!program?.icon) return icon("terminal");
+        return (program.tint ? svg(program.icon) : image(program.icon)).size(14).flex_none().rounded(3);
+      };
+      const own = presets.some((p) => p.scope === "workspace");
+      return frame([
+        head(shown ? `New agent in “${shown.name}”` : "New agent"),
+        ...presets.map((p) => row(`ws-preset-${p.name}`, iconOf(p), p.name, hint(p.scope === "workspace" ? (active?.name ?? "") : ""),
+          () => openStart(p.name, active), { tip: [p.description, p.command].filter(Boolean).join("\n") })),
+        ...(presets.length ? [] : [head("No presets yet: add one to a presets folder.")]),
+        line(),
+        row("ws-presets-manage", icon("square-pen"), "Manage presets…", div(), () => openPresets(active)),
+        ...(active ? [row("ws-presets-ws", icon("folder"), `${active.name} presets`, hint(own ? "" : "none yet"),
+          () => openFolder(own ? `${active.dir}/agents` : active.dir), { tip: `${tilde(active.dir)}/agents/<name>.md` })] : []),
+        row("ws-presets-global", icon("folder"), "Presets for every workspace", div(),
+          () => openFolder((shared("workspaces.presets")?.global ?? []).length ? templatesDir() : `${home()}/.config`),
+          { tip: `${tilde(templatesDir())}/<name>.md (herdr-core templates)` }),
+      ]);
+    }
+
     const items = [head("Workspaces"),
       row("ws-all", mark(null, defs, t, 18), "All spaces", hint(String(sp.length), check(!active)), () => choose(null))];
     for (const d of defs) {
@@ -555,6 +780,14 @@ export default class Workspaces extends View {
 
     // The actions before the folders: a workspace can have many folders.
     items.push(line());
+    if (active) {
+      // The board opens from the sidebar copy: a popup's tasks end when it closes.
+      items.push(row("ws-board-open", svg("mods/ws-board/board.svg").size(14).flex_none().text_color(t.muted), `Open ${active.name} board`, div(),
+        () => setShared("workspaces.board", { id: active.id, at: Date.now() })));
+    }
+    items.push(row("ws-agent-new", icon("terminal"), "New agent…", hint(String(presetsFor(active?.id).length), "›"),
+      (cx) => { this.picking = true; cx.notify(); }, { keep: true, tip: "Start an agent from a preset" }));
+    items.push(row("ws-presets", svg("mods/ws-presets/presets.svg").size(14).flex_none().text_color(t.muted), "Agent presets…", div(), () => openPresets(active), { tip: "See, make and edit presets" }));
     if (shown && defs.length) {
       items.push(row("ws-move", icon("layers"), `Move “${shown.name}” to…`, hint("›"),
         (cx) => { this.moving = true; cx.notify(); }, { keep: true }));
@@ -574,7 +807,7 @@ export default class Workspaces extends View {
       const folders = active.folders.length ? active.folders : active.children.map((c) => `${active.root}/${c}`);
       if (folders.length) items.push(line(), head(`${active.name} folders`));
       for (const f of folders) {
-        const there = sp.find((s) => !s.machine && under(placeOf(s, ps), f));
+        const there = sp.find((s) => !s.machine && inFolder(active, placeOf(s, ps), f));
         items.push(row(`ws-folder-${f}`, icon("folder"), base(f), hint(there ? "Go" : "Open"),
           () => run(there ? "space.select" : "space.new", there ? { id: there.id } : { folder: f }), { tip: tilde(f) }));
       }
@@ -585,7 +818,7 @@ export default class Workspaces extends View {
 
   // 0 shows every space, 1-9 the workspaces in the menu's order.
   key(e, defs) {
-    if (this.moving || e.modifiers?.control || e.modifiers?.platform || e.modifiers?.alt) return;
+    if (this.moving || this.picking || e.modifiers?.control || e.modifiers?.platform || e.modifiers?.alt) return;
     if (!/^[0-9]$/.test(e.key)) return;
     const n = Number(e.key);
     if (n > defs.length) return;
