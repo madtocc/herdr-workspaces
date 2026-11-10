@@ -762,7 +762,9 @@ export default class Workspaces extends View {
           { tip: "Shows only under All spaces, and doesn't join a workspace by its folder" })]);
     }
 
-    const items = [head("Workspaces"),
+    // Making a workspace comes first, above the list it adds to.
+    const items = [row("ws-new", icon("folder-plus"), "New workspace from a folder…", div(), () => setShared("workspaces.create", Date.now())),
+      line(), head("Workspaces"),
       row("ws-all", mark(null, defs, t, 18), "All spaces", hint(String(sp.length), check(!active)), () => choose(null))];
     for (const d of defs) {
       const mine = sp.filter((s) => assigned[s.id] === d.id);
@@ -774,7 +776,8 @@ export default class Workspaces extends View {
 
     // The actions before the folders: a workspace can have many folders.
     items.push(line());
-    if (active) {
+    // The board has its own button beside the switcher, except on the narrow rail.
+    if (active && narrow()) {
       // The board opens from the sidebar copy: a popup's tasks end when it closes.
       items.push(row("ws-board-open", svg("mods/ws-board/board.svg").size(14).flex_none().text_color(t.muted), `Open ${active.name} board`, div(),
         () => setShared("workspaces.board", { id: active.id, at: Date.now() })));
@@ -783,7 +786,6 @@ export default class Workspaces extends View {
       items.push(row("ws-move", icon("layers"), `Move “${shown.name}” to…`, hint("›"),
         (cx) => { this.moving = true; cx.notify(); }, { keep: true }));
     }
-    items.push(row("ws-new", icon("folder-plus"), "New workspace from a folder…", div(), () => setShared("workspaces.create", Date.now())));
     const target = active?.dir ?? dir();
     items.push(row("ws-edit", icon("file-text"), active ? `Open ${active.name}'s files` : "Open the workspaces folder", div(),
       () => openFolder(target), { tip: tilde(target) }));
