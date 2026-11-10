@@ -31,8 +31,13 @@ const columnsOf = (def) => (Array.isArray(def?.board?.columns) && def.board.colu
 const rel = (def, path) => (path === def.root ? "" : path.startsWith(def.root + "/") ? path.slice(def.root.length + 1) : tilde(path));
 const folderChoices = (def) => (def.folders.length ? def.folders : def.children.map((c) => `${def.root}/${c}`)).map((f) => rel(def, f));
 
-// What sets it off, as the When chips group it. A schedule is every, at or cron.
-const kindOf = (w) => (w.kind === "every" || w.kind === "at" || w.kind === "cron" ? "schedule" : w.kind);
+// What sets it off, as the When chips group it. A schedule is every, at, cron or once.
+const kindOf = (w) => (w.kind === "every" || w.kind === "at" || w.kind === "cron" || w.kind === "once" ? "schedule" : w.kind);
+// "once <tomorrow's date> 09:00", on this computer's clock.
+const onceTomorrow = () => {
+  const d = new Date(Date.now() + 86400e3), p = (n) => String(n).padStart(2, "0");
+  return `once ${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} 09:00`;
+};
 const KINDS = [["schedule", "Schedule"], ["board", "Board"], ["agent", "Agent"], ["files", "Files"], ["github", "GitHub"], ["link", "By hand"]];
 const SCHEDULES = ["every 30m", "every 1h", "daily 09:00", "weekdays 09:00", "mon 09:00", "0 9 * * 1-5"];
 // The {{…}} a prompt can use, by kind.
@@ -307,7 +312,7 @@ export default class Automations extends View {
         .child(div().text_size(14).font_semibold().text_color(t.foreground).child("Pick an automation, or make a new one."))
         .child(div().child(`An automation starts an agent by itself: on a schedule, when a task enters a board column, when an agent finishes or needs you, when files change, when a PR or issue is opened on GitHub, or when another app calls it.`))
         .child(div().child(`Each run is a tab in ${def.name}'s Automations space, made the first time. Your view stays where it is.`))
-        .child(div().child(`They run while Herdr is open. A schedule missed while it was closed runs once when it opens, if that's within 12 hours.`))
+        .child(div().child(`They run while Herdr is open. A schedule missed while it was closed or the Mac slept runs once when it can, if that's within 12 hours. A one-time schedule turns itself off after it runs.`))
         .child(div().child(`The files are in ${tilde(def.dir)}/automations.`));
     }
     const sel = this.sel, c = this.choice;
@@ -339,7 +344,8 @@ export default class Automations extends View {
     const columns = columnsOf(def);
     const finish = String(def.board?.finish ?? "review").toLowerCase();
     const firstOf = { github: `github ${this.ghRepos[0]?.folder ?? "owner/name"} pr opened`, schedule: "weekdays 09:00", board: `task enters ${columns.includes(finish) ? finish : columns[columns.length - 1]}`, agent: "agent done", files: `files ${folderChoices(def)[0] ?? "inbox"}`, link: "link" };
-    const quick = kind === "schedule" ? SCHEDULES.map((s) => pick(`a-q-${s}`, s, this.whenIn.value().trim() === s, () => setWhen(s)))
+    const quick = kind === "schedule" ? [...SCHEDULES.map((s) => pick(`a-q-${s}`, s, this.whenIn.value().trim() === s, () => setWhen(s))),
+      pick("a-q-once", "once tomorrow 09:00", w.kind === "once", () => setWhen(onceTomorrow()))]
       : kind === "board" ? columns.map((col) => pick(`a-q-${col}`, label(col), w.column === col, () => setWhen(`task enters ${col}`)))
       : kind === "agent" ? [pick("a-q-done", "Finishes", w.status === "done", () => setWhen("agent done")), pick("a-q-blocked", "Needs you", w.status === "blocked", () => setWhen("agent blocked"))]
       : kind === "files" ? folderChoices(def).map((f) => pick(`a-q-f-${f}`, f, w.folder === f, () => setWhen(`files ${f}`)))

@@ -12,8 +12,9 @@
 #   codex:  -c developer_instructions=<instructions> --add-dir <...>
 #
 # The instructions are the workspace's AGENTS.md (or its "instructions" file)
-# without HTML comments; an empty one adds nothing. Any other agent, or a folder
-# outside every workspace, runs unchanged. The workspaces come from the index
+# without HTML comments; an empty one adds nothing. Inside a workspace a last
+# line says how to leave work for later (herdr-ws-run --add), when that's on PATH.
+# Any other agent, or a folder outside every workspace, runs unchanged. The workspaces come from the index
 # the ws-switcher mod keeps in ~/.herdr/workspaces/.index while Herdr runs.
 #
 # --instructions FILE adds a preset's instructions after the workspace's (its
@@ -195,6 +196,13 @@ $more"
   done <<EOF
 $presets
 EOF
+  # In a workspace, the agent can leave work for later: a Herdr automation.
+  if [ -n "$ws" ] && command -v herdr-ws-run >/dev/null 2>&1; then
+    later="You're working in the Herdr workspace \"$ws\". When you're asked to do something later or on a schedule (\"tomorrow at 6, check X and if so do Y\"), set it up as a Herdr automation with herdr-ws-run --add; run herdr-ws-run --help first. It starts a new agent at that time, so its prompt must say everything that agent needs."
+    text=${text:+$text
+
+}$later
+  fi
   if [ -n "$text" ]; then
     if [ "$name" = claude ]; then
       set -- "$@" --append-system-prompt "$text"

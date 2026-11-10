@@ -1,20 +1,199 @@
 #!/bin/sh
-# Starts a workspace automation from outside Herdr: a script, a git hook, cron,
-# Raycast, Shortcuts. It runs like the Automations screen's Run now, even when the
-# automation is off. Herdr's ws-switcher picks the call up within two seconds; one
-# made while Herdr is closed runs when it opens, if that's within an hour.
+# Workspace automations from outside Herdr: start one now (a script, a git hook,
+# Raycast, Shortcuts), add one (once at a time, or repeating), turn one off, or
+# list them. Agents started in a workspace through herdr-ws-agent are told about
+# --add, so "tomorrow at 6, check X" becomes an automation.
 #
-#   herdr-ws-run <workspace> <automation> [text...]   the text fills {{text}}
+#   herdr-ws-run <workspace> <automation> [text...]   start it now; the text fills {{text}}
 #   herdr-ws-run <workspace> <automation> -           the text from stdin
-#   herdr-ws-run --list                               what there is to run
+#   herdr-ws-run --add (--at TIME | --when LINE) [...] prompt   add one (--help says more)
+#   herdr-ws-run --off <automation>                   turn one off
+#   herdr-ws-run --list                               every automation and its when: line
 #
-# <workspace> is the workspace's folder name in ~/.herdr/workspaces. Without
-# {{text}} in its prompt, the text is added at the end of the prompt.
+# A start runs like the Automations screen's Run now, even when the automation is
+# off. Herdr's ws-switcher picks it up within two seconds; one made while Herdr is
+# closed runs when it opens, if that's within an hour. <workspace> is the folder
+# name in ~/.herdr/workspaces; --add and --off find it from the current folder,
+# the way herdr-ws-agent does, unless given --workspace. Times are this computer's.
 set -eu
 
 dir=$HOME/.herdr/workspaces
+index=$dir/.index
+templates=${XDG_CONFIG_HOME:-$HOME/.config}/herdr-core/templates
+tab=$(printf '\t')
 usage="usage: herdr-ws-run <workspace> <automation> [text... | -]
-       herdr-ws-run --list"
+       herdr-ws-run --add (--at TIME | --when LINE) [--name NAME] [--agent NAME] [--folder DIR] [--card] [--workspace ID] prompt... | -
+       herdr-ws-run --off <automation> [--workspace ID]
+       herdr-ws-run --list
+       herdr-ws-run --help"
+
+die() { echo "herdr-ws-run: $*" >&2; exit 1; }
+
+help() {
+  cat <<'EOF'
+herdr-ws-run: Herdr workspace automations. An automation starts an agent with a
+prompt, in a new tab of the workspace's "Automations" space, while Herdr is open.
+
+Have an agent do something later, from a folder in the workspace:
+
+  herdr-ws-run --add --at "tomorrow 6am" "Check whether X. If it is, do Y."
+  herdr-ws-run --add --when "weekdays 09:00" --name morning-review --agent reviewer \
+    "Review the changes merged since yesterday and list what needs a follow-up."
+
+  --at TIME       once, then it turns itself off: "tomorrow 6am", "today 18:30",
+                  "in 2 hours", "monday 9am" (the next one), "2026-11-12 06:00",
+                  or just "6am" (the next 6:00)
+  --when LINE     repeating, as an automation's when: line: "every 2h",
+                  "weekdays 09:00", "mon,wed 8:30", "0 9 * * 1-5" (cron),
+                  "task enters review", "agent done", "files inbox",
+                  "github api pr opened"
+  --name NAME     letters, digits, - and _ (needed with --when)
+  --agent NAME    a preset (herdr-ws-agent --presets lists them) or a program;
+                  default: the workspace board's agent, else claude
+  --folder DIR    where it runs; default: the current folder
+  --card          also put a card for each run on the workspace's board
+  --workspace ID  default: the workspace holding the current folder
+  prompt          the agent's whole task, or - to read it from stdin. The agent
+                  starts fresh, without this conversation: say everything it
+                  needs (what to check, where, what to do, how to report).
+
+  herdr-ws-run --off NAME       turn one off (the file stays; Herdr's
+                                Automations screen turns it back on)
+  herdr-ws-run --list           every automation, with its when: line
+  herdr-ws-run WS NAME [text]   start one now
+
+Times are this computer's clock. Herdr must be open: a run missed while it was
+closed or the Mac slept starts when it can, if that's within 12 hours.
+EOF
+}
+
+# A front matter value as written, without its quotes.
+front() { awk -v k="$2" 'NR == 1 && /^---[ \t\r]*$/ { h = 1; next } h && /^---[ \t\r]*$/ { exit }
+  h && index($0, k ":") == 1 { v = substr($0, length(k) + 2); sub(/^[ \t]+/, "", v); sub(/[ \t\r]+$/, "", v); print v; exit }' "$1" |
+  sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'$/\1/"; }
+
+# The folder as the file system sees it (a root may be a symlink).
+real() { (cd "$1" 2>/dev/null && pwd -P) || printf '%s' "$1"; }
+# $1 is $2 or inside it.
+holds() { case "$1/" in "$2"/*) return 0 ;; esac; return 1; }
+
+# The workspace holding folder $1: its most specific root or folder, or for a
+# herdr worktree (~/.herdr/worktrees/<repo>/<branch>), its repo's. As herdr-ws-agent.
+workspace_of() {
+  [ -r "$index" ] || return 0
+  found= best=-1
+  while IFS=$tab read -r kind id path _; do
+    [ "$kind" = dir ] || continue
+    path=$(real "$path")
+    if holds "$1" "$path" && [ ${#path} -gt $best ]; then found=$id; best=${#path}; fi
+  done < "$index"
+  trees=$(real "$HOME/.herdr/worktrees")
+  if [ -z "$found" ] && holds "$1" "$trees"; then
+    repo=${1#"$trees"/}
+    repo=${repo%%/*}
+    while IFS=$tab read -r kind id name _; do
+      if [ "$kind" = repo ] && [ "$name" = "$repo" ]; then found=$id; break; fi
+    done < "$index"
+  fi
+  printf '%s' "$found"
+}
+root_of() {
+  [ -r "$index" ] || return 0
+  while IFS=$tab read -r kind id path _; do
+    if [ "$kind" = ws ] && [ "$id" = "$1" ]; then printf '%s' "$path"; return 0; fi
+  done < "$index"
+}
+
+# Dates: BSD date (macOS), else GNU date.
+# Today plus $1 days, as format $2.
+day() { date -v+"$1"d +"$2" 2>/dev/null || date -d "+$1 days" +"$2"; }
+# Epoch seconds $1 as format $2.
+at_epoch() { date -r "$1" +"$2" 2>/dev/null || date -d "@$1" +"$2"; }
+# "YYYY-MM-DD HH:MM" $1 as format $2.
+fmt() { date -j -f "%Y-%m-%d %H:%M" "$1" +"$2" 2>/dev/null || date -d "$1" +"$2" 2>/dev/null; }
+# $1 comes after $2 (both "YYYY-MM-DD HH:MM").
+later() { [ "$(expr "x$1" \> "x$2")" = 1 ]; }
+
+# "6am", "6:30pm", "18:30", "9": HH:MM.
+clock() {
+  t=$1 suf=
+  case $t in *am|*pm) suf=${t#"${t%??}"}; t=${t%??} ;; esac
+  case $t in *:*) h=${t%%:*} m=${t#*:} ;; *) h=$t m=00 ;; esac
+  case "$h:$m" in *[!0-9:]*|:*|*:|*:*:*) return 1 ;; esac
+  [ ${#h} -le 2 ] && [ ${#m} -eq 2 ] || return 1
+  h=${h#0} m=${m#0}
+  h=${h:-0} m=${m:-0}
+  if [ -n "$suf" ]; then
+    [ "$h" -ge 1 ] && [ "$h" -le 12 ] || return 1
+    h=$((h % 12))
+    [ "$suf" = am ] || h=$((h + 12))
+  fi
+  [ "$h" -le 23 ] && [ "$m" -le 59 ] || return 1
+  printf '%02d:%02d' "$h" "$m"
+}
+
+weekday() {
+  case $1 in
+    sun|sunday) echo 0 ;; mon|monday) echo 1 ;; tue|tues|tuesday) echo 2 ;; wed|weds|wednesday) echo 3 ;;
+    thu|thur|thurs|thursday) echo 4 ;; fri|friday) echo 5 ;; sat|saturday) echo 6 ;; *) return 1 ;;
+  esac
+}
+
+# An --at TIME as "YYYY-MM-DD HH:MM". Fails 1 when it can't read it, 2 (printing
+# the time) when it has passed.
+resolve() {
+  s=$(printf '%s' "$1" | tr 'A-Z' 'a-z' | sed -e 's/^ *//' -e 's/ *$//' -e 's/  */ /g' \
+    -e 's/^at //' -e 's/ at / /' -e 's/^on //' -e 's/^next //' -e 's/ next / /')
+  now=$(date +"%Y-%m-%d %H:%M")
+  n=$(printf '%s' "$s" | sed -n 's/^in \([0-9][0-9]*\) *\([a-z]*\)$/\1/p')
+  if [ -n "$n" ]; then
+    case $(printf '%s' "$s" | sed -n 's/^in [0-9]* *\([a-z]*\)$/\1/p') in
+      m|min|mins|minute|minutes) secs=60 ;;
+      h|hr|hrs|hour|hours) secs=3600 ;;
+      d|day|days) secs=86400 ;;
+      *) return 1 ;;
+    esac
+    x=$(at_epoch $(( $(date +%s) + n * secs )) "%Y-%m-%d %H:%M")
+  else
+    set -f
+    # shellcheck disable=SC2086
+    set -- $s
+    set +f
+    d= t=
+    for w in "$@"; do
+      if c=$(clock "$w"); then [ -z "$t" ] || return 1; t=$c; continue; fi
+      [ -z "$d" ] || return 1
+      case $w in
+        today) d=0 ;;
+        tomorrow) d=1 ;;
+        [0-9][0-9][0-9][0-9]-*) d=date:$w ;;
+        *) wd=$(weekday "$w") || return 1; d=wd:$wd ;;
+      esac
+    done
+    [ -n "$t" ] || return 1
+    case $d in
+      "") x="$(day 0 %Y-%m-%d) $t"; later "$x" "$now" || x="$(day 1 %Y-%m-%d) $t" ;;
+      date:*)
+        given=$(printf '%s' "${d#date:}" | awk -F- 'NF == 3 { printf "%04d %02d %02d", $1, $2, $3 }')
+        [ -n "$given" ] && [ "$(fmt "${d#date:} $t" "%Y %m %d")" = "$given" ] || return 1
+        x="$(fmt "${d#date:} $t" "%Y-%m-%d") $t" ;;
+      wd:*)
+        i=0 x=
+        while [ $i -le 7 ]; do
+          if [ "$(day $i %w)" = "${d#wd:}" ]; then x="$(day $i %Y-%m-%d) $t"; later "$x" "$now" && break; fi
+          i=$((i + 1))
+        done ;;
+      *) x="$(day "$d" %Y-%m-%d) $t" ;;
+    esac
+  fi
+  printf '%s' "$x"
+  later "$x" "$now" || return 2
+}
+
+# A front matter value in double quotes, on one line.
+q() { printf '"%s"' "$(printf '%s' "$1" | tr '\r\n' '  ' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"; }
+
+case "${1:-}" in -h|--help) help; exit 0 ;; esac
 
 if [ "${1:-}" = --list ]; then
   found=
@@ -22,13 +201,141 @@ if [ "${1:-}" = --list ]; then
     [ -f "$f" ] || continue
     ws=${f#"$dir"/}
     name=${f##*/}
-    printf '%s %s\n' "${ws%%/*}" "${name%.md}"
+    off=
+    case $(front "$f" enabled) in false|no|off|0) off="  (off)" ;; esac
+    printf '%s %s  %s%s\n' "${ws%%/*}" "${name%.md}" "$(front "$f" when)" "$off"
     found=1
   done
-  [ -n "$found" ] || echo "No automations yet: add one in Herdr's Automations screen."
+  [ -n "$found" ] || echo "No automations yet: add one with --add, or in Herdr's Automations screen."
   exit 0
 fi
-case "${1:-}" in -h|--help) echo "$usage"; exit 0 ;; esac
+
+if [ "${1:-}" = --add ] || [ "${1:-}" = --off ]; then
+  mode=${1#--}
+  shift
+  at= when= name= agent= folder= card= wsid= desc= auto=
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --at|--when|--name|--agent|--folder|--workspace|--description)
+        [ $# -ge 2 ] || die "$1 needs a value"
+        case $1 in
+          --at) at=$2 ;; --when) when=$2 ;; --name) name=$2 ;; --agent) agent=$2 ;;
+          --folder) folder=$2 ;; --workspace) wsid=$2 ;; --description) desc=$2 ;;
+        esac
+        shift 2 ;;
+      --card) card=1; shift ;;
+      --) shift; break ;;
+      -) break ;;
+      -*) die "unknown option $1
+$usage" ;;
+      *) if [ "$mode" = off ] && [ -z "$name" ]; then name=$1; shift; else break; fi ;;
+    esac
+  done
+
+  cwd=$(pwd -P) fromcwd=
+  [ -n "$wsid" ] || { wsid=$(workspace_of "$cwd"); fromcwd=1; }
+  [ -n "$wsid" ] || die "this folder ($cwd) isn't in a Herdr workspace: run it from one, or pass --workspace <id> (ls ~/.herdr/workspaces)"
+  case $wsid in */*|.*) die "\"$wsid\" is a workspace's folder name, not a path" ;; esac
+  [ -d "$dir/$wsid" ] || die "there's no workspace \"$wsid\" (ls ~/.herdr/workspaces)"
+  case $name in */*|.*) die "\"$name\" is a name, not a path" ;; esac
+
+  if [ "$mode" = off ]; then
+    [ -n "$name" ] || die "which one? herdr-ws-run --list shows them"
+    file=$dir/$wsid/automations/$name.md
+    [ -f "$file" ] || die "there's no automation \"$name\" in \"$wsid\" (herdr-ws-run --list shows them)"
+    tmp=$dir/$wsid/automations/.$name.$$.tmp
+    awk 'NR == 1 && !/^---[ \t\r]*$/ { print "---"; print "enabled: false"; print "---" }
+         NR == 1 && /^---[ \t\r]*$/ { h = 1; print; next }
+         h && /^enabled[ \t]*:/ { next }
+         h && /^---[ \t\r]*$/ { print "enabled: false"; h = 0 }
+         { print }' "$file" > "$tmp"
+    mv "$tmp" "$file"
+    echo "Turned off \"$name\" in $wsid. Herdr's Automations screen turns it back on."
+    exit 0
+  fi
+
+  [ -n "$at$when" ] || die "say when: --at TIME (once) or --when LINE (repeating); --help has examples"
+  [ -z "$at" ] || [ -z "$when" ] || die "give --at or --when, not both"
+  if [ $# -eq 1 ] && [ "$1" = - ]; then prompt=$(cat); else prompt=$*; fi
+  [ -n "$(printf '%s' "$prompt" | tr -d ' \t\r\n')" ] || die "what should the agent do? Give the prompt last, or - to read it from stdin"
+
+  if [ -n "$at" ]; then
+    set +e
+    t=$(resolve "$at")
+    r=$?
+    set -e
+    [ $r -ne 2 ] || die "\"$at\" ($t) has already passed"
+    [ $r -eq 0 ] || die "can't read \"$at\" as a time: try \"tomorrow 6am\", \"today 18:30\", \"in 2 hours\", \"monday 9am\" or \"2026-11-12 06:00\""
+    when="once $t"
+    if [ -z "$name" ]; then name="once-$(printf '%s' "$t" | tr -d ':' | tr ' ' '-')"; auto=1; fi
+  else
+    case " $when " in
+      *" today "*|*" tomorrow "*|" in "*|" once "*) die "\"$when\" happens once: use --at" ;;
+    esac
+  fi
+  [ -n "$name" ] || die "give a repeating automation a --name"
+  case $name in -*|*[!A-Za-z0-9_-]*) die "a name is letters, digits, - and _" ;; esac
+
+  if [ -n "$agent" ]; then
+    case $agent in */*|.*) die "\"$agent\" is a preset or program name, not a path" ;; esac
+    [ -f "$dir/$wsid/agents/$agent.md" ] || [ -f "$templates/$agent.md" ] || command -v "$agent" >/dev/null 2>&1 ||
+      die "there's no preset or program \"$agent\" (herdr-ws-agent --presets lists the presets)"
+  fi
+
+  # Where it runs: --folder, else this folder when it's in the workspace, else
+  # the root. Written from the root when it's under it, else in full.
+  root=$(root_of "$wsid")
+  [ -z "$root" ] || root=$(real "$root")
+  if [ -n "$folder" ]; then
+    place=$(cd "$folder" 2>/dev/null && pwd -P) || die "there's no folder \"$folder\""
+  else
+    place=$cwd
+  fi
+  if [ -n "$root" ] && [ "$place" = "$root" ]; then rel=
+  elif [ -n "$root" ] && holds "$place" "$root"; then rel=${place#"$root"/}
+  elif [ -n "$folder" ] || [ -n "$fromcwd" ]; then rel=$place
+  else rel=
+  fi
+
+  mkdir -p "$dir/$wsid/automations"
+  file=$dir/$wsid/automations/$name.md
+  if [ -e "$file" ]; then
+    [ -n "$auto" ] || die "there's already an automation \"$name\" in \"$wsid\": pick another --name"
+    n=2
+    while [ -e "$dir/$wsid/automations/$name-$n.md" ]; do n=$((n + 1)); done
+    name=$name-$n
+    file=$dir/$wsid/automations/$name.md
+  fi
+  [ -n "$desc" ] || desc=$(printf '%s\n' "$prompt" | sed -n '/[^[:space:]]/{p;q;}' | sed -E 's/^[[:space:]]+//; s/^(.{77}).+$/\1…/')
+
+  # Written aside, then moved in, so Herdr never reads half a file.
+  tmp=$dir/$wsid/automations/.$name.$$.tmp
+  {
+    echo ---
+    echo "description: $(q "$desc")"
+    echo "when: $(q "$when")"
+    [ -z "$agent" ] || echo "agent: $(q "$agent")"
+    [ -z "$rel" ] || echo "folder: $(q "$rel")"
+    [ -z "$card" ] || echo "card: true"
+    echo ---
+    printf '%s\n' "$prompt"
+  } > "$tmp"
+  mv "$tmp" "$file"
+
+  if [ -n "$at" ]; then
+    pretty=$(fmt "$t" "%a %d %b %Y at %H:%M" | sed 's/ 0\([0-9]\) / \1 /')
+    echo "Added \"$name\" in $wsid: it runs once, ${pretty:-$t}, then turns itself off."
+  else
+    echo "Added \"$name\" in $wsid: \"$when\". If Herdr can't read that line, its Automations screen says why."
+  fi
+  echo "It starts ${agent:-the default agent} in ${rel:-the workspace root}, in a tab of the workspace's Automations space."
+  echo "File: $file"
+  echo "To cancel: herdr-ws-run --off $name --workspace $wsid"
+  herdr-app status >/dev/null 2>&1 ||
+    echo "Herdr isn't open: it has to be open then (a run missed while it's closed starts when it opens, within 12 hours)." >&2
+  exit 0
+fi
+
 [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }
 ws=$1 name=$2
 shift 2

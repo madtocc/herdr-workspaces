@@ -12,11 +12,13 @@ card's Start;
 `examples/presets/` has three to start from, among them an orchestrator that
 splits a task across helper agents with herdr-core's `hc`; its helpers show
 under it in the Agents list. Automations start an agent by
-themselves: on a schedule, when a task enters a board column, when an agent
-finishes or needs you, when files change, when a PR or issue is opened on
-GitHub (asked every 2 minutes through `gh`), or when another app calls
-`herdr-ws-run`. Each run is a tab in the workspace's Automations space;
-`examples/automations/` has one to start from.
+themselves: on a schedule (once or repeating), when a task enters a board
+column, when an agent finishes or needs you, when files change, when a PR or
+issue is opened on GitHub (asked every 2 minutes through `gh`), or when another
+app calls `herdr-ws-run`. Each run is a tab in the workspace's Automations space;
+`examples/automations/` has one to start from. Agents in a workspace can add one
+themselves with `herdr-ws-run --add`, so you can tell one "tomorrow at 6, check
+X and if so do Y".
 
 ![Workspaces](preview.png)
 
@@ -30,8 +32,8 @@ says how), or by hand:
 1. Copy `layouts/workspaces.json` to `~/.config/herdr-app/layouts/` and the nine
    folders in `mods/` to `~/.config/herdr-app/mods/` (rename them if a name is taken).
 2. For agent instructions from the + menu, put the launcher on your `PATH` and
-   point `programs.json` at it. `herdr-ws-run` is for starting automations from
-   other apps:
+   point `programs.json` at it. `herdr-ws-run` starts automations from other
+   apps and lets agents add them:
    ```sh
    ln -s ~/.config/herdr-app/mods/ws-switcher/bin/herdr-ws-agent ~/.local/bin/
    ln -s ~/.config/herdr-app/mods/ws-switcher/bin/herdr-ws-run ~/.local/bin/
@@ -49,7 +51,9 @@ says how), or by hand:
 each workspace's root. It writes `~/.herdr/workspaces/.index`, a new
 workspace's files when you make one, its `workspace.jsonc` when you rename it,
 task files in `~/.herdr/workspaces/<id>/tasks/` and automation files in
-`~/.herdr/workspaces/<id>/automations/`. Deleting a workspace, a task or an
+`~/.herdr/workspaces/<id>/automations/` (from the Automations screen, from
+`herdr-ws-run --add` and `--off`, and `enabled: false` after a one-time one
+runs). Deleting a workspace, a task or an
 automation (after a confirmation) moves it to the Trash. The board's Worktree runs
 `git worktree add` on a new `task/…` branch; otherwise your repos aren't
 touched. It runs `sh` (editor, Trash, symlinked folders), `herdr-app do` (the

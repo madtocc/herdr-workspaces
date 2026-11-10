@@ -11,10 +11,11 @@ task. A card starts an agent on its task, in the repo or a fresh worktree, and
 then shows that agent's live status. Agent presets (a command plus instructions,
 herdr-core's template format) can be global or per workspace; the tab bar's +
 menu and the board's Start run them. Automations run them by themselves:
-on a schedule, when a task enters a board column, when an agent finishes or needs
-you, when files change, when a PR or issue is opened on GitHub, or when another
-app calls `herdr-ws-run`. Each run is a
-tab in the workspace's "Automations" space, and your view stays where it is.
+on a schedule (once or repeating), when a task enters a board column, when an
+agent finishes or needs you, when files change, when a PR or issue is opened on
+GitHub, or when another app calls `herdr-ws-run`. Each run is a tab in the
+workspace's "Automations" space, and your view stays where it is. An agent in a
+workspace can set one up itself: "tomorrow at 6, check X and if so do Y".
 
 ![Workspaces](preview.png)
 
@@ -72,7 +73,7 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
   - **The editor**, a scrolling form (each automation opens scrolled to the top) over a pinned footer:
     - the name (16px semibold) or "New automation", "unsaved" in `working` while edited, and On / Off chips on the right;
     - Name (new ones only; it suggests `automation-<n>`), Description;
-    - **When**: kind chips (Schedule, Board, Agent, Files, GitHub, By hand), the `when:` line (JetBrains Mono), then quick chips for that kind: `every 30m`, `every 1h`, `daily 09:00`, `weekdays 09:00`, `mon 09:00`, `0 9 * * 1-5`; the board's columns; Finishes / Needs you; the workspace's folders; for GitHub, the workspace's folders that have a GitHub remote, then Pull requests / Issues and "By others only". Under them, the line in words plus "· next <time>" for a schedule or "· looks every 2 minutes, with your gh login" for GitHub, or the reason it can't be read in `blocked`. A files automation whose folder can't be watched, or a GitHub one whose repo can't be found or read, says why in `working`;
+    - **When**: kind chips (Schedule, Board, Agent, Files, GitHub, By hand), the `when:` line (JetBrains Mono), then quick chips for that kind: `every 30m`, `every 1h`, `daily 09:00`, `weekdays 09:00`, `mon 09:00`, `0 9 * * 1-5`, and "once tomorrow 09:00" (`once <tomorrow's date> 09:00`); the board's columns; Finishes / Needs you; the workspace's folders; for GitHub, the workspace's folders that have a GitHub remote, then Pull requests / Issues and "By others only". Under them, the line in words plus "· next <time>" for a schedule or "· looks every 2 minutes, with your gh login" for GitHub, or the reason it can't be read in `blocked`. A files automation whose folder can't be watched, or a GitHub one whose repo can't be found or read, says why in `working`;
     - **Agent** chips: "Board's (<board.agent>)" and the workspace's presets;
     - **Folder** chips: Root ("Its repo's folder" for GitHub) and the workspace's folders;
     - **Each run** chips: "Just its tab" / "A tab and a board card";
@@ -194,6 +195,7 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
   - `every 30m`, `every 2h`, `every 1d`: an interval of at least a minute, counted from its last run (from when it was first seen, before that);
   - `09:00`, `daily 9:00`, `weekdays 09:00,17:30`, `weekends 10am`, `mon,wed 8:30`, `mon-fri 9:00`, `at 6pm`: days and times, on this computer's clock;
   - `0 9 * * 1-5`: cron's five fields, with `*`, lists, ranges and steps; with both day fields set, either one will do;
+  - `once 2026-11-12 06:00` (or `once 2026-11-12 at 6am`): one time, on this computer's clock. When its time comes the runner writes `enabled: false` into the file, so it stays as a record and doesn't run again. One that's on with its time passed (missed by more than 12 hours, or written with a past date) says "Its time has passed and it didn't run";
   - `task enters <column>`: a board task's status changes to that column, or a new task is written there;
   - `agent done` (it finished: working → done or idle) or `agent blocked` (it needs you), optionally followed by a tab name to listen to only that one;
   - `files <folder>`: something is made or changed under that folder (from the root);
@@ -216,9 +218,18 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
   - agent automations ignore the agents automations started;
   - board automations ignore a card an automation has just made (its later moves count);
   - files automations ignore changes made while their own run is working, dotfiles, and anything under `.git` or `node_modules`. They wait for 3s of quiet, then start once for everything that changed, leaving out files that are gone again.
-- **Missed schedules**: a schedule due while Herdr was closed runs once when Herdr opens, if it was due in the last 12 hours ("Missed 09:00 while Herdr was closed"). Older ones are skipped. An interval that came due while closed runs once.
+- **Missed schedules**: a schedule due while Herdr was closed runs once when Herdr opens, if it was due in the last 12 hours ("Missed 09:00 while Herdr was closed"). The same goes for minutes the Mac slept through with Herdr open: they run once when it wakes ("Missed 06:00 while the Mac was asleep"). Older ones are skipped. An interval that came due while closed runs once.
 - **Run tabs**: each automation keeps its newest three run tabs. Older ones close when a new run starts, unless their agent is working or waiting on you.
-- **`herdr-ws-run <workspace> <automation> [text…]`** (or `-` for the text from stdin; `--list` lists what there is): `<workspace>` is the folder name in `~/.herdr/workspaces`. It checks the automation's file exists, leaves the call in `~/.herdr/workspaces/.inbox/<time>-<pid>.run`, and says whether Herdr is open. Herdr picks it up within two seconds and deletes the file. A call that waited over an hour (Herdr closed) is dropped and logged.
+- **`herdr-ws-run --add`** adds an automation from the command line, for agents above all:
+  - `--at TIME` makes a one-time one: "tomorrow 6am", "today 18:30", "6am tomorrow", "in 2 hours", "in 90 minutes", "monday 9am" or "next friday 17:00" (the next one), "2026-11-12 06:00", or just "6am" (the next 6:00). It's written as `once <date> <time>`; a time that has passed or a date that doesn't exist is refused;
+  - `--when LINE` writes a repeating `when:` line as given, and needs `--name`. A line that happens once ("tomorrow …", "in …") is sent to `--at`;
+  - `--name` (default for `--at`: `once-<date>-<time>`, with `-2`, `-3` when taken; a taken `--name` is refused), `--agent` (a preset of the workspace, a global one, or a program on `PATH`, else refused), `--folder` (default: the current folder), `--card`, `--workspace`, `--description` (default: the prompt's first line, up to 80 characters);
+  - the prompt is the rest of the words, or `-` for stdin;
+  - the workspace is found from the current folder, as the launcher does; outside every workspace it asks for `--workspace`;
+  - it writes `description`, `when` (in double quotes), `agent`, `folder` (from the root, else in full), `card`, then the prompt, to a dotfile that it then moves in. It prints when it runs, where, the file, and how to cancel.
+- **`herdr-ws-run --off <name>`** writes `enabled: false` into the automation's front matter; the screen turns it back on. **`--list`** prints each one's workspace, name, `when:` line and "(off)". **`--help`** explains it all for an agent.
+- **Agents are told**: Claude and Codex started in a workspace through the launcher get one more line in their instructions: when asked to do something later or on a schedule, set it up with `herdr-ws-run --add`, read `--help` first, and write a prompt that says everything the new agent needs.
+- **`herdr-ws-run <workspace> <automation> [text…]`** (or `-` for the text from stdin): `<workspace>` is the folder name in `~/.herdr/workspaces`. It checks the automation's file exists, leaves the call in `~/.herdr/workspaces/.inbox/<time>-<pid>.run`, and says whether Herdr is open. Herdr picks it up within two seconds and deletes the file. A call that waited over an hour (Herdr closed) is dropped and logged.
 - **In the screen**:
   - kind chips switch the `when:` line to that kind's first example, and quick chips set it;
   - **Save** rewrites `description`, `when`, `agent`, `folder`, `card` (only when true) and `enabled` (only when false) and the prompt, keeping other front matter lines. It refuses a `when:` it can't read, and fails if the file changed on disk since it was opened;
@@ -283,6 +294,8 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
 **`mods/ws-switcher/automations.js`**: the runner.
 - **Reads** every workspace's `automations/*.md`, with the board's front matter rules. Its `tasks/` too, for workspaces that have a board automation. It publishes `workspaces.automations` (`{ <workspace>: [{ name, file, description, when, trigger, summary, agent, folder, card, enabled, body, error, next, warning }] }`) and `workspaces.automation.runs` (newest first: `{ id, ws, name, at, why, status, note, terminal, tab, space, card }`).
 - **Remembers** in the switcher copy's `localStorage` (`automations`): when each last ran, when an interval was first seen, when Herdr last ticked (`seen`, every minute, for missed schedules), and the runs.
+- **Catching up**: `catchUp(from, now, reason)` looks at each minute from `from` (at most 12 hours back) up to this one and queues each schedule that was due and hasn't run since. It runs at load (from `seen`) and on any tick that finds more than one minute has passed since the last (the timer stopped while the Mac slept).
+- **One-time schedules**: `fire()` on a `once` automation's turn calls `turnOff()`, which marks the listed copy off at once and writes `enabled: false` into its file (read again, `writeTextFile` with `expected`, three tries).
 - **Schedules** are checked once a minute against that minute; intervals every tick.
 - **Agents**: each tick compares `agents()` statuses with the last tick's. A run is recognised by its terminal and its tab together, because a terminal's address can be used again later.
 - **Board**: on a change under `tasks/`, it reads the tasks again and compares statuses.
@@ -292,9 +305,9 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
 - **Starting** goes through the switcher's `presetLaunch()` (else `knownAgents()`), then `herdr-app do tab.new` (or `space.new { name: "Automations" }` the first time) through `exec`, then `space.select` / `tab.select` back to the `focused()` space and tab. Starts of one automation are queued, one after another. `fs` only reads under home, so whether a folder or file exists is asked of `test -e` when it's elsewhere.
 - **Board helpers** (`boardOf`, front matter, `nextId`, `brief`, `folderPath`) are copies of `ws-board`'s, because mods can't import across folders.
 
-**`mods/ws-switcher/when.js`**: the `when:` reader (`parseWhen`, `due`, `nextAt` up to 32 days ahead, `describe`, `shortTime`). `mods/ws-automations/when.js` is the same file; `scripts/sync-from-home.sh` stops when they differ.
+**`mods/ws-switcher/when.js`**: the `when:` reader (`parseWhen`, `due`, `nextAt` up to 32 days ahead, `describe`, `shortTime`). A `once` line becomes `{ kind: "once", at }` (local time, in ms); a date that doesn't exist (2026-02-30) is an error. `mods/ws-automations/when.js` is the same file; `scripts/sync-from-home.sh` stops when they differ.
 
-**`mods/ws-switcher/bin/herdr-ws-run`**: POSIX `sh`. It writes the call to `<name>.tmp`, then moves it to `.run`, so the runner never reads half of one. `herdr-app status` tells it whether Herdr is open.
+**`mods/ws-switcher/bin/herdr-ws-run`**: POSIX `sh`. It writes the call to `<name>.tmp`, then moves it to `.run`, so the runner never reads half of one. `herdr-app status` tells it whether Herdr is open. For `--add`, dates come from BSD `date` (`-v`, `-r`, `-j -f`) with GNU `date -d` as the fallback, a date is checked by reading it back, and "later" compares `YYYY-MM-DD HH:MM` strings with `expr`. The workspace lookup is a copy of the launcher's. `bin/herdr-ws-agent` adds its line to the instructions only inside a workspace and only when `herdr-ws-run` is on `PATH`.
 
 **`mods/ws-automations`** (`mod.json`: `{ "place": "none", "title": "Automations" }`, plus `automations.svg` and `when.js`): the screen, opened as `openOverlay({ mod: "ws-automations", kind: "dialog", width: 940, height: 680, props: { workspace } })` by the footer row. It reads the list and runs from shared state and each file afresh when it's picked, writes with `writeTextFile` (the text it read as `expected`, null for Create), updates `workspaces.automations` itself until the runner confirms, and sets `workspaces.automation.run` for Run now. Like the Presets screen, it makes its inputs once in `init` and redraws with the reading task's own `cx`.
 
@@ -361,7 +374,7 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
 
 **What it touches:**
 - It reads `~/.herdr/workspaces` and lists the subfolders of each workspace's root.
-- It writes `~/.herdr/workspaces/.index`, a new workspace's two files when you make one, and `workspace.jsonc` when you rename one. The board writes task files in `~/.herdr/workspaces/<id>/tasks/`; the Automations screen writes `~/.herdr/workspaces/<id>/automations/`, and an automation with `card: true` writes a task per run.
+- It writes `~/.herdr/workspaces/.index`, a new workspace's two files when you make one, and `workspace.jsonc` when you rename one. The board writes task files in `~/.herdr/workspaces/<id>/tasks/`; the Automations screen and `herdr-ws-run --add` / `--off` write `~/.herdr/workspaces/<id>/automations/`, the runner writes `enabled: false` into a one-time automation once it has run, and an automation with `card: true` writes a task per run.
 - It moves a workspace's folder, a task's file or an automation's file to the Trash when you delete it, and only after you confirm.
 - Automations watch the folders files automations name, delete the calls `herdr-ws-run` leaves in `~/.herdr/workspaces/.inbox`, and close an automation's run tabs beyond its newest three once their agent isn't working or waiting on you.
 - It runs programs:
@@ -411,7 +424,11 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
 
 - Automations run inside Herdr, in the switcher: nothing fires while Herdr is closed or while another layout is shown.
 - Starting a run shows its tab for a moment before your view comes back. Keys typed in that moment can land in the new tab.
-- A schedule missed more than 12 hours ago is skipped, not run late.
+- A schedule missed more than 12 hours ago is skipped, not run late. A one-time one then stays on and says its time has passed.
+- One-time and repeating schedules need Herdr open and the Mac awake, or waking within 12 hours. A Mac that's off or asleep at 6:00 runs the job when it wakes, not at 6:00.
+- An agent that can run `herdr-ws-run` can leave work for later agents, which then run with their own permissions and nobody watching. In Claude's auto mode it may do this without asking. The run tabs and the Automations screen show what was added; `herdr-ws-run --list` lists it all.
+- `herdr-ws-run --add --when` doesn't check the line itself (it's `sh`); Herdr reads it within a second and the Automations screen shows a line it can't read. `--at` is checked.
+- `--at "monday 9am"` means the next Monday at 9:00 (today, if it's Monday before 9). `--when "monday 9am"` means every Monday.
 - An `agent blocked` automation only hears what Herdr reports as blocked. Claude's folder trust prompt, for one, isn't.
 - `herdr-ws-run` takes the workspace's folder name (`ls ~/.herdr/workspaces`), not its display name.
 - There's no clickable `herdr://` link yet: it needs a small helper app to register the scheme. `herdr-ws-run` covers apps and scripts on this computer.
@@ -458,4 +475,9 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
   - three `herdr-ws-run` calls at once start three runs, and the oldest run tab beyond three closes.
 - In the screen: kind and quick chips change the When line and its preview; Save writes the file; Run now adds a "Started by hand" row with Go to; Create adds `automation-<n>`; Delete (twice) moves it to the Trash.
 - With `github <folder> pr opened` (the folder's origin a busy public repo) and `github <owner/name> issue opened by others`, nothing starts on the first look; then each new PR and issue starts its own run in the repo's folder, with `{{number}}`, `{{author}}` and the rest filled. A `github nowhere pr opened` shows "There's no folder nowhere in this workspace, and it isn't owner/name." under its When line.
+- From a workspace folder, `herdr-ws-run --add --at` with "tomorrow 6am", "6am tomorrow", "in 90 minutes", "monday 9am", "next friday 17:00", "2026-11-12 06:00" and "6am" writes `once` lines for the right times, and Herdr lists each as "Once, <day> <date> at <time>" with that next time. "2026-02-30 06:00", "banana 6am", "13pm" and "tomorrow" (no time) are refused; a past time says it has passed.
+- `--add` twice for the same time names the second `-2`; a taken `--name` is refused; `--when "tomorrow 6am"` says to use `--at`; `--when` without `--name`, no prompt, no time, both `--at` and `--when`, an unknown `--agent`, a name with `/`, and a folder outside every workspace without `--workspace` all fail with a message. `--off` adds `enabled: false` and `--list` shows "(off)".
+- A one-time job due in a minute, with the printing preset, starts in that minute in the Automations space, its file then has `enabled: false`, the screen shows it Off with no next time, and your view stays where it was.
+- A Claude started in the workspace through the launcher, asked "In 2 minutes, an agent should reply with just the word PONG. Set that up now", reads `herdr-ws-run --help`, adds a one-time automation with a prompt that stands on its own, and at that minute a new agent replies "PONG". The automation is then off.
+- With a stubbed `herdr` module, a runner whose last tick was 20 minutes ago queues a one-time job due in that gap once ("Missed … while the Mac was asleep"), runs a later one in its own minute, and after a 13-hour gap runs nothing.
 - With the runner's memory set to "last ticked 21:00" and a `daily 21:30` automation, opening at 21:50 runs it once ("Missed 21:30 while Herdr was closed"); a `daily 08:00` one 13 hours late doesn't run.

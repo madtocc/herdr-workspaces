@@ -6,6 +6,7 @@
 //   every 30m | every 2h | every 1d        an interval, at least a minute
 //   09:00 | daily 9:00 | weekdays 09:00,17:30 | weekends 10am | mon,wed 8:30 | mon-fri 9:00
 //   0 9 * * 1-5                            cron: minute hour day month weekday
+//   once 2026-11-12 06:00                  one time, on this computer's clock; then it turns itself off
 //   task enters review                     a board task moves into that column
 //   agent done | agent blocked [tab name]  an agent in the workspace finishes, or needs you
 //   files inbox                            something changes under a folder (from the root)
@@ -13,9 +14,10 @@
 //   github owner/name issue opened by others label:bug   workspace folder's repo or owner/name
 //   link                                   only Run now and herdr-ws-run start it
 
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const DAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
 const UNITS = { s: 1e3, sec: 1e3, secs: 1e3, second: 1e3, seconds: 1e3, m: 60e3, min: 60e3, mins: 60e3, minute: 60e3, minutes: 60e3, h: 3600e3, hr: 3600e3, hrs: 3600e3, hour: 3600e3, hours: 3600e3, d: 86400e3, day: 86400e3, days: 86400e3 };
-const HELP = 'Try "every 30m", "weekdays 09:00", "0 9 * * 1-5", "task enters review", "agent done", "files inbox", "github api pr opened" or "link".';
+const HELP = 'Try "every 30m", "weekdays 09:00", "once 2026-11-12 06:00", "0 9 * * 1-5", "task enters review", "agent done", "files inbox", "github api pr opened" or "link".';
 
 const pad = (n) => String(n).padStart(2, "0");
 const hhmm = ([h, m]) => `${pad(h)}:${pad(m)}`;
@@ -65,12 +67,21 @@ function cronField(text, lo, hi) {
   return [...out].sort((x, y) => x - y);
 }
 
-// The parsed line: { kind: "every" | "at" | "cron" | "board" | "agent" | "files" | "link" | "error", ... }.
+// The parsed line: { kind: "every" | "at" | "cron" | "once" | "board" | "agent" | "files" | "github" | "link" | "error", ... }.
 export function parseWhen(line) {
   const raw = String(line ?? "").trim();
   const s = raw.toLowerCase().replace(/\s+/g, " ");
   if (!s || s === "link" || s === "manual" || s === "never") return { kind: "link" };
-  let m = /^every (\d+) ?([a-z]+)$/.exec(s);
+  // once YYYY-MM-DD [at] time: one minute on this computer's clock.
+  let m = /^once\b(.*)$/.exec(s);
+  if (m) {
+    const d = /^ (\d{4})-(\d{1,2})-(\d{1,2})(?: at)? (\S+)$/.exec(m[1]);
+    const t = d && time(d[4]);
+    const at = t && new Date(+d[1], +d[2] - 1, +d[3], t[0], t[1]);
+    if (!at || at.getMonth() !== +d[2] - 1 || at.getDate() !== +d[3]) return { kind: "error", error: 'A one-time schedule is a date and a time: "once 2026-11-12 06:00".' };
+    return { kind: "once", at: at.getTime() };
+  }
+  m = /^every (\d+) ?([a-z]+)$/.exec(s);
   if (m && UNITS[m[2]]) {
     const ms = +m[1] * UNITS[m[2]];
     return ms >= 60e3 ? { kind: "every", ms } : { kind: "error", error: "An interval is at least a minute." };
@@ -111,8 +122,9 @@ export function parseWhen(line) {
   return { kind: "error", error: `Can't read "${raw}". ${HELP}` };
 }
 
-// A schedule ("at" or "cron") is due in the minute starting at `d`.
+// A schedule ("at", "cron" or "once") is due in the minute starting at `d`.
 export function due(w, d) {
+  if (w.kind === "once") return Math.floor(w.at / 60e3) === Math.floor(d.getTime() / 60e3);
   if (w.kind === "at") return w.days.includes(d.getDay()) && w.times.some(([h, m]) => h === d.getHours() && m === d.getMinutes());
   if (w.kind !== "cron") return false;
   const has = (list, v) => !list || list.includes(v);
@@ -124,6 +136,7 @@ export function due(w, d) {
 
 // The next minute a schedule is due, after `from` (ms), within 32 days; else null.
 export function nextAt(w, from) {
+  if (w.kind === "once") return w.at > from ? w.at : null;
   if (w.kind !== "at" && w.kind !== "cron") return null;
   let t = Math.floor(from / 60e3) * 60e3 + 60e3;
   for (let i = 0; i < 32 * 1440; i++, t += 60e3) if (due(w, new Date(t))) return t;
@@ -148,6 +161,10 @@ export function describe(w) {
       return `${when} at ${and(w.times.map(hhmm))}`;
     }
     case "cron": return `On the cron schedule ${w.text}`;
+    case "once": {
+      const d = new Date(w.at);
+      return `Once, ${label(DAYS[d.getDay()]).slice(0, 3)} ${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()} at ${hhmm([d.getHours(), d.getMinutes()])}`;
+    }
     case "board": return `When a task enters ${label(w.column)}`;
     case "agent": return `When an agent ${w.status === "done" ? "finishes" : "needs you"}${w.name ? ` (tabs named ${w.name})` : ""}`;
     case "files": return `When files change in ${w.folder}`;
@@ -163,5 +180,5 @@ export function shortTime(ms, now = Date.now()) {
   const clock = hhmm([d.getHours(), d.getMinutes()]);
   if (d.toDateString() === n.toDateString()) return clock;
   if (Math.abs(ms - now) < 6 * 86400e3) return `${label(DAYS[d.getDay()]).slice(0, 3)} ${clock}`;
-  return `${d.getDate()} ${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][d.getMonth()]} ${clock}`;
+  return `${d.getDate()} ${MONTHS[d.getMonth()]} ${clock}`;
 }

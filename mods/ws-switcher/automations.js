@@ -14,6 +14,8 @@
 // The switcher's sidebar copy owns the one Runner and ticks it on its 500ms timer:
 // Herdr doesn't draw in the background, and a dialog's tasks end when it closes.
 // A run is a tab in the workspace's "Automations" space (made the first time).
+// A one-time schedule (`when: once …`) writes `enabled: false` in its file when
+// its time comes, so it doesn't stay on.
 // Making a tab shows it, so the runner puts your view back straight after.
 //
 // Published (shared), for the ws-automations screen:
@@ -31,7 +33,7 @@ import * as fs from "fs/promises";
 import { parseWhen, describe, due, nextAt, shortTime } from "./when.js";
 
 const SPACE = "Automations";
-const MISSED = 12 * 3600e3; // a schedule missed while Herdr was closed runs once if it was due this recently
+const MISSED = 12 * 3600e3; // a schedule missed (Herdr closed, the Mac asleep) runs once if it was due this recently
 const GAP = 50e3;           // an automatic run doesn't start within this of the same one's last start
 const QUIET = 3000;         // files must be quiet this long before a files automation starts
 const OLD_CALL = 3600e3;    // an outside call that waited longer than this (Herdr closed) is dropped
@@ -308,23 +310,24 @@ export class Runner {
       this.state.runs = this.state.runs.filter((r) => there.has(r.ws));
       for (const map of [this.state.last, this.state.base]) for (const k of Object.keys(map)) if (!there.has(k.split("/")[0])) delete map[k];
     }
-    if (!this.loaded) { this.loaded = true; this.catchUp(now); }
+    if (!this.loaded) { this.loaded = true; this.catchUp(this.state.seen || now, now, "while Herdr was closed"); }
     this.save();
     this.watchFiles(cx);
     this.publish();
   }
 
-  // Schedules due while Herdr was closed (in the last MISSED): each runs once.
-  catchUp(now) {
-    const from = Math.max(this.state.seen || now, now - MISSED);
+  // Schedules due from `from` up to this minute (at most MISSED back) that didn't
+  // run, because Herdr was closed or its timer stopped while the Mac slept: each runs once.
+  catchUp(from, now, reason) {
+    from = Math.max(from, now - MISSED);
     this.each((ws, a) => {
-      if (a.trigger.kind !== "at" && a.trigger.kind !== "cron") return;
+      if (a.trigger.kind !== "at" && a.trigger.kind !== "cron" && a.trigger.kind !== "once") return;
       const last = this.state.last[`${ws}/${a.name}`] ?? 0;
       let missed = null;
       for (let t = Math.floor(from / 60e3) * 60e3; t < Math.floor(now / 60e3) * 60e3; t += 60e3) {
         if (t > last && due(a.trigger, new Date(t))) missed = t;
       }
-      if (missed) this.pending.push({ ws, name: a.name, why: `Missed ${shortTime(missed, now)} while Herdr was closed` });
+      if (missed) this.pending.push({ ws, name: a.name, why: `Missed ${shortTime(missed, now)} ${reason}` });
     });
   }
 
@@ -338,6 +341,7 @@ export class Runner {
   }
 
   warningOf(ws, a, def) {
+    if (a.trigger.kind === "once") return a.enabled && a.trigger.at < Date.now() - 60e3 ? "Its time has passed and it didn't run. Change the date, or use Run now." : null;
     if (a.trigger.kind === "files") return def ? this.warnings[folderPath(def, a.trigger.folder)] ?? null : null;
     if (a.trigger.kind !== "github") return null;
     const r = this.repos[`${ws}\t${a.trigger.repo}`];
@@ -368,6 +372,8 @@ export class Runner {
     }
     const minute = Math.floor(now / 60e3);
     if (minute !== this.minute) {
+      // Minutes skipped since the last tick (the Mac slept): their schedules run late, once.
+      if (this.minute !== undefined && minute > this.minute + 1) this.catchUp((this.minute + 1) * 60e3, now, "while the Mac was asleep");
       this.minute = minute;
       const at = new Date(minute * 60e3);
       this.each((ws, a) => { if (due(a.trigger, at)) this.fire(cx, ws, a, `The ${shortTime(at.getTime(), now)} schedule`); });
@@ -405,6 +411,7 @@ export class Runner {
       if (how.key) this.recent.set(key, now);
       this.state.last[k] = now;
       this.save();
+      if (a.trigger.kind === "once") this.turnOff(cx, a);
       const prev = this.lastRun(ws, a.name);
       if (!how.key && this.busy(prev)) {
         this.log({ ws, name: a.name, at: now, why, status: "skipped", note: "Its last run was still working." });
@@ -412,6 +419,22 @@ export class Runner {
       }
     }
     cx.spawn(async (cx) => { await this.start(ws, a, why, vars, key, how.folder); cx.notify(); });
+  }
+
+  // A one-time schedule has had its turn: `enabled: false` in its file, which the
+  // folder watch then reloads. Until then, the copy in the list is off already.
+  turnOff(cx, a) {
+    a.enabled = false;
+    this.publish();
+    cx.spawn(async () => {
+      for (let i = 0; i < 3; i++) {
+        const old = await readTextFile(a.file);
+        if (old === null) return;
+        const parts = split(old);
+        const head = [...parts.head.filter((l) => !/^enabled\s*:/.test(l)), "enabled: false"];
+        try { await writeTextFile(a.file, `---\n${head.join("\n")}\n---\n${parts.body}`, old); return; } catch {}
+      }
+    });
   }
 
   // Starts of one automation take turns, so a burst of calls all run, one after another.
