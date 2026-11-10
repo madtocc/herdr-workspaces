@@ -1,5 +1,6 @@
-// Agent presets: see, make and edit them. A dialog the switcher's menu opens
-// with props { workspace } (null: no workspace shown).
+// Agent presets: see, make and edit them. A dialog the sidebar footer's
+// "Agent presets" row (ws-chrome) opens with props { workspace } (null: no
+// workspace shown).
 //
 // Global presets are herdr-core's templates (~/.config/herdr-core/templates,
 // which `hc run <name>` also starts); a workspace's own are in

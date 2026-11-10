@@ -9,10 +9,16 @@ set -eu
 src=${HERDR_APP_HOME:-$HOME/.config/herdr-app}
 dst=$(cd "$(dirname "$0")/.." && pwd)
 
+# The runner and the Automations screen read `when:` with the same file.
+cmp -s "$src/mods/ws-switcher/when.js" "$src/mods/ws-automations/when.js" || {
+  echo "mods/ws-switcher/when.js and mods/ws-automations/when.js differ: make them the same first" >&2
+  exit 1
+}
+
 mkdir -p "$dst/layouts"
 cp "$src/layouts/workspaces.json" "$dst/layouts/workspaces.json"
 
-for mod in ws-switcher ws-spaces ws-agents ws-board ws-presets ws-chrome; do
+for mod in ws-switcher ws-spaces ws-agents ws-board ws-presets ws-chrome ws-automations ws-tabs ws-new-menu; do
   rm -rf "$dst/mods/$mod"
   mkdir -p "$dst/mods/$mod"
   (cd "$src/mods/$mod" && find . -type f ! -name jsconfig.json ! -name gpui-kit.d.ts ! -name '.*' ! -name '*.error') |

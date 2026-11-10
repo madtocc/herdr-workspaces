@@ -7,9 +7,16 @@ one markdown file per task, cards that start an agent on their task (in the
 repo or a fresh worktree) and then show that agent's live status. Agent presets
 (herdr-core templates: a command plus instructions) can be global or per
 workspace, are managed in the Agent presets screen (model and effort included;
-open it from the sidebar footer or the switcher), and run from
-"New agent…" or a card's Start;
-`examples/presets/` has two to start from.
+open it from the sidebar footer), and start from the tab bar's + menu or a
+card's Start;
+`examples/presets/` has three to start from, among them an orchestrator that
+splits a task across helper agents with herdr-core's `hc`; its helpers show
+under it in the Agents list. Automations start an agent by
+themselves: on a schedule, when a task enters a board column, when an agent
+finishes or needs you, when files change, when a PR or issue is opened on
+GitHub (asked every 2 minutes through `gh`), or when another app calls
+`herdr-ws-run`. Each run is a tab in the workspace's Automations space;
+`examples/automations/` has one to start from.
 
 ![Workspaces](preview.png)
 
@@ -20,12 +27,14 @@ open it from the sidebar footer or the switcher), and run from
 Ask your agent to add this layout (Herdr's own guide, `~/.config/herdr-app/AGENTS.md`,
 says how), or by hand:
 
-1. Copy `layouts/workspaces.json` to `~/.config/herdr-app/layouts/` and the six
+1. Copy `layouts/workspaces.json` to `~/.config/herdr-app/layouts/` and the nine
    folders in `mods/` to `~/.config/herdr-app/mods/` (rename them if a name is taken).
 2. For agent instructions from the + menu, put the launcher on your `PATH` and
-   point `programs.json` at it:
+   point `programs.json` at it. `herdr-ws-run` is for starting automations from
+   other apps:
    ```sh
    ln -s ~/.config/herdr-app/mods/ws-switcher/bin/herdr-ws-agent ~/.local/bin/
+   ln -s ~/.config/herdr-app/mods/ws-switcher/bin/herdr-ws-run ~/.local/bin/
    ```
    ```json
    { "programs": { "claude": { "run": ["herdr-ws-agent", "claude"] },
@@ -39,20 +48,26 @@ says how), or by hand:
 **What it touches:** it reads `~/.herdr/workspaces` and the folders of
 each workspace's root. It writes `~/.herdr/workspaces/.index`, a new
 workspace's files when you make one, its `workspace.jsonc` when you rename it,
-and task files in `~/.herdr/workspaces/<id>/tasks/`. Deleting a workspace or a
-task (after a confirmation) moves it to the Trash. The board's Worktree runs
+task files in `~/.herdr/workspaces/<id>/tasks/` and automation files in
+`~/.herdr/workspaces/<id>/automations/`. Deleting a workspace, a task or an
+automation (after a confirmation) moves it to the Trash. The board's Worktree runs
 `git worktree add` on a new `task/…` branch; otherwise your repos aren't
 touched. It runs `sh` (editor, Trash, symlinked folders), `herdr-app do` (the
-board's new tabs) and, through the launcher and Start, your agents. It doesn't
-use the network.
+board's and automations' new tabs) and, through the launcher, Start and
+automations, your agents. Automations watch the folders a files automation
+names, read calls `herdr-ws-run` leaves in `~/.herdr/workspaces/.inbox` (and
+delete them), and close an automation's older run tabs once their agent is done.
+Only GitHub automations use the network: `gh api` with your login, every 2
+minutes per watched repo.
 
-Built for Herdr 0.1.14; `ws-spaces` and `ws-agents` are copies of that version's
-`spaces` and `agents` lists.
+Built for Herdr 0.1.14; `ws-spaces`, `ws-agents`, `ws-tabs`, `ws-new-menu` and
+`ws-chrome` are copies of that version's `spaces`, `agents`, `tabs`, `new-menu`
+and `workspace-chrome`.
 
 ## License
 
-Apache License 2.0. `ws-spaces` and `ws-agents` are modified copies of Herdr's
-own mods, also Apache 2.0; see `NOTICE`.
+Apache License 2.0. `ws-spaces`, `ws-agents`, `ws-tabs`, `ws-new-menu` and
+`ws-chrome` are modified copies of Herdr's own mods, also Apache 2.0; see `NOTICE`.
 
 ## Working on it
 

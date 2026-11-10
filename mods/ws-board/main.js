@@ -49,7 +49,8 @@ function expand(p) {
 const tilde = (p) => (p === home() ? "~" : p.startsWith(home() + "/") ? "~" + p.slice(home().length) : p);
 const under = (p, d) => Boolean(p && d) && (p === d || p.startsWith(d + "/"));
 const base = (p) => p.replace(/\/+$/, "").split("/").pop();
-const today = () => new Date().toISOString().slice(0, 10);
+// Today's date where you are (toISOString would give UTC's).
+const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
 const label = (c) => c.charAt(0).toUpperCase() + c.slice(1).replace(/[-_]+/g, " ");
 const slug = (s) => s.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
 const message = (e) => String(e?.message ?? e);

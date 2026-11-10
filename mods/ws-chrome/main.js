@@ -1,6 +1,7 @@
-// ws-chrome: Herdr's `workspace-chrome` (0.1.14) for the sidebar footer, with an
-// "Agent presets" row above Settings that opens the ws-presets screen for the
-// shown workspace. The brand row still uses Herdr's own workspace-chrome.
+// ws-chrome: Herdr's `workspace-chrome` (0.1.14) for the sidebar footer, with
+// "Automations" and "Agent presets" rows above Settings that open the
+// ws-automations and ws-presets screens for the shown workspace. The brand row
+// still uses Herdr's own workspace-chrome.
 
 import { View, div, image, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
@@ -40,11 +41,13 @@ export default class WorkspaceChrome extends View {
       const row = (id, icon, label, dim, action) => h_flex().id(id).h(28).px(8).gap(9).items_center().rounded(8)
         .when(collapsed, el => el.relative().w(32).px(0).justify_center().tooltip(label))
         .text_color(dim ? t.dim : t.muted).hover(s => s.bg(t.hover).text_color(t.foreground)).cursor_pointer()
-        .on_click(action).child(svg(`mods/ws-chrome/${icon}.svg`).size(14))
+        .on_click(action).child(svg(icon.includes("/") ? icon : `mods/ws-chrome/${icon}.svg`).size(14))
         .when(!collapsed, el => el.child(label));
       const ready = div().size(6).rounded_full().bg(t.accent);
       return v_flex().size_full().bg(t.chrome).border_t(1).border_color(t.border).px(8).pt(4).pb(8).text_size(13)
         .when(collapsed, el => el.px(0).items_center())
+        .child(row("automations", "mods/ws-automations/automations.svg", "Automations", false, () => openOverlay({
+          mod: "ws-automations", kind: "dialog", width: 940, height: 680, props: { workspace: shared("workspaces.active") ?? null } })))
         .child(row("presets", "presets", "Agent presets", false, () => openOverlay({
           mod: "ws-presets", kind: "dialog", width: 900, height: 640, props: { workspace: shared("workspaces.active") ?? null } })))
         .child(row("settings", "settings", "Settings", false, () => run("app.settings"))

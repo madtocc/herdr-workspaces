@@ -69,7 +69,7 @@
             }
           },
           "size": {
-            "px": 97
+            "px": 125
           }
         }
       ],
@@ -89,7 +89,7 @@
           "id": "tabs",
           "type": "block",
           "content": {
-            "mod": "tabs"
+            "mod": "ws-tabs"
           },
           "size": {
             "px": 42

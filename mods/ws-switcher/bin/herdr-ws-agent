@@ -2,6 +2,8 @@
 # Start an agent with its Herdr workspace's instructions.
 #
 #   herdr-ws-agent [--instructions FILE]... <agent> [args...]
+#   herdr-ws-agent --preset NAME [task...]     start a preset here (as Herdr's UI does)
+#   herdr-ws-agent --presets                   list the presets this folder's workspace offers
 #
 # Finds the workspace whose root or folders hold the current folder (a herdr
 # worktree goes by its repo's name) and starts the agent with:
@@ -20,23 +22,39 @@
 # the agent knows which one it is. The switcher and the board pass it when they
 # start a preset.
 #
+# --preset NAME finds the preset (the workspace's agents/NAME.md, else herdr-core's
+# templates/NAME.md) and runs its command: Claude and Codex with --instructions,
+# any other agent with its instructions and the task as its first message. It's
+# how an agent starts a workspace's own preset as its helper, which `hc run NAME`
+# can't (hc only knows the templates):
+#   hc run --bg --name review --cwd <repo> herdr-ws-agent --preset reviewer "<task>"
+# The preset's command is read as the shell reads it (eval): it's your own config.
+#
 # Point Herdr's programs.json at it so the + menu starts agents this way:
 #   { "programs": { "claude": { "run": ["herdr-ws-agent", "claude"] },
 #                   "codex":  { "run": ["herdr-ws-agent", "codex", "--no-daemon"] } } }
 #
 # HERDR_WS_AGENT_DRY=1 prints the command, one word per line, instead of running it.
 
-usage="usage: herdr-ws-agent [--instructions FILE]... <agent> [args...]"
-presets=
-while [ "${1:-}" = --instructions ]; do
-  [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }
-  presets="$presets$2
+usage="usage: herdr-ws-agent [--instructions FILE]... <agent> [args...]
+       herdr-ws-agent --preset NAME [task...]
+       herdr-ws-agent --presets"
+presets= mode= pname= agent=
+case "${1:-}" in
+  --presets) mode=list; shift ;;
+  --preset) [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }; mode=preset; pname=$2; shift 2 ;;
+esac
+if [ -z "$mode" ]; then
+  while [ "${1:-}" = --instructions ]; do
+    [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }
+    presets="$presets$2
 "
-  shift 2
-done
-[ $# -ge 1 ] || { echo "$usage" >&2; exit 2; }
-agent=$1
-shift
+    shift 2
+  done
+  [ $# -ge 1 ] || { echo "$usage" >&2; exit 2; }
+  agent=$1
+  shift
+fi
 
 index=$HOME/.herdr/workspaces/.index
 trees=$HOME/.herdr/worktrees
@@ -85,6 +103,75 @@ told() {
          }
          sub(/^[ \t\r\n]+/, "", s); sub(/[ \t\r\n]+$/, "", s); printf "%s", s }' "$1"
 }
+
+templates=${XDG_CONFIG_HOME:-$HOME/.config}/herdr-core/templates
+wsdir=$HOME/.herdr/workspaces/$ws
+# A front matter field of a preset file.
+front() { awk -v k="$2" 'NR == 1 && /^---[ \t\r]*$/ { h = 1; next } h && /^---[ \t\r]*$/ { exit }
+  h && index($0, k ":") == 1 { v = substr($0, length(k) + 2); sub(/^[ \t]+/, "", v); sub(/[ \t\r]+$/, "", v); print v; exit }' "$1"; }
+
+if [ "$mode" = list ]; then
+  own=" "
+  if [ -n "$ws" ] && [ -d "$wsdir/agents" ]; then
+    echo "Only in this workspace ($ws):"
+    for f in "$wsdir"/agents/*.md; do
+      [ -f "$f" ] || continue
+      n=${f##*/}; n=${n%.md}
+      printf '  %-16s %s\n' "$n" "$(front "$f" description)"
+      own="$own$n "
+    done
+  fi
+  echo "Every workspace:"
+  for f in "$templates"/*.md; do
+    [ -f "$f" ] || continue
+    n=${f##*/}; n=${n%.md}
+    case "$own" in
+      *" $n "*) printf '  %-16s %s\n' "$n" "(this workspace's own $n is the one that runs)" ;;
+      *) printf '  %-16s %s\n' "$n" "$(front "$f" description)" ;;
+    esac
+  done
+  echo
+  echo "Start one: hc run --bg --name <name> --cwd <folder> herdr-ws-agent --preset <preset> \"<task>\""
+  exit 0
+fi
+
+if [ "$mode" = preset ]; then
+  case "$pname" in */*|.*|'') echo "herdr-ws-agent: \"$pname\" is a preset's name, not a path" >&2; exit 2 ;; esac
+  file=
+  if [ -n "$ws" ] && [ -f "$wsdir/agents/$pname.md" ]; then file=$wsdir/agents/$pname.md
+  elif [ -f "$templates/$pname.md" ]; then file=$templates/$pname.md
+  else echo "herdr-ws-agent: there's no preset \"$pname\" here (herdr-ws-agent --presets lists them)" >&2; exit 1
+  fi
+  task=$*
+  line=$(front "$file" command)
+  [ -n "$line" ] || { echo "herdr-ws-agent: $file has no command" >&2; exit 1; }
+  eval "set -- $line"
+  [ "${1:-}" = env ] && shift
+  while [ $# -gt 0 ]; do
+    case "$1" in [A-Za-z_]*=*) export "${1%%=*}=${1#*=}"; shift ;; *) break ;; esac
+  done
+  [ "${1##*/}" = herdr-ws-agent ] && shift
+  [ $# -ge 1 ] || { echo "herdr-ws-agent: $file's command names no program" >&2; exit 1; }
+  case "${1##*/}" in
+    claude|codex) exec "$0" --instructions "$file" "$@" ${task:+"$task"} ;;
+  esac
+  # Any other agent: its instructions, then the task, as its first message (as hc does).
+  body=$(told "$file")
+  first=
+  [ -n "$body" ] && first="You are the \"$pname\" agent, started from the Herdr agent preset of that name ($file). Its instructions:
+
+$body"
+  [ -n "$task" ] && first=${first:+$first
+
+}$task
+  [ -n "$first" ] && set -- "$@" "$first"
+  if [ -n "${HERDR_WS_AGENT_DRY:-}" ]; then
+    printf 'workspace: %s\n' "${ws:-none}"
+    printf '%s\n' "$@"
+    exit 0
+  fi
+  exec "$@"
+fi
 
 # Extra words go before the caller's: append them, then rotate the caller's to the end.
 given=$#

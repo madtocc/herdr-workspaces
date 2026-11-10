@@ -1,0 +1,55 @@
+#!/bin/sh
+# Starts a workspace automation from outside Herdr: a script, a git hook, cron,
+# Raycast, Shortcuts. It runs like the Automations screen's Run now, even when the
+# automation is off. Herdr's ws-switcher picks the call up within two seconds; one
+# made while Herdr is closed runs when it opens, if that's within an hour.
+#
+#   herdr-ws-run <workspace> <automation> [text...]   the text fills {{text}}
+#   herdr-ws-run <workspace> <automation> -           the text from stdin
+#   herdr-ws-run --list                               what there is to run
+#
+# <workspace> is the workspace's folder name in ~/.herdr/workspaces. Without
+# {{text}} in its prompt, the text is added at the end of the prompt.
+set -eu
+
+dir=$HOME/.herdr/workspaces
+usage="usage: herdr-ws-run <workspace> <automation> [text... | -]
+       herdr-ws-run --list"
+
+if [ "${1:-}" = --list ]; then
+  found=
+  for f in "$dir"/*/automations/*.md; do
+    [ -f "$f" ] || continue
+    ws=${f#"$dir"/}
+    name=${f##*/}
+    printf '%s %s\n' "${ws%%/*}" "${name%.md}"
+    found=1
+  done
+  [ -n "$found" ] || echo "No automations yet: add one in Herdr's Automations screen."
+  exit 0
+fi
+case "${1:-}" in -h|--help) echo "$usage"; exit 0 ;; esac
+[ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }
+ws=$1 name=$2
+shift 2
+case "$ws/$name" in
+  */*/*|.*|*/.*) echo "herdr-ws-run: \"$ws\" and \"$name\" are names, not paths" >&2; exit 2 ;;
+esac
+[ -f "$dir/$ws/automations/$name.md" ] || {
+  echo "herdr-ws-run: there's no automation \"$name\" in \"$ws\" (herdr-ws-run --list shows them)" >&2
+  exit 1
+}
+if [ $# -eq 1 ] && [ "$1" = - ]; then text=$(cat); else text=$*; fi
+
+# Written aside, then moved in, so Herdr never reads half a call.
+mkdir -p "$dir/.inbox"
+stamp=$(date +%s)
+call="$dir/.inbox/$stamp-$$"
+printf '%s\n%s\n%s000\n%s\n' "$ws" "$name" "$stamp" "$text" > "$call.tmp"
+mv "$call.tmp" "$call.run"
+
+if herdr-app status >/dev/null 2>&1; then
+  echo "Asked Herdr to start $name in $ws."
+else
+  echo "Herdr isn't open: $name starts when it opens, if that's within an hour." >&2
+fi
