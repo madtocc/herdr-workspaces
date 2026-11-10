@@ -1,5 +1,7 @@
-// Automations: what a workspace runs by itself. A dialog that the sidebar's
-// Automations row and the switcher's menu open, with props { workspace }.
+// Automations: what a workspace runs by itself. A dialog that the sidebar
+// footer's Automations row opens, with props { workspace }. Each row has a switch
+// that turns the automation on or off at once; a run that's working or waiting
+// on you shows in its row, and its Stop (two clicks) closes the run's tab.
 //
 // An automation is ~/.herdr/workspaces/<id>/automations/<name>.md: front matter
 // (description, when, agent, folder, card, enabled), then its prompt. This screen
@@ -82,6 +84,16 @@ function automationText(old, fields, body) {
 }
 
 // shared "workspaces.automations" with one changed or (null) gone, until the runner confirms it.
+// A run's state now: its agent's status, else whether its terminal is still open.
+function runState(r, ag, tm) {
+  if (!r) return null;
+  if (r.status !== "started") return r.status;
+  const a = ag.find((x) => x.address === r.terminal);
+  if (a) return STATE[a.status] ?? a.status;
+  // Not an agent (or not one that reports): its tab is still open, or it's gone.
+  return tm.some((x) => x.address === r.terminal && x.state === "live") ? "open" : "closed";
+}
+
 function updateShared(ws, name, record) {
   const all = JSON.parse(JSON.stringify(shared("workspaces.automations") ?? {}));
   const list = (all[ws] ??= []);
@@ -154,6 +166,7 @@ export default class Automations extends View {
     this.error = null;
     this.notice = null;
     this.confirming = false;
+    this.stopping = null;
     // `cx` is passed in: the click's own is gone by the time the file has been read.
     const load = (snap, cx) => {
       this.sel = sel;
@@ -250,6 +263,39 @@ export default class Automations extends View {
     });
   }
 
+  // A row's switch: turns it on or off at once, rewriting only its `enabled` line.
+  toggle(a, cx) {
+    const open = this.sel && !this.sel.isNew && this.sel.name === a.name;
+    if (open && this.dirty()) { this.error = "Save or discard this automation's changes first."; cx.notify(); return; }
+    const on = !a.enabled, ws = this.workspace;
+    updateShared(ws, a.name, { ...a, enabled: on, next: on ? a.next : null });
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        const old = await readTextFile(a.file);
+        if (old === null) throw new Error(`${tilde(a.file)} is gone.`);
+        const text = automationText(old, { enabled: on ? null : "false" }, split(old).body);
+        await writeTextFile(a.file, text, old);
+        if (this.sel && !this.sel.isNew && this.sel.name === a.name && this.snap) {
+          this.snap = { ...this.snap, text, enabled: on };
+          this.choice.enabled = on;
+        }
+      } catch (e) {
+        updateShared(ws, a.name, a);
+        notify({ title: `Couldn't turn ${a.name} ${on ? "on" : "off"}`, body: message(e), level: "error" });
+      }
+      cx.notify();
+    });
+  }
+
+  // Stops a run that's working, waiting on you or (a program) still open, by closing its tab; the first click asks.
+  stop(r, cx) {
+    if (this.stopping !== r.id) { this.stopping = r.id; cx.notify(); return; }
+    this.stopping = null;
+    run("tab.close", { id: r.tab, confirmed: true });
+    cx.notify();
+  }
+
   // The switcher's sidebar copy starts it: this dialog's tasks end when it closes.
   runNow(cx) {
     if (!this.sel || this.sel.isNew) return;
@@ -283,9 +329,20 @@ export default class Automations extends View {
       return shell.child(div().p(18).text_color(t.muted).child("Automations belong to a workspace. Pick one in the switcher first, then open this again."));
     }
     const autos = this.list();
+    const runs = (shared("workspaces.automation.runs") ?? []).filter((r) => r.ws === def.id);
+    const ag = agents(), tm = terminals();
+    // On or off at a click: a track with its knob at the right when it's on.
+    const toggle = (a) => h_flex().id(`a-sw-${a.name}`).w(26).h(15).p(2).flex_none().rounded_full().items_center().cursor_pointer()
+      .bg(a.enabled ? t.accent : t.input).when(a.enabled, (el) => el.justify_end())
+      .tooltip(a.enabled ? "On. Click to turn it off" : "Off. Click to turn it on")
+      .on_click((_e, cx) => { cx.stop_propagation(); this.toggle(a, cx); })
+      .child(div().size(11).rounded_full().bg(t.background));
     const item = (a) => {
       const on = this.sel && !this.sel.isNew && this.sel.name === a.name;
       const dot = a.error ? t.blocked : a.enabled ? t.done : t.dim;
+      // Its newest run, while that's working or waiting on you.
+      const now = runState(runs.find((r) => r.name === a.name && r.status === "started"), ag, tm);
+      const busy = now === "working" || now === "needs you" ? now : null;
       return h_flex().id(`a-${a.name}`).h(46).mx(6).px(8).gap(9).rounded(7).items_center().cursor_pointer()
         .when(on, (el) => el.bg(t.selected)).when(!on, (el) => el.hover((s) => s.bg(t.hover)))
         .on_click((_e, cx) => this.pick({ name: a.name, isNew: false }, null, cx))
@@ -293,7 +350,9 @@ export default class Automations extends View {
         .child(v_flex().flex_1().min_w(0).gap(2)
           .child(div().truncate().text_color(a.enabled ? t.foreground : t.muted).child(a.name))
           .child(div().truncate().text_size(11).text_color(a.error ? t.blocked : t.dim).child(a.error ? "Can't read its when" : a.summary)))
-        .child(div().flex_none().text_size(11).text_color(t.dim).child(!a.enabled ? "off" : a.next ? shortTime(a.next) : ""));
+        .child(div().flex_none().text_size(11).text_color(busy === "working" ? t.working : busy ? t.blocked : t.dim)
+          .child(busy ?? (!a.enabled ? "off" : a.next ? shortTime(a.next) : "")))
+        .child(toggle(a));
     };
     const list = v_flex().w(260).flex_none().min_h(0).border_r(1).border_color(t.border).bg(t.chrome)
       .child(div().p(10).child(h_flex().id("a-new").h(30).px(12).gap(6).items_center().justify_center().rounded(8).cursor_pointer()
@@ -361,21 +420,17 @@ export default class Automations extends View {
     const boardAgent = String(def.board?.agent || "claude");
     const runs = saved ? (shared("workspaces.automation.runs") ?? []).filter((r) => r.ws === def.id && r.name === saved.name).slice(0, 4) : [];
     const ag = agents(), tm = terminals();
-    const stateOf = (r) => {
-      if (r.status !== "started") return r.status;
-      const a = ag.find((x) => x.address === r.terminal);
-      if (a) return STATE[a.status] ?? a.status;
-      // Not an agent (or not one that reports): its tab is still open, or it's gone.
-      return tm.some((x) => x.address === r.terminal && x.state === "live") ? "open" : "closed";
-    };
     const runRow = (r) => {
-      const state = stateOf(r);
+      const state = runState(r, ag, tm);
       const color = state === "working" ? t.working : state === "needs you" ? t.blocked : state === "failed" ? t.blocked : t.dim;
       const live = state !== "closed" && r.status === "started" && r.tab;
       return h_flex().id(`a-run-${r.id}`).h(26).gap(10).items_center().text_size(12)
         .child(div().w(70).flex_none().text_color(t.dim).child(shortTime(r.at)))
         .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(r.note ? `${r.why}. ${r.note}` : r.why))
         .child(div().flex_none().text_color(color).child(state))
+        .when(Boolean(live) && (state === "working" || state === "needs you" || state === "open"), (el) => el.child(div().id(`a-stop-${r.id}`).flex_none().px(8).h(22).flex().items_center()
+          .rounded(6).border_1().border_color(t.input).text_size(11.5).text_color(t.blocked).cursor_pointer().hover((s) => s.bg(t.hover))
+          .on_click((_e, cx) => this.stop(r, cx)).child(this.stopping === r.id ? "Click again to stop" : "Stop")))
         .when(Boolean(live), (el) => el.child(div().id(`a-go-${r.id}`).flex_none().px(8).h(22).flex().items_center().rounded(6).border_1().border_color(t.input)
           .text_size(11.5).cursor_pointer().hover((s) => s.bg(t.hover)).on_click(() => this.goTo(r)).child("Go to")));
     };

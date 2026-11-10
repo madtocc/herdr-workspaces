@@ -8,6 +8,7 @@
 #   herdr-ws-run <workspace> <automation> -           the text from stdin
 #   herdr-ws-run --add (--at TIME | --when LINE) [...] prompt   add one (--help says more)
 #   herdr-ws-run --off <automation>                   turn one off
+#   herdr-ws-run --on <automation> [--at TIME]        turn one back on (a new time for a one-time one)
 #   herdr-ws-run --list                               every automation and its when: line
 #
 # A start runs like the Automations screen's Run now, even when the automation is
@@ -24,6 +25,7 @@ tab=$(printf '\t')
 usage="usage: herdr-ws-run <workspace> <automation> [text... | -]
        herdr-ws-run --add (--at TIME | --when LINE) [--name NAME] [--agent NAME] [--folder DIR] [--card] [--workspace ID] prompt... | -
        herdr-ws-run --off <automation> [--workspace ID]
+       herdr-ws-run --on <automation> [--at TIME] [--workspace ID]
        herdr-ws-run --list
        herdr-ws-run --help"
 
@@ -57,8 +59,9 @@ Have an agent do something later, from a folder in the workspace:
                   starts fresh, without this conversation: say everything it
                   needs (what to check, where, what to do, how to report).
 
-  herdr-ws-run --off NAME       turn one off (the file stays; Herdr's
-                                Automations screen turns it back on)
+  herdr-ws-run --off NAME       turn one off (the file stays)
+  herdr-ws-run --on NAME        turn it back on; a one-time one whose time has
+                                passed needs --at TIME, its new time
   herdr-ws-run --list           every automation, with its when: line
   herdr-ws-run WS NAME [text]   start one now
 
@@ -210,7 +213,7 @@ if [ "${1:-}" = --list ]; then
   exit 0
 fi
 
-if [ "${1:-}" = --add ] || [ "${1:-}" = --off ]; then
+if [ "${1:-}" = --add ] || [ "${1:-}" = --off ] || [ "${1:-}" = --on ]; then
   mode=${1#--}
   shift
   at= when= name= agent= folder= card= wsid= desc= auto=
@@ -228,7 +231,7 @@ if [ "${1:-}" = --add ] || [ "${1:-}" = --off ]; then
       -) break ;;
       -*) die "unknown option $1
 $usage" ;;
-      *) if [ "$mode" = off ] && [ -z "$name" ]; then name=$1; shift; else break; fi ;;
+      *) if [ "$mode" != add ] && [ -z "$name" ]; then name=$1; shift; else break; fi ;;
     esac
   done
 
@@ -250,7 +253,47 @@ $usage" ;;
          h && /^---[ \t\r]*$/ { print "enabled: false"; h = 0 }
          { print }' "$file" > "$tmp"
     mv "$tmp" "$file"
-    echo "Turned off \"$name\" in $wsid. Herdr's Automations screen turns it back on."
+    echo "Turned off \"$name\" in $wsid. herdr-ws-run --on $name turns it back on."
+    exit 0
+  fi
+
+  if [ "$mode" = on ]; then
+    [ -n "$name" ] || die "which one? herdr-ws-run --list shows them"
+    file=$dir/$wsid/automations/$name.md
+    [ -f "$file" ] || die "there's no automation \"$name\" in \"$wsid\" (herdr-ws-run --list shows them)"
+    cur=$(front "$file" when)
+    once=
+    case $cur in once\ *|ONCE\ *|Once\ *) once=1 ;; esac
+    new=
+    if [ -n "$at" ]; then
+      [ -n "$once" ] || die "\"$name\" repeats ($cur): --at only gives a one-time automation a new time"
+      set +e
+      t=$(resolve "$at")
+      r=$?
+      set -e
+      [ $r -ne 2 ] || die "\"$at\" ($t) has already passed"
+      [ $r -eq 0 ] || die "can't read \"$at\" as a time: try \"tomorrow 6am\", \"in 2 hours\" or \"2026-11-12 06:00\""
+      new="once $t"
+    elif [ -n "$once" ]; then
+      # Its time as written ("once 2026-11-12 06:00"): passed, it would never run.
+      was=$(printf '%s' "${cur#* }" | sed -n 's/^\([0-9]\{4\}-[0-9][0-9]-[0-9][0-9]\) \([0-9][0-9]:[0-9][0-9]\)$/\1 \2/p')
+      if [ -n "$was" ] && ! later "$was" "$(date +"%Y-%m-%d %H:%M")"; then
+        die "\"$name\" ran once, at $was. Give it a new time: herdr-ws-run --on $name --at \"tomorrow 6am\""
+      fi
+    fi
+    tmp=$dir/$wsid/automations/.$name.$$.tmp
+    awk -v new="$new" 'NR == 1 && /^---[ \t\r]*$/ { h = 1; print; next }
+         h && /^enabled[ \t]*:/ { next }
+         h && new != "" && /^when[ \t]*:/ { print "when: \"" new "\""; next }
+         h && /^---[ \t\r]*$/ { h = 0 }
+         { print }' "$file" > "$tmp"
+    mv "$tmp" "$file"
+    if [ -n "$new" ]; then
+      pretty=$(fmt "$t" "%a %d %b %Y at %H:%M" | sed 's/ 0\([0-9]\) / \1 /')
+      echo "Turned on \"$name\" in $wsid: it runs once, ${pretty:-$t}, then turns itself off."
+    else
+      echo "Turned on \"$name\" in $wsid ($cur)."
+    fi
     exit 0
   fi
 

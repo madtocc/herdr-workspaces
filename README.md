@@ -52,8 +52,8 @@ each workspace's root. It writes `~/.herdr/workspaces/.index`, a new
 workspace's files when you make one, its `workspace.jsonc` when you rename it,
 task files in `~/.herdr/workspaces/<id>/tasks/` and automation files in
 `~/.herdr/workspaces/<id>/automations/` (from the Automations screen, from
-`herdr-ws-run --add` and `--off`, and `enabled: false` after a one-time one
-runs). Deleting a workspace, a task or an
+`herdr-ws-run --add`, `--off` and `--on`, and `enabled: false` after a one-time
+one runs). Deleting a workspace, a task or an
 automation (after a confirmation) moves it to the Trash. The board's Worktree runs
 `git worktree add` on a new `task/…` branch; otherwise your repos aren't
 touched. It runs `sh` (editor, Trash, symlinked folders), `herdr-app do` (the
