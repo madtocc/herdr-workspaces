@@ -147,6 +147,23 @@ const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const and = (list) => (list.length < 2 ? list.join("") : `${list.slice(0, -1).join(", ")} and ${list[list.length - 1]}`);
 const label = (c) => c.charAt(0).toUpperCase() + c.slice(1).replace(/[-_]+/g, " ");
 
+// A cron line in words when it has a common shape ("Every 30 minutes from 09:00
+// to 18:30, weekdays", "Weekdays at 09:00"); else null. Day of month and month must be *.
+function cronWords(w) {
+  if (w.dom || w.month) return null;
+  const dayList = w.dow ?? range(0, 6);
+  const daysText = { "0,1,2,3,4,5,6": "", "1,2,3,4,5": "weekdays", "0,6": "weekends" }[dayList.join(",")] ?? and(dayList.map((x) => `${label(DAYS[x])}s`));
+  if (w.minute?.length === 1 && w.hour && w.hour.length <= 4) return describe({ kind: "at", days: dayList, times: w.hour.map((h) => [h, w.minute[0]]) });
+  const mins = w.minute ?? range(0, 59);
+  const step = mins.length > 1 ? mins[1] - mins[0] : 60;
+  const even = mins[0] === 0 && 60 % step === 0 && mins.length === 60 / step && mins.every((m, i) => m === i * step);
+  const every = mins.length === 1 ? `Every hour at :${pad(mins[0])}` : even ? (step === 1 ? "Every minute" : `Every ${step} minutes`) : null;
+  const hours = w.hour;
+  if (!every || (hours && !hours.every((h, i) => i === 0 || h === hours[i - 1] + 1))) return null;
+  const span = hours ? ` from ${hhmm([hours[0], mins[0]])} to ${hhmm([hours[hours.length - 1], mins[mins.length - 1]])}` : "";
+  return `${every}${span}${daysText ? `, ${daysText}` : ""}`;
+}
+
 // The line in words: "Weekdays at 09:00", "When a task enters Review".
 export function describe(w) {
   switch (w.kind) {
@@ -160,7 +177,7 @@ export function describe(w) {
         : and(w.days.map((x) => `${label(DAYS[x])}s`));
       return `${when} at ${and(w.times.map(hhmm))}`;
     }
-    case "cron": return `On the cron schedule ${w.text}`;
+    case "cron": return cronWords(w) ?? `On the cron schedule ${w.text}`;
     case "once": {
       const d = new Date(w.at);
       return `Once, ${label(DAYS[d.getDay()]).slice(0, 3)} ${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()} at ${hhmm([d.getHours(), d.getMinutes()])}`;

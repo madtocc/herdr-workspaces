@@ -23,7 +23,7 @@ index=$dir/.index
 templates=${XDG_CONFIG_HOME:-$HOME/.config}/herdr-core/templates
 tab=$(printf '\t')
 usage="usage: herdr-ws-run <workspace> <automation> [text... | -]
-       herdr-ws-run --add (--at TIME | --when LINE) [--name NAME] [--agent NAME] [--folder DIR] [--card] [--workspace ID] prompt... | -
+       herdr-ws-run --add (--at TIME | --when LINE) [--name NAME] [--agent NAME] [--model M] [--effort E] [--folder DIR] [--card] [--workspace ID] prompt... | -
        herdr-ws-run --off <automation> [--workspace ID]
        herdr-ws-run --on <automation> [--at TIME] [--workspace ID]
        herdr-ws-run --list
@@ -52,6 +52,11 @@ Have an agent do something later, from a folder in the workspace:
   --name NAME     letters, digits, - and _ (needed with --when)
   --agent NAME    a preset (herdr-ws-agent --presets lists them) or a program;
                   default: the workspace board's agent, else claude
+  --model MODEL   its model, in place of the preset's: for claude fable, opus,
+                  sonnet or haiku; codex and pi take their own names. Pick the
+                  smallest that does the job: haiku for checks and summaries
+  --effort LEVEL  its effort: claude low, medium, high, xhigh, max; codex
+                  minimal to max; pi off to max
   --folder DIR    where it runs; default: the current folder
   --card          also put a card for each run on the workspace's board
   --workspace ID  default: the workspace holding the current folder
@@ -216,13 +221,14 @@ fi
 if [ "${1:-}" = --add ] || [ "${1:-}" = --off ] || [ "${1:-}" = --on ]; then
   mode=${1#--}
   shift
-  at= when= name= agent= folder= card= wsid= desc= auto=
+  at= when= name= agent= model= effort= folder= card= wsid= desc= auto=
   while [ $# -gt 0 ]; do
     case $1 in
-      --at|--when|--name|--agent|--folder|--workspace|--description)
+      --at|--when|--name|--agent|--model|--effort|--folder|--workspace|--description)
         [ $# -ge 2 ] || die "$1 needs a value"
         case $1 in
           --at) at=$2 ;; --when) when=$2 ;; --name) name=$2 ;; --agent) agent=$2 ;;
+          --model) model=$2 ;; --effort) effort=$2 ;;
           --folder) folder=$2 ;; --workspace) wsid=$2 ;; --description) desc=$2 ;;
         esac
         shift 2 ;;
@@ -325,6 +331,10 @@ $usage" ;;
       die "there's no preset or program \"$agent\" (herdr-ws-agent --presets lists the presets)"
   fi
 
+  for v in "$model" "$effort"; do
+    case $v in *[!A-Za-z0-9._:/@-]*) die "\"$v\" isn't a model or effort name" ;; esac
+  done
+
   # Where it runs: --folder, else this folder when it's in the workspace, else
   # the root. Written from the root when it's under it, else in full.
   root=$(root_of "$wsid")
@@ -358,6 +368,8 @@ $usage" ;;
     echo "description: $(q "$desc")"
     echo "when: $(q "$when")"
     [ -z "$agent" ] || echo "agent: $(q "$agent")"
+    [ -z "$model" ] || echo "model: $model"
+    [ -z "$effort" ] || echo "effort: $effort"
     [ -z "$rel" ] || echo "folder: $(q "$rel")"
     [ -z "$card" ] || echo "card: true"
     echo ---
@@ -371,7 +383,9 @@ $usage" ;;
   else
     echo "Added \"$name\" in $wsid: \"$when\". If Herdr can't read that line, its Automations screen says why."
   fi
-  echo "It starts ${agent:-the default agent} in ${rel:-the workspace root}, in a tab of the workspace's Automations space."
+  knobs=$model
+  [ -z "$effort" ] || knobs="${knobs:+$knobs, }$effort effort"
+  echo "It starts ${agent:-the default agent}${knobs:+ ($knobs)} in ${rel:-the workspace root}, in a tab of the workspace's Automations space."
   echo "File: $file"
   echo "To cancel: herdr-ws-run --off $name --workspace $wsid"
   herdr-app status >/dev/null 2>&1 ||

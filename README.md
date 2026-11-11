@@ -16,9 +16,11 @@ themselves: on a schedule (once or repeating), when a task enters a board
 column, when an agent finishes or needs you, when files change, when a PR or
 issue is opened on GitHub (asked every 2 minutes through `gh`), or when another
 app calls `herdr-ws-run`. Each run is a tab in the workspace's Automations space;
-`examples/automations/` has one to start from. Agents in a workspace can add one
-themselves with `herdr-ws-run --add`, so you can tell one "tomorrow at 6, check
-X and if so do Y".
+`examples/automations/` has one to start from. You make one by saying what it
+should do and when, in your own words: Claude drafts the trigger, the agent,
+its model and the prompt, and you read the draft before it's saved. Agents in a
+workspace can add one themselves with `herdr-ws-run --add`, so you can tell one
+"tomorrow at 6, check X and if so do Y".
 
 ![Workspaces](preview.png)
 
@@ -61,8 +63,11 @@ board's and automations' new tabs) and, through the launcher, Start and
 automations, your agents. Automations watch the folders a files automation
 names, read calls `herdr-ws-run` leaves in `~/.herdr/workspaces/.inbox` (and
 delete them), and close an automation's older run tabs once their agent is done.
-Only GitHub automations use the network: `gh api` with your login, every 2
-minutes per watched repo.
+Two things use the network: GitHub automations (`gh api` with your login, every
+2 minutes per watched repo), and the Automations screen's Draft it and Change it,
+which run `claude -p` with your Claude login and no tools. That sends Anthropic
+your words, the workspace's name, root, folder names, GitHub repos and presets,
+and, for a change, the automation as it stands.
 
 Built for Herdr 0.1.14; `ws-spaces`, `ws-agents`, `ws-tabs`, `ws-new-menu` and
 `ws-chrome` are copies of that version's `spaces`, `agents`, `tabs`, `new-menu`

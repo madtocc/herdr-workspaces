@@ -4,18 +4,27 @@
 // on you shows in its row, and its Stop (two clicks) closes the run's tab.
 //
 // An automation is ~/.herdr/workspaces/<id>/automations/<name>.md: front matter
-// (description, when, agent, folder, card, enabled), then its prompt. This screen
-// writes the files. The switcher's runner (mods/ws-switcher/automations.js) reads
-// them, starts the runs, and publishes both in shared "workspaces.automations" and
-// "workspaces.automation.runs". Run now asks it through "workspaces.automation.run",
-// because a dialog's tasks end when it closes.
+// (description, when, agent, model, effort, folder, card, enabled), then its
+// prompt. This screen writes the files. The switcher's runner
+// (mods/ws-switcher/automations.js) reads them, starts the runs, and publishes
+// both in shared "workspaces.automations" and "workspaces.automation.runs". Run
+// now asks it through "workspaces.automation.run", because a dialog's tasks end
+// when it closes.
+//
+// Describe it: you say what you want in words, and Claude drafts every field
+// (`claude -p` with no tools and a fixed answer shape, on DRAFT_MODEL). The draft
+// fills the editor unsaved, and you read it before Create or Save. On a saved
+// automation the same box changes it ("make it hourly"). The fields themselves
+// are folded under Details.
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
 import { theme, shared, setShared, props, closeOverlay, home, readTextFile, writeTextFile, exec, notify, agents, terminals, run } from "herdr";
 import { parseWhen, describe, nextAt, shortTime } from "./when.js";
+import { KNOBS, words, programOf, knobsIn } from "./knobs.js";
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const MODEL_WORD = /^[A-Za-z0-9._:/@-]+$/;
 const COLUMNS = ["backlog", "todo", "doing", "review", "done"];
 const STATE = { working: "working", blocked: "needs you", done: "finished", idle: "finished" };
 // Moves a file to the Trash ($1), or into $2 where there's no Trash command. Prints where.
@@ -28,17 +37,21 @@ const tilde = (p) => (p === home() ? "~" : p.startsWith(home() + "/") ? "~" + p.
 const message = (e) => String(e?.message ?? e);
 const oneLine = (s) => String(s ?? "").replace(/\s*\n\s*/g, " ").trim();
 const label = (c) => c.charAt(0).toUpperCase() + c.slice(1).replace(/[-_]+/g, " ");
+const pad = (n) => String(n).padStart(2, "0");
 const defOf = (id) => (shared("workspaces.defs") ?? []).find((d) => d.id === id) ?? null;
 const columnsOf = (def) => (Array.isArray(def?.board?.columns) && def.board.columns.length ? def.board.columns : COLUMNS).map((c) => String(c).toLowerCase());
 const rel = (def, path) => (path === def.root ? "" : path.startsWith(def.root + "/") ? path.slice(def.root.length + 1) : tilde(path));
 const folderChoices = (def) => (def.folders.length ? def.folders : def.children.map((c) => `${def.root}/${c}`)).map((f) => rel(def, f));
+const boardAgentOf = (def) => String(def?.board?.agent || "claude");
+// The agents the + menu can start (ws-new-menu publishes them), installed here.
+const installedAgents = () => (shared("new-menu.agents")?.[""] ?? []).filter((a) => a.installed && Array.isArray(a.run));
 
 // What sets it off, as the When chips group it. A schedule is every, at, cron or once.
 const kindOf = (w) => (w.kind === "every" || w.kind === "at" || w.kind === "cron" || w.kind === "once" ? "schedule" : w.kind);
 // "once <tomorrow's date> 09:00", on this computer's clock.
 const onceTomorrow = () => {
-  const d = new Date(Date.now() + 86400e3), p = (n) => String(n).padStart(2, "0");
-  return `once ${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} 09:00`;
+  const d = new Date(Date.now() + 86400e3);
+  return `once ${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} 09:00`;
 };
 const KINDS = [["schedule", "Schedule"], ["board", "Board"], ["agent", "Agent"], ["files", "Files"], ["github", "GitHub"], ["link", "By hand"]];
 const SCHEDULES = ["every 30m", "every 1h", "daily 09:00", "weekdays 09:00", "mon 09:00", "0 9 * * 1-5"];
@@ -51,6 +64,60 @@ const FILLS = {
   github: "{{pr}} or {{issue}} (number, title, author, link and description), {{number}} {{title}} {{url}} {{author}} {{repo}} {{labels}}",
   link: "{{text}} (what herdr-ws-run was given)",
 };
+
+// --- Describe it: the drafter ---
+
+const DRAFT_MODEL = "sonnet";
+const DRAFT_TIMEOUT = 120e3;
+// What Claude answers with: every field, as strings (card a boolean).
+const SCHEMA = {
+  type: "object", additionalProperties: false,
+  required: ["name", "description", "when", "agent", "model", "effort", "folder", "card", "prompt", "note"],
+  properties: {
+    name: { type: "string" }, description: { type: "string" }, when: { type: "string" },
+    agent: { type: "string" }, model: { type: "string" }, effort: { type: "string" }, folder: { type: "string" },
+    card: { type: "boolean" }, prompt: { type: "string" }, note: { type: "string" },
+  },
+};
+const GUIDE = `You set up automations for Herdr, a desktop app for terminals and coding agents. An automation starts a coding agent by itself, with a prompt, as a new tab in the workspace's "Automations" space, while Herdr is open. The person says what they want in their own words; you answer with the automation's fields. Nothing is saved until they have read your draft and clicked Create or Save.
+
+Fields:
+- name: a short file name in lowercase words joined by dashes, saying what it does (board-sync, morning-review). Not one of the names taken.
+- description: one line, under 80 characters: what it does.
+- when: what sets it off, in exactly one of these forms:
+  - every 30m, every 2h, every 1d: an interval of at least a minute, counted from its last run
+  - 09:00, daily 9:00, weekdays 09:00,17:30, weekends 10am, mon,wed 8:30, mon-fri 9:00: days and times on this computer's clock
+  - 0 9 * * 1-5: cron's five fields (minute hour day month weekday), with lists, ranges and steps
+  - once 2026-11-12 06:00: one time, then it turns itself off
+  - task enters <column>: a task on the workspace's board moves into that column
+  - agent done, agent blocked: an agent in the workspace finishes, or needs the person; a tab name after it listens to that tab only
+  - files <folder>: something changes under that folder (from the root)
+  - github <folder or owner/name> pr opened, github <folder or owner/name> issue opened, optionally followed by "by others" (leaves out the person's own) and label:<name>: a new pull request or issue on GitHub. It only sees new ones, never edits, comments, moves, assignments or closes; for those, use a schedule whose prompt checks GitHub.
+  - link: only when started by hand (Run now) or from a script
+  Prefer the plain forms. Use cron only when they can't say it: every 30 minutes on weekdays from 9:00 to 18:30 is */30 9-18 * * 1-5.
+- agent: "" for the board's agent, else exactly one of the presets or installed agents listed. A preset that fits the job wins (a reviewer for reviews).
+- model and effort: the smallest that does the job well. For claude: haiku for checks, syncs, summaries and reports that read things and update a file or two; sonnet for ordinary code changes and reviews; opus for hard, long or many-step work; fable only when the person asks for the strongest. Effort "" (the default) unless the job is trivial (low) or hard (high). If the agent is a preset that already sets a model that suits the job, leave model "" to keep it. For codex and pi, leave model "" unless the person names one. If the person names a model or an effort, use it. Effort levels: claude low, medium, high, xhigh, max; codex minimal, low, medium, high, xhigh, max; pi off, minimal, low, medium, high, xhigh, max. Other agents take neither: leave both "".
+- folder: where it runs. "" for the workspace root (for a github trigger, its repo's folder). Else one of the folders listed, written as listed. Pick the folder the agent's commands need (a git repo for git and gh).
+- card: true only when the person wants each run as a card on the board.
+- prompt: the agent's whole task. It starts fresh and knows nothing of this conversation, so say what to look at (full paths, repos), what to do, what to leave alone, and how to finish (one line saying what it did or found). Keep it short and concrete, with numbered steps when there are several. It only reads and reports unless the person asks it to change something, and it never pushes, posts, comments, merges, deletes or messages anyone unless the person asked for exactly that. A scheduled check that finds nothing new changes nothing and says so. It can use these fill-ins: {{date}} {{time}} {{workspace}} {{folder}} {{event}} (what set it off); for board triggers {{task}} {{task.id}} {{task.title}} {{task.file}}; agent triggers {{agent}} {{terminal}} {{space}}; files triggers {{files}} {{file}}; github triggers {{pr}} or {{issue}} (number, title, author, link, labels and description) {{number}} {{title}} {{url}} {{author}} {{repo}} {{labels}}; link {{text}}. For anything but a schedule, what set it off is added at the end by itself unless the prompt uses one of these.
+- note: one or two short, plain sentences for the person about what you assumed or couldn't know and they should check before saving (a path you guessed, a field the agent has to find). Don't repeat the fields: they're shown already. "" when there's nothing to check.
+
+You can't look anything up. Use only the folders, repos, presets and agents listed. Where the task needs something you don't know (a project number, a list of issues), have the agent find it, and say so in note.
+
+When you're given the current automation, change only what the person asks and copy every other field exactly as it is, the prompt included.`;
+
+// The result message of `claude -p --output-format json` (one object, or a list of messages ending with it).
+function draftOf(r) {
+  let out = null;
+  try { out = JSON.parse(r.stdout); } catch {}
+  const res = Array.isArray(out) ? [...out].reverse().find((m) => m?.type === "result") : out;
+  if (!res) throw new Error(r.code !== 0 ? (r.stderr.trim().split("\n").pop() || `claude stopped with code ${r.code}`) : "Claude's answer couldn't be read.");
+  if (res.is_error) throw new Error(String(res.result || res.subtype || "Claude couldn't draft it."));
+  let d = res.structured_output;
+  if (!d && typeof res.result === "string") { try { d = JSON.parse(res.result); } catch {} }
+  if (!d || typeof d !== "object") throw new Error("Claude didn't send back a draft.");
+  return d;
+}
 
 // --- the file: front matter (`key: value` lines, others kept), then the prompt ---
 
@@ -83,7 +150,6 @@ function automationText(old, fields, body) {
   return `---\n${head.join("\n")}\n---\n${body.trim()}\n`;
 }
 
-// shared "workspaces.automations" with one changed or (null) gone, until the runner confirms it.
 // A run's state now: its agent's status, else whether its terminal is still open.
 function runState(r, ag, tm) {
   if (!r) return null;
@@ -94,6 +160,7 @@ function runState(r, ag, tm) {
   return tm.some((x) => x.address === r.terminal && x.state === "live") ? "open" : "closed";
 }
 
+// shared "workspaces.automations" with one changed or (null) gone, until the runner confirms it.
 function updateShared(ws, name, record) {
   const all = JSON.parse(JSON.stringify(shared("workspaces.automations") ?? {}));
   const list = (all[ws] ??= []);
@@ -109,6 +176,15 @@ function presetsFor(id) {
   return [...own, ...(p.global ?? []).filter((g) => !own.some((o) => o.name === g.name))].filter((x) => !x.error);
 }
 
+// The command an agent choice runs ("" is the board's agent): a preset's, an installed agent's, or the name.
+function commandOf(def, agent) {
+  const name = agent || boardAgentOf(def);
+  const preset = presetsFor(def.id).find((p) => p.name === name);
+  if (preset) return { name, preset, argv: words(preset.command ?? "") };
+  const known = (shared("new-menu.agents")?.[""] ?? []).find((a) => a.key === name);
+  return { name, preset: null, argv: known?.run ?? [name] };
+}
+
 export default class Automations extends View {
   init(_props, cx) {
     this.handle = cx.focus_handle();
@@ -118,18 +194,42 @@ export default class Automations extends View {
     this.descIn = InputState.new({ value: "", placeholder: "What it does, in one line" });
     this.whenIn = InputState.new({ value: "", placeholder: "weekdays 09:00" });
     this.bodyIn = TextareaState.new({ value: "", rows: 8, placeholder: "The agent's task: what to do and how to report back." });
+    // Describe it: one box for a new automation, one for a change to what's there.
+    this.askIn = TextareaState.new({ value: "", rows: 3, placeholder: "For example: every weekday at 9, list yesterday's merged PRs in api that still need docs" });
+    this.changeIn = InputState.new({ value: "", placeholder: "Change it in words: make it hourly, only on Mondays, use opus…" });
+    this.modelIn = InputState.new({ value: "", placeholder: "another model, then Enter" });
+    this.modelIn.on("submit", (_e, cx) => {
+      const model = this.modelIn.value().trim();
+      if (MODEL_WORD.test(model)) this.choice.model = model;
+      this.modelIn.set_value("");
+      cx.notify();
+    });
+    for (const input of [this.askIn, this.changeIn]) input.on("submit", (e, cx) => { if (!e.shift) this.draft(cx); });
     // The editor follows the fields as you type; the one being typed in has the accent border.
     this.focusedIn = null;
-    for (const input of [this.nameIn, this.descIn, this.whenIn, this.bodyIn]) {
+    for (const input of [this.nameIn, this.descIn, this.whenIn, this.bodyIn, this.askIn, this.changeIn, this.modelIn]) {
       input.on("change", (_e, cx) => cx.notify());
       input.on("focus", (_e, cx) => { this.focusedIn = input; cx.notify(); });
       input.on("blur", (_e, cx) => { if (this.focusedIn === input) this.focusedIn = null; cx.notify(); });
     }
     this.sel = null;  // { name, isNew }
-    this.snap = null; // what was loaded: { text, file, name, description, when, agent, folder, card, enabled, body }
-    this.choice = { agent: "", folder: "", card: false, enabled: true };
-    // The workspace's folders with a GitHub remote, for the GitHub chips.
+    this.snap = null; // what was loaded: { text, file, name, description, when, agent, model, effort, folder, card, enabled, body }
+    this.choice = { agent: "", model: "", effort: "", folder: "", card: false, enabled: true };
+    this.details = false; // the fields shown, not just the summary
+    this.manual = false;  // a new one being filled in by hand, before any draft
+    this.drafting = null; // the selection a draft is for, while Claude works
+    this.drafted = false; // the editor holds a draft not saved yet
+    this.draftNote = null;
+    this.draftError = null;
+    // The workspace's folders with a GitHub remote, for the GitHub chips and the drafter.
     this.ghRepos = [];
+    // Codex's models, from its config.
+    this.codexModels = [];
+    cx.spawn(async (cx) => {
+      const text = await readTextFile(`${home()}/.codex/config.toml`).catch(() => null);
+      this.codexModels = [...new Set([...(text ?? "").matchAll(/^\s*model\s*=\s*"([^"]+)"/gm)].map((m) => m[1]))];
+      cx.notify();
+    });
     const def = defOf(this.workspace);
     if (def) cx.spawn(async (cx) => {
       for (const f of folderChoices(def)) {
@@ -143,14 +243,17 @@ export default class Automations extends View {
   }
 
   def() { return defOf(this.workspace); }
+  // A new one shows only the Describe box until it's drafted or you choose to fill it in.
+  blank() { return Boolean(this.sel?.isNew && !this.drafted && !this.manual); }
+  askState() { return this.blank() ? this.askIn : this.changeIn; }
   list() { return (shared("workspaces.automations") ?? {})[this.workspace] ?? []; }
 
   dirty() {
-    const s = this.snap;
+    const s = this.snap, c = this.choice;
     if (!s) return false;
     return (this.sel?.isNew && this.nameIn.value().trim() !== s.name)
       || this.descIn.value() !== s.description || this.whenIn.value() !== s.when || this.bodyIn.value().trim() !== s.body
-      || this.choice.agent !== s.agent || this.choice.folder !== s.folder || this.choice.card !== s.card || this.choice.enabled !== s.enabled;
+      || c.agent !== s.agent || c.model !== s.model || c.effort !== s.effort || c.folder !== s.folder || c.card !== s.card || c.enabled !== s.enabled;
   }
 
   // Opens an automation (or a new one) in the editor; unsaved edits ask for a second click.
@@ -167,6 +270,13 @@ export default class Automations extends View {
     this.notice = null;
     this.confirming = false;
     this.stopping = null;
+    this.drafting = null;
+    this.drafted = false;
+    this.draftNote = null;
+    this.draftError = null;
+    this.manual = false;
+    this.askIn.set_value("");
+    this.changeIn.set_value("");
     // `cx` is passed in: the click's own is gone by the time the file has been read.
     const load = (snap, cx) => {
       this.sel = sel;
@@ -175,7 +285,7 @@ export default class Automations extends View {
       this.descIn.set_value(snap.description);
       this.whenIn.set_value(snap.when);
       this.bodyIn.set_value(snap.body);
-      this.choice = { agent: snap.agent, folder: snap.folder, card: snap.card, enabled: snap.enabled };
+      this.choice = { agent: snap.agent, model: snap.model, effort: snap.effort, folder: snap.folder, card: snap.card, enabled: snap.enabled };
       cx.notify();
     };
     if (fill) return load({ text: null, file: null, ...fill }, cx);
@@ -186,7 +296,7 @@ export default class Automations extends View {
       const { head, body } = split(text);
       load({
         text, file, name: sel.name, description: field(head, "description") ?? "", when: field(head, "when") ?? "",
-        agent: field(head, "agent") ?? "", folder: field(head, "folder") ?? "",
+        agent: field(head, "agent") ?? "", model: field(head, "model") ?? "", effort: field(head, "effort") ?? "", folder: field(head, "folder") ?? "",
         card: /^(true|yes|on|1)$/i.test(field(head, "card") ?? ""), enabled: !/^(false|no|off|0)$/i.test(field(head, "enabled") ?? ""),
         body: body.trim(),
       }, cx);
@@ -198,9 +308,106 @@ export default class Automations extends View {
     let n = 1;
     while (names.has(`automation-${n}`)) n++;
     this.pick({ name: "", isNew: true }, {
-      name: `automation-${n}`, description: "", when: "weekdays 09:00", agent: "", folder: "", card: false, enabled: true, body: "",
+      name: `automation-${n}`, description: "", when: "weekdays 09:00", agent: "", model: "", effort: "", folder: "", card: false, enabled: true, body: "",
     }, cx);
-    this.nameIn.focus();
+    this.askIn.focus();
+  }
+
+  // --- Describe it ---
+
+  // What the drafter is told: the workspace, what it offers, the time, the automation so far, and the ask.
+  request(def, ask, current, retry) {
+    const presets = presetsFor(def.id);
+    const d = new Date();
+    const lines = [
+      `Workspace: ${def.name} (id ${def.id}). Root: ${def.root}`,
+      `Folders, from the root: ${folderChoices(def).join(", ") || "none"}`,
+      `GitHub repos: ${this.ghRepos.map((g) => `${g.folder} is ${g.repo}`).join("; ") || "none found"}`,
+      `Board columns: ${columnsOf(def).join(", ")}. The board's agent: ${boardAgentOf(def)}`,
+      `Presets: ${presets.map((p) => `${p.name} (runs: ${p.command ?? "?"})${p.description ? `: ${p.description}` : ""}`).join("; ") || "none"}`,
+      `Installed agents: ${installedAgents().map((a) => a.key).join(", ") || "claude"}`,
+      `Names taken: ${this.list().map((a) => a.name).join(", ") || "none"}`,
+      `Now: ${d.toLocaleDateString("en-GB", { weekday: "short" })} ${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}, this computer's clock`,
+    ];
+    if (current) lines.push("", "The current automation (change only what's asked):", JSON.stringify(current, null, 2));
+    lines.push("", "What the person wants:", ask);
+    if (retry) lines.push("", `Your last draft's when line "${retry.when}" can't be read: ${retry.problem} Answer again, with one that can.`);
+    return lines.join("\n");
+  }
+
+  async askClaude(text) {
+    const r = await exec("claude", ["-p", text, "--model", DRAFT_MODEL, "--system-prompt", GUIDE,
+      "--tools", "", "--strict-mcp-config", "--setting-sources", "", "--no-session-persistence", "--disable-slash-commands",
+      "--output-format", "json", "--json-schema", JSON.stringify(SCHEMA)], { cwd: "/tmp", timeout: DRAFT_TIMEOUT });
+    return draftOf(r);
+  }
+
+  // The fields as they are in the editor, for a change in words.
+  current() {
+    const c = this.choice;
+    return {
+      name: this.sel.isNew ? this.nameIn.value().trim() : this.sel.name, description: this.descIn.value(), when: this.whenIn.value(),
+      agent: c.agent, model: c.model, effort: c.effort, folder: c.folder, card: c.card, prompt: this.bodyIn.value().trim(),
+    };
+  }
+
+  draft(cx) {
+    const def = this.def(), sel = this.sel;
+    const input = this.askState();
+    const ask = input.value().trim();
+    if (!def || !sel || !ask || this.drafting) return;
+    // A new one starts from nothing until it has been drafted or filled in; after that, a draft changes it.
+    const current = this.blank() ? null : this.current();
+    this.drafting = sel;
+    this.draftError = null;
+    this.draftNote = null;
+    this.error = null;
+    this.notice = null;
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        let d = await this.askClaude(this.request(def, ask, current, null));
+        const w = parseWhen(oneLine(d.when));
+        if (w.kind === "error") d = await this.askClaude(this.request(def, ask, current, { when: d.when, problem: w.error }));
+        // Opened another one meanwhile: this draft was for the one before.
+        if (this.sel !== sel) return;
+        this.apply(def, d);
+        this.drafted = true;
+        this.draftNote = oneLine(d.note) || null;
+        input.set_value("");
+      } catch (e) {
+        if (this.sel === sel) this.draftError = `Couldn't draft it: ${message(e)}`;
+      } finally {
+        if (this.drafting === sel) this.drafting = null;
+        cx.notify();
+      }
+    });
+  }
+
+  // A draft into the editor, kept to what this workspace has: anything else stays as it was.
+  apply(def, d) {
+    const s = (v) => (typeof v === "string" ? v.trim() : "");
+    if (this.sel.isNew) {
+      const base = s(d.name).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[-._]+|[-._]+$/g, "").slice(0, 60);
+      if (NAME.test(base)) {
+        const taken = new Set(this.list().map((a) => a.name));
+        let name = base, n = 2;
+        while (taken.has(name)) name = `${base}-${n++}`;
+        this.nameIn.set_value(name);
+      }
+    }
+    this.descIn.set_value(oneLine(d.description));
+    if (s(d.when)) this.whenIn.set_value(oneLine(d.when));
+    if (s(d.prompt)) this.bodyIn.set_value(s(d.prompt));
+    const c = this.choice;
+    const agent = s(d.agent);
+    const okAgent = !agent || presetsFor(def.id).some((p) => p.name === agent) || installedAgents().some((a) => a.key === agent) ? agent : c.agent;
+    const folder = s(d.folder);
+    const okFolder = !folder || folderChoices(def).includes(folder) ? folder : c.folder;
+    const knobs = KNOBS[programOf(commandOf(def, okAgent).argv)];
+    const model = knobs && MODEL_WORD.test(s(d.model)) ? s(d.model) : "";
+    const effort = knobs && knobs.effort.levels.includes(s(d.effort)) ? s(d.effort) : "";
+    this.choice = { ...c, agent: okAgent, model, effort, folder: okFolder, card: d.card === true };
   }
 
   save(cx) {
@@ -209,14 +416,16 @@ export default class Automations extends View {
     const name = sel.isNew ? this.nameIn.value().trim() : sel.name;
     const when = oneLine(this.whenIn.value());
     const trigger = parseWhen(when);
-    if (!NAME.test(name)) { this.error = "A name is letters, digits, dots, dashes or underscores, starting with a letter or digit."; cx.notify(); return; }
-    if (sel.isNew && this.list().some((a) => a.name === name)) { this.error = `There's already an automation called "${name}".`; cx.notify(); return; }
-    if (trigger.kind === "error") { this.error = trigger.error; cx.notify(); return; }
+    const showDetails = (why) => { this.error = why; this.details = true; cx.notify(); };
+    if (!NAME.test(name)) return showDetails("A name is letters, digits, dots, dashes or underscores, starting with a letter or digit.");
+    if (sel.isNew && this.list().some((a) => a.name === name)) return showDetails(`There's already an automation called "${name}".`);
+    if (trigger.kind === "error") return showDetails(trigger.error);
     const c = this.choice;
     const file = `${def.dir}/automations/${name}.md`;
     const body = this.bodyIn.value();
     const text = automationText(sel.isNew ? null : this.snap.text, {
-      description: this.descIn.value(), when, agent: c.agent, folder: c.folder, card: c.card ? "true" : null, enabled: c.enabled ? null : "false",
+      description: this.descIn.value(), when, agent: c.agent, model: c.model, effort: c.effort, folder: c.folder,
+      card: c.card ? "true" : null, enabled: c.enabled ? null : "false",
     }, body);
     this.busy = true;
     cx.spawn(async (cx) => {
@@ -224,11 +433,13 @@ export default class Automations extends View {
         await writeTextFile(file, text, sel.isNew ? null : this.snap.text);
         updateShared(def.id, name, {
           name, file, description: oneLine(this.descIn.value()), when, trigger, summary: describe(trigger),
-          agent: c.agent || null, folder: c.folder || null, card: c.card, enabled: c.enabled,
+          agent: c.agent || null, model: c.model || null, effort: c.effort || null, folder: c.folder || null, card: c.card, enabled: c.enabled,
           body: body.replace(/<!--[\s\S]*?-->/g, "").trim(), error: null, next: null, warning: null,
         });
         this.sel = { name, isNew: false };
         this.snap = { text, file, name, description: this.descIn.value(), when: this.whenIn.value(), ...c, body: body.trim() };
+        this.drafted = false;
+        this.draftNote = null;
         this.error = null;
         this.notice = c.enabled ? "Saved. It's on." : "Saved. It's off: only Run now and herdr-ws-run start it.";
       } catch (e) {
@@ -370,6 +581,7 @@ export default class Automations extends View {
       return pane.p(18).gap(10).text_color(t.muted).text_size(12.5)
         .child(div().text_size(14).font_semibold().text_color(t.foreground).child("Pick an automation, or make a new one."))
         .child(div().child(`An automation starts an agent by itself: on a schedule, when a task enters a board column, when an agent finishes or needs you, when files change, when a PR or issue is opened on GitHub, or when another app calls it.`))
+        .child(div().child(`New automation asks what it should do, in your words. Claude drafts it, and nothing is saved until you've read it.`))
         .child(div().child(`Each run is a tab in ${def.name}'s Automations space, made the first time. Your view stays where it is.`))
         .child(div().child(`They run while Herdr is open. A schedule missed while it was closed or the Mac slept runs once when it can, if that's within 12 hours. A one-time schedule turns itself off after it runs.`))
         .child(div().child(`The files are in ${tilde(def.dir)}/automations.`));
@@ -380,6 +592,9 @@ export default class Automations extends View {
     const w = parseWhen(this.whenIn.value());
     const kind = w.kind === "error" ? null : kindOf(w);
     const next = w.kind === "every" ? (saved && !dirty ? saved.next : null) : nextAt(w, Date.now());
+    const drafting = this.drafting === sel;
+    const blank = this.blank();
+    const ask = this.askState();
     const label_ = (text) => div().pt(14).pb(6).text_size(11.5).text_color(t.dim).child(text);
     const box = (state, mono) => Input.new(state).h(34).px(10).rounded(8).border_1().border_color(this.focusedIn === state ? t.accent : t.input).bg(t.background)
       .text_size(12.8).text_color(t.foreground).when(mono, (el) => el.font_family("JetBrains Mono"));
@@ -417,7 +632,20 @@ export default class Automations extends View {
       ]
       : [];
     const presets = presetsFor(def.id);
-    const boardAgent = String(def.board?.agent || "claude");
+    const boardAgent = boardAgentOf(def);
+    // The agent it starts, and the model and effort that will run: its own, else what its command sets.
+    const cmd = commandOf(def, c.agent);
+    const program = programOf(cmd.argv);
+    const knobs = KNOBS[program] ? { ...KNOBS[program], models: program === "codex" ? this.codexModels : KNOBS[program].models } : null;
+    const own = knobsIn(cmd.argv);
+    const models = knobs ? [...new Set([...knobs.models, ...(own.model ? [own.model] : []), ...(c.model ? [c.model] : [])])] : [];
+    const model = c.model || own.model, effort = c.effort || own.effort;
+    const who = `${c.agent || boardAgent}${cmd.preset && program && program !== cmd.name ? ` (${program})` : ""}`;
+    const knobText = [model && `on ${model}`, effort && `${effort} effort`].filter(Boolean).join(", ");
+    const where = c.folder || (kind === "github" ? "its repo's folder" : "the root");
+    const runsText = `Starts ${who}${knobText ? ` ${knobText}` : ""}, in ${where}${c.card ? ", with a board card each run" : ""}.`;
+    const noKnobs = !knobs && (c.model || c.effort);
+
     const runs = saved ? (shared("workspaces.automation.runs") ?? []).filter((r) => r.ws === def.id && r.name === saved.name).slice(0, 4) : [];
     const ag = agents(), tm = terminals();
     const runRow = (r) => {
@@ -434,44 +662,101 @@ export default class Automations extends View {
         .when(Boolean(live), (el) => el.child(div().id(`a-go-${r.id}`).flex_none().px(8).h(22).flex().items_center().rounded(6).border_1().border_color(t.input)
           .text_size(11.5).cursor_pointer().hover((s) => s.bg(t.hover)).on_click(() => this.goTo(r)).child("Go to")));
     };
-    // Its own id per automation, so each opens scrolled to the top.
-    const form = v_flex().id(`a-form-${sel.isNew ? "+new" : sel.name}`).flex_1().min_h(0).px(18).pt(18).pb(8).overflow_y_scrollbar()
-      .child(h_flex().gap(10).items_center()
-        .child(div().text_size(16).font_semibold().child(sel.isNew ? "New automation" : sel.name))
-        .when(dirty, (el) => el.child(div().text_size(11.5).text_color(t.working).child("unsaved")))
-        .child(div().flex_1())
-        .child(chips(pick("a-on", "On", c.enabled, () => { c.enabled = true; }), pick("a-off", "Off", !c.enabled, () => { c.enabled = false; }))))
+
+    // Describe it: a box for a new one (Draft it), or one line to change what's there (Change it).
+    const working = h_flex().gap(8).items_center()
+      .child(svg("mods/workspace-chrome/spinner.svg").size(13).text_color(t.working).spin(900))
+      .child(div().text_size(11.5).text_color(t.muted).child(`Claude (${DRAFT_MODEL}) is drafting it…`));
+    const canDraft = !drafting && Boolean(ask.value().trim());
+    const askBox = blank
+      ? v_flex().pt(4)
+        .child(div().pb(8).text_size(12.5).text_color(t.muted).child("Say what it should do and when, in your own words. Claude drafts it, and you read the draft before it's saved."))
+        .child(div().h(92).flex_none().child(Textarea.new(ask).size_full().p(10).rounded(8).border_1()
+          .border_color(this.focusedIn === ask ? t.accent : t.input).bg(t.background).text_size(12.5).text_color(t.foreground)))
+        .child(h_flex().pt(8).gap(8).items_center()
+          .when(drafting, (el) => el.child(working))
+          .when(!drafting, (el) => el.child(div().id("a-manual").text_size(11.5).text_color(t.dim).cursor_pointer().hover((s) => s.text_color(t.foreground))
+            .on_click((_e, cx) => { this.manual = true; this.details = true; cx.notify(); }).child("Or fill it in yourself")))
+          .child(div().flex_1())
+          .child(button("a-draft", "Draft it", "primary", (_e, cx) => this.draft(cx), canDraft)))
+      : v_flex().pt(12)
+        .child(h_flex().gap(8).items_center()
+          .child(div().flex_1().min_w(0).child(box(ask)))
+          .child(button("a-draft", "Change it", "plain", (_e, cx) => this.draft(cx), canDraft)))
+        .when(drafting, (el) => el.child(div().pt(8).child(working)));
+    const askNotes = v_flex()
+      .when(Boolean(this.draftError), (el) => el.child(div().pt(8).text_size(11.5).text_color(t.blocked).child(this.draftError)))
+      .when(Boolean(this.draftNote), (el) => el.child(div().pt(8).text_size(11.5).text_color(t.working).child(`Check: ${this.draftNote}`)));
+
+    // What it does, in words: when, then what it starts and where.
+    const summary = v_flex().gap(3)
+      .child(div().text_size(13).text_color(w.kind === "error" ? t.blocked : t.foreground)
+        .child(w.kind === "error" ? w.error : `${describe(w)}${next ? ` · next ${shortTime(next)}` : ""}${w.kind === "github" ? " · looks every 2 minutes, with your gh login" : ""}`))
+      .child(div().text_size(12).text_color(t.muted).child(runsText))
+      .when(Boolean(noKnobs), (el) => el.child(div().text_size(11.5).text_color(t.working).child(`${who} doesn't take a model or effort here, so they're left out when it runs.`)))
+      .when(Boolean(saved?.warning), (el) => el.child(div().text_size(11.5).text_color(t.working).child(saved.warning)));
+
+    const detailsRow = h_flex().id("a-details").mt(16).h(30).gap(6).items_center().cursor_pointer().border_t(1).border_color(t.border).pt(12)
+      .on_click((_e, cx) => { this.details = !this.details; cx.notify(); })
+      .child(svg(`mods/workspace-chrome/chevron-${this.details ? "down" : "right"}.svg`).size(13).text_color(t.muted))
+      .child(div().text_size(12.5).font_medium().child("Details"))
+      .child(div().text_size(11.5).text_color(t.dim).child(sel.isNew ? "name, when, agent, model, folder" : "when, agent, model, folder"));
+
+    const details = v_flex()
       .when(sel.isNew, (el) => el.child(label_("Name: its file's name, and what herdr-ws-run calls it")).child(box(this.nameIn)))
       .child(label_("Description")).child(box(this.descIn))
       .child(label_("When"))
       .child(chips(...KINDS.map(([k, text]) => pick(`a-k-${k}`, text, kind === k, () => { if (kind !== k) setWhen(firstOf[k]); }))))
       .child(div().pt(8).child(box(this.whenIn, true)))
       .when(quick.length > 0, (el) => el.child(div().pt(8).child(chips(...quick))))
-      .child(div().pt(7).text_size(11.5).text_color(w.kind === "error" ? t.blocked : t.muted)
-        .child(w.kind === "error" ? w.error : `${describe(w)}${next ? ` · next ${shortTime(next)}` : ""}${w.kind === "github" ? " · looks every 2 minutes, with your gh login" : ""}`))
-      .when(Boolean(saved?.warning), (el) => el.child(div().pt(4).text_size(11.5).text_color(t.working).child(saved.warning)))
       .child(label_("Agent: a preset, or the board's agent"))
       .child(chips(pick("a-ag-default", `Board's (${boardAgent})`, !c.agent, () => { c.agent = ""; }),
         ...presets.map((p) => pick(`a-ag-${p.name}`, p.name, c.agent === p.name, () => { c.agent = p.name; })),
         ...(c.agent && !presets.some((p) => p.name === c.agent) ? [pick("a-ag-other", c.agent, true, () => {})] : [])))
+      .when(Boolean(knobs), (el) => el
+        .child(label_(cmd.preset ? `Model: Default is what ${cmd.name} sets` : "Model"))
+        .child(h_flex().gap(6).flex_wrap().items_center()
+          .child(pick("a-model-default", own.model ? `Default (${own.model})` : program === "codex" && this.codexModels[0] ? `Default (${this.codexModels[0]})` : "Default", !c.model, () => { c.model = ""; }))
+          .children(models.map((m) => pick(`a-model-${m}`, m, c.model === m, () => { c.model = m; })))
+          .child(div().w(190).child(Input.new(this.modelIn).h(26).px(8).rounded(13).border_1().border_color(this.focusedIn === this.modelIn ? t.accent : t.input).bg(t.background).text_size(11.5).text_color(t.foreground))))
+        .child(label_("Effort"))
+        .child(h_flex().gap(6).flex_wrap()
+          .child(pick("a-effort-default", own.effort ? `Default (${own.effort})` : "Default", !c.effort, () => { c.effort = ""; }))
+          .children(knobs.effort.levels.map((l) => pick(`a-effort-${l}`, l, c.effort === l, () => { c.effort = l; })))))
       .child(label_("Folder: where it runs"))
       .child(chips(pick("a-fo-root", kind === "github" ? "Its repo's folder" : "Root", !c.folder, () => { c.folder = ""; }),
         ...folderChoices(def).map((f) => pick(`a-fo-${f}`, f, c.folder === f, () => { c.folder = f; })),
         ...(c.folder && !folderChoices(def).includes(c.folder) ? [pick("a-fo-other", c.folder, true, () => {})] : [])))
       .child(label_("Each run"))
-      .child(chips(pick("a-card-no", "Just its tab", !c.card, () => { c.card = false; }), pick("a-card-yes", "A tab and a board card", c.card, () => { c.card = true; })))
-      .child(label_("Prompt: the agent's task"))
-      .child(div().h(150).flex_none().child(Textarea.new(this.bodyIn).size_full().p(10).rounded(8).border_1().border_color(this.focusedIn === this.bodyIn ? t.accent : t.input)
-        .bg(t.background).text_size(12.5).text_color(t.foreground)))
-      .child(div().pt(6).text_size(11.5).text_color(t.dim).child(`Fill-ins: ${[FILLS[kind], "{{event}} {{workspace}} {{folder}} {{date}} {{time}}"].filter(Boolean).join(" · ")}.`))
-      .when(kind !== null && kind !== "schedule", (el) => el.child(div().pt(2).text_size(11.5).text_color(t.dim)
-        .child("What set it off is added at the end, unless the prompt uses {{event}} or one of the fill-ins above.")))
-      .when(Boolean(saved), (el) => el
-        .child(label_("Recent runs"))
-        .when(!runs.length, (el) => el.child(div().text_size(12).text_color(t.dim).child("None yet.")))
-        .children(runs.map(runRow))
-        .child(label_("From another app or a script"))
-        .child(div().text_size(11.5).text_color(t.muted).font_family("JetBrains Mono").child(`herdr-ws-run ${def.id} ${saved.name} "optional text"`)));
+      .child(chips(pick("a-card-no", "Just its tab", !c.card, () => { c.card = false; }), pick("a-card-yes", "A tab and a board card", c.card, () => { c.card = true; })));
+
+    // Its own id per automation, so each opens scrolled to the top.
+    const title = sel.isNew ? (this.drafted || this.manual ? this.nameIn.value().trim() || "New automation" : "New automation") : sel.name;
+    const form = v_flex().id(`a-form-${sel.isNew ? "+new" : sel.name}`).flex_1().min_h(0).px(18).pt(18).pb(8).overflow_y_scrollbar()
+      .child(h_flex().gap(10).items_center()
+        .child(div().text_size(16).font_semibold().child(title))
+        .when(dirty && !blank, (el) => el.child(div().text_size(11.5).text_color(t.working).child(this.drafted ? "drafted, not saved" : "unsaved")))
+        .child(div().flex_1())
+        .when(!blank, (el) => el.child(chips(pick("a-on", "On", c.enabled, () => { c.enabled = true; }), pick("a-off", "Off", !c.enabled, () => { c.enabled = false; })))))
+      .child(askBox)
+      .child(askNotes)
+      .when(!blank, (el) => el
+        .child(label_("What it does"))
+        .child(summary)
+        .child(label_("Prompt: the agent's task"))
+        .child(div().h(150).flex_none().child(Textarea.new(this.bodyIn).size_full().p(10).rounded(8).border_1().border_color(this.focusedIn === this.bodyIn ? t.accent : t.input)
+          .bg(t.background).text_size(12.5).text_color(t.foreground)))
+        .child(div().pt(6).text_size(11.5).text_color(t.dim).child(`Fill-ins: ${[FILLS[kind], "{{event}} {{workspace}} {{folder}} {{date}} {{time}}"].filter(Boolean).join(" · ")}.`))
+        .when(kind !== null && kind !== "schedule", (el) => el.child(div().pt(2).text_size(11.5).text_color(t.dim)
+          .child("What set it off is added at the end, unless the prompt uses {{event}} or one of the fill-ins above.")))
+        .child(detailsRow)
+        .when(this.details, (el) => el.child(details))
+        .when(Boolean(saved), (el) => el
+          .child(label_("Recent runs"))
+          .when(!runs.length, (el) => el.child(div().text_size(12).text_color(t.dim).child("None yet.")))
+          .children(runs.map(runRow))
+          .child(label_("From another app or a script"))
+          .child(div().text_size(11.5).text_color(t.muted).font_family("JetBrains Mono").child(`herdr-ws-run ${def.id} ${saved.name} "optional text"`))));
     return pane
       .child(form)
       .child(v_flex().flex_none().px(18).pb(14).pt(8).border_t(1).border_color(t.border)
@@ -481,6 +766,6 @@ export default class Automations extends View {
           .when(!sel.isNew, (el) => el.child(button("a-delete", this.confirming ? "Click again to delete" : "Delete", "danger", (_e, cx) => this.remove(cx))))
           .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(this.snap?.file ? tilde(this.snap.file) : ""))
           .when(!sel.isNew, (el) => el.child(button("a-run", "Run now", "plain", (_e, cx) => this.runNow(cx))))
-          .child(button("a-save", sel.isNew ? "Create" : "Save", "primary", (_e, cx) => this.save(cx), sel.isNew || dirty))));
+          .child(button("a-save", sel.isNew ? "Create" : "Save", "primary", (_e, cx) => this.save(cx), !blank && (sel.isNew || dirty)))));
   }
 }

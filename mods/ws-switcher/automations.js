@@ -5,6 +5,8 @@
 //   description: Review yesterday's changes
 //   when: weekdays 09:00        what sets it off (when.js)
 //   agent: reviewer             a preset or a program; default: the board's agent
+//   model: haiku                its model, in place of the preset's (claude, codex, pi)
+//   effort: low                 its effort, the same way
 //   folder: api                 where it runs, from the root; default: the root
 //   card: true                  each run also adds a card to the board
 //   enabled: false              off: only Run now and herdr-ws-run start it
@@ -31,6 +33,7 @@
 import { spaces, agents, focused, run, shared, setShared, home, readTextFile, writeTextFile, watchFolder, exec, notify, knownAgents } from "herdr";
 import * as fs from "fs/promises";
 import { parseWhen, describe, due, nextAt, shortTime } from "./when.js";
+import { withKnobs } from "./knobs.js";
 
 const SPACE = "Automations";
 const MISSED = 12 * 3600e3; // a schedule missed (Herdr closed, the Mac asleep) runs once if it was due this recently
@@ -167,8 +170,8 @@ export function parseAutomation(name, file, text) {
   const trigger = parseWhen(when);
   return {
     name, file, description: field(head, "description") ?? "", when, trigger, summary: describe(trigger),
-    agent: field(head, "agent") || null, folder: field(head, "folder") || null,
-    card: yes(field(head, "card")), enabled: !no(field(head, "enabled")),
+    agent: field(head, "agent") || null, model: field(head, "model") || null, effort: field(head, "effort") || null,
+    folder: field(head, "folder") || null, card: yes(field(head, "card")), enabled: !no(field(head, "enabled")),
     body: body.replace(/<!--[\s\S]*?-->/g, "").trim(),
     error: trigger.kind === "error" ? trigger.error : null,
   };
@@ -481,6 +484,7 @@ export class Runner {
       argv = known.find((x) => x.key === name)?.run ?? [name];
       first = task;
     }
+    argv = withKnobs(argv, a.model, a.effort);
     const made = await this.open(ws, a.name, folder, argv, first);
     if (card) await this.updateCard(card.file, { terminal: made.terminal ?? null, started: today() });
     this.log({ ws, name: a.name, at, why, status: "started", terminal: made.terminal ?? null, tab: made.tab ?? null, space: made.space ?? null, card: card?.id ?? null });

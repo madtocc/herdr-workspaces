@@ -9,11 +9,13 @@ set -eu
 src=${HERDR_APP_HOME:-$HOME/.config/herdr-app}
 dst=$(cd "$(dirname "$0")/.." && pwd)
 
-# The runner and the Automations screen read `when:` with the same file.
-cmp -s "$src/mods/ws-switcher/when.js" "$src/mods/ws-automations/when.js" || {
-  echo "mods/ws-switcher/when.js and mods/ws-automations/when.js differ: make them the same first" >&2
-  exit 1
-}
+# The runner and the Automations screen read `when:`, `model:` and `effort:` with the same files.
+for shared in when.js knobs.js; do
+  cmp -s "$src/mods/ws-switcher/$shared" "$src/mods/ws-automations/$shared" || {
+    echo "mods/ws-switcher/$shared and mods/ws-automations/$shared differ: make them the same first" >&2
+    exit 1
+  }
+done
 
 mkdir -p "$dst/layouts"
 cp "$src/layouts/workspaces.json" "$dst/layouts/workspaces.json"
