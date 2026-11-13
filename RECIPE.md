@@ -95,12 +95,13 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
   - **Header** (48px, bottom border): the workspace's 20px mark, "<name> board" (semibold), "N open · M done" (12px, `dim`), then on the right a Board | List toggle (two 26px segments with the `board.svg` and `list.svg` icons in a 1px-bordered `chrome` pill; the chosen one in `selected`) and a "New task" button (theme `solid`, plus icon).
   - **List view**: one section per column, top to bottom.
     - A 34px section header in `chrome` with a bottom border: a fold chevron, the column name (12px semibold, `muted`), its count, and a `+` on the right.
-    - Under it, a 40px row per task with a bottom border, indented 36px. The row shows the id (64px, `dim`), the title (13px, truncated, takes the rest), the priority word (52px, colored as on cards), the folder chip and branch icon (120px), and the card's agent footer on one line, right-aligned (210px).
+    - Under it, a 40px row per task with a bottom border, indented 36px. The row shows the id (64px, `dim`), the title (13px, truncated, takes the rest), the pull request chip when the task has one (as on cards, but with the number inside the chip, before the status), the priority word (52px, colored as on cards), the folder chip and branch icon (120px), and the card's agent footer on one line, right-aligned (210px).
     - When there are no tasks at all, the list says "No tasks yet. New task adds one." 
-  - **Columns** (12px padding, 10px apart, equal widths that always fit), one per status, in theme `chrome` with a 1px border and 10px corners. Each has a 38px header with the column name (12px semibold, `muted`), its count and a `+`, then a scrolling list of cards. A column being dropped on gets an `accent` border. An empty column says "Empty"; the first one says "No tasks yet. New task adds one." when there are none at all.
+  - **Columns** (12px padding, 10px apart, equal widths that always fit), one per status, in theme `chrome` with a 1px border and 10px corners. Each has a 38px header with the column name (12px semibold, `muted`), its count and a `+`, then a scrolling list of cards. A column being dropped on gets an `accent` border. An empty column says "Empty", also when the board has no tasks at all.
   - **Cards** (theme `background`, 1px border, 8px corners, 10px padding):
     - a top row: the task id (11px, `dim`), the folder's name in a small `raised` chip, a branch icon when it has a worktree, the task's preset name when it has one, and the priority word on the right (high in `blocked`, medium in `working`, low in `dim`);
     - the title at 13px;
+    - its pull request, when it has one: a chip 20px tall (`raised`, 5px corners, 11px text) with the `pr.svg` icon (11px) and one status in its color, then, 6px after the chip, the number in `muted` 11px text, as in "Checks failing #12". Nothing runs past the card's edge: on a card too narrow for both, the number isn't shown (it's in the tooltip), and on one too narrow for the status, the status ends in "…". A pull request with no status yet shows the number in the chip. The statuses are Checks failing, Changes requested and Conflicts (`blocked`); Checks running (`working`); Ready to merge and Merged (`done`); Draft and Closed (`dim`); Needs a review and Open (`muted`). Its tooltip has the title, the two branches, the checks ("2 failed, 3 running, 14 passed"), the failed checks' names and the review state;
     - a footer:
       - while starting, "Starting…" or "Making the worktree…";
       - with a live agent, a 7px dot in the agent's status color, "<program> · working / needs you / finished / idle / running" and a "Go to" button;
@@ -128,7 +129,7 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
 - **"Open … files"** opens the workspace's folder in the first installed editor of `zed`, `cursor`, `code` and `subl`, else with `open` / `xdg-open` (Explorer on Windows).
 - **"Rename…"** opens a 420×210 dialog: "Rename workspace", a Name field with the current name selected, and Cancel / Save. Enter saves and Esc cancels; an empty name is refused. It rewrites only the top-level `"name"` string in `workspace.jsonc`, keeping comments, other keys and the folder id. If there is no `"name"`, it adds one after the opening `{`. The write fails if the file changed since it was read.
 - **"Delete…"** opens a 420×200 dialog: "Delete “Acme”?", saying the folder and its two files go to the Trash, your repos aren't touched, and its spaces stay open. Cancel / "Move to Trash"; Enter confirms and Esc cancels. The folder goes to the Trash with `trash` (macOS) or `gio trash` (Linux), else to `~/.herdr/workspaces/.trash/<id>-<time>`. A toast says where. Its spaces are decided again: they join the workspace their folder is in, else show under All spaces. A workspace deleted by hand is handled the same way.
-- **The + menu** (when `programs.json` points at the launcher; see Built from): Claude Code and Codex started inside a workspace get its `AGENTS.md`, without HTML comments, plus `--add-dir` for the workspace root and for any folder outside it. Elsewhere they start as before. An `AGENTS.md` that is only a comment adds nothing.
+- **The + menu** (when `programs.json` points at the launcher; see Built from): Claude Code and Codex started inside a workspace get its `AGENTS.md`, without HTML comments, plus `--add-dir` for the workspace root, for any folder outside it and for the workspace's `tasks` folder (once it has one). Elsewhere they start as before. An `AGENTS.md` that is only a comment adds nothing.
 - **The `+` in the Spaces header** makes a space in the shown workspace's root.
 - Config edits apply within a second: the switcher watches `~/.herdr/workspaces`.
 - **Folders reached through a symlink** (macOS's `/tmp` is `/private/tmp`) match by both paths. Terminals report the real one.
@@ -193,12 +194,34 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
   - else as a new space there.
 - **Worktree** first runs `git worktree add -b task/<id>-<title-slug> ~/.herdr/worktrees/<repo>/<slug>` from the repo's HEAD, the same place Herdr's worktree menu uses. It reuses the branch or folder if they already exist, then opens a new space there with a tab named after the task id. That space joins the workspace through the worktree rule above.
 - **After either Start**, the card moves to `board.start` (default `doing`), and the task records:
-  - `terminal`, the agent's address;
+  - `terminal`, the agent's address, and `tab`, the tab it's in;
   - `started`;
   - for Worktree, also `worktree` and `branch`.
-- **The agent's first message** is the id and title, the notes, then where the task file is and what to do when finished: set `status:` to `board.finish` (default `review`), put anything left open under "## Notes", and leave the other front-matter lines alone.
+- **The agent's first message** is the id and title, the notes, then where the task file is and what to do when finished: set `status:` to `board.finish` (default `review`), put anything left open under "## Notes", and leave the other front-matter lines alone. It's also told to add `pr: <URL>` to the front matter if it opens a pull request, and to end its turn instead of waiting on the checks, because Herdr tells it when one fails. The launcher adds the workspace's `tasks` folder to the agent's folders, so an agent that edits without asking (Claude's `acceptEdits`) isn't stopped on its own task file.
 - **A card with an agent** shows that agent's status live, from `agents()` by address. When the address is a live terminal but not an agent, it says "running". When the terminal is gone, it says "Agent ended" and offers Start again. "Go to" runs `agent.focus`.
 - **Task files are watched**: an agent's or a person's edit shows within a second.
+
+**Pull requests on cards:**
+- **Which cards**: a task with a `pr:` line or a `branch:` line (Worktree writes `branch:`). `pr:` is a GitHub pull request's URL, or its number (`12`, `"#12"`) in the task folder's repo. With only a branch, the card takes the newest pull request of that branch in its folder's `origin` repo, and writes `pr: <URL>` into the task once it finds one.
+- **Reading it**: `gh pr view`, with your `gh` login. An open pull request is read every minute; a closed one, or a branch that has none yet, every 5 minutes; after a read that failed, 2 minutes later. A merged one isn't read again. A card in the last column is read once, then only while its pull request is open.
+- **The status** is the first of these that's true:
+  - Merged; Closed;
+  - Checks failing; Changes requested; Conflicts;
+  - Draft; Checks running; Ready to merge; Needs a review; Open.
+- **Checks**: each check's newest run counts, so a rerun replaces the run it cancelled. Cancelled, skipped and neutral runs neither pass nor fail.
+- **Ready to merge** needs every fact known: open, not a draft, no check failed or running, approved (or no review needed), and GitHub saying it can merge and isn't blocked or behind. While GitHub is still working that out, the card says Open.
+- **When GitHub can't be read** for 10 minutes, the chip shows only the number, and its tooltip says why. The last status might no longer be true.
+- **A click on the chip** opens the pull request in your browser. It doesn't open the task or start a drag.
+- **The card's agent is told** with one message typed into its terminal (`hc send`). The message names the pull request, says what happened and gives the `gh` commands that show the rest. It's sent when:
+  - a check fails: once per head commit, and failures already there when the card is first read count;
+  - it conflicts with its base branch: once per head commit;
+  - reviews arrive (approved, changes requested or commented): after 2 minutes with no new one, and at most 5 minutes after the first, so a burst is one message.
+- **It isn't told** about reviews that were already there the first time, a push, checks that pass, comments in the pull request's conversation, or reviews from your own GitHub login sent while the agent was working (those are its own replies).
+- **Only when it's free**: nothing is typed while the agent is working or waiting on you. What gathers meanwhile goes in as one message once it's idle or finished, leaving out what's no longer true (a failure fixed by a newer commit). `hc send` also waits while you have a draft typed in that terminal. A toast says "<id>: told <program> about pull request #12"; clicking it goes to the agent.
+- **The card's agent** is the terminal Start recorded, while it's still in the tab Start made. A card with no agent, or whose agent has ended, gets a warning toast instead: "<id>: pull request #12 needs someone", with the same facts.
+- **Ready to merge** gets you one toast per head commit.
+- **Merged**: the card moves to the last column and a toast says so. That also happens for one merged while Herdr was closed. **Closed** without merging gets a warning toast, and the card stays.
+- Names that come from GitHub (checks, people, titles, branches) are cut to one short line, without backticks or angle brackets, before they're shown or sent.
 
 **Automations:**
 - **What one is**: `~/.herdr/workspaces/<id>/automations/<name>.md`, front matter then the prompt (HTML comments left out):
@@ -225,7 +248,7 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
   - A repo that can't be read (gh missing or signed out, no access, a typo) shows the reason on the automation and is tried again on the next look.
 - **A run** starts the agent like a preset's Start, with the prompt as its task, as a tab named after the automation in the workspace's "Automations" space. The first run makes that space in its folder, and the space joins the workspace at once. Making a tab shows it, so the runner puts back the space and tab you were on straight after. A toast says "<name> started", why and where; clicking it shows the tab.
 - **Fill-ins** in the prompt: `{{event}}` (what set it off, in words or a block), `{{workspace}}`, `{{automation}}`, `{{folder}}`, `{{date}}`, `{{time}}`, and by kind: `{{task}}` (id, title, notes and file), `{{task.id}}`, `{{task.title}}`, `{{task.file}}`; `{{agent}}` (its tab's name), `{{terminal}}`, `{{space}}`; `{{files}}` (one per line, at most 50), `{{file}}`; `{{text}}` (what `herdr-ws-run` was given); `{{pr}}` or `{{issue}}` (number, title, author, link, labels and the first 4,000 characters of its description), `{{number}}`, `{{title}}`, `{{url}}`, `{{author}}`, `{{repo}}`, `{{labels}}`. Unknown ones stay as written. For anything but a schedule, what set it off is added at the end unless the prompt uses `{{event}}` or one of its kind's fill-ins.
-- **With `card: true`**, a run first writes a task in the board's start column: title "<description or name> (<date> <time>)", `agent:`, `folder:`, `automation: <name>`, `created:`, and the prompt as its notes. The agent gets the board's brief for it, and the card gets `terminal:` and `started:`, as with Start.
+- **With `card: true`**, a run first writes a task in the board's start column: title "<description or name> (<date> <time>)", `agent:`, `folder:`, `automation: <name>`, `created:`, and the prompt as its notes. The agent gets the board's brief for it, and the card gets `terminal:`, `tab:` and `started:`, as with Start.
 - **When it doesn't start**:
   - an automatic run doesn't start within 50s of the same automation's last one;
   - a schedule, interval or files run is skipped while the automation's last run is still working or waiting on you, and the skip is logged;
@@ -302,6 +325,7 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
 - opens its own menu as `openOverlay({ mod: "ws-switcher", kind: "popup", props: { popup: true } })`, and its rename and delete dialogs as `kind: "dialog"` with `props: { dialog: "rename" | "delete", id }`. Each dialog does its file work before it closes itself, because a closed overlay's tasks are cancelled;
 - runs `space.select` and `space.new {folder}`;
 - writes `~/.herdr/workspaces/.index` with `writeTextFile`, only when it changes: tab-separated `ws`, `dir` and `repo` lines for the launcher;
+- follows pull requests: the sidebar copy makes the one `PrWatcher` (`prs.js`), loads it after each config reload (a change under any `tasks/` is one) and ticks it on the 500ms timer;
 - runs automations: the sidebar copy makes the one `Runner` (`automations.js`), loads it after each config reload, passes it what its folder watch saw, and ticks it on the 500ms timer. While the runner is making a run's tab, `sync()` doesn't follow the shown space or remember it as the workspace's last. It also handles `workspaces.automation.run` (`{ workspace, name, at }`, from Run now) like the other requests;
 - uses Herdr's icons from `mods/workspace-chrome/` (`layers`, `chevron-down`, `check`, `folder`, `folder-plus`, `file-text`, `square-pen`, `archive`), and `InputState` / `Input` from `gpui-base` for the Name field.
 
@@ -345,7 +369,25 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
 - **GitHub**: each github automation's repo is found once (`git -C <folder> remote get-url origin`, else `owner/name`), and every 2 minutes `gh api` lists each watched repo's newest 30 issues and PRs. Your login (`gh api user`) is asked once, for "by others". The highest number seen per repo is kept in `localStorage` (`github`).
 - **Outside calls**: on a change under `.inbox` and every 2s, it reads the `.run` files (workspace, automation, time in ms, then the text) and deletes them with `rm`.
 - **Starting** goes through the switcher's `presetLaunch()` (else `knownAgents()`), then `withKnobs(argv, model, effort)` from `knobs.js`, then the switcher's `withTask()`, then `herdr-app do tab.new` (or `space.new { name: "Automations" }` the first time) through `exec`, then `space.select` / `tab.select` back to the `focused()` space and tab. Starts of one automation are queued, one after another. `fs` only reads under home, so whether a folder or file exists is asked of `test -e` when it's elsewhere.
-- **Board helpers** (`boardOf`, front matter, `nextId`, `brief`, `folderPath`) are copies of `ws-board`'s, because mods can't import across folders.
+- **Board helpers** (`boardOf`, front matter, `nextId`, `brief`, `folderPath`) are copies of `ws-board`'s, because mods can't import across folders. It exports the ones `prs.js` uses.
+
+**`mods/ws-switcher/prfacts.js`**: the pull request rules, with no imports, so `node` can run them.
+- `FIELDS`: what `gh pr view --json` is asked for (`number,url,title,state,isDraft,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,headRefOid,headRefName,baseRefName,reviews`).
+- `facts(raw)` cuts gh's answer down: state, draft, head commit, branches, `mergeable` (true, false, or null while GitHub works it out), the review decision, the checks (`total`, `passed`, and the names that `failed` or are `pending`) and the reviews (`id`, `by`, `state`, `at`), without `PENDING` ones. A check is named `<workflow> / <name>`, or a status's `context`; per name the run with the latest `startedAt` counts. `FAILURE`, `TIMED_OUT`, `STARTUP_FAILURE`, `ACTION_REQUIRED` and a status's `ERROR` are failures.
+- `chip(facts, stale)` gives `{ number, url, label, tone, tip }`; `tone` is a theme color's name.
+- `step(prev, facts, { now, me, workSince, lastWorking })` gives `{ s, wakes, notes }`: what to remember (`told` per kind, holding the head commit it was told for; the review ids `seen`, at most 300; reviews `wait`ing for quiet), the wakes for the agent (`checks`, `conflicts`, `reviews` with who and how) and the notes for the person (`ready`, `merged`, `closed`).
+- `mergeWakes`, `stillTrue`, `wakeLines` and `wakeText` gather waiting wakes, drop the ones that stopped being true, and word them for a toast and for the agent.
+- `clean(text, max)` flattens text from GitHub; `parsePr` reads a `pr:` line; `repoOfRemote` reads a remote's URL.
+
+**`mods/ws-switcher/prs.js`**: `PrWatcher`, which asks, sends and writes.
+- **Reads** every workspace's `tasks/*.md` for `pr:` or `branch:`, with the runner's front matter helpers.
+- **The repo** of a task without a URL is `git -C <its worktree, else its folder> remote get-url origin`, kept per folder; one that isn't on GitHub is tried again after 5 minutes.
+- **Asks** with `exec("gh", ["pr", "view", "--repo", repo, "--json", FIELDS, "--", <number or branch>])`, one task after another, every 5 seconds for those that are due. "no pull requests found" for a branch isn't an error. Your login comes from `gh api user`, once.
+- **Publishes** `workspaces.prs` (`{ <task file>: chip }`), only when it changes.
+- **Remembers** in the switcher copy's `localStorage` (`prs`), per task file: the repo, the last facts, `step`'s state, the wakes waiting, when it last read and what it last asked for (so a changed `pr:` line is read at once). A task that's gone is forgotten.
+- **When the agent worked**: each tick notes, per task, since when and until when its agent's status was `working` (a gap over 5s starts a new stretch). That's how your own login's reviews are told apart from the agent's replies.
+- **Sends** with `hc(["send", <address>, <text>])` when the agent's status isn't `working` or `blocked`, and tries again after 15s if hc refused. The agent is the `agents()` entry at the task's `terminal` whose `tab` is the task's `tab` (for a card without `tab:`, whose tab is named after the task's id).
+- **Writes** `pr:` and, for a merge, `status:` with `writeTextFile` and the text it read as `expected`, three tries.
 
 **`mods/ws-switcher/when.js`**: the `when:` reader (`parseWhen`, `due`, `nextAt` up to 32 days ahead, `describe`, `shortTime`). A `once` line becomes `{ kind: "once", at }` (local time, in ms); a date that doesn't exist (2026-02-30) is an error. `describe` puts a cron line in words when its day of month and month are `*` and its minutes are one value or an even step from 0 (`*/30`), over consecutive hours or all of them; one minute at up to four hours reads like a days-and-times line. `mods/ws-automations/when.js` is the same file; `scripts/sync-from-home.sh` stops when they differ.
 
@@ -356,7 +398,7 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
 **`mods/ws-automations`** (`mod.json`: `{ "place": "none", "title": "Automations" }`, plus `automations.svg`, `when.js` and `knobs.js`): the screen, opened as `openOverlay({ mod: "ws-automations", kind: "dialog", width: 940, height: 680, props: { workspace } })` by the footer row. It reads the list and runs from shared state and each file afresh when it's picked, writes with `writeTextFile` (the text it read as `expected`, null for Create), updates `workspaces.automations` itself until the runner confirms, and sets `workspaces.automation.run` for Run now. Like the Presets screen, it makes its inputs once in `init` and redraws with the reading task's own `cx`. A placeholder can't change after `TextareaState.new`, so the Describe box (a `TextareaState`) and the change line (an `InputState`) are two states; both `submit` on Enter, and the box's Shift-Enter (`e.shift`) is a new line. The installed agents come from shared `new-menu.agents` (`[""]`, those `installed` with a `run`), and Codex's models from `~/.codex/config.toml`.
 - **The drafter** is one `exec` from the dialog: `claude -p <request> --model sonnet --system-prompt <GUIDE> --tools "" --strict-mcp-config --setting-sources "" --no-session-persistence --disable-slash-commands --output-format json --json-schema <SCHEMA>`, in `/tmp`, with a 120s timeout. No tools, MCP servers, settings files (so no hooks), slash commands or saved session. `SCHEMA` asks for every field (strings, `card` a boolean). The answer is one object or a list of messages; the screen takes the `result` message's `structured_output`, else parses its `result` text, and turns `is_error` into the failure line. `DRAFT_MODEL`, `DRAFT_TIMEOUT`, `GUIDE` and `SCHEMA` are constants at the top of `main.js`.
 
-**`mods/ws-board`** (`mod.json`: `{ "place": "none", "title": "Board" }`, plus `board.svg` and `list.svg`). It's a pane mod with `props: { workspace }`. The same mod draws the task dialog, opened as `openOverlay({ mod: "ws-board", kind: "dialog", width: 600, height: 560, props: { dialog: "task", workspace, task, status } })`.
+**`mods/ws-board`** (`mod.json`: `{ "place": "none", "title": "Board" }`, plus `board.svg`, `list.svg` and `pr.svg`). It's a pane mod with `props: { workspace }`. The same mod draws the task dialog, opened as `openOverlay({ mod: "ws-board", kind: "dialog", width: 600, height: 560, props: { dialog: "task", workspace, task, status } })`.
 
 - **Task file**: `~/.herdr/workspaces/<id>/tasks/<ID>.md`:
   ```md
@@ -375,7 +417,9 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
   - Unknown lines and inline `# comments` are kept. Fields are set by rewriting or appending their line, and an empty value removes the line.
   - `folder` is relative to the root, or absolute / `~`.
   - `created` and `started` are dates on this computer's clock.
+  - Start adds `terminal`, `tab`, `started` and, for Worktree, `worktree` and `branch`. `pr` is the pull request, added by the agent, by you, or by the switcher when it finds one for the branch.
 - **Live data**: it waits on `watchFolder(~/.herdr/workspaces/<id>)` (`tasks/` may not exist yet), reads `agents()` and `terminals()` for card status, and gets the board settings from the switcher's `workspaces.defs` (`board`).
+- **The pull request chip** is `workspaces.prs[<task file>]`, drawn as it comes: the board asks GitHub nothing. A click runs `open` (else `xdg-open`) through `sh`, only for a URL starting `https://github.com/`. On a card, the chip and the number are two children of a row 20px tall that wraps and hides its overflow, so a number that doesn't fit beside the chip wraps to a second line nobody sees; the chip may shrink (`min_w(0)`, at most the row's width) and its status truncates. Both open the pull request.
 - **Writes**: `writeTextFile` with the text it just read as `expected`. It reads again and retries up to three times when the file changed under it, and a new task's write uses `expected: null`, so a taken ID moves on to the next.
 - **Start**:
   - a preset goes through `presetLaunch()`, with the brief as its task. `presetLaunch()` and `words()` are copies of the switcher's and must stay the same;
@@ -419,7 +463,7 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
 
 **What it touches:**
 - It reads `~/.herdr/workspaces` and lists the subfolders of each workspace's root.
-- It writes `~/.herdr/workspaces/.index`, a new workspace's two files when you make one, and `workspace.jsonc` when you rename one. The board writes task files in `~/.herdr/workspaces/<id>/tasks/`; the Automations screen and `herdr-ws-run --add` / `--off` / `--on` write `~/.herdr/workspaces/<id>/automations/`, the runner writes `enabled: false` into a one-time automation once it has run, and an automation with `card: true` writes a task per run.
+- It writes `~/.herdr/workspaces/.index`, a new workspace's two files when you make one, and `workspace.jsonc` when you rename one. The board writes task files in `~/.herdr/workspaces/<id>/tasks/`; the Automations screen and `herdr-ws-run --add` / `--off` / `--on` write `~/.herdr/workspaces/<id>/automations/`, the runner writes `enabled: false` into a one-time automation once it has run, and an automation with `card: true` writes a task per run. Following a card's pull request writes `pr:` into its task when it's found by its branch, and `status:` when it merges.
 - It moves a workspace's folder, a task's file or an automation's file to the Trash when you delete it, and only after you confirm.
 - For restarts, the launcher writes and removes notes in `~/.herdr/resume/` and runs `hc ls`. It gives Claude two hooks through `--settings` that run `herdr-ws-resume --hook`. You add a `shell` line to `~/.config/herdr-core/config.toml`, after which every new terminal starts through `herdr-ws-resume`.
 - Automations watch the folders files automations name, delete the calls `herdr-ws-run` leaves in `~/.herdr/workspaces/.inbox`, and close an automation's run tabs beyond its newest three once their agent isn't working or waiting on you.
@@ -428,10 +472,17 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
   - `herdr-app do`, for the board's and automations' new tabs and spaces;
   - `rm` (handled calls) and `test` (folders outside home), for automations;
   - `git remote get-url` and `gh api`, for GitHub automations;
+  - `git remote get-url`, `gh pr view` and `gh api user`, for cards' pull requests, and `hc send`, which types a message into a card's agent;
+  - `open` or `xdg-open`, for a click on a pull request chip;
   - `git worktree add`, for a task's Worktree;
   - `explorer`, on Windows;
   - your agents, through the launcher, the board's Start and automations.
-- The network: only GitHub automations use it, through `gh api` with your login, every 2 minutes per watched repo. Without one, nothing goes over the network.
+- The network, three things:
+  - GitHub automations, through `gh api` with your login, every 2 minutes per watched repo;
+  - cards with a `pr:` or `branch:` line, through `gh pr view` with your login, every minute per open pull request;
+  - the Automations screen's Draft it and Change it, through `claude -p`.
+
+  Without any of those, nothing goes over the network.
 
 ## Watch out
 
@@ -444,7 +495,7 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
 - `programs.json` runs a quoted command: `~` isn't expanded. Use a name on `PATH` or an absolute path.
 - The launcher is `sh`, `awk` and `sed`: macOS and Linux. On Windows the + menu works, but agents don't get the instructions.
 - The launcher reads `.index`, which the switcher rewrites while Herdr runs. Config edits made while Herdr is closed reach the launcher on Herdr's next start.
-- `--add-dir <root>` lets the agent read and edit the whole workspace, sibling repos included. That's the point of a multi-repo workspace, but it's broader than one repo.
+- `--add-dir <root>` lets the agent read and edit the whole workspace, sibling repos included. That's the point of a multi-repo workspace, but it's broader than one repo. `--add-dir <tasks folder>` lets it edit every card of its workspace, not only its own.
 - Codex gets the instructions through `developer_instructions`. The TOML quoting is checked; how a given Codex version weighs those instructions is up to Codex.
 - A popup's tasks end when it closes. That's why "New workspace" goes through `workspaces.create` to the sidebar copy, and why "Edit" is a single `exec`.
 - `preview.png` is a drawing of the layout with demo names, not a screenshot.
@@ -455,6 +506,19 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
 - The board only finds a board tab by the workspace of its space: a board left in a space moved to another workspace isn't found, and a new one is made.
 - Boards, Start and Worktree work on this computer's spaces only.
 - A first click on a background window only focuses it in some setups, so a chip or button may need a second click when the window wasn't in front.
+
+- Pull requests are followed inside Herdr, in the switcher: nothing is read or sent while Herdr is closed or another layout is shown. What happened meanwhile is caught up on the next read, as one message.
+- GitHub is asked, not told, so a failed check can take a minute to reach the agent, and reviews 2 to 5 minutes.
+- It needs `gh` signed in with access to the repo. A GitHub Enterprise remote isn't recognised; write the task's `pr:` as a number only if `gh` is signed in to that host by default.
+- A pull request opened from a fork isn't found by its branch. Write its URL as `pr:`.
+- The message is typed into the agent's terminal like any other. If the agent starts working in the moment between the check and the send, it lands in its queue.
+- The agent and you share one GitHub login, so its replies and your reviews look alike. Your login's reviews count unless the agent was working when they were sent. Ones the agent sent while Herdr was closed are taken for yours once, and reviews you send during its turn are taken for its own.
+- When a card is first read, GitHub often hasn't worked out yet whether the pull request can merge. Failing checks and conflicts then arrive as two messages, a minute apart.
+- Comments in the pull request's conversation (not on a review) don't reach the agent: deploy bots post there. Ask the agent to read them.
+- A required check that hasn't reported yet may be missing from the checks. GitHub's merge state says blocked then, so the card says Open or Needs a review, not Ready to merge.
+- Only the last column counts as done: a merged pull request moves its card there, which also sets off a `task enters <last column>` automation.
+- An agent told about a failure may push a fix by itself, and then be told again if the next commit fails. Nothing limits how many rounds that takes; closing its tab ends it.
+- A card started before `tab:` was recorded finds its agent by the tab's name, so renaming that tab stops the messages (you get the toast instead).
 
 - Herdr's own Settings screen can't take new sections (Herdr rewrites it), which is why Agent presets is a footer row of its own.
 - The model lists are short on purpose: Claude's aliases always mean its latest models, Codex's come from your config, and any other model is typed in. Effort levels a given CLI version doesn't accept fail when the agent starts.
@@ -512,7 +576,7 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
 - "Move “x” to… → No workspace" moves the space to All spaces only, and it doesn't rejoin by its folder.
 - "Rename…" with a new name changes it in the switcher within a second, and `workspace.jsonc` keeps its comments.
 - "Delete…" → "Move to Trash" removes the workspace from the menu, puts its folder in the Trash, and its spaces show under the workspace their folder is in (else All spaces). Cancel and Esc change nothing.
-- Writing `Use pnpm.` in a workspace's `AGENTS.md`, then running `HERDR_WS_AGENT_DRY=1 herdr-ws-agent claude` in one of its folders, prints `--append-system-prompt` with that text and `--add-dir <root>`. In a folder outside every workspace it prints `claude` alone.
+- Writing `Use pnpm.` in a workspace's `AGENTS.md`, then running `HERDR_WS_AGENT_DRY=1 herdr-ws-agent claude` in one of its folders, prints `--append-system-prompt` with that text, `--add-dir <root>` and, when the workspace has tasks, `--add-dir ~/.herdr/workspaces/<id>/tasks` (as a full path). In a folder outside every workspace it prints `claude` alone.
 - With a workspace whose root is under `/tmp` (macOS), a space opened in one of its folders joins that workspace, not the shown one.
 - The board button opens a "Board" tab showing the workspace's columns; three hand-written task files appear in their columns, sorted high priority first.
 - Dragging a card to another column changes its `status:` line and nothing else, and doesn't open the dialog.
@@ -558,4 +622,29 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
 - With a stubbed `herdr` module, a runner whose last tick was 20 minutes ago queues a one-time job due in that gap once ("Missed … while the Mac was asleep"), runs a later one in its own minute, and after a 13-hour gap runs nothing.
 - With a stubbed `herdr` module and Herdr closed from Monday 18:00 to Thursday 23:00: `daily 09:00` gets one "missed" run ("Missed 3 times, last 09:00 …"); `daily 22:00` and `0 * * * *` are queued to catch up and not reported; a `once` on Tuesday 07:00 is reported; an automation that's off and a `once` next week aren't; one toast says "2 automations didn't run", with the action `mod.open {"name":"ws-automations"}`. If `daily 09:00` last ran Wednesday 09:00, only Thursday's is missed. A 20-minute sleep and a first load report nothing. A `* * * * *` closed 40 days catches up once and reports nothing, and `monday 08:00` closed 40 days is missed 4 times (31 days back). Each check takes milliseconds.
 - `herdr-app do mod.open '{"name":"ws-automations"}'` opens "Automations for <the shown workspace>".
+- `node`, with `prfacts.js` copied to a `.mjs` file:
+  - a pull request first seen with a failed check and an old review wakes for the check only, and not again on the same head commit;
+  - a rerun that passes takes its name out of the failed checks;
+  - a new head commit with everything green gives "ready" once;
+  - `mergeable: "UNKNOWN"` reads "Open";
+  - two reviews a minute apart wake once, 2 minutes after the second, and reviews arriving every minute wake once at 5 minutes;
+  - a review by `me` inside the agent's working stretch isn't news, and one outside it is;
+  - a conflict wakes once per head commit;
+  - "merged" is noted once, also for one first seen merged, and "closed" only after it was seen open;
+  - a check named with a newline, backticks and angle brackets comes out as one line of at most 60 characters.
+- In a test workspace whose tasks name public pull requests by URL:
+  - an open one shows its status on its card within 20 seconds, in the board and the list;
+  - with five columns in a 1280px window (cards about 155px wide), a failing one's card shows "Checks failing" alone and a merged one's shows "Merged #12"; no text crosses a card's edge;
+  - a merged one moves to the last column;
+  - a task with only `branch:` (in a folder whose `origin` is that repo) gets `pr: <URL>` written, and one whose branch has no pull request shows no chip;
+  - `pr: "#<n>"` with `folder:` works like the URL.
+- With a stand-in agent (a script that prints `ESC ] 7501 ; state=working ESC \`, then `state=done` 40 seconds later, and logs its input) recorded as a failing pull request's `terminal:` and `tab:`, nothing is typed for 40 seconds. Within a second of `done`, the message arrives once, naming the failed checks. A failing one with no `terminal:` gets the "needs someone" toast instead.
+- With a real agent (Claude, started on a Worktree card in a private test repo that has two checks):
+  - it opens the pull request, writes `pr:` and `status: review` in its task file and ends its turn; the card shows "Checks running", then "Ready to merge" with a toast;
+  - a review left from your own login while the agent is idle is typed into its terminal about 2 minutes later, naming the reviewer; the agent reads it, pushes and ends its turn;
+  - a check that fails on its next push is typed within about a minute, naming the check; a commit on the base branch that conflicts gets "It conflicts with main", and the agent merges the base in and pushes;
+  - each message comes with a "<id>: told <agent> about pull request #1" toast, and none is repeated;
+  - merging the pull request moves the card to the last column (`status: done`) at the next read, with a toast.
+- In `acceptEdits` mode with no other permissions, Claude started by the launcher edits `~/.herdr/workspaces/<id>/tasks/<ID>.md` without asking.
+- Deleting the test workspace empties `workspaces.prs` and the switcher's `prs` memory.
 - With the runner's memory set to "last ticked 21:00" and a `daily 21:30` automation, opening at 21:50 runs it once ("Missed 21:30 while Herdr was closed"); a `daily 08:00` one 13 hours late doesn't run.

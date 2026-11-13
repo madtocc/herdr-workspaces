@@ -8,7 +8,7 @@
 # Finds the workspace whose root or folders hold the current folder (a herdr
 # worktree goes by its repo's name) and starts the agent with:
 #
-#   claude: --append-system-prompt <instructions> --add-dir <root, outside folders>
+#   claude: --append-system-prompt <instructions> --add-dir <root, outside folders, its tasks folder>
 #   codex:  -c developer_instructions=<instructions> --add-dir <...>
 #
 # The instructions are the workspace's AGENTS.md (or its "instructions" file)
@@ -262,6 +262,8 @@ EOF
       p=$(real "$path")
       holds "$p" "$realroot" || [ "$p" = "$cwd" ] || set -- "$@" --add-dir "$path"
     done < "$index"
+    # Its board cards too: a card's agent notes its status and pull request there.
+    [ -d "$wsdir/tasks" ] && set -- "$@" --add-dir "$wsdir/tasks"
   fi
 fi
 

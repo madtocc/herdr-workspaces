@@ -50,14 +50,14 @@ const STORE = "automations";
 // Changes a files automation doesn't count: git's and dependency folders, dotfiles.
 const IGNORED = /\/(\.git|node_modules)(\/|$)|\/\.[^/]*$/;
 
-const wsDir = () => `${home()}/.herdr/workspaces`;
+export const wsDir = () => `${home()}/.herdr/workspaces`;
 const tasksDir = (id) => `${wsDir()}/${id}/tasks`;
-const tilde = (p) => (p === home() ? "~" : p.startsWith(home() + "/") ? "~" + p.slice(home().length) : p);
-const message = (e) => String(e?.message ?? e);
+export const tilde = (p) => (p === home() ? "~" : p.startsWith(home() + "/") ? "~" + p.slice(home().length) : p);
+export const message = (e) => String(e?.message ?? e);
 const pad = (n) => String(n).padStart(2, "0");
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 // fs reads only under home; a workspace can live anywhere, so the shell checks the rest.
-async function exists(path) {
+export async function exists(path) {
   try { return await fs.exists(path); }
   catch { return (await exec("test", ["-e", path]).catch(() => ({ code: 1 }))).code === 0; }
 }
@@ -68,14 +68,14 @@ const COLUMNS = ["backlog", "todo", "doing", "review", "done"];
 // Today's date where you are (toISOString would give UTC's).
 const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
 
-function expand(p) {
+export function expand(p) {
   const s = String(p ?? "").trim();
   if (!s) return "";
   const full = s === "~" ? home() : s.startsWith("~/") ? home() + s.slice(1) : s;
   return full.length > 1 ? full.replace(/\/+$/, "") : full;
 }
 
-function boardOf(def) {
+export function boardOf(def) {
   const b = def?.board && typeof def.board === "object" ? def.board : {};
   const columns = (Array.isArray(b.columns) && b.columns.length ? b.columns : COLUMNS).map((c) => String(c).toLowerCase());
   const pick = (want, fallback) => (columns.includes(String(want ?? "").toLowerCase()) ? String(want).toLowerCase() : fallback);
@@ -88,7 +88,7 @@ function boardOf(def) {
   };
 }
 
-function split(text) {
+export function split(text) {
   const m = /^---\r?\n([\s\S]*?)\r?\n?---[ \t]*(?:\r?\n|$)/.exec(text);
   if (!m) return { head: [], body: text };
   return { head: m[1] ? m[1].split(/\r?\n/) : [], body: text.slice(m[0].length) };
@@ -108,12 +108,12 @@ function quote(v) {
     ? s : JSON.stringify(s);
 }
 
-function field(head, key) {
+export function field(head, key) {
   const line = head.find((l) => l.startsWith(`${key}:`));
   return line === undefined ? null : unquote(line.slice(key.length + 1));
 }
 
-function withFields(text, fields, body) {
+export function withFields(text, fields, body) {
   const parts = split(text);
   const lines = [...parts.head];
   for (const [k, v] of Object.entries(fields)) {
@@ -137,7 +137,7 @@ async function nextId(id, prefix) {
   return `${prefix}-${n + 1}`;
 }
 
-function folderPath(def, folder) {
+export function folderPath(def, folder) {
   if (!folder) return def.root;
   const e = expand(folder);
   return e.startsWith("/") ? e : `${def.root}/${e}`;
@@ -149,6 +149,7 @@ function brief(task, b) {
     task.body,
     "---",
     `This task is tracked in ${tilde(task.file)}; its status is now "${b.start}". When you've finished, change its "status:" line to "${b.finish}" and, if anything is left open, add it under a "## Notes" heading at the end. Leave the other lines between the --- markers as they are.`,
+    `If you open a pull request for it, add a line "pr: <its URL>" between the --- markers. Herdr then follows it and tells you here when a check fails, a review arrives or it conflicts, so end your turn instead of waiting on its checks.`,
   ].filter(Boolean).join("\n\n");
 }
 
@@ -509,7 +510,7 @@ export class Runner {
     }
     argv = withKnobs(argv, a.model, a.effort);
     const made = await this.open(ws, a.name, folder, argv, first);
-    if (card) await this.updateCard(card.file, { terminal: made.terminal ?? null, started: today() });
+    if (card) await this.updateCard(card.file, { terminal: made.terminal ?? null, tab: made.tab ?? null, started: today() });
     this.log({ ws, name: a.name, at, why, status: "started", terminal: made.terminal ?? null, tab: made.tab ?? null, space: made.space ?? null, card: card?.id ?? null });
     this.tidy(ws, a.name);
     notify({

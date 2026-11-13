@@ -8,7 +8,10 @@ A workspace is a folder of repos, with its own agent instructions; it groups
 Herdr's spaces. A switcher at the top of the sidebar picks one; the
 spaces and agents lists show only what's in it. Each workspace has a task board (as columns or a list):
 one markdown file per task, cards that start an agent on their task (in the
-repo or a fresh worktree) and then show that agent's live status. Agent presets
+repo or a fresh worktree) and then show that agent's live status. A card also
+follows its pull request: it shows whether checks fail, changes are requested,
+it conflicts or it's ready to merge, tells the card's agent when a check fails
+or a review arrives, and moves to done when it merges. Agent presets
 (herdr-core templates: a command plus instructions) can be global or per
 workspace, are managed in the Agent presets screen (model and effort included;
 open it from the sidebar footer), and start from the tab bar's + menu or a
@@ -84,12 +87,15 @@ workspace's files when you make one, its `workspace.jsonc` when you rename it,
 task files in `~/.herdr/workspaces/<id>/tasks/` and automation files in
 `~/.herdr/workspaces/<id>/automations/` (from the Automations screen, from
 `herdr-ws-run --add`, `--off` and `--on`, and `enabled: false` after a one-time
-one runs). Deleting a workspace, a task or an
+one runs). Following a card's pull request writes `pr:` into its task and, when
+it merges, its `status:`, and types a message into the card's agent with
+`hc send` when a check fails, a review arrives or it conflicts. Deleting a workspace, a task or an
 automation (after a confirmation) moves it to the Trash. The board's Worktree runs
 `git worktree add` on a new `task/…` branch; otherwise your repos aren't
 touched. It runs `sh` (editor, Trash, symlinked folders), `herdr-app do` (the
 board's and automations' new tabs) and, through the launcher, Start and
-automations, your agents. Automations watch the folders a files automation
+automations, your agents. The launcher lets Claude and Codex read and edit
+the workspace's root, its folders elsewhere and its `tasks` folder. Automations watch the folders a files automation
 names, read calls `herdr-ws-run` leaves in `~/.herdr/workspaces/.inbox` (and
 delete them), and close an automation's older run tabs once their agent is done.
 For restarts, the launcher keeps notes of the Claude agents it starts in
@@ -97,8 +103,9 @@ For restarts, the launcher keeps notes of the Claude agents it starts in
 of closed tabs, and gives Claude two hooks (`--settings`) that note its session
 and drop the note when you leave it. With the `shell` line in herdr-core's
 config, every new terminal starts through `herdr-ws-resume`.
-Two things use the network: GitHub automations (`gh api` with your login, every
-2 minutes per watched repo), and the Automations screen's Draft it and Change it,
+Three things use the network: GitHub automations (`gh api` with your login, every
+2 minutes per watched repo), cards with a `pr:` or `branch:` line (`gh pr view`
+with your login, every minute per open pull request), and the Automations screen's Draft it and Change it,
 which run `claude -p` with your Claude login and no tools. That sends Anthropic
 your words, the workspace's name, root, folder names, GitHub repos and presets,
 and, for a change, the automation as it stands.

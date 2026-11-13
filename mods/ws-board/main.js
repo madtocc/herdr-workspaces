@@ -3,7 +3,8 @@
 //
 // A task is a markdown file, ~/.herdr/workspaces/<workspace>/tasks/<ID>.md:
 // front matter between --- lines (id, title, status, folder, priority, created,
-// and what Start adds: terminal, worktree, branch, started), then notes in
+// what Start adds: terminal, tab, worktree, branch, started; and pr, its pull
+// request, which the agent or the switcher adds), then notes in
 // markdown. People (the task dialog) and agents (editing the file) change the
 // same files; the board redraws when they do. Unknown front matter lines are kept.
 //
@@ -135,6 +136,7 @@ async function loadTasks(id) {
       terminal: field(head, "terminal"),
       worktree: field(head, "worktree"),
       branch: field(head, "branch"),
+      pr: field(head, "pr"),
       body: body.trim(),
     });
   }
@@ -292,6 +294,7 @@ function brief(task, b) {
     task.body,
     "---",
     `This task is tracked in ${tilde(task.file)}; its status is now "${b.start}". When you've finished, change its "status:" line to "${b.finish}" and, if anything is left open, add it under a "## Notes" heading at the end. Leave the other lines between the --- markers as they are.`,
+    `If you open a pull request for it, add a line "pr: <its URL>" between the --- markers. Herdr then follows it and tells you here when a check fails, a review arrives or it conflicts, so end your turn instead of waiting on its checks.`,
   ].filter(Boolean).join("\n\n");
 }
 
@@ -385,7 +388,7 @@ export default class Board extends View {
             ? await herdr("tab.new", { space: space.id, name: task.id, folder, argv, ...(first ? { task: first } : {}) })
             : await herdr("space.new", { folder, tab: task.id, argv, ...(first ? { task: first } : {}) });
         }
-        await this.update(task, { status: b.start, terminal: made.terminal ?? null, started: today(), ...extra });
+        await this.update(task, { status: b.start, terminal: made.terminal ?? null, tab: made.tab ?? null, started: today(), ...extra });
       } catch (e) {
         notify({ title: `Couldn't start ${task.id}`, body: message(e), level: "error" });
       }
@@ -485,11 +488,13 @@ export default class Board extends View {
   row(task, last, b, t, ag, tm) {
     const pr = task.priority && PRIORITY[task.priority] ? task.priority : null;
     const prColor = pr === "high" ? t.blocked : pr === "medium" ? t.working : t.dim;
+    const pull = this.prChip(task, t, true);
     return h_flex().id(`row-${task.id}`).h(40).flex_none().pl(36).pr(12).gap(12).items_center()
       .border_b(1).border_color(t.border).cursor_pointer().hover((s) => s.bg(t.hover))
       .on_click(() => this.openTask(task))
       .child(div().w(64).flex_none().text_size(11.5).text_color(t.dim).child(task.id))
       .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(t.foreground).child(task.title))
+      .when(Boolean(pull), (el) => el.child(pull))
       .child(div().w(52).flex_none().text_size(11.5).text_color(prColor).child(pr ?? ""))
       .child(h_flex().w(120).flex_none().gap(6).items_center().text_size(11).text_color(t.dim)
         .when(Boolean(task.folder), (el) => el.child(div().min_w(0).px(6).rounded(4).bg(t.raised).truncate().child(base(task.folder))))
@@ -526,7 +531,7 @@ export default class Board extends View {
       .child(v_flex().id(`col-list-${col}`).flex_1().min_h(0).px(8).pb(8).gap(8).overflow_y_scrollbar()
         .children(tasks.map((task) => this.card(task, col, b, t, ag, tm)))
         .when(!tasks.length && this.loaded, (el) => el.child(div().px(4).py(6).text_size(12).text_color(t.dim)
-          .child(col === b.columns[0] && !this.tasks.length ? "No tasks yet. New task adds one." : "Empty"))));
+          .child("Empty"))));
   }
 
   // A task's agent: starting, live (status and Go to), or Start / Worktree.
@@ -555,11 +560,38 @@ export default class Board extends View {
       .child(small(`wt-${task.id}`, "Worktree", (cx) => this.start(task, true, cx), "Run it on a new branch in its own worktree"));
   }
 
+  // The task's pull request, as the switcher reads it from GitHub (shared
+  // "workspaces.prs"): one status and its number. A click opens it. In a list
+  // row both sit in one chip. On a card the number follows the chip, and wraps
+  // out of sight when the card is too narrow for both.
+  prChip(task, t, inline) {
+    const pr = (shared("workspaces.prs") ?? {})[task.file];
+    if (!pr) return null;
+    const opens = (el) => el.cursor_pointer().tooltip(pr.tip)
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_click((_e, cx) => {
+        cx.stop_propagation();
+        if (/^https:\/\/github\.com\//.test(pr.url)) exec("sh", ["-c", 'command -v open >/dev/null 2>&1 && exec open "$1"; exec xdg-open "$1"', "sh", pr.url]).catch(() => {});
+      });
+    const number = () => div().flex_none().text_color(t.muted).child(`#${pr.number}`);
+    const status = pr.label ? div().text_color(t[pr.tone] ?? t.muted).child(pr.label) : null;
+    const chip = (kids) => opens(h_flex().id(`pr-${task.id}`).h(20).px(6).gap(5).items_center().rounded(5).bg(t.raised)
+      .text_size(11).text_color(t.muted).hover((s) => s.bg(t.hover))
+      .child(svg("mods/ws-board/pr.svg").size(11).flex_none())
+      .children(kids));
+    if (inline) return chip([number(), status?.flex_none()].filter(Boolean)).flex_none();
+    if (!status) return h_flex().child(chip([number()]).flex_none());
+    return h_flex().h(20).min_w(0).flex_wrap().items_start().overflow_hidden().gap(6)
+      .child(chip([status.min_w(0).truncate()]).min_w(0).max_w_full())
+      .child(opens(h_flex().id(`pr-number-${task.id}`).flex_none().h(20).items_center().text_size(11).child(number())));
+  }
+
   card(task, col, b, t, ag, tm) {
     const last = col === b.columns[b.columns.length - 1];
     const pr = task.priority && PRIORITY[task.priority] ? task.priority : null;
     const prColor = pr === "high" ? t.blocked : pr === "medium" ? t.working : t.dim;
     const foot = this.agentArea(task, last, b, t, ag, tm, false);
+    const pull = this.prChip(task, t, false);
 
     return v_flex().id(`card-${task.id}`).flex_none().gap(7).p(10).rounded(8).bg(t.background).border_1().border_color(t.border)
       .cursor_pointer().hover((s) => s.border_color(t.input))
@@ -574,6 +606,7 @@ export default class Board extends View {
         .child(div().flex_1())
         .when(Boolean(pr), (el) => el.child(div().flex_none().text_color(prColor).child(pr))))
       .child(div().text_size(13).text_color(t.foreground).child(task.title))
+      .when(Boolean(pull), (el) => el.child(pull))
       .when(Boolean(foot), (el) => el.child(foot));
   }
 

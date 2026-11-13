@@ -17,7 +17,8 @@
 //   workspaces.create    a time: the menu asks this block to make a workspace
 //
 // It also runs each workspace's automations (automations.js): the one runner lives
-// in this sidebar copy and ticks on its timer.
+// in this sidebar copy and ticks on its timer. So does what follows board cards'
+// pull requests on GitHub (prs.js).
 //
 // A space joins a workspace once and stays: when its first terminal is under the
 // workspace's root or one of its folders (a herdr worktree goes by its repo's
@@ -31,6 +32,7 @@ import {
 } from "herdr";
 import * as fs from "fs/promises";
 import { Runner } from "./automations.js";
+import { PrWatcher } from "./prs.js";
 
 // "Edit" opens the workspace's folder in the first of these that's installed,
 // else with the system's opener (Finder, the file manager, Explorer).
@@ -418,6 +420,7 @@ export default class Workspaces extends View {
         setShared("workspaces.assigned", { ...(shared("workspaces.assigned") ?? {}), [space]: ws });
       },
     });
+    this.prs = new PrWatcher();
     this.reload(cx);
     cx.spawn(async (cx) => {
       for (;;) {
@@ -438,7 +441,7 @@ export default class Workspaces extends View {
     });
     // Placing and following also run here: Herdr doesn't draw while its window is
     // in the background, and a new space waits SETTLE for its folder.
-    cx.timer.every(500, (cx) => { this.sync(); this.requests(cx); this.runner.tick(cx); if (spaces().some((s) => !this.known.has(s.id))) cx.notify(); });
+    cx.timer.every(500, (cx) => { this.sync(); this.requests(cx); this.runner.tick(cx); this.prs.tick(cx); if (spaces().some((s) => !this.known.has(s.id))) cx.notify(); });
   }
 
   reload(cx) {
@@ -454,6 +457,7 @@ export default class Workspaces extends View {
       } catch {} // a stale snapshot: the next change writes it
       await this.loadPresets(defs);
       await this.runner?.load(cx);
+      await this.prs?.load();
       cx.notify();
     });
   }
