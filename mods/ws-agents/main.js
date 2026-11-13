@@ -4,7 +4,8 @@
 // ws-agents: Herdr's `agents` (0.1.14) showing only the agents in the workspace
 // chosen in `ws-switcher` (an agent is in its space's workspace, shared
 // "workspaces.assigned"). agent.next / agent.prev follow the same list. The
-// changes are inWorkspace(), the filter in render() and the empty text.
+// changes are inWorkspace(), the filter in render(), the empty text, and
+// open(): a click on a sub-agent keeps it as a tab instead of peeking at it.
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
@@ -185,6 +186,20 @@ export default class Agents extends View {
     run("terminal.peek", { terminal: addr });
   }
 
+  // A click on a sub-agent: to its pane, or without one it gets a tab in its
+  // parent's space (no peek first). Cmd-click (Ctrl elsewhere) peeks instead.
+  open(k, root, e) {
+    if (this.listed.has(k.address)) return run("pane.focus", { terminal: k.address });
+    if (e?.modifiers?.platform || e?.modifiers?.control) return this.peek(k.address);
+    // A second click while the tab is being made would only toast "in progress".
+    const now = Date.now();
+    if (now - (this.keeping?.get(k.address) ?? 0) < 1500) return;
+    (this.keeping ??= new Map()).set(k.address, now);
+    // terminal.keep puts the tab in the shown space: show the parent's first.
+    if (root && !spaces().some((s) => s.id === root.space && s.active)) run("pane.focus", { terminal: root.address });
+    run("terminal.keep", { terminal: k.address });
+  }
+
   // Live sub-agents of `addr`, depth first, each with the tree lines in front of it.
   tree(all, addr, lead = []) {
     const kids = all.filter((k) => k.parent === addr && k.state === "live");
@@ -197,7 +212,7 @@ export default class Agents extends View {
     });
   }
 
-  subRow(t, s, shown, compact) {
+  subRow(t, s, shown, compact, root) {
     const k = s.t;
     const st = kidStatus(k, this.listed);
     const pic = icon(k.program, 14, t.foreground);
@@ -214,7 +229,7 @@ export default class Agents extends View {
       .text_size(12.5)
       .when(on, (el) => el.bg(t.raised))
       .hover((s) => s.bg(t.hover))
-      .on_click(() => (this.listed.has(k.address) ? run("pane.focus", { terminal: k.address }) : this.peek(k.address)))
+      .on_click((e) => this.open(k, root, e))
       .children(s.lines.map(l => div().self_start().mt(-4).w(9).h(17).mr(4).flex_none()
         .when(Boolean(l), el => el.border_l(1.5).border_color(t.input))
         .when(l === "└" || l === "├", el => el.border_b(1.5).rounded_bl(6))))
@@ -269,7 +284,7 @@ export default class Agents extends View {
       const subs = collapsed ? [] : this.tree(all, a.address);
       const r = row(a, i, subs);
       if (this.folded.has(a.address)) return [r];
-      return [r, ...subs.map((s) => this.subRow(t, s, shown, byPriority))];
+      return [r, ...subs.map((s) => this.subRow(t, s, shown, byPriority, a))];
     };
 
     // The fold chevron; folded, the count too, colored by the most urgent one.

@@ -123,6 +123,7 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
 ## How it behaves
 
 - **Agent states** work as in Herdr's lists (working, blocked, done, idle). The switcher's dot only speaks up for blocked and done agents in workspaces that aren't shown. Blocked wins over done.
+- **A click on a sub-agent opens it as a tab.** In the Agents list, a sub-agent without a pane gets one with the click: a new tab in its parent's space, which is shown first when another space is open. Herdr's own list opens a peek over the tab, where "↗ keep" does the same. Cmd-click (Ctrl-click elsewhere) still peeks. A sub-agent that has a pane is shown there, as in Herdr.
 - **The switcher menu is only about workspaces.** The board opens from the button beside the switcher. Presets start from the + menu and are managed from the footer's Agent presets; automations are the footer's Automations.
 - **Choosing a workspace** (a click, or `0`–`9` while the menu is open; `0` is All spaces) filters both lists. It also shows the space you last had open in that workspace, else its first. A workspace with no spaces leaves the shown space where it is.
 - **A space joins a workspace once and stays.** It joins when its first terminal is under the workspace's `root` or one of its `folders`; the longest matching folder wins, so a nested workspace beats its parent. A space in a herdr worktree (`~/.herdr/worktrees/<repo>/<branch>`) goes by the repo's name. A space with neither, made while a workspace is shown, joins that workspace once its first terminal has had 1.5s to report its folder. Spaces from before the workspace existed keep the workspace they were in.
@@ -485,7 +486,8 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
 - **ws-agents**:
   - `inWorkspace()` takes an agent's workspace from its `space`;
   - `render()` filters the list after `hold()`, so `setAgentOrder` and `agent.next`/`agent.prev` follow the filtered list;
-  - the empty text names the workspace.
+  - the empty text names the workspace;
+  - `open()`: a sub-agent row's click runs `terminal.keep {terminal}` (after `pane.focus {terminal: <parent agent>}` when the parent's space isn't the shown one) instead of `terminal.peek`; with Cmd or Ctrl held it runs `terminal.peek`. It ignores a second click on the same row for 1.5s, because a keep in progress refuses another.
 
 **What it touches:**
 - It reads `~/.herdr/workspaces` and lists the subfolders of each workspace's root.
@@ -513,6 +515,7 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
 ## Watch out
 
 - `ws-spaces`, `ws-agents`, `ws-tabs`, `ws-new-menu` and `ws-chrome` are copies of Herdr 0.1.14's mods and won't get Herdr's later fixes. On another version, rebuild them from this recipe on top of that version's `spaces`, `agents`, `tabs`, `new-menu` and `workspace-chrome`: the changes are small and listed above.
+- A sub-agent kept as a tab stays a tab: closing that tab ends its terminal. To look without keeping, Cmd-click the row (Ctrl-click elsewhere). Peeks opened another way, such as Cmd-clicking a terminal address in terminal text, still show "↗ keep".
 - The + menu leaves presets out for a space on another machine, because the launcher and the preset files are on this computer.
 - With more agents and presets than fit in 85% of the window, the + menu's middle scrolls; New space and the worktree rows stay in view.
 - `ctrl-1…9` (`space.select:N`) and `space.next` still count every space. The switcher follows, so they jump between workspaces.
@@ -611,6 +614,7 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
 - Choosing a workspace with no spaces lists its folders in the sidebar, and clicking one makes a space that stays in that workspace.
 - `herdr-app do space.select --id <a space in another workspace>` switches the switcher to that workspace.
 - With an agent running in workspace A, workspace B's agents list says "No agents in B…", and a blocked agent in A puts the dot on B's switcher row.
+- With a sub-agent started under an agent (`hc run --bg --parent <agent> --name kid -- sleep 600`), clicking its row in the Agents list adds a tab "kid" to the agent's space and shows it, with no peek (`herdr-app status` has no overlays). Clicking it again only shows that tab. Cmd-clicking a sub-agent without a pane opens the peek.
 - "Move “x” to… → No workspace" moves the space to All spaces only, and it doesn't rejoin by its folder.
 - "Rename…" with a new name changes it in the switcher within a second, and `workspace.jsonc` keeps its comments.
 - "Delete…" → "Move to Trash" removes the workspace from the menu, puts its folder in the Trash, and its spaces show under the workspace their folder is in (else All spaces). Cancel and Esc change nothing.
