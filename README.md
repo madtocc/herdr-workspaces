@@ -1,7 +1,11 @@
 # Workspaces for Herdr
 
-A Herdr layout that groups spaces into workspaces: a folder of repos, with its
-own agent instructions. A switcher at the top of the sidebar picks one; the
+A Herdr layout for multi-repo work: workspaces with their own agent
+instructions, a task board, agent presets, automations, and agents that come
+back after a restart.
+
+A workspace is a folder of repos, with its own agent instructions; it groups
+Herdr's spaces. A switcher at the top of the sidebar picks one; the
 spaces and agents lists show only what's in it. Each workspace has a task board (as columns or a list):
 one markdown file per task, cards that start an agent on their task (in the
 repo or a fresh worktree) and then show that agent's live status. Agent presets
@@ -18,7 +22,7 @@ issue is opened on GitHub (asked every 2 minutes through `gh`), or when another
 app calls `herdr-ws-run`. A schedule missed while the Mac was off runs when Herdr
 opens if it was due in the last 12 hours; older ones are reported as missed, with
 a toast, for Run now. Each run is a tab in the workspace's Automations space;
-`examples/automations/` has one to start from. You make one by saying what it
+`examples/automations/` has two to start from. You make one by saying what it
 should do and when, in your own words: Claude drafts the trigger, the agent,
 its model and the prompt, and you read the draft before it's saved. Agents in a
 workspace can add one themselves with `herdr-ws-run --add`, so you can tell one
@@ -64,6 +68,15 @@ says how), or by hand:
    (`ctrl-shift-l` cycles back).
 5. Open the switcher and pick **New workspace from a folder…**. The board button
    beside the switcher opens the workspace's board.
+6. To start from the examples, copy them where Herdr reads them:
+   - presets for every workspace: `examples/presets/*.md` to
+     `~/.config/herdr-core/templates/` (where `hc run <name>` finds them too);
+   - presets for one workspace: to `~/.herdr/workspaces/<id>/agents/`;
+   - automations: `examples/automations/*.md` to
+     `~/.herdr/workspaces/<id>/automations/`. Both use the `reviewer` preset and
+     a folder called `api`: change that to one of the workspace's folders (the
+     note at the end of each file says where). A copied automation is on, so add
+     `enabled: false` to its front matter if you'd rather read it first.
 
 **What it touches:** it reads `~/.herdr/workspaces` and the folders of
 each workspace's root. It writes `~/.herdr/workspaces/.index`, a new
