@@ -189,7 +189,8 @@ export default class Automations extends View {
   init(_props, cx) {
     this.handle = cx.focus_handle();
     this.handle.focus();
-    this.workspace = props()?.workspace ?? null;
+    // From the footer, the shown workspace; opened on its own (a missed-runs toast), the same.
+    this.workspace = props()?.workspace ?? shared("workspaces.active") ?? null;
     this.nameIn = InputState.new({ value: "", placeholder: "daily-review" });
     this.descIn = InputState.new({ value: "", placeholder: "What it does, in one line" });
     this.whenIn = InputState.new({ value: "", placeholder: "weekdays 09:00" });
@@ -554,6 +555,8 @@ export default class Automations extends View {
       // Its newest run, while that's working or waiting on you.
       const now = runState(runs.find((r) => r.name === a.name && r.status === "started"), ag, tm);
       const busy = now === "working" || now === "needs you" ? now : null;
+      // Missed while the Mac was off, and nothing has run since.
+      const missed = runs.find((r) => r.name === a.name)?.status === "missed";
       return h_flex().id(`a-${a.name}`).h(46).mx(6).px(8).gap(9).rounded(7).items_center().cursor_pointer()
         .when(on, (el) => el.bg(t.selected)).when(!on, (el) => el.hover((s) => s.bg(t.hover)))
         .on_click((_e, cx) => this.pick({ name: a.name, isNew: false }, null, cx))
@@ -561,8 +564,8 @@ export default class Automations extends View {
         .child(v_flex().flex_1().min_w(0).gap(2)
           .child(div().truncate().text_color(a.enabled ? t.foreground : t.muted).child(a.name))
           .child(div().truncate().text_size(11).text_color(a.error ? t.blocked : t.dim).child(a.error ? "Can't read its when" : a.summary)))
-        .child(div().flex_none().text_size(11).text_color(busy === "working" ? t.working : busy ? t.blocked : t.dim)
-          .child(busy ?? (!a.enabled ? "off" : a.next ? shortTime(a.next) : "")))
+        .child(div().flex_none().text_size(11).text_color(busy === "working" ? t.working : busy || missed ? t.blocked : t.dim)
+          .child(busy ?? (missed ? "missed" : !a.enabled ? "off" : a.next ? shortTime(a.next) : "")))
         .child(toggle(a));
     };
     const list = v_flex().w(260).flex_none().min_h(0).border_r(1).border_color(t.border).bg(t.chrome)
@@ -650,7 +653,7 @@ export default class Automations extends View {
     const ag = agents(), tm = terminals();
     const runRow = (r) => {
       const state = runState(r, ag, tm);
-      const color = state === "working" ? t.working : state === "needs you" ? t.blocked : state === "failed" ? t.blocked : t.dim;
+      const color = state === "working" ? t.working : state === "needs you" || state === "failed" || state === "missed" ? t.blocked : t.dim;
       const live = state !== "closed" && r.status === "started" && r.tab;
       return h_flex().id(`a-run-${r.id}`).h(26).gap(10).items_center().text_size(12)
         .child(div().w(70).flex_none().text_color(t.dim).child(shortTime(r.at)))

@@ -15,7 +15,9 @@ under it in the Agents list. Automations start an agent by
 themselves: on a schedule (once or repeating), when a task enters a board
 column, when an agent finishes or needs you, when files change, when a PR or
 issue is opened on GitHub (asked every 2 minutes through `gh`), or when another
-app calls `herdr-ws-run`. Each run is a tab in the workspace's Automations space;
+app calls `herdr-ws-run`. A schedule missed while the Mac was off runs when Herdr
+opens if it was due in the last 12 hours; older ones are reported as missed, with
+a toast, for Run now. Each run is a tab in the workspace's Automations space;
 `examples/automations/` has one to start from. You make one by saying what it
 should do and when, in your own words: Claude drafts the trigger, the agent,
 its model and the prompt, and you read the draft before it's saved. Agents in a

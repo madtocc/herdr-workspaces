@@ -37,6 +37,7 @@ import { withKnobs } from "./knobs.js";
 
 const SPACE = "Automations";
 const MISSED = 12 * 3600e3; // a schedule missed (Herdr closed, the Mac asleep) runs once if it was due this recently
+const LOOK_BACK = 31 * 86400e3; // older misses, up to this far back, are reported ("missed"), not run
 const GAP = 50e3;           // an automatic run doesn't start within this of the same one's last start
 const QUIET = 3000;         // files must be quiet this long before a files automation starts
 const OLD_CALL = 3600e3;    // an outside call that waited longer than this (Herdr closed) is dropped
@@ -321,17 +322,39 @@ export class Runner {
 
   // Schedules due from `from` up to this minute (at most MISSED back) that didn't
   // run, because Herdr was closed or its timer stopped while the Mac slept: each runs once.
+  // One whose misses are all older than that doesn't run late: it's logged as
+  // "missed" (how many times, and the last), and one toast lists them all.
   catchUp(from, now, reason) {
-    from = Math.max(from, now - MISSED);
+    const cutoff = now - MISSED;
+    const older = Math.max(from, now - LOOK_BACK);
+    const report = [];
     this.each((ws, a) => {
       if (a.trigger.kind !== "at" && a.trigger.kind !== "cron" && a.trigger.kind !== "once") return;
       const last = this.state.last[`${ws}/${a.name}`] ?? 0;
       let missed = null;
-      for (let t = Math.floor(from / 60e3) * 60e3; t < Math.floor(now / 60e3) * 60e3; t += 60e3) {
+      for (let t = Math.floor(Math.max(from, cutoff) / 60e3) * 60e3; t < Math.floor(now / 60e3) * 60e3; t += 60e3) {
         if (t > last && due(a.trigger, new Date(t))) missed = t;
       }
-      if (missed) this.pending.push({ ws, name: a.name, why: `Missed ${shortTime(missed, now)} ${reason}` });
+      if (missed) { this.pending.push({ ws, name: a.name, why: `Missed ${shortTime(missed, now)} ${reason}` }); return; }
+      if (older >= cutoff) return;
+      // Due minutes from `older` up to the cutoff, after its last run.
+      let count = 0, latest = null;
+      for (let t = nextAt(a.trigger, Math.max(older, last) - 60e3); t !== null && t < cutoff && count < 50000; t = nextAt(a.trigger, t)) {
+        if (t > last && t >= older) { count++; latest = t; }
+      }
+      if (!latest) return;
+      const when = `${count > 1 ? `${count} times, last ` : ""}${shortTime(latest, now)}`;
+      this.log({ ws, name: a.name, at: now, why: `Missed ${when} ${reason}`, status: "missed", note: "Over 12 hours ago, so it didn't run late. Run now runs it" });
+      report.push(`${a.name} (${this.def(ws)?.name ?? ws}, ${when})`);
     });
+    if (report.length) {
+      notify({
+        title: report.length === 1 ? "An automation didn't run" : `${report.length} automations didn't run`,
+        body: `Missed over 12 hours ago ${reason}: ${report.join("; ")}. Run now in Automations runs one.`,
+        level: "warning",
+        action: { name: "mod.open", args: { name: "ws-automations" } },
+      });
+    }
   }
 
   next(ws, a, now) {
