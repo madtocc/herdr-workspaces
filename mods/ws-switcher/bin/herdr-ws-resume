@@ -5,6 +5,8 @@
 #   herdr-ws-resume --hook       Claude's SessionStart / SessionEnd hook (the launcher adds it)
 #   herdr-ws-resume --list       the agents that come back, by terminal
 #   herdr-ws-resume --forget [T] don't bring back terminal T's agent (default: this terminal's)
+#   herdr-ws-resume --off | --on bring agents back after a restart, or not (on at first)
+#   herdr-ws-resume --status     whether it's on, how many come back, and whether it's set up
 #
 # herdr-core keeps a Herdr terminal through a reboot, a logout or a core crash: same
 # address, same folder, but a new shell instead of what ran there. herdr-ws-agent
@@ -24,12 +26,31 @@
 #
 # That shell starts every new terminal too. Without a note for its terminal it is
 # your usual one ($SHELL, a login shell on macOS, as herdr-core starts it).
+#
+# --off writes "off" in ~/.herdr/resume/switch (--on: "on"; the Agent presets screen
+# has the same switch). While it's off, a lost terminal gets your usual shell and
+# herdr-ws-agent neither notes nor hooks new agents. Notes already written stay,
+# so turning it on again brings back the agents that still run.
 
 dir=${HERDR_WS_RESUME_DIR:-$HOME/.herdr/resume}
 core=${HC_TERMINAL_SOCKET##*/}
 core=${core%.sock}
 [ -n "$core" ] || core=default
 here=$(dirname "$0")
+config=${XDG_CONFIG_HOME:-$HOME/.config}/herdr-core/config.toml
+
+off() { [ "$(sed -n 1p "$dir/switch" 2>/dev/null)" = off ]; }
+# How many agents come back, and whether herdr-core starts terminals through this.
+count() { n=0; for f in "$dir"/*/*.cmd; do [ -f "$f" ] && n=$((n + 1)); done; echo "$n"; }
+status() {
+  n=$(count)
+  if off; then echo "Off: after a restart, tabs come back as shells ($n noted agents wait for --on)."
+  elif [ "$n" = 1 ]; then echo "On: 1 agent comes back after a restart."
+  else echo "On: $n agents come back after a restart."
+  fi
+  grep -q herdr-ws-resume "$config" 2>/dev/null ||
+    echo "Not set up: herdr-core's $config doesn't start terminals through herdr-ws-resume (add its shell line; see the top of this script)."
+}
 
 shell=${SHELL:-/bin/sh}
 l=
@@ -62,7 +83,17 @@ case "${1:-}" in
     esac
     exit 0
     ;;
+  --on | --off)
+    mkdir -p "$dir" && printf '%s\n' "${1#--}" > "$dir/switch" || exit 1
+    status
+    exit 0
+    ;;
+  --status)
+    status
+    exit 0
+    ;;
   --list)
+    off && echo "(Off: none of these come back until herdr-ws-resume --on.)"
     found=
     for f in "$dir"/*/*.cmd; do
       [ -f "$f" ] || continue
@@ -85,14 +116,14 @@ case "${1:-}" in
     ;;
   '') ;;
   *)
-    echo "usage: herdr-ws-resume [--hook | --list | --forget [terminal]]" >&2
+    echo "usage: herdr-ws-resume [--hook | --list | --forget [terminal] | --on | --off | --status]" >&2
     exit 2
     ;;
 esac
 
 # The shell herdr-core starts in a terminal: this terminal's agent, when it has one.
 note=$dir/$core/${HC_TERMINAL_ID:-}
-if [ -n "${HC_TERMINAL_ID:-}" ] && [ -r "$note.cmd" ] && words=$(cat "$note.cmd") && eval "set -- $words" 2>/dev/null && [ $# -gt 0 ]; then
+if [ -n "${HC_TERMINAL_ID:-}" ] && ! off && [ -r "$note.cmd" ] && words=$(cat "$note.cmd") && eval "set -- $words" 2>/dev/null && [ $# -gt 0 ]; then
   if [ "$1" = herdr-ws-agent ] && [ -x "$here/herdr-ws-agent" ]; then
     shift
     set -- "$here/herdr-ws-agent" "$@"

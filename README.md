@@ -49,7 +49,9 @@ says how), or by hand:
 3. To bring Claude agents back after a restart, add this line to
    `~/.config/herdr-core/config.toml`. herdr-core then starts terminals through
    `herdr-ws-resume`, which resumes a terminal's agent, else runs your usual shell.
-   The `ln` line puts `herdr-ws-resume --list` and `--forget` on your `PATH`:
+   The switch at the foot of the Agent presets screen turns it off and on again
+   (or `herdr-ws-resume --off` / `--on`). The `ln` line puts `herdr-ws-resume`
+   (`--status`, `--list`, `--forget`) on your `PATH`:
    ```toml
    shell = ["/bin/sh", "-c", "r=\"$HOME/.config/herdr-app/mods/ws-switcher/bin/herdr-ws-resume\"; [ -x \"$r\" ] && exec \"$r\"; exec \"${SHELL:-/bin/sh}\" -l"]
    ```

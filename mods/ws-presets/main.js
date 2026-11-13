@@ -19,6 +19,7 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
 import { theme, shared, setShared, props, openOverlay, closeOverlay, home, readTextFile, writeTextFile, exec, notify, spaces, focused, window } from "herdr";
+import * as fs from "fs/promises";
 
 const templatesDir = () => `${home()}/.config/herdr-core/templates`;
 const modKey = () => (window()?.platform === "macos" ? "⌘" : "Ctrl+");
@@ -151,6 +152,21 @@ function presetsFor(id) {
   return [...own, ...(p.global ?? []).filter((g) => !own.some((o) => o.name === g.name))].filter((x) => !x.error);
 }
 
+// After a restart (ws-switcher/bin/herdr-ws-resume): whether agents come back
+// (~/.herdr/resume/switch), how many have notes, and whether herdr-core's
+// config.toml starts terminals through the script.
+const resumeBin = () => `${home()}/.config/herdr-app/mods/ws-switcher/bin/herdr-ws-resume`;
+async function resumeState() {
+  const dir = `${home()}/.herdr/resume`;
+  const on = ((await readTextFile(`${dir}/switch`).catch(() => null)) ?? "").trim() !== "off";
+  let count = 0;
+  for (const core of await fs.readdir(dir).catch(() => [])) {
+    count += (await fs.readdir(`${dir}/${core}`).catch(() => [])).filter((f) => f.endsWith(".cmd")).length;
+  }
+  const config = await readTextFile(`${home()}/.config/herdr-core/config.toml`).catch(() => null);
+  return { on, count, ready: (config ?? "").includes("herdr-ws-resume") };
+}
+
 // Opens the Start dialog for a preset (from this screen or the switcher's New agent).
 function openStart(name, workspace) {
   openOverlay({ mod: "ws-presets", kind: "dialog", width: 560, height: 430, props: { start: name, workspace } });
@@ -195,6 +211,24 @@ export default class Presets extends View {
     });
     this.sel = null; // { scope, name, isNew }
     this.snap = null; // what was loaded: { text, file, description, command, body }
+    // The restart switch, read again every 3s (the CLI can change it too).
+    this.resume = null; // { on, count, ready }
+    const readResume = async (cx) => { this.resume = await resumeState(); cx.notify(); };
+    cx.spawn(readResume);
+    cx.timer.every(3000, readResume);
+  }
+
+  // Bring agents back after a restart, or not: herdr-ws-resume --on / --off.
+  flipResume(cx) {
+    const on = !this.resume?.on;
+    this.resume = { ...this.resume, on };
+    cx.notify();
+    cx.spawn(async (cx) => {
+      const r = await exec(resumeBin(), [on ? "--on" : "--off"]).catch((e) => ({ code: 1, stdout: "", stderr: String(e) }));
+      if (r.code !== 0) notify({ title: "Couldn't change it", body: (r.stderr || r.stdout).trim() || `${tilde(resumeBin())} failed.`, level: "error" });
+      this.resume = await resumeState();
+      cx.notify();
+    });
   }
 
   def() { return defOf(this.workspace); }
@@ -410,7 +444,8 @@ export default class Presets extends View {
           .when(!own.length, (el) => el.child(div().px(14).text_size(12).text_color(t.dim).child("None yet."))))
         .child(head("Every workspace"))
         .children(global.map((p) => item(p, "global", p.error ? "error" : own.some((o) => o.name === p.name) ? "replaced here" : "")))
-        .when(!global.length, (el) => el.child(div().px(14).text_size(12).text_color(t.dim).child("None yet."))));
+        .when(!global.length, (el) => el.child(div().px(14).text_size(12).text_color(t.dim).child("None yet."))))
+      .when(Boolean(this.resume), (el) => el.child(this.resumeRow(t)));
 
     return v_flex().id("presets").track_focus(this.handle).size_full().min_h(0).bg(t.popover).text_size(13).text_color(t.foreground)
       .on_key_down((e, cx) => {
@@ -422,6 +457,29 @@ export default class Presets extends View {
         .child(div().flex_1())
         .child(div().text_size(11).text_color(t.dim).child("Esc")))
       .child(h_flex().flex_1().min_h(0).items_stretch().child(list).child(this.editor(t, def, own, iconOf)));
+  }
+
+  // At the foot of the list: the switch for bringing Claude agents back after a restart.
+  resumeRow(t) {
+    const r = this.resume;
+    const note = !r.ready ? "Not set up in herdr-core's config.toml"
+      : !r.on ? "Off: tabs come back as shells"
+      : r.count === 1 ? "On: 1 agent would come back" : `On: ${r.count} agents would come back`;
+    return v_flex().flex_none().border_t(1).border_color(t.border).pb(8)
+      .child(div().px(14).pt(10).pb(4).text_size(11).text_color(t.dim).child("After a restart"))
+      .child(h_flex().id("p-resume").mx(6).px(8).py(6).gap(9).rounded(7).items_center().cursor_pointer()
+        .hover((s) => s.bg(t.hover))
+        .tooltip(!r.ready ? `Add herdr-ws-resume's shell line to ~/.config/herdr-core/config.toml (see the recipe). ${r.on ? "On" : "Off"}: click to turn it ${r.on ? "off" : "on"}.`
+          : r.on ? "Claude agents you didn't close come back, resumed, in their tabs. Click to turn it off."
+          : "Tabs come back as shells. Click to bring Claude agents back.")
+        .on_click((_e, cx) => this.flipResume(cx))
+        .child(v_flex().flex_1().min_w(0).gap(2)
+          .child(div().truncate().child("Bring agents back"))
+          .child(div().truncate().text_size(11).text_color(!r.ready && r.on ? t.blocked : t.dim).child(note)))
+        // On or off: a track with its knob at the right when it's on, as in Automations.
+        .child(h_flex().w(26).h(15).p(2).flex_none().rounded_full().items_center()
+          .bg(r.on ? t.accent : t.input).when(r.on, (el) => el.justify_end())
+          .child(div().size(11).rounded_full().bg(t.background))));
   }
 
   editor(t, def, own, iconOf) {

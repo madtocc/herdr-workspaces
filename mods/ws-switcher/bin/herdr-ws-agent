@@ -273,8 +273,10 @@ self=$0
 [ -L "$self" ] && link=$(readlink "$self") && case "$link" in /*) self=$link ;; *) self=$(dirname "$self")/$link ;; esac
 resume=$(dirname "$self")/herdr-ws-resume
 [ -x "$resume" ] || resume=$(command -v herdr-ws-resume 2>/dev/null) || resume=
+# Off (herdr-ws-resume --off, or the Agent presets screen): no hooks, no note.
+switch=${HERDR_WS_RESUME_DIR:-$HOME/.herdr/resume}/switch
 hooks=
-if [ "$name" = claude ] && [ -n "$resume" ] && [ -n "${HC_TERMINAL_ID:-}" ] && [ -n "${HC_TERMINAL_SOCKET:-}" ]; then
+if [ "$name" = claude ] && [ -n "$resume" ] && [ "$(sed -n 1p "$switch" 2>/dev/null)" != off ] && [ -n "${HC_TERMINAL_ID:-}" ] && [ -n "${HC_TERMINAL_SOCKET:-}" ]; then
   hook=$(printf '%s' "'$resume' --hook" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
   hooks="{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$hook\",\"timeout\":10}]}],\"SessionEnd\":[{\"matcher\":\"prompt_input_exit|logout\",\"hooks\":[{\"type\":\"command\",\"command\":\"$hook\",\"timeout\":10}]}]}"
 fi
