@@ -25,7 +25,8 @@ issue is opened on GitHub (asked every 2 minutes through `gh`), or when another
 app calls `herdr-ws-run`. A schedule missed while the Mac was off runs when Herdr
 opens if it was due in the last 12 hours; older ones are reported as missed, with
 a toast, for Run now. Each run is a tab in the workspace's Automations space;
-`examples/automations/` has two to start from. You make one by saying what it
+`examples/automations/` has two to start from. An automation can have a check, a
+command that runs first, so no agent starts when there's nothing to do; it runs only once you've allowed it. You make one by saying what it
 should do and when, in your own words: Claude drafts the trigger, the agent,
 its model and the prompt, and you read the draft before it's saved. Agents in a
 workspace can add one themselves with `herdr-ws-run --add`, so you can tell one
@@ -98,6 +99,8 @@ automations, your agents. The launcher lets Claude and Codex read and edit
 the workspace's root, its folders elsewhere and its `tasks` folder. Automations watch the folders a files automation
 names, read calls `herdr-ws-run` leaves in `~/.herdr/workspaces/.inbox` (and
 delete them), and close an automation's older run tabs once their agent is done.
+An automation's `check:` is a shell command Herdr runs by itself, as you, in the
+automation's folder before each run, to see whether there's anything to do. It runs only a line you've allowed: one you saved in the Automations screen, or one you allowed there after an agent or a file brought it.
 For restarts, the launcher keeps notes of the Claude agents it starts in
 `~/.herdr/resume/` (their command and session), runs `hc ls` to drop the notes
 of closed tabs, and gives Claude two hooks (`--settings`) that note its session

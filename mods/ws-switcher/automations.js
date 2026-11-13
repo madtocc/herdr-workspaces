@@ -8,6 +8,8 @@
 //   model: haiku                its model, in place of the preset's (claude, codex, pi)
 //   effort: low                 its effort, the same way
 //   folder: api                 where it runs, from the root; default: the root
+//   check: git log --oneline --since=yesterday    a shell command run first, in the
+//                               folder: no agent starts unless it prints something (check.js)
 //   card: true                  each run also adds a card to the board
 //   enabled: false              off: only Run now and herdr-ws-run start it
 //   ---
@@ -18,6 +20,13 @@
 // A run is a tab in the workspace's "Automations" space (made the first time).
 // A one-time schedule (`when: once …`) writes `enabled: false` in its file when
 // its time comes, so it doesn't stay on.
+// A check that prints nothing leaves one "quiet" entry in the runs, counted up
+// while it repeats; one that fails leaves a "failed" one the same way. On a
+// schedule, printing the same as at the last check is nothing new: quiet too.
+// A check runs only once you've allowed that exact line: by saving it in the
+// Automations screen, or with its Allow this check. One that arrives another way
+// (herdr-ws-run --add --check, an edited file) is asked about as soon as it's
+// seen, with a toast, and its automation doesn't start until then.
 // Making a tab shows it, so the runner puts your view back straight after.
 //
 // Published (shared), for the ws-automations screen:
@@ -25,6 +34,8 @@
 //   workspaces.automation.runs   the last 100 runs, newest first
 // Asked for (shared), by the screen's Run now (the switcher passes it on):
 //   workspaces.automation.run    { workspace, name, at }
+// … and by its Create, Save and Allow this check (read here):
+//   workspaces.automation.allow  { workspace, name, check, at }
 // Outside calls (bin/herdr-ws-run) are files in ~/.herdr/workspaces/.inbox.
 // GitHub automations ask GitHub with `gh api` every POLL, one call per repo.
 // What it remembers (when each last ran, when Herdr last ticked, the runs) is in
@@ -34,6 +45,7 @@ import { spaces, agents, focused, run, shared, setShared, home, readTextFile, wr
 import * as fs from "fs/promises";
 import { parseWhen, describe, due, nextAt, shortTime } from "./when.js";
 import { withKnobs } from "./knobs.js";
+import { runCheck } from "./check.js";
 
 const SPACE = "Automations";
 const MISSED = 12 * 3600e3; // a schedule missed (Herdr closed, the Mac asleep) runs once if it was due this recently
@@ -173,7 +185,8 @@ export function parseAutomation(name, file, text) {
   return {
     name, file, description: field(head, "description") ?? "", when, trigger, summary: describe(trigger),
     agent: field(head, "agent") || null, model: field(head, "model") || null, effort: field(head, "effort") || null,
-    folder: field(head, "folder") || null, card: yes(field(head, "card")), enabled: !no(field(head, "enabled")),
+    folder: field(head, "folder") || null, check: field(head, "check") || null,
+    card: yes(field(head, "card")), enabled: !no(field(head, "enabled")),
     body: body.replace(/<!--[\s\S]*?-->/g, "").trim(),
     error: trigger.kind === "error" ? trigger.error : null,
   };
@@ -262,11 +275,24 @@ export class Runner {
     this.me = null;             // your GitHub login, for "by others"
     this.hold = 0;
     this.loaded = false;
-    const empty = { last: {}, base: {}, seen: 0, runs: [], github: {} };
+    const empty = { last: {}, base: {}, seen: 0, runs: [], github: {}, printed: {}, allowed: {}, asked: {} };
     try { this.state = { ...empty, ...JSON.parse(localStorage.getItem(STORE) ?? "{}") }; } catch { this.state = empty; }
+    this.allowAsked = shared("workspaces.automation.allow")?.at;
   }
 
   save() { try { localStorage.setItem(STORE, JSON.stringify(this.state)); } catch {} }
+  // Its check may run: it has none, or you allowed the line as it's written now.
+  allowed(ws, a) { return !a.check || this.state.allowed[`${ws}/${a.name}`] === a.check; }
+  // The screen's Create, Save and Allow this check: that line, for that automation.
+  approvals() {
+    const ask = shared("workspaces.automation.allow") ?? null;
+    if (!ask || ask.at === this.allowAsked) return;
+    this.allowAsked = ask.at;
+    if (Date.now() - ask.at > 15000 || !ask.workspace || !ask.name || !ask.check) return;
+    this.state.allowed[`${ask.workspace}/${ask.name}`] = String(ask.check);
+    this.save();
+    if (this.loaded) this.publish();
+  }
   // While a run's tab is being made: the switcher doesn't follow the view then.
   holding() { return Date.now() < this.hold; }
   def(ws) { return (shared("workspaces.defs") ?? []).find((d) => d.id === ws && !d.error) ?? null; }
@@ -286,6 +312,8 @@ export class Runner {
 
   // Every workspace's automations, read again (after the switcher's folder watch).
   async load(cx) {
+    // Before the files: a save in the screen allows its check, then writes the file.
+    this.approvals();
     const list = {};
     for (const d of (shared("workspaces.defs") ?? []).filter((x) => !x.error)) list[d.id] = await loadAutomations(d);
     const now = Date.now();
@@ -308,12 +336,37 @@ export class Runner {
     }
     // A repo nothing watches forgets what it saw, so watching it again starts afresh.
     for (const repo of Object.keys(this.state.github)) if (!watched.has(repo)) delete this.state.github[repo];
+    // What a check last printed goes with its automation, and with the check as it was written then.
+    for (const k of Object.keys(this.state.printed)) {
+      const i = k.indexOf("/");
+      if (list[k.slice(0, i)]?.find((a) => a.name === k.slice(i + 1))?.check !== this.state.printed[k].cmd) delete this.state.printed[k];
+    }
+    // An allowed line, and having asked about one, go with their automation.
+    for (const map of [this.state.allowed, this.state.asked]) {
+      for (const k of Object.keys(map)) {
+        const i = k.indexOf("/");
+        if (list[k.slice(0, i)] && !list[k.slice(0, i)].some((a) => a.name === k.slice(i + 1) && a.check)) delete map[k];
+      }
+    }
+    // A check nobody has allowed is asked about once, when it's first seen.
+    for (const [ws, autos] of Object.entries(list)) {
+      for (const a of autos) {
+        const k = `${ws}/${a.name}`;
+        if (!a.check || this.state.allowed[k] === a.check || this.state.asked[k] === a.check) continue;
+        this.state.asked[k] = a.check;
+        notify({
+          title: `Allow ${a.name}'s check?`,
+          body: `In ${this.def(ws)?.name ?? ws}. Before each start, Herdr would run: ${a.check.length > 160 ? `${a.check.slice(0, 160)}…` : a.check}. It doesn't start until you allow that in Automations.`,
+          level: "warning", action: { name: "mod.open", args: { name: "ws-automations" } },
+        });
+      }
+    }
     // A workspace that's gone takes its runs and times with it (one with a broken
     // workspace.jsonc is still there).
     const there = new Set((shared("workspaces.defs") ?? []).map((d) => d.id));
     if (there.size) {
       this.state.runs = this.state.runs.filter((r) => there.has(r.ws));
-      for (const map of [this.state.last, this.state.base]) for (const k of Object.keys(map)) if (!there.has(k.split("/")[0])) delete map[k];
+      for (const map of [this.state.last, this.state.base, this.state.allowed, this.state.asked]) for (const k of Object.keys(map)) if (!there.has(k.split("/")[0])) delete map[k];
     }
     if (!this.loaded) { this.loaded = true; this.catchUp(this.state.seen || now, now, "while Herdr was closed"); }
     this.save();
@@ -367,7 +420,16 @@ export class Runner {
     return nextAt(a.trigger, now);
   }
 
+  // Its check failed the last time it was set off (and hasn't been changed since).
+  checkFailing(ws, a) {
+    const r = a.check ? this.state.runs.find((x) => x.ws === ws && x.name === a.name) : null;
+    return r?.check && r.status === "failed" && r.cmd === a.check ? r : null;
+  }
+
   warningOf(ws, a, def) {
+    if (!this.allowed(ws, a)) return "Its check hasn't been allowed yet, so it doesn't start. Read the command, then allow it.";
+    const failing = this.checkFailing(ws, a);
+    if (failing) return `Its check failed ${shortTime(failing.at)}: ${failing.what} No agent starts until the check works. Try it under Details.`;
     if (a.trigger.kind === "once") return a.enabled && a.trigger.at < Date.now() - 60e3 ? "Its time has passed and it didn't run. Change the date, or use Run now." : null;
     if (a.trigger.kind === "files") return def ? this.warnings[folderPath(def, a.trigger.folder)] ?? null : null;
     if (a.trigger.kind !== "github") return null;
@@ -381,7 +443,7 @@ export class Runner {
     for (const [ws, autos] of Object.entries(this.list)) {
       const def = this.def(ws);
       out[ws] = autos.map((a) => ({
-        ...a, next: this.next(ws, a, now),
+        ...a, next: this.next(ws, a, now), allowed: this.allowed(ws, a),
         warning: this.warningOf(ws, a, def),
       }));
     }
@@ -392,6 +454,7 @@ export class Runner {
   // Every 500ms, from the switcher's timer.
   tick(cx) {
     if (!this.loaded) return;
+    this.approvals();
     const now = Date.now();
     for (const p of this.pending.splice(0)) {
       const a = this.find(p.ws, p.name);
@@ -438,14 +501,15 @@ export class Runner {
       if (how.key) this.recent.set(key, now);
       this.state.last[k] = now;
       this.save();
-      if (a.trigger.kind === "once") this.turnOff(cx, a);
+      // A one-time one whose check waits for you stays on: it hasn't had its turn.
+      if (a.trigger.kind === "once" && this.allowed(ws, a)) this.turnOff(cx, a);
       const prev = this.lastRun(ws, a.name);
       if (!how.key && this.busy(prev)) {
         this.log({ ws, name: a.name, at: now, why, status: "skipped", note: "Its last run was still working." });
         return;
       }
     }
-    cx.spawn(async (cx) => { await this.start(ws, a, why, vars, key, how.folder); cx.notify(); });
+    cx.spawn(async (cx) => { await this.start(ws, a, why, vars, key, how.folder, Boolean(how.manual)); cx.notify(); });
   }
 
   // A one-time schedule has had its turn: `enabled: false` in its file, which the
@@ -465,11 +529,11 @@ export class Runner {
   }
 
   // Starts of one automation take turns, so a burst of calls all run, one after another.
-  start(ws, a, why, vars, key, place) {
+  start(ws, a, why, vars, key, place, manual) {
     const at = Date.now();
     this.starting.set(key, (this.starting.get(key) ?? 0) + 1);
     const go = async () => {
-      try { await this.launch(ws, a, why, vars, at, place); }
+      try { await this.launch(ws, a, why, vars, at, place, manual); }
       catch (e) {
         this.log({ ws, name: a.name, at, why, status: "failed", note: message(e) });
         notify({ title: `${a.name} didn't start`, body: message(e), level: "error" });
@@ -483,7 +547,8 @@ export class Runner {
   }
 
   // place: where it runs when the automation names no folder (a github one's repo), else the root.
-  async launch(ws, a, why, vars, at, place) {
+  // manual: started by hand or from outside, so it starts whatever its check says.
+  async launch(ws, a, why, vars, at, place, manual) {
     const def = this.def(ws);
     if (!def) throw new Error("Its workspace is gone.");
     const b = boardOf(def);
@@ -495,9 +560,32 @@ export class Runner {
       workspace: def.name, automation: a.name, folder: tilde(folder), event: why,
       date: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`, time: `${pad(d.getHours())}:${pad(d.getMinutes())}`, ...vars,
     };
+    if (a.check && !this.allowed(ws, a)) {
+      const again = this.repeat(ws, a, at, why, "waiting", "", (row) => `Its check hasn't been allowed${row}, so it didn't start`);
+      if (manual || a.trigger.kind === "once" || !again) notify({
+        title: `${a.name} didn't start`, body: "Its check hasn't been allowed yet. Read it in Automations, then allow it.", level: "warning",
+        action: { name: "mod.open", args: { name: "ws-automations" } },
+      });
+      return;
+    }
+    if (a.check) {
+      const res = await runCheck(exec, a.check, folder, { ...all, folder, workspace_id: ws });
+      // On a schedule, what it printed at the last check too isn't news. (What sets
+      // off the other kinds is new each time.) Printing nothing in between forgets it.
+      if (!res.error && (a.trigger.kind === "every" || a.trigger.kind === "at" || a.trigger.kind === "cron")) {
+        const k = `${ws}/${a.name}`, was = this.state.printed[k];
+        res.same = Boolean(res.out) && was?.cmd === a.check && was.out === res.out;
+        this.state.printed[k] = { cmd: a.check, out: res.out };
+        this.save();
+      }
+      if (!manual && !this.checked(ws, a, at, why, res)) return;
+      all.check = res.out ?? "";
+    }
     let prompt = fill(a.body, all);
     // What set it off goes at the end, unless the prompt uses one of its fill-ins.
     if (vars.event && !/\{\{\s*(event|text|task|task\.\w+|files?|agent|terminal|space|pr|issue|number|title|url|author|repo|labels)\s*\}\}/.test(a.body)) prompt = [prompt, vars.event].filter(Boolean).join("\n\n");
+    // What the check printed goes last, unless the prompt says where with {{check}}.
+    if (all.check && !/\{\{\s*check\s*\}\}/.test(a.body)) prompt = [prompt, `Before you were started, Herdr ran this automation's check (\`${a.check}\`). It printed:\n${all.check}`].filter(Boolean).join("\n\n");
     const card = a.card ? await this.card(def, b, a, name, prompt, at) : null;
     const task = card ? brief(card, b) : prompt;
     const preset = this.h.presetsFor(ws).find((x) => x.name === name);
@@ -569,6 +657,34 @@ export class Runner {
     const live = new Set(spaces().flatMap((s) => (s.tabs ?? []).map((t) => t.id)));
     const runs = this.state.runs.filter((r) => r.ws === ws && r.name === name && r.status === "started" && r.tab && live.has(r.tab));
     for (const r of runs.slice(KEEP_TABS)) if (!this.busy(r)) run("tab.close", { id: r.tab, confirmed: true });
+  }
+
+  // What an automatic run's check said. True: it printed something (new), so the
+  // run goes on. Nothing, nothing new, or a failure: no run, and one entry in the
+  // runs that counts up while the same thing repeats. A failure is also said
+  // once, as a toast.
+  checked(ws, a, at, why, res) {
+    if (res.out && !res.same) return true;
+    const what = res.error ?? (res.same ? "same" : "");
+    const again = this.repeat(ws, a, at, why, res.error ? "failed" : "quiet", what, (row) => (res.error ? `Its check failed${row}: ${what}`
+      : `Its check printed ${res.same ? "the same as last time" : "nothing"}${row}, so no agent started`));
+    const open = { action: { name: "mod.open", args: { name: "ws-automations" } } };
+    if (res.error && !again) notify({ title: `${a.name}'s check failed`, body: `${what} No agent starts until the check works.`, level: "warning", ...open });
+    // A one-time one won't be back: say that it came to nothing.
+    if (!res.error && a.trigger.kind === "once") notify({ title: `${a.name} had nothing to do`, body: `${why}: its check printed nothing, so no agent started.`, level: "info", ...open });
+    return false;
+  }
+
+  // An entry for a run its check kept from starting. The same thing again (status,
+  // reason, line) replaces the last one, with its count one higher. True: again.
+  repeat(ws, a, at, why, status, what, note) {
+    const i = this.state.runs.findIndex((x) => x.ws === ws && x.name === a.name);
+    const old = i >= 0 ? this.state.runs[i] : null;
+    const again = Boolean(old?.check && old.status === status && old.what === what && old.cmd === a.check);
+    if (again) this.state.runs.splice(i, 1);
+    const times = again ? (old.times ?? 1) + 1 : 1;
+    this.log({ ws, name: a.name, at, why, status, check: true, cmd: a.check, what, times, note: note(times > 1 ? `, ${times} times in a row` : "") });
+    return again;
   }
 
   log(r) {

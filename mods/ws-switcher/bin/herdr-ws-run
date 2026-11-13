@@ -23,7 +23,7 @@ index=$dir/.index
 templates=${XDG_CONFIG_HOME:-$HOME/.config}/herdr-core/templates
 tab=$(printf '\t')
 usage="usage: herdr-ws-run <workspace> <automation> [text... | -]
-       herdr-ws-run --add (--at TIME | --when LINE) [--name NAME] [--agent NAME] [--model M] [--effort E] [--folder DIR] [--card] [--workspace ID] prompt... | -
+       herdr-ws-run --add (--at TIME | --when LINE) [--name NAME] [--agent NAME] [--model M] [--effort E] [--folder DIR] [--check CMD] [--card] [--workspace ID] prompt... | -
        herdr-ws-run --off <automation> [--workspace ID]
        herdr-ws-run --on <automation> [--at TIME] [--workspace ID]
        herdr-ws-run --list
@@ -41,6 +41,9 @@ Have an agent do something later, from a folder in the workspace:
   herdr-ws-run --add --at "tomorrow 6am" "Check whether X. If it is, do Y."
   herdr-ws-run --add --when "weekdays 09:00" --name morning-review --agent reviewer \
     "Review the changes merged since yesterday and list what needs a follow-up."
+  herdr-ws-run --add --when "every 30m" --name review-requests --model haiku \
+    --check "gh pr list --search 'review-requested:@me' --json number,title -q '.[] | [.number, .title] | @tsv'" \
+    "Pull requests waiting for my review: {{check}} Summarize each in two lines."
 
   --at TIME       once, then it turns itself off: "tomorrow 6am", "today 18:30",
                   "in 2 hours", "monday 9am" (the next one), "2026-11-12 06:00",
@@ -58,6 +61,22 @@ Have an agent do something later, from a folder in the workspace:
   --effort LEVEL  its effort: claude low, medium, high, xhigh, max; codex
                   minimal to max; pi off to max
   --folder DIR    where it runs; default: the current folder
+  --check CMD     one line of shell that Herdr runs first, in the folder, each
+                  time: the agent starts only if it prints something, and gets
+                  what it printed as {{check}} (added at the end of the prompt
+                  unless the prompt uses {{check}}). Prints nothing: no agent
+                  starts, at no cost. With a repeating time (--when "every 2h",
+                  "weekdays 09:00"), printing the same as at the last check is
+                  nothing new either, so it can just list what's open now.
+                  Give one whenever a plain command can tell if there's
+                  anything to do ("check X, and if so do Y": X is the check).
+                  It should only read, never change things.
+                  What set it off is in $HERDR_NUMBER, $HERDR_TITLE,
+                  $HERDR_TASK_ID, $HERDR_FILES and so on; {{…}} isn't filled
+                  in inside it. Try it in the folder first: sh -c 'CMD'
+                  The person has to allow a check you add before it runs:
+                  Herdr asks them with a toast as soon as it's added, and
+                  the automation doesn't start until they do. Tell them.
   --card          also put a card for each run on the workspace's board
   --workspace ID  default: the workspace holding the current folder
   prompt          the agent's whole task, or - to read it from stdin. The agent
@@ -221,15 +240,15 @@ fi
 if [ "${1:-}" = --add ] || [ "${1:-}" = --off ] || [ "${1:-}" = --on ]; then
   mode=${1#--}
   shift
-  at= when= name= agent= model= effort= folder= card= wsid= desc= auto=
+  at= when= name= agent= model= effort= folder= card= wsid= desc= auto= check=
   while [ $# -gt 0 ]; do
     case $1 in
-      --at|--when|--name|--agent|--model|--effort|--folder|--workspace|--description)
+      --at|--when|--name|--agent|--model|--effort|--folder|--workspace|--description|--check)
         [ $# -ge 2 ] || die "$1 needs a value"
         case $1 in
           --at) at=$2 ;; --when) when=$2 ;; --name) name=$2 ;; --agent) agent=$2 ;;
           --model) model=$2 ;; --effort) effort=$2 ;;
-          --folder) folder=$2 ;; --workspace) wsid=$2 ;; --description) desc=$2 ;;
+          --folder) folder=$2 ;; --workspace) wsid=$2 ;; --description) desc=$2 ;; --check) check=$2 ;;
         esac
         shift 2 ;;
       --card) card=1; shift ;;
@@ -303,6 +322,8 @@ $usage" ;;
     exit 0
   fi
 
+  case $check in *"
+"*) die "a check is one line: put a longer one in a script and name that" ;; esac
   [ -n "$at$when" ] || die "say when: --at TIME (once) or --when LINE (repeating); --help has examples"
   [ -z "$at" ] || [ -z "$when" ] || die "give --at or --when, not both"
   if [ $# -eq 1 ] && [ "$1" = - ]; then prompt=$(cat); else prompt=$*; fi
@@ -371,6 +392,7 @@ $usage" ;;
     [ -z "$model" ] || echo "model: $model"
     [ -z "$effort" ] || echo "effort: $effort"
     [ -z "$rel" ] || echo "folder: $(q "$rel")"
+    [ -z "$check" ] || echo "check: $(q "$check")"
     [ -z "$card" ] || echo "card: true"
     echo ---
     printf '%s\n' "$prompt"
@@ -386,6 +408,8 @@ $usage" ;;
   knobs=$model
   [ -z "$effort" ] || knobs="${knobs:+$knobs, }$effort effort"
   echo "It starts ${agent:-the default agent}${knobs:+ ($knobs)} in ${rel:-the workspace root}, in a tab of the workspace's Automations space."
+  [ -z "$check" ] || echo "Each time, Herdr first runs its check there ($check): the agent starts only if that prints something.
+The check needs the person's OK before it runs: Herdr asks them with a toast now, and Automations has Allow this check. Until then this automation doesn't start. Tell them."
   echo "File: $file"
   echo "To cancel: herdr-ws-run --off $name --workspace $wsid"
   herdr-app status >/dev/null 2>&1 ||
