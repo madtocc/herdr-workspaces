@@ -1,0 +1,117 @@
+#!/bin/sh
+# Brings a Claude agent back after a restart, in the terminal it ran in.
+#
+#   herdr-ws-resume              herdr-core's shell: resume this terminal's agent, else a login shell
+#   herdr-ws-resume --hook       Claude's SessionStart / SessionEnd hook (the launcher adds it)
+#   herdr-ws-resume --list       the agents that come back, by terminal
+#   herdr-ws-resume --forget [T] don't bring back terminal T's agent (default: this terminal's)
+#
+# herdr-core keeps a Herdr terminal through a reboot, a logout or a core crash: same
+# address, same folder, but a new shell instead of what ran there. herdr-ws-agent
+# notes what it starts for Claude in each terminal, and Claude's hook adds the
+# session it opens:
+#
+#   ~/.herdr/resume/<core>/<terminal>.cmd       the launcher's words, as the shell reads them
+#   ~/.herdr/resume/<core>/<terminal>.session   the session id, then its transcript
+#
+# <core> is the core's socket name ("default"), <terminal> is $HC_TERMINAL_ID ("t18").
+# Leaving Claude yourself (/exit, Ctrl-D, Ctrl-C twice) or logging out of it drops
+# both files; closing the tab ends the terminal, so nothing comes back there.
+#
+# To be that shell, herdr-core's config.toml (~/.config/herdr-core/config.toml) says:
+#
+#   shell = ["/bin/sh", "-c", "r=\"$HOME/.config/herdr-app/mods/ws-switcher/bin/herdr-ws-resume\"; [ -x \"$r\" ] && exec \"$r\"; exec \"${SHELL:-/bin/sh}\" -l"]
+#
+# That shell starts every new terminal too. Without a note for its terminal it is
+# your usual one ($SHELL, a login shell on macOS, as herdr-core starts it).
+
+dir=${HERDR_WS_RESUME_DIR:-$HOME/.herdr/resume}
+core=${HC_TERMINAL_SOCKET##*/}
+core=${core%.sock}
+[ -n "$core" ] || core=default
+here=$(dirname "$0")
+
+shell=${SHELL:-/bin/sh}
+l=
+[ "$(uname -s 2>/dev/null)" = Darwin ] && l=l
+
+# A JSON string field of the hook's input (Claude's fields are flat strings).
+field() { printf '%s' "$input" | tr -d '\n' | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p"; }
+
+case "${1:-}" in
+  --hook)
+    input=$(cat)
+    id=${HC_TERMINAL_ID:-}
+    [ -n "$id" ] || exit 0
+    note=$dir/$core/$id
+    [ -f "$note.cmd" ] || exit 0
+    # Claude's own subagents report under the main session's id.
+    case "$input" in *'"agent_id"'*) exit 0 ;; esac
+    case "$(field hook_event_name)" in
+      SessionStart)
+        session=$(field session_id)
+        case "$session" in '' | *[!0-9A-Za-z-]*) exit 0 ;; esac
+        printf '%s\n%s\n' "$session" "$(field transcript_path)" > "$note.session.tmp" &&
+          mv -f "$note.session.tmp" "$note.session"
+        ;;
+      SessionEnd)
+        case "$(field reason)" in
+          prompt_input_exit | logout) rm -f "$note.cmd" "$note.session" ;;
+        esac
+        ;;
+    esac
+    exit 0
+    ;;
+  --list)
+    found=
+    for f in "$dir"/*/*.cmd; do
+      [ -f "$f" ] || continue
+      found=1
+      c=${f%/*}; c=${c##*/}
+      t=${f##*/}; t=${t%.cmd}
+      s=fresh
+      [ -r "${f%.cmd}.session" ] && s=$(sed -n 1p "${f%.cmd}.session")
+      printf '%s/%s\t%s\t%s\n' "$c" "$t" "$s" "$(cat "$f")"
+    done
+    [ -n "$found" ] || echo "No agents to bring back."
+    exit 0
+    ;;
+  --forget)
+    t=${2:-${HC_TERMINAL_ID:-}}
+    [ -n "$t" ] || { echo "usage: herdr-ws-resume --forget <terminal, like t18>" >&2; exit 2; }
+    case "$t" in */* | .*) echo "herdr-ws-resume: \"$t\" is a terminal's address (t18)" >&2; exit 2 ;; esac
+    rm -f "$dir/$core/$t.cmd" "$dir/$core/$t.session"
+    exit 0
+    ;;
+  '') ;;
+  *)
+    echo "usage: herdr-ws-resume [--hook | --list | --forget [terminal]]" >&2
+    exit 2
+    ;;
+esac
+
+# The shell herdr-core starts in a terminal: this terminal's agent, when it has one.
+note=$dir/$core/${HC_TERMINAL_ID:-}
+if [ -n "${HC_TERMINAL_ID:-}" ] && [ -r "$note.cmd" ] && words=$(cat "$note.cmd") && eval "set -- $words" 2>/dev/null && [ $# -gt 0 ]; then
+  if [ "$1" = herdr-ws-agent ] && [ -x "$here/herdr-ws-agent" ]; then
+    shift
+    set -- "$here/herdr-ws-agent" "$@"
+  fi
+  # A session with a transcript resumes; one that never got a message starts again.
+  if [ -r "$note.session" ]; then
+    session=$(sed -n 1p "$note.session")
+    transcript=$(sed -n 2p "$note.session")
+    [ -n "$session" ] && [ -f "$transcript" ] && set -- "$@" --resume "$session"
+  fi
+  # As Herdr's + menu starts an agent: from your shell, which stays when it ends.
+  case "${shell##*/}" in
+    fish) exec "$shell" -"$l"ic "command \$argv[2..]; exec \$argv[1] -${l}i" "$shell" "$@" ;;
+    sh | bash | zsh | dash | ksh) exec "$shell" -"$l"ic "\"\$@\"; exec \"\$0\" -${l}i" "$shell" "$@" ;;
+    *)
+      trap : INT QUIT
+      "$@"
+      exec "$shell"
+      ;;
+  esac
+fi
+exec "$shell" ${l:+-l}

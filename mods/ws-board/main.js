@@ -235,6 +235,16 @@ function words(line) {
 // How Herdr starts a preset: { argv, task }. With the launcher, Claude and Codex
 // get the instructions as system instructions (--instructions) and the task as
 // the first message; other agents get both in the first message, as hc does.
+// The first message, for the launcher: as --task, not last on the command line where
+// Herdr would put it, so a restart brings the agent back without sending it again
+// (bin/herdr-ws-resume). Other commands keep Herdr's task.
+function withTask(argv, task) {
+  let i = argv[0] === "env" ? 1 : 0;
+  while (argv[i] && /^[A-Za-z_][A-Za-z0-9_]*=/.test(argv[i])) i++;
+  if (!task || base(argv[i] ?? "") !== "herdr-ws-agent") return { argv, task };
+  return { argv: [...argv.slice(0, i + 1), "--task", task, ...argv.slice(i + 1)], task: "" };
+}
+
 function presetLaunch(preset, task) {
   let argv = words(preset.command);
   // `VAR=x cmd` (or `env VAR=x cmd`): the assignments go first, before the launcher.
@@ -363,6 +373,7 @@ export default class Board extends View {
           argv = known.find((a) => a.key === name)?.run ?? [name];
           first = brief(task, b);
         }
+        ({ argv, task: first } = withTask(argv, first));
         let made, extra = {};
         if (worktree) {
           const wt = await makeWorktree(folder, task);

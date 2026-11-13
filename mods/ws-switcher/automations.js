@@ -239,7 +239,7 @@ const taskText = (t) => [`${t.id}: ${t.title}`, t.body, `The task file is ${tild
 const fill = (text, vars) => text.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (all, k) => (vars[k] ?? all));
 
 export class Runner {
-  // h: { presetsFor(workspace), presetLaunch(preset, task), claim(space, workspace) }
+  // h: { presetsFor(workspace), presetLaunch(preset, task), withTask(argv, task), claim(space, workspace) }
   constructor(h) {
     this.h = h;
     this.list = {};             // workspace -> its automations
@@ -497,6 +497,7 @@ export class Runner {
 
   // A tab in the workspace's Automations space (made the first time), then your view back.
   async open(ws, name, folder, argv, task) {
+    ({ argv, task } = this.h.withTask(argv, task));
     const assigned = shared("workspaces.assigned") ?? {};
     const space = spaces().find((s) => assigned[s.id] === ws && !s.machine && s.named && s.name === SPACE);
     const view = focused();

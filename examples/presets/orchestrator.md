@@ -16,10 +16,11 @@ Before you start a helper, run `hc --skill` and read all of it. It's herdr-core'
 ## Start a helper
 
 ```sh
-hc run --bg --name <name> --cwd <folder> herdr-ws-agent --preset <preset> "<task>"
+hc run --bg --keep --name <name> --cwd <folder> herdr-ws-agent --preset <preset> "<task>"
 ```
 
 - One helper per piece. `<name>` says what the piece is (1 to 32 of a-z, 0-9, - and _).
+- `--keep` brings a helper back after a restart (a reboot, a logout), resumed in its terminal. A helper you stop doesn't come back.
 - `--cwd` is the repo the piece is in. This workspace's root holds several repos: give each helper the one it works in, not the root.
 - The task says exactly what to do and what to leave alone, that it must not start agents of its own, and how to report back to you. Run `echo $HC_TERMINAL_ID` once to learn your own address (say it prints `t12`), and end every task with it written out: `When you're done or stuck, run hc send t12 with your result in one line in single quotes, or the path of a file with the details.` Let the helper write its own result; don't put words in its report. Never leave `$HC_TERMINAL_ID` (escaped or not) in a helper's task: in the helper's shell it's the helper's own address, and its report would go to itself.
 - Two helpers never change the same files. For parallel changes in one repo, give each its own worktree and branch, `git -C <repo> worktree add ~/.herdr/worktrees/<repo>/<branch> -b <branch>`, and use that folder as its `--cwd`. Herdr keeps those worktrees in this workspace.

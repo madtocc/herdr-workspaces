@@ -1,7 +1,7 @@
 #!/bin/sh
 # Start an agent with its Herdr workspace's instructions.
 #
-#   herdr-ws-agent [--instructions FILE]... <agent> [args...]
+#   herdr-ws-agent [--instructions FILE]... [--task TEXT] <agent> [args...]
 #   herdr-ws-agent --preset NAME [task...]     start a preset here (as Herdr's UI does)
 #   herdr-ws-agent --presets                   list the presets this folder's workspace offers
 #
@@ -23,39 +23,77 @@
 # the agent knows which one it is. The switcher and the board pass it when they
 # start a preset.
 #
+# --task TEXT is the agent's first message, last on its command line. Herdr would
+# put a tab's task there itself; given apart, it stays out of the note below.
+#
 # --preset NAME finds the preset (the workspace's agents/NAME.md, else herdr-core's
 # templates/NAME.md) and runs its command: Claude and Codex with --instructions,
 # any other agent with its instructions and the task as its first message. It's
 # how an agent starts a workspace's own preset as its helper, which `hc run NAME`
 # can't (hc only knows the templates):
-#   hc run --bg --name review --cwd <repo> herdr-ws-agent --preset reviewer "<task>"
-# The preset's command is read as the shell reads it (eval): it's your own config.
+#   hc run --bg --keep --name review --cwd <repo> herdr-ws-agent --preset reviewer "<task>"
+# With --keep a restart brings it back (see herdr-ws-resume). The preset's
+# command is read as the shell reads it (eval): it's your own config.
 #
 # Point Herdr's programs.json at it so the + menu starts agents this way:
 #   { "programs": { "claude": { "run": ["herdr-ws-agent", "claude"] },
 #                   "codex":  { "run": ["herdr-ws-agent", "codex", "--no-daemon"] } } }
 #
+# In a herdr-core terminal, Claude also gets a hook (in --settings) and its command
+# a note in ~/.herdr/resume/<core>/<terminal>.cmd, so herdr-ws-resume brings it
+# back after a restart, in the same tab.
+#
 # HERDR_WS_AGENT_DRY=1 prints the command, one word per line, instead of running it.
 
-usage="usage: herdr-ws-agent [--instructions FILE]... <agent> [args...]
+usage="usage: herdr-ws-agent [--instructions FILE]... [--task TEXT] <agent> [args...]
        herdr-ws-agent --preset NAME [task...]
        herdr-ws-agent --presets"
-presets= mode= pname= agent=
+presets= mode= pname= agent= task=
 case "${1:-}" in
   --presets) mode=list; shift ;;
   --preset) [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }; mode=preset; pname=$2; shift 2 ;;
 esac
 if [ -z "$mode" ]; then
-  while [ "${1:-}" = --instructions ]; do
+  while [ "${1:-}" = --instructions ] || [ "${1:-}" = --task ]; do
     [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }
-    presets="$presets$2
-"
+    if [ "$1" = --task ]; then task=$2; else presets="$presets$2
+"; fi
     shift 2
   done
   [ $# -ge 1 ] || { echo "$usage" >&2; exit 2; }
   agent=$1
   shift
 fi
+# The words that start this again after a restart (herdr-ws-resume): Claude's
+# command without its prompt (the first message, sent once) and without a session
+# to resume, which herdr-ws-resume adds. As Claude reads its words: the flags in
+# $bare take no value, those in $many every word up to the next flag, any other
+# flag the next word; a word no flag takes is the prompt.
+bare=" --allow-dangerously-skip-permissions --ax-screen-reader --bg --background --bare --brief --chrome --no-chrome --dangerously-skip-permissions --desktop --disable-slash-commands --exclude-dynamic-system-prompt-sections --forward-subagent-text --ide --include-hook-events --include-partial-messages --no-session-persistence -p --print --replay-user-messages --restricted --safe-mode --strict-mcp-config --verbose "
+many=" --add-dir --allowedTools --allowed-tools --betas --disallowedTools --disallowed-tools --file --mcp-config --tools "
+q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+note=herdr-ws-agent skip= take=
+while IFS= read -r f; do
+  [ -n "$f" ] && note="$note --instructions $(q "$f")"
+done <<EOF
+$presets
+EOF
+note="$note $(q "$agent")"
+for w in "$@"; do
+  if [ -n "$skip" ]; then skip=; case "$w" in -*) ;; *) continue ;; esac; fi
+  if [ "$take" = one ]; then take=; case "$w" in -*) ;; *) note="$note $(q "$w")"; continue ;; esac; fi
+  if [ "$take" = all ]; then case "$w" in -*) take= ;; *) note="$note $(q "$w")"; continue ;; esac; fi
+  [ "$take" = rest ] && continue
+  case "$w" in
+    --) take=rest; continue ;;
+    --resume | -r | --session-id) skip=1; continue ;;
+    --resume=* | --session-id=* | --continue | -c | --fork-session) continue ;;
+    --*=*) ;;
+    -*) case "$bare" in *" $w "*) ;; *) case "$many" in *" $w "*) take=all ;; *) take=one ;; esac ;; esac ;;
+    *) continue ;;
+  esac
+  note="$note $(q "$w")"
+done
 
 index=$HOME/.herdr/workspaces/.index
 trees=$HOME/.herdr/worktrees
@@ -132,7 +170,7 @@ if [ "$mode" = list ]; then
     esac
   done
   echo
-  echo "Start one: hc run --bg --name <name> --cwd <folder> herdr-ws-agent --preset <preset> \"<task>\""
+  echo "Start one: hc run --bg --keep --name <name> --cwd <folder> herdr-ws-agent --preset <preset> \"<task>\""
   exit 0
 fi
 
@@ -154,7 +192,10 @@ if [ "$mode" = preset ]; then
   [ "${1##*/}" = herdr-ws-agent ] && shift
   [ $# -ge 1 ] || { echo "herdr-ws-agent: $file's command names no program" >&2; exit 1; }
   case "${1##*/}" in
-    claude|codex) exec "$0" --instructions "$file" "$@" ${task:+"$task"} ;;
+    claude|codex)
+      [ -n "$task" ] && exec "$0" --task "$task" --instructions "$file" "$@"
+      exec "$0" --instructions "$file" "$@"
+      ;;
   esac
   # Any other agent: its instructions, then the task, as its first message (as hc does).
   body=$(told "$file")
@@ -224,9 +265,70 @@ EOF
   fi
 fi
 
+# Brought back after a restart (herdr-ws-resume): in a herdr-core terminal, Claude
+# gets hooks that note its session, and its command is noted. The hooks go into the
+# command's own inline --settings, since a second --settings would replace it; a
+# --settings file, or settings with hooks of their own, leave it out of restarts.
+self=$0
+[ -L "$self" ] && link=$(readlink "$self") && case "$link" in /*) self=$link ;; *) self=$(dirname "$self")/$link ;; esac
+resume=$(dirname "$self")/herdr-ws-resume
+[ -x "$resume" ] || resume=$(command -v herdr-ws-resume 2>/dev/null) || resume=
+hooks=
+if [ "$name" = claude ] && [ -n "$resume" ] && [ -n "${HC_TERMINAL_ID:-}" ] && [ -n "${HC_TERMINAL_SOCKET:-}" ]; then
+  hook=$(printf '%s' "'$resume' --hook" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+  hooks="{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$hook\",\"timeout\":10}]}],\"SessionEnd\":[{\"matcher\":\"prompt_input_exit|logout\",\"hooks\":[{\"type\":\"command\",\"command\":\"$hook\",\"timeout\":10}]}]}"
+fi
+# Inline settings JSON with the hooks added, or false.
+withhooks() {
+  case "$1" in *'"hooks"'*) return 1 ;; esac
+  rest=$(printf '%s' "$1" | sed '1s/^[[:space:]]*{//')
+  [ "$rest" != "$1" ] || return 1
+  case "$(printf '%s' "$rest" | sed '1s/^[[:space:]]*//')" in
+    '}'*) printf '{"hooks":%s%s' "$hooks" "$rest" ;;
+    *) printf '{"hooks":%s,%s' "$hooks" "$rest" ;;
+  esac
+}
+
 # Rotate: the caller's words (the first $given) move after the extras.
-i=0
-while [ $i -lt "$given" ]; do set -- "$@" "$1"; shift; i=$((i + 1)); done
+i=0 prev= merged=
+while [ $i -lt "$given" ]; do
+  w=$1
+  if [ -n "$hooks" ] && [ -z "$merged" ]; then
+    if [ "$prev" = --settings ]; then
+      if m=$(withhooks "$w"); then w=$m merged=1; else hooks=; fi
+    else
+      case "$w" in --settings=*) if m=$(withhooks "${w#--settings=}"); then w=--settings=$m merged=1; else hooks=; fi ;; esac
+    fi
+  fi
+  set -- "$@" "$w"
+  shift
+  prev=$w
+  i=$((i + 1))
+done
+
+if [ -n "$hooks" ]; then
+  [ -n "$merged" ] || set -- "$@" --settings "{\"hooks\":$hooks}"
+  if [ -z "${HERDR_WS_AGENT_DRY:-}" ]; then
+    core=${HC_TERMINAL_SOCKET##*/}
+    notes=${HERDR_WS_RESUME_DIR:-$HOME/.herdr/resume}/${core%.sock}
+    if mkdir -p "$notes" 2>/dev/null; then
+      rm -f "$notes/$HC_TERMINAL_ID.session"
+      printf '%s\n' "$note" > "$notes/$HC_TERMINAL_ID.cmd"
+      # Drop the notes of terminals that are gone (their tab was closed).
+      if command -v hc >/dev/null 2>&1; then
+        (live=$(hc ls --json 2>/dev/null) || exit 0
+          case "$live" in *'"address"'*) ;; *) exit 0 ;; esac
+          for f in "$notes"/*.cmd; do
+            [ -f "$f" ] || continue
+            t=${f##*/}; t=${t%.cmd}
+            [ "$t" = "$HC_TERMINAL_ID" ] && continue
+            case "$live" in *"\"address\":\"$t\""*) ;; *) rm -f "$f" "${f%.cmd}.session" ;; esac
+          done) >/dev/null 2>&1 &
+      fi
+    fi
+  fi
+fi
+[ -n "$task" ] && set -- "$@" "$task"
 
 if [ -n "${HERDR_WS_AGENT_DRY:-}" ]; then
   printf 'workspace: %s\n' "${ws:-none}"

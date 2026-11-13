@@ -243,12 +243,23 @@ function presetLaunch(preset, task) {
   return { argv, task: system ? task : [told, task].filter(Boolean).join("\n\n") };
 }
 
+// The first message, for the launcher: as --task, not last on the command line where
+// Herdr would put it, so a restart brings the agent back without sending it again
+// (bin/herdr-ws-resume). Other commands keep Herdr's task.
+function withTask(argv, task) {
+  let i = argv[0] === "env" ? 1 : 0;
+  while (argv[i] && /^[A-Za-z_][A-Za-z0-9_]*=/.test(argv[i])) i++;
+  if (!task || base(argv[i] ?? "") !== "herdr-ws-agent") return { argv, task };
+  return { argv: [...argv.slice(0, i + 1), "--task", task, ...argv.slice(i + 1)], task: "" };
+}
+
 // Starts a preset as a tab named after it in the shown space (its focused
 // terminal's folder), else as a new space in the workspace's root. `prompt`:
 // the task for its first message, if any.
 function startPreset(preset, active, prompt = "") {
   const shown = spaces().find((s) => s.active);
-  const { argv, task } = presetLaunch(preset, prompt);
+  const launch = presetLaunch(preset, prompt);
+  const { argv, task } = withTask(launch.argv, launch.task);
   if (shown) run("tab.new", { space: shown.id, name: preset.name, argv, ...(task ? { task } : {}) });
   else run("space.new", { ...(active?.root ? { folder: active.root } : {}), tab: preset.name, argv, ...(task ? { task } : {}) });
 }
@@ -401,7 +412,7 @@ export default class Workspaces extends View {
     this.runAsked = shared("workspaces.automation.run")?.at;
     // A space the runner makes for its runs joins that workspace at once.
     this.runner = new Runner({
-      presetsFor, presetLaunch,
+      presetsFor, presetLaunch, withTask,
       claim: (space, ws) => {
         this.known.add(space);
         setShared("workspaces.assigned", { ...(shared("workspaces.assigned") ?? {}), [space]: ws });

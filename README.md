@@ -20,7 +20,9 @@ app calls `herdr-ws-run`. Each run is a tab in the workspace's Automations space
 should do and when, in your own words: Claude drafts the trigger, the agent,
 its model and the prompt, and you read the draft before it's saved. Agents in a
 workspace can add one themselves with `herdr-ws-run --add`, so you can tell one
-"tomorrow at 6, check X and if so do Y".
+"tomorrow at 6, check X and if so do Y". After a reboot or a logout, the Claude
+agents you hadn't closed come back in their tabs, resumed with their
+conversations, helpers included.
 
 ![Workspaces](preview.png)
 
@@ -44,9 +46,19 @@ says how), or by hand:
    { "programs": { "claude": { "run": ["herdr-ws-agent", "claude"] },
                    "codex":  { "run": ["herdr-ws-agent", "codex", "--no-daemon"] } } }
    ```
-3. Switch to it: `herdr-app do layout.switch '{"name":"workspaces"}'`
+3. To bring Claude agents back after a restart, add this line to
+   `~/.config/herdr-core/config.toml`. herdr-core then starts terminals through
+   `herdr-ws-resume`, which resumes a terminal's agent, else runs your usual shell.
+   The `ln` line puts `herdr-ws-resume --list` and `--forget` on your `PATH`:
+   ```toml
+   shell = ["/bin/sh", "-c", "r=\"$HOME/.config/herdr-app/mods/ws-switcher/bin/herdr-ws-resume\"; [ -x \"$r\" ] && exec \"$r\"; exec \"${SHELL:-/bin/sh}\" -l"]
+   ```
+   ```sh
+   ln -s ~/.config/herdr-app/mods/ws-switcher/bin/herdr-ws-resume ~/.local/bin/
+   ```
+4. Switch to it: `herdr-app do layout.switch '{"name":"workspaces"}'`
    (`ctrl-shift-l` cycles back).
-4. Open the switcher and pick **New workspace from a folder…**. The board button
+5. Open the switcher and pick **New workspace from a folder…**. The board button
    beside the switcher opens the workspace's board.
 
 **What it touches:** it reads `~/.herdr/workspaces` and the folders of
@@ -63,6 +75,11 @@ board's and automations' new tabs) and, through the launcher, Start and
 automations, your agents. Automations watch the folders a files automation
 names, read calls `herdr-ws-run` leaves in `~/.herdr/workspaces/.inbox` (and
 delete them), and close an automation's older run tabs once their agent is done.
+For restarts, the launcher keeps notes of the Claude agents it starts in
+`~/.herdr/resume/` (their command and session), runs `hc ls` to drop the notes
+of closed tabs, and gives Claude two hooks (`--settings`) that note its session
+and drop the note when you leave it. With the `shell` line in herdr-core's
+config, every new terminal starts through `herdr-ws-resume`.
 Two things use the network: GitHub automations (`gh api` with your login, every
 2 minutes per watched repo), and the Automations screen's Draft it and Change it,
 which run `claude -p` with your Claude login and no tools. That sends Anthropic
