@@ -7,7 +7,8 @@
 // `ws-switcher` (shared "workspaces.active", membership in "workspaces.assigned").
 // The changes are the workspace helpers, the filter in grouped(), the empty
 // workspace's folders, and new spaces starting in the workspace's root (in the
-// Scratch workspace, the + and the empty list use ws-switcher's scratch spaces).
+// Scratch workspace, the + and the empty list use ws-switcher's scratch spaces), and
+// holding or right-clicking the + opens ws-switcher's New space dialog.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
@@ -33,6 +34,7 @@ function place(s, ps) {
 }
 const rowHeight = ({ tree }) => (tree ? 28 : 30);
 const RAIL_CELL = 32;
+const HOLD = 450; // ms the Spaces + is held before it asks for a name and folder
 const railCell = (el) => h_flex().flex_none().justify_center().child(el);
 const where = (s, ps) => JSON.stringify([s.machine ?? null, place(s, ps)]);
 const base = (path) => path.replace(/\/+$/, "").split("/").pop();
@@ -79,6 +81,8 @@ export default class Spaces extends View {
     this.born = {};
     this.pressed = null;
     this.over = null;
+    this.holding = null; // when the Spaces + was pressed, while it's held
+    this.held = false; // the hold opened the dialog, so the release is no click
     this.machines = [];
     this.reconnecting = JSON.parse(localStorage.getItem("machines.reconnecting") ?? "{}");
     for (const state of Object.values(this.reconnecting)) state.busy = false;
@@ -469,6 +473,12 @@ export default class Spaces extends View {
       .child(div().absolute().right(5).text_color(tone(t, w.status)).child(glyph(w.status))));
   }
 
+  // The New space dialog (ws-switcher's), for the shown workspace.
+  askNewSpace() {
+    const ws = workspace();
+    openOverlay({ mod: "ws-switcher", kind: "dialog", width: 460, height: ws?.scratch ? 220 : 330, props: { dialog: "new-space", id: ws?.id ?? null } });
+  }
+
   // A workspace with no spaces yet: its folders, each a click from a space.
   emptyWorkspace(ws, t, collapsed) {
     const folders = ws.scratch ? (shared("workspaces.scratch.folders") ?? []) : ws.folders.length ? ws.folders : ws.children.map((c) => `${ws.root}/${c}`);
@@ -505,8 +515,24 @@ export default class Spaces extends View {
         .when(collapsed, el => el.pl(0).pr(0).justify_center())
         .when(!collapsed, el => el.child("Spaces"))
         .child(div().id("space-new").size(26).flex_none().flex().items_center().justify_center().rounded(6).hover(s => s.bg(t.hover).text_color(t.foreground))
-          // In Scratch, a new scratch space (a fresh folder; ws-switcher makes it).
-          .on_click(() => workspace()?.scratch ? setShared("workspaces.scratch", { at: Date.now() }) : run("space.new", workspace()?.root ? { folder: workspace().root } : {}))
+          .when(this.holding !== null, el => el.bg(t.selected))
+          .tooltip(workspace()?.scratch ? "New scratch space. Hold or right-click to name it" : "New space. Hold or right-click to name it and choose its folder")
+          // A click: a space in the workspace's root (in Scratch, a new scratch space; ws-switcher
+          // makes it). Held for HOLD ms, or right-clicked: ws-switcher's New space dialog.
+          .on_mouse_down("left", (_e, cx) => {
+            const at = this.holding = Date.now();
+            cx.notify();
+            cx.timer.after(HOLD, (cx) => { if (this.holding === at) { this.holding = null; this.held = true; this.askNewSpace(); cx.notify(); } });
+          })
+          .on_mouse_up("left", (_e, cx) => {
+            if (this.held) { this.held = false; return; }
+            if (this.holding === null) return;
+            this.holding = null;
+            cx.notify();
+            if (workspace()?.scratch) setShared("workspaces.scratch", { at: Date.now() });
+            else run("space.new", workspace()?.root ? { folder: workspace().root } : {});
+          })
+          .on_mouse_down("right", () => { this.holding = null; this.askNewSpace(); })
           .child(svg("mods/workspace-chrome/plus.svg").size(14))))
       .child(v_flex().flex_1().min_h(0).px(collapsed ? 0 : 8).pb(14).overflow_y_scrollbar().mode("always")
         .on_mouse_up("left", (_e, cx) => { this.pressed = null; cx.notify(); })

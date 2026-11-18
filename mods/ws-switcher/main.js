@@ -15,7 +15,7 @@
 //   workspaces.assigned  space id -> workspace id (false: kept out of all of them)
 //   workspaces.last      workspace id -> the space last shown in it
 //   workspaces.create    a time: the menu asks this block to make a workspace
-//   workspaces.scratch   { at }: the menu asks this block for a scratch space (scratch.js)
+//   workspaces.scratch   { at, name? }: the menu or the New space dialog asks this block for a scratch space (scratch.js)
 //   workspaces.scratch.folders  the Scratch workspace's folders, newest first, for the menu and ws-spaces
 //   workspaces.worktrees { id, at }: the menu asks this block to show a workspace's
 //                        Worktrees tab (ws-worktrees), as workspaces.board does the board
@@ -242,6 +242,7 @@ export default class Workspaces extends View {
     }
     if (props()?.dialog) {
       this.handle.focus();
+      if (props().dialog === "new-space") this.initNewSpace(cx);
       if (props().dialog === "rename") {
         this.text = (shared("workspaces.defs") ?? []).find((d) => d.id === props().id)?.name ?? "";
         this.input = InputState.new({ value: this.text });
@@ -563,6 +564,45 @@ export default class Workspaces extends View {
     choose(id);
   }
 
+  // The New space dialog (holding or right-clicking the Spaces +): a name and a folder.
+  initNewSpace(cx) {
+    const ws = (shared("workspaces.defs") ?? []).find((d) => d.id === props().id) ?? null;
+    const shown = spaces().find((s) => s.active);
+    const start = ws?.root || (shown ? placeOf(shown, panes()) : "") || home();
+    const now = new Date(), hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+    this.nameIn = InputState.new({ value: "", placeholder: ws?.scratch ? `Scratch ${hhmm}` : "Called after its folder" });
+    this.folderIn = InputState.new({ value: ws?.scratch ? "" : tilde(start) });
+    for (const input of [this.nameIn, this.folderIn]) {
+      input.on("change", (_e, cx) => { this.error = null; cx.notify(); });
+      input.on("submit", (_e, cx) => this.newSpace(cx));
+    }
+    this.nameIn.focus();
+    cx.timer.after(600, () => this.nameIn.focus());
+  }
+
+  // Its Create: a space with that name in that folder (Scratch: a new scratch folder).
+  newSpace(cx) {
+    const p = props();
+    const ws = (shared("workspaces.defs") ?? []).find((d) => d.id === p.id) ?? null;
+    const name = this.nameIn.value().trim();
+    if (this.busy) return;
+    if (ws?.scratch) {
+      setShared("workspaces.scratch", { at: Date.now(), ...(name ? { name } : {}) });
+      closeOverlay(p.overlay);
+      return;
+    }
+    const folder = expand(this.folderIn.value().trim()).replace(/\/+$/, "") || "/";
+    if (!folder.startsWith("/")) { this.error = "Give a full path, or one starting with ~/."; cx.notify(); return; }
+    this.busy = true;
+    cx.spawn(async (cx) => {
+      const r = await exec("test", ["-d", folder]).catch(() => ({ code: 1 }));
+      this.busy = false;
+      if (r.code !== 0) { this.error = `There's no folder at ${tilde(folder)}.`; cx.notify(); return; }
+      run("space.new", { folder, ...(name ? { name } : {}) });
+      closeOverlay(p.overlay);
+    });
+  }
+
   // The rename dialog's Save: writes the new name into workspace.jsonc, then closes.
   rename(cx) {
     const d = (shared("workspaces.defs") ?? []).find((x) => x.id === props().id);
@@ -630,6 +670,41 @@ export default class Workspaces extends View {
     });
   }
 
+  newSpaceDialog(t, ws, { frame, title, button, error, close }) {
+    const defs = shared("workspaces.defs") ?? [];
+    const field = (label, input) => [div().pt(14).pb(7).text_size(11.5).text_color(t.dim).child(label),
+      Input.new(input).h(36).px(10).rounded(9).border_1().border_color(t.input).bg(t.background).text_size(12.8).text_color(t.foreground)];
+    const el = frame("ws-new-space", (cx) => this.newSpace(cx)).child(title(ws ? `New space in ${ws.name}` : "New space"));
+    el.children(field("Name", this.nameIn));
+    if (ws?.scratch) {
+      return el.child(div().pt(10).text_size(11.5).text_color(t.dim).child("In a new scratch folder in ~/.herdr/scratch, tidied away when you're done unless you keep it."))
+        .when(Boolean(this.error), (e) => e.child(error()))
+        .child(h_flex().pt(18).gap(8).justify_end()
+          .child(button("ws-new-cancel", "Cancel", false, close))
+          .child(button("ws-new-create", "Create", true, (_e, cx) => this.newSpace(cx))));
+    }
+    const folder = expand(this.folderIn.value().trim()).replace(/\/+$/, "");
+    const hit = folder.startsWith("/") ? (isScratch(folder, home()) ? scratchDef(defs)?.id : match(folder, defs)) : null;
+    const owner = defs.find((d) => d.id === hit) ?? null;
+    const joins = owner && owner.id !== ws?.id ? `Joins ${owner.name}: its folder is there.` : ws ? `Joins ${ws.name}.` : owner ? `Joins ${owner.name}.` : "Shows under All spaces.";
+    const picks = ws ? [ws.root, ...ws.folders].filter(Boolean).slice(0, 6) : [];
+    const chip = (id, label, tip, action) => div().id(id).h(24).px(8).flex().items_center().rounded(6).border_1().border_color(t.input)
+      .text_size(11.5).text_color(t.muted).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip(tip).on_click(action).child(label);
+    const setFolder = (path, cx) => { this.folderIn.set_value(tilde(path)); this.error = null; cx.notify(); };
+    return el.children(field("Folder", this.folderIn))
+      .child(h_flex().pt(8).gap(6).flex_wrap()
+        .children(picks.map((f, i) => chip(`ws-new-pick-${i}`, f === ws.root ? `${base(f)} (root)` : base(f), tilde(f), (_e, cx) => setFolder(f, cx))))
+        .child(chip("ws-new-choose", "Choose…", "Pick a folder", (_e, cx) => cx.spawn(async (cx) => {
+          const picked = await pickFolder({ prompt: "Use for the space" });
+          if (picked) setFolder(picked, cx);
+        }))))
+      .child(div().pt(10).text_size(11.5).text_color(t.dim).child(`${joins} Blank name: called after its folder.`))
+      .when(Boolean(this.error), (e) => e.child(error()))
+      .child(h_flex().pt(18).gap(8).justify_end()
+        .child(button("ws-new-cancel", "Cancel", false, close))
+        .child(button("ws-new-create", "Create", true, (_e, cx) => this.newSpace(cx))));
+  }
+
   dialog(t) {
     const p = props();
     const d = (shared("workspaces.defs") ?? []).find((x) => x.id === p.id);
@@ -649,6 +724,7 @@ export default class Workspaces extends View {
         else return;
         cx.stop_propagation();
       });
+    if (p.dialog === "new-space") return this.newSpaceDialog(t, d ?? null, { frame, title, button, error, close });
     if (!d) return frame("ws-gone", null).child(title("Workspace")).child(div().pt(12).text_color(t.muted).child("This workspace is gone."));
 
     if (p.dialog === "rename") {
@@ -729,7 +805,7 @@ export default class Workspaces extends View {
       this.scratchAsked = scratchAsk?.at;
       if (scratchAsk && Date.now() - scratchAsk.at < 15000) {
         cx.spawn(async () => {
-          try { await this.scratch.create(); }
+          try { await this.scratch.create(scratchAsk.name ?? ""); }
           catch (e) { notify({ title: "Couldn't make a scratch space", body: String(e?.message ?? e), level: "error" }); }
         });
       }

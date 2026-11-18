@@ -100,7 +100,7 @@ export class Scratch {
   }
 
   // Makes the folder and the space; the switcher places it in Scratch by its root.
-  async create() {
+  async create(name = "") {
     const { home, exec, run } = this.io;
     await this.ensureWorkspace();
     const now = new Date();
@@ -114,7 +114,7 @@ export class Scratch {
     this.save();
     // Two in the same minute: "Scratch 10:20 (2)", like the folder's -2.
     const n = folder.match(/-(\d)$/)?.[1];
-    run("space.new", { folder, name: `Scratch ${pad(now.getHours())}:${pad(now.getMinutes())}${n ? ` (${n})` : ""}` });
+    run("space.new", { folder, name: name || `Scratch ${pad(now.getHours())}:${pad(now.getMinutes())}${n ? ` (${n})` : ""}` });
     return folder;
   }
 
