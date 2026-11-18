@@ -6,7 +6,9 @@ back after a restart.
 
 A workspace is a folder of repos, with its own agent instructions; it groups
 Herdr's spaces. A switcher at the top of the sidebar picks one; the
-spaces and agents lists show only what's in it. Each workspace has a task board (as columns or a list):
+spaces and agents lists show only what's in it. A Scratch workspace, always last in the
+switcher, holds throwaway spaces for ideas that belong to no project: each gets a
+fresh folder, tidied away when you're done unless you keep it. Each workspace has a task board (as columns or a list):
 one markdown file per task, cards that start an agent on their task (in the
 repo or a fresh worktree) and then show that agent's live status. A card also
 follows its pull request: it shows whether checks fail, changes are requested,
@@ -118,7 +120,12 @@ board's and automations' new tabs) and, through the launcher, Start and
 automations, your agents. The Worktrees tab reads git in the workspace's repos and
 their worktrees (`worktree list`, `for-each-ref`, `status`) and each repo's pull
 requests with `gh pr list`. Removing a worktree there (after a confirmation)
-deletes its folder with `git worktree remove`; the branch stays. A repo's two
+deletes its folder with `git worktree remove`; the branch stays. On its first run it makes
+the Scratch workspace (`~/.herdr/workspaces/scratch/`); New scratch space makes folders in
+`~/.herdr/scratch/`, and there it deletes empty ones nobody is in (`rmdir`) and moves ones
+with files to the Trash after 7 days unused, unless they have a `.keep` file. It looks at
+nothing else there. Deleting Scratch closes its spaces and moves `~/.herdr/scratch`, kept
+folders included, to the Trash with it. A repo's two
 worktree scripts (`~/.herdr/workspaces/<id>/worktrees.json`) are shell lines Herdr
 runs as you: setup in a new worktree the board makes, archive before a removal.
 Like a check, only a line you saved or allowed in the screen runs

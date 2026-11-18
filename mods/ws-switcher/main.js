@@ -15,6 +15,8 @@
 //   workspaces.assigned  space id -> workspace id (false: kept out of all of them)
 //   workspaces.last      workspace id -> the space last shown in it
 //   workspaces.create    a time: the menu asks this block to make a workspace
+//   workspaces.scratch   { at }: the menu asks this block for a scratch space (scratch.js)
+//   workspaces.scratch.folders  the Scratch workspace's folders, newest first, for the menu and ws-spaces
 //   workspaces.worktrees { id, at }: the menu asks this block to show a workspace's
 //                        Worktrees tab (ws-worktrees), as workspaces.board does the board
 //
@@ -38,11 +40,12 @@ import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input } from "gpui-base";
 import {
   spaces, panes, machines, run, theme, shared, setShared, props, openOverlay, closeOverlay,
-  home, appHome, layout, watchFolder, readTextFile, writeTextFile, pickFolder, exec, notify, window,
+  home, appHome, layout, watchFolder, readTextFile, writeTextFile, pickFolder, exec, notify, window, nextCommand,
 } from "herdr";
 import * as fs from "fs/promises";
 import { Runner, runnerDir, globalDir } from "./automations.js";
 import { PrWatcher } from "./prs.js";
+import { Scratch, isScratch, scratchDef } from "./scratch.js";
 import { dir, expand, tilde, under, base, subdirs, loadDefs, templatesDir, loadPresetDir, presetsFor, presetLaunch, withTask } from "./defs.js";
 
 // "Edit" opens the workspace's folder in the first of these that's installed,
@@ -141,6 +144,16 @@ const TRASH = `
 if command -v trash >/dev/null 2>&1; then trash "$1" && echo Trash && exit 0; fi
 if command -v gio >/dev/null 2>&1; then gio trash "$1" && echo Trash && exit 0; fi
 mkdir -p "$2" && mv "$1" "$2/$3" && echo "$2/$3"`;
+
+// The delete dialog's words for the Scratch workspace: its folders and spaces go too.
+function scratchDeleteText(d) {
+  const folders = (shared("workspaces.scratch.folders") ?? []).length;
+  const open = spaces().filter((s) => (shared("workspaces.assigned") ?? {})[s.id] === d.id).length;
+  const n = (k, one, many) => `${k} ${k === 1 ? one : many}`;
+  return `Moves ${tilde(d.dir)} and ${tilde(d.root)} (${n(folders, "scratch folder", "scratch folders")}, kept ones too) to the Trash`
+    + (open ? `, and closes its ${n(open, "space", "spaces")}, ending what runs there.` : ".")
+    + " Scratch comes back, empty, the next time you make a scratch space.";
+}
 
 // Where a space is now: its first terminal's live folder, else where it was made.
 function placeOf(s, ps) {
@@ -249,6 +262,7 @@ export default class Workspaces extends View {
     this.boardAsked = shared("workspaces.board")?.at;
     this.treesAsked = shared("workspaces.worktrees")?.at;
     this.runAsked = shared("workspaces.automation.run")?.at;
+    this.scratchAsked = shared("workspaces.scratch")?.at;
     this.allowAsked = shared("workspaces.automation.allow")?.at;
     this.setAsked = shared("workspaces.runner.set")?.at;
     // A space the runner makes for its runs joins that workspace at once.
@@ -261,6 +275,21 @@ export default class Workspaces extends View {
     };
     this.runner = new Runner(this.hooks);
     this.prs = new PrWatcher();
+    this.scratch = new Scratch({
+      home, exec, spaces, panes, run, notify, shared, setShared, readTextFile, writeTextFile, wsDir: dir,
+      trash: async (path) => (await exec("sh", ["-c", TRASH, "sh", path, `${home()}/.herdr/scratch/.trash`, `${base(path)}-${Date.now()}`])).stdout.trim(),
+    });
+    // Commands for this copy: "ws-switcher.scratch-new" (bind it to a key) makes a scratch
+    // space in the shown workspace; the scratch toast's Keep is "ws-switcher.scratch-keep/<workspace>/<folder>".
+    cx.spawn(async () => {
+      for (;;) {
+        const c = await nextCommand();
+        try {
+          if (c === "scratch-new") await this.scratch.create();
+          else if (c.startsWith("scratch-keep/")) await this.scratch.keep(c);
+        } catch (e) { notify({ title: "Couldn't make a scratch space", body: String(e?.message ?? e), level: "error" }); }
+      }
+    });
     // known: the switch has been read once (nothing runs here before that).
     // owner: the background runner runs them, not this copy.
     this.bg = { known: false, owner: false, rev: null, tries: 0, tried: 0, failed: false };
@@ -296,7 +325,7 @@ export default class Workspaces extends View {
     });
     // Placing and following also run here: Herdr doesn't draw while its window is
     // in the background, and a new space waits SETTLE for its folder.
-    cx.timer.every(500, (cx) => { this.sync(); this.requests(cx); if (this.mine()) { this.runner.tick(cx); this.prs.tick(cx); } if (spaces().some((s) => !this.known.has(s.id))) cx.notify(); });
+    cx.timer.every(500, (cx) => { this.sync(); this.requests(cx); if (this.mine()) { this.runner.tick(cx); this.prs.tick(cx); } this.scratch.tick(cx); if (spaces().some((s) => !this.known.has(s.id))) cx.notify(); });
   }
 
   reload(cx) {
@@ -304,6 +333,12 @@ export default class Workspaces extends View {
       const defs = await loadDefs();
       this.loaded = true;
       if (JSON.stringify(defs) !== JSON.stringify(shared("workspaces.defs") ?? [])) setShared("workspaces.defs", defs);
+      // The Scratch workspace is there from the first run (scratch.js); the folder watch reloads.
+      if (this.scratch && !this.scratchChecked) {
+        this.scratchChecked = true;
+        try { await this.scratch.firstRun(); }
+        catch (e) { notify({ title: "Couldn't make the Scratch workspace", body: String(e?.message ?? e), level: "error" }); }
+      }
       // Only when it changes: writing it wakes watchFolder (and this) again.
       const index = `${dir()}/.index`, text = indexText(defs);
       try {
@@ -463,6 +498,12 @@ export default class Workspaces extends View {
     }
     for (const s of sp) {
       if (s.id in assigned) { this.known.add(s.id); continue; }
+      // A scratch space joins Scratch at once; it waits while that workspace is being made.
+      if (!s.machine && isScratch(s.folder || placeOf(s, ps), home())) {
+        const sd = scratchDef(defs);
+        if (sd) { assigned[s.id] = sd.id; changed = true; this.known.add(s.id); }
+        continue;
+      }
       const fresh = !this.known.has(s.id);
       if (fresh && now - (this.born[s.id] ??= now) < SETTLE) continue;
       const hit = s.machine ? null : match(placeOf(s, ps), defs);
@@ -547,6 +588,7 @@ export default class Workspaces extends View {
   }
 
   // The delete dialog's confirm: the folder to the Trash, its spaces decided again.
+  // Scratch takes its scratch folders along (they're throwaway) and closes its spaces first.
   remove(cx) {
     const d = (shared("workspaces.defs") ?? []).find((x) => x.id === props().id);
     if (!d || this.busy) return;
@@ -555,6 +597,15 @@ export default class Workspaces extends View {
     cx.spawn(async (cx) => {
       try {
         const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+        if (d.scratch) {
+          const assignedNow = shared("workspaces.assigned") ?? {};
+          for (const s of spaces()) if (assignedNow[s.id] === d.id) run("space.close", { id: s.id, confirmed: true });
+          const root = d.root;
+          if (root && root.endsWith("/.herdr/scratch") && (await fs.exists(root))) {
+            const t = await exec("sh", ["-c", TRASH, "sh", root, `${dir()}/.trash`, `scratch-folders-${stamp}`]);
+            if (t.code !== 0) throw new Error(t.stderr.trim() || `exit ${t.code}`);
+          }
+        }
         const r = await exec("sh", ["-c", TRASH, "sh", d.dir, `${dir()}/.trash`, `${d.id}-${stamp}`]);
         if (r.code !== 0) throw new Error(r.stderr.trim() || `exit ${r.code}`);
         const where = r.stdout.trim();
@@ -567,7 +618,9 @@ export default class Workspaces extends View {
         delete last[d.id];
         setShared("workspaces.last", last);
         if (shared("workspaces.active") === d.id) setShared("workspaces.active", null);
-        notify({ title: `Deleted ${d.name}`, body: where === "Trash" ? "Its folder is in the Trash." : `Its folder is in ${tilde(where)}.`, level: "success" });
+        notify({ title: `Deleted ${d.name}`, body: d.scratch
+          ? (where === "Trash" ? "It and its scratch folders are in the Trash. It comes back, empty, with the next scratch space." : `It and its scratch folders are in ${tilde(`${dir()}/.trash`)}.`)
+          : where === "Trash" ? "Its folder is in the Trash." : `Its folder is in ${tilde(where)}.`, level: "success" });
         closeOverlay(props().overlay);
       } catch (e) {
         this.error = `Couldn't delete it: ${e?.message ?? e}`;
@@ -613,6 +666,7 @@ export default class Workspaces extends View {
     return frame("ws-delete", (cx) => this.remove(cx))
       .child(title(`Delete “${d.name}”?`))
       .child(div().pt(12).text_color(t.muted).child(
+        d.scratch ? scratchDeleteText(d) :
         `Moves ${tilde(d.dir)} (its workspace.jsonc and AGENTS.md) to the Trash. Your repos and folders aren't touched, and its spaces stay open: they join the workspace their folder is in, else show under All spaces.`))
       .when(Boolean(this.error), (el) => el.child(error()))
       .child(h_flex().pt(18).gap(8).justify_end()
@@ -669,6 +723,16 @@ export default class Workspaces extends View {
         catch (e) { notify({ title: "Couldn't make the workspace", body: String(e?.message ?? e), level: "error" }); }
         cx.notify();
       });
+    }
+    const scratchAsk = shared("workspaces.scratch") ?? null;
+    if (scratchAsk?.at !== this.scratchAsked) {
+      this.scratchAsked = scratchAsk?.at;
+      if (scratchAsk && Date.now() - scratchAsk.at < 15000) {
+        cx.spawn(async () => {
+          try { await this.scratch.create(); }
+          catch (e) { notify({ title: "Couldn't make a scratch space", body: String(e?.message ?? e), level: "error" }); }
+        });
+      }
     }
     const launchAsk = shared("workspaces.launch") ?? null;
     if (launchAsk?.at !== this.launchAsked) {
@@ -792,7 +856,12 @@ export default class Workspaces extends View {
     }
 
     // Making a workspace comes first, above the list it adds to.
+    // A space in a new empty folder in the Scratch workspace (scratch.js); the sidebar copy makes it.
+    const scratchRow = row("ws-scratch", svg("mods/ws-switcher/scratch.svg").size(14).flex_none().text_color(t.muted), "New scratch space", div(),
+      () => setShared("workspaces.scratch", { at: Date.now() }),
+      { tip: "A space in a new empty folder in the Scratch workspace, for an idea that belongs to no project. Deleted when you close it empty; with files, kept 7 days unless you keep it." });
     const items = [row("ws-new", icon("folder-plus"), "New workspace from a folder…", div(), () => setShared("workspaces.create", Date.now())),
+      scratchRow,
       line(), head("Workspaces"),
       row("ws-all", mark(null, defs, t, 18), "All spaces", hint(String(sp.length), check(!active)), () => choose(null))];
     for (const d of defs) {
@@ -811,7 +880,7 @@ export default class Workspaces extends View {
       items.push(row("ws-board-open", svg("mods/ws-board/board.svg").size(14).flex_none().text_color(t.muted), `Open ${active.name} board`, div(),
         () => setShared("workspaces.board", { id: active.id, at: Date.now() })));
     }
-    if (active && !active.error) {
+    if (active && !active.error && !active.scratch) {
       items.push(row("ws-trees-open", icon("git-branch"), `Open ${active.name} worktrees`, div(),
         () => setShared("workspaces.worktrees", { id: active.id, at: Date.now() }), { tip: "Every worktree of its repos: what's finished, set up and clean up" }));
     }
@@ -826,11 +895,13 @@ export default class Workspaces extends View {
       const ask = (dialog, height) => openOverlay({ mod: "ws-switcher", kind: "dialog", width: 420, height, props: { dialog, id: active.id } });
       items.push(row("ws-rename", icon("square-pen"), `Rename ${active.name}…`, div(), () => ask("rename", 210)));
       items.push(row("ws-delete", svg("mods/workspace-chrome/archive.svg").size(14).flex_none().text_color(t.blocked), `Delete ${active.name}…`, div(),
-        () => ask("delete", 200), { danger: true }));
+        () => ask("delete", active.scratch ? 230 : 200), { danger: true }));
     }
 
     if (active && !active.error) {
-      const folders = active.folders.length ? active.folders : active.children.map((c) => `${active.root}/${c}`);
+      // Scratch's folders are its scratch folders as the last look found them (scratch.js).
+      const folders = active.scratch ? (shared("workspaces.scratch.folders") ?? active.children.map((c) => `${active.root}/${c}`))
+        : active.folders.length ? active.folders : active.children.map((c) => `${active.root}/${c}`);
       if (folders.length) items.push(line(), head(`${active.name} folders`));
       for (const f of folders) {
         const there = sp.find((s) => !s.machine && inFolder(active, placeOf(s, ps), f));

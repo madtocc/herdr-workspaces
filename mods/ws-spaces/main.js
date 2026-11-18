@@ -6,7 +6,8 @@
 // ws-spaces: Herdr's `spaces` (0.1.14) showing only the workspace chosen in
 // `ws-switcher` (shared "workspaces.active", membership in "workspaces.assigned").
 // The changes are the workspace helpers, the filter in grouped(), the empty
-// workspace's folders, and new spaces starting in the workspace's root.
+// workspace's folders, and new spaces starting in the workspace's root (in the
+// Scratch workspace, the + and the empty list use ws-switcher's scratch spaces).
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
@@ -470,7 +471,7 @@ export default class Spaces extends View {
 
   // A workspace with no spaces yet: its folders, each a click from a space.
   emptyWorkspace(ws, t, collapsed) {
-    const folders = ws.folders.length ? ws.folders : ws.children.map((c) => `${ws.root}/${c}`);
+    const folders = ws.scratch ? (shared("workspaces.scratch.folders") ?? []) : ws.folders.length ? ws.folders : ws.children.map((c) => `${ws.root}/${c}`);
     const open = (id, label, folder, tip) => h_flex().id(id).h(28).flex_none().px(collapsed ? 0 : 8).gap(7).items_center().rounded(7)
       .text_size(12).text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground)).cursor_pointer()
       .on_click(() => run("space.new", { folder }))
@@ -504,7 +505,9 @@ export default class Spaces extends View {
         .when(collapsed, el => el.pl(0).pr(0).justify_center())
         .when(!collapsed, el => el.child("Spaces"))
         .child(div().id("space-new").size(26).flex_none().flex().items_center().justify_center().rounded(6).hover(s => s.bg(t.hover).text_color(t.foreground))
-          .on_click(() => run("space.new", workspace()?.root ? { folder: workspace().root } : {})).child(svg("mods/workspace-chrome/plus.svg").size(14))))
+          // In Scratch, a new scratch space (a fresh folder; ws-switcher makes it).
+          .on_click(() => workspace()?.scratch ? setShared("workspaces.scratch", { at: Date.now() }) : run("space.new", workspace()?.root ? { folder: workspace().root } : {}))
+          .child(svg("mods/workspace-chrome/plus.svg").size(14))))
       .child(v_flex().flex_1().min_h(0).px(collapsed ? 0 : 8).pb(14).overflow_y_scrollbar().mode("always")
         .on_mouse_up("left", (_e, cx) => { this.pressed = null; cx.notify(); })
         .children(this.grouped(t, collapsed)));

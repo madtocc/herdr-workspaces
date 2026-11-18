@@ -73,6 +73,7 @@ export async function loadDefs() {
         id, dir: at, name: String(c.name || id), color: c.color ? String(c.color) : null, root, folders,
         children: root ? await subdirs(root) : [], instructions: told.startsWith("/") ? told : `${at}/${told}`,
         board: c.board && typeof c.board === "object" ? c.board : null,
+        scratch: c.scratch === true, // the Scratch workspace (scratch.js)
       });
     } catch (e) {
       defs.push({ id, dir: at, name: id, color: null, root: "", folders: [], children: [], instructions: "", error: String(e?.message ?? e) });
@@ -89,6 +90,8 @@ export async function loadDefs() {
       paths.forEach((p, i) => { if (out[i] && out[i] !== p) real[p] = out[i]; });
     } catch {}
   }
+  // The Scratch workspace comes last in the lists.
+  defs.sort((a, b) => Number(Boolean(a.scratch)) - Number(Boolean(b.scratch)));
   for (const d of defs) d.real = Object.fromEntries([d.root, ...d.folders].filter((p) => real[p]).map((p) => [p, real[p]]));
   return defs;
 }
