@@ -5,7 +5,7 @@ describes the whole thing as it is now; this file says what's new since the
 version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 "Updating" in the README.
 
-## [Unreleased]
+## [0.2.0] - 2026-11-18
 
 ### New
 - **Keep running: automations and pull requests are followed with Herdr closed.** A switch at the foot of the Automations list (or `herdr-ws-runner --on`) moves that work to a background process herdr-core keeps going. It needs Node 20.6 or newer. Link `bin/herdr-ws-runner` into `~/.local/bin` like the other two.
