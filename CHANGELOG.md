@@ -7,6 +7,8 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-18
+
 ### New
 - **Hold the Spaces + to name a space and choose its folder.** A click still makes a space in the workspace's root at once. Holding it (or right-clicking) opens New space: a name, a folder (the workspace's folders one click away, or Choose…), and a line saying which workspace it will join. In Scratch it names the new scratch space. Copy `ws-switcher` and `ws-spaces` again.
 
