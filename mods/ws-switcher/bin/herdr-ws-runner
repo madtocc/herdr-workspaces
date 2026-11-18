@@ -1,0 +1,103 @@
+#!/bin/sh
+# The workspaces' background runner: automations and board cards' pull requests,
+# kept going while Herdr's window is closed. Off, Herdr runs them itself, while
+# it's open. On, they run in a Node process that herdr-core holds as a terminal
+# named herdr-ws-runner, so closing or updating Herdr doesn't stop them.
+#
+#   herdr-ws-runner --on       turn it on and start it
+#   herdr-ws-runner --off      turn it off and stop it (Herdr runs them again)
+#   herdr-ws-runner --status   on or off, and whether it's running
+#   herdr-ws-runner --start    start it if it's on and not running (Herdr does this when it opens)
+#   herdr-ws-runner --serve    what the terminal runs
+#
+# It needs Node 20.6 or newer. It isn't started at login: after a restart of the
+# computer it starts when Herdr first opens (or with --start), and schedules
+# missed in between are caught up as after any time away.
+# Its log: hc read herdr-ws-runner --lines 100
+set -eu
+
+name=herdr-ws-runner
+dir=$HOME/.herdr/runner
+self=$0
+while [ -L "$self" ]; do
+  t=$(readlink "$self")
+  case $t in /*) self=$t ;; *) self=$(dirname "$self")/$t ;; esac
+done
+self=$(cd "$(dirname "$self")" && pwd)/$(basename "$self")
+mod=$(dirname "$(dirname "$self")")
+
+is_on() { [ "$(cat "$dir/switch" 2>/dev/null || true)" = on ]; }
+
+# Its pid, if it said it was alive within the last 30 seconds and still is.
+running() {
+  [ -f "$dir/alive" ] || return 1
+  pid=$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$dir/alive")
+  at=$(sed -n 's/.*"at":\([0-9]*\).*/\1/p' "$dir/alive")
+  [ -n "$pid" ] && [ -n "$at" ] || return 1
+  [ $(( $(date +%s) - at / 1000 )) -lt 30 ] || return 1
+  kill -0 "$pid" 2>/dev/null
+}
+
+need_node() {
+  command -v node >/dev/null 2>&1 || { echo "$name: Node isn't on your PATH. It needs Node 20.6 or newer." >&2; exit 127; }
+  node -e 'const [a,b]=process.versions.node.split(".").map(Number);process.exit(a>20||(a===20&&b>=6)?0:1)' ||
+    { echo "$name: Node $(node -v) is too old. It needs 20.6 or newer." >&2; exit 1; }
+}
+
+start() {
+  running && return 0
+  need_node
+  command -v hc >/dev/null 2>&1 || { echo "$name: hc (herdr-core) isn't on your PATH." >&2; exit 127; }
+  # One left over that isn't answering.
+  hc kill "$name" >/dev/null 2>&1 || true
+  hc rm "$name" >/dev/null 2>&1 || true
+  sh=${SHELL:-/bin/sh}
+  # Through your shell, as agents start: its PATH has node, gh and git.
+  case $(uname) in Darwin) flag=-lic ;; *) flag=-ic ;; esac
+  case $(basename "$sh") in
+    fish) hc run --bg --no-parent --name "$name" --cwd "$HOME" -- "$sh" "$flag" 'exec $argv[1] --serve' "$self" >/dev/null ;;
+    sh|bash|zsh|dash|ksh) hc run --bg --no-parent --name "$name" --cwd "$HOME" -- "$sh" "$flag" 'exec "$0" --serve' "$self" >/dev/null ;;
+    *) hc run --bg --no-parent --name "$name" --cwd "$HOME" -- "$self" --serve >/dev/null ;;
+  esac
+}
+
+case ${1:-} in
+  --on)
+    need_node
+    mkdir -p "$dir"
+    echo on > "$dir/switch"
+    start
+    echo "on: automations and pull requests are followed while Herdr is closed too"
+    ;;
+  --off)
+    mkdir -p "$dir"
+    echo off > "$dir/switch"
+    hc kill "$name" >/dev/null 2>&1 || true
+    hc rm "$name" >/dev/null 2>&1 || true
+    rm -f "$dir/alive"
+    echo "off: Herdr runs them itself, while it's open"
+    ;;
+  --status)
+    if ! is_on; then echo off
+    elif running; then echo "on, running (pid $pid)"
+    else echo "on, not running (herdr-ws-runner --start starts it; Herdr does when it opens)"
+    fi
+    ;;
+  --start)
+    is_on || { echo "$name: it's off (--on turns it on)" >&2; exit 1; }
+    start
+    ;;
+  --serve)
+    need_node
+    # A crash starts it again; turned off, or another one running, it ends.
+    while is_on; do
+      node --import "$mod/runner/register.js" "$mod/runner/main.js" && break
+      echo "$name: it stopped; starting again in 5 seconds" >&2
+      sleep 5
+    done
+    ;;
+  *)
+    sed -n '2,15p' "$self" | sed 's/^# \{0,1\}//'
+    [ "${1:-}" = --help ] || [ "${1:-}" = -h ] || exit 2
+    ;;
+esac

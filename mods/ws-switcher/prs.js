@@ -11,13 +11,13 @@
 //     the card has no agent left;
 //   - a merged one moves its card to the board's last column.
 //
-// prfacts.js has the rules. Like the automations runner, this lives in the
-// switcher's sidebar copy and is ticked on its 500ms timer. What it remembers (what
-// each card's agent was already told) is in that copy's localStorage.
+// prfacts.js has the rules. Like the automations runner, this is ticked every 500ms
+// by the background runner when it's on, else by the switcher's sidebar copy. What it
+// remembers (what each card's agent was already told) is in ~/.herdr/runner/prs.json.
 
 import { agents, shared, setShared, readTextFile, writeTextFile, exec, hc, notify } from "herdr";
 import * as fs from "fs/promises";
-import { wsDir, tilde, message, exists, expand, boardOf, split, field, withFields, folderPath } from "./automations.js";
+import { wsDir, tilde, message, exists, expand, boardOf, split, field, withFields, folderPath, Store } from "./automations.js";
 import { FIELDS, clean, parsePr, repoOfRemote, facts, chip, step, mergeWakes, stillTrue, wakeText, wakeLines } from "./prfacts.js";
 
 const OPEN = 60e3;    // how often an open pull request is read
@@ -50,15 +50,21 @@ export class PrWatcher {
     this.looked = 0;
     this.busy = false;
     this.loaded = false;
-    try { this.state = { items: {}, ...JSON.parse(localStorage.getItem(STORE) ?? "{}") }; } catch { this.state = { items: {} }; }
+    this.state = { items: {} };
+    this.store = new Store(STORE);
+    this.restored = false;
   }
 
-  save() { try { localStorage.setItem(STORE, JSON.stringify(this.state)); } catch {} }
+  save() { if (this.restored) this.store.write(this.state); }
   def(ws) { return (shared("workspaces.defs") ?? []).find((d) => d.id === ws && !d.error) ?? null; }
 
   // Every workspace's tasks that name a pull request or a branch, read again
   // (after the switcher's folder watch).
   async load() {
+    if (!this.restored) {
+      this.state = { items: {}, ...((await this.store.read()) ?? {}) };
+      this.restored = true;
+    }
     const defs = shared("workspaces.defs") ?? [];
     const tasks = {};
     for (const d of defs.filter((x) => !x.error)) {

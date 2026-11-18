@@ -11,6 +11,10 @@
 #   herdr-ws-run --on <automation> [--at TIME]        turn one back on (a new time for a one-time one)
 #   herdr-ws-run --list                               every automation and its when: line
 #
+# --global with --add makes one for every workspace (~/.herdr/automations); with
+# --off or --on it turns that one off or on everywhere. Without it, --off and --on
+# on a global one turn it off or on in this workspace only (its `off:` line).
+#
 # A start runs like the Automations screen's Run now, even when the automation is
 # off. Herdr's ws-switcher picks it up within two seconds; one made while Herdr is
 # closed runs when it opens, if that's within an hour. <workspace> is the folder
@@ -19,13 +23,14 @@
 set -eu
 
 dir=$HOME/.herdr/workspaces
+global=$HOME/.herdr/automations
 index=$dir/.index
 templates=${XDG_CONFIG_HOME:-$HOME/.config}/herdr-core/templates
 tab=$(printf '\t')
 usage="usage: herdr-ws-run <workspace> <automation> [text... | -]
-       herdr-ws-run --add (--at TIME | --when LINE) [--name NAME] [--agent NAME] [--model M] [--effort E] [--folder DIR] [--check CMD] [--card] [--workspace ID] prompt... | -
-       herdr-ws-run --off <automation> [--workspace ID]
-       herdr-ws-run --on <automation> [--at TIME] [--workspace ID]
+       herdr-ws-run --add (--at TIME | --when LINE) [--name NAME] [--agent NAME] [--model M] [--effort E] [--folder DIR] [--check CMD] [--card] [--workspace ID | --global] prompt... | -
+       herdr-ws-run --off <automation> [--workspace ID | --global]
+       herdr-ws-run --on <automation> [--at TIME] [--workspace ID | --global]
        herdr-ws-run --list
        herdr-ws-run --help"
 
@@ -51,7 +56,8 @@ Have an agent do something later, from a folder in the workspace:
   --when LINE     repeating, as an automation's when: line: "every 2h",
                   "weekdays 09:00", "mon,wed 8:30", "0 9 * * 1-5" (cron),
                   "task enters review", "agent done", "files inbox",
-                  "github api pr opened"
+                  "github api pr opened", "github * issue opened" (any repo
+                  of the workspace)
   --name NAME     letters, digits, - and _ (needed with --when)
   --agent NAME    a preset (herdr-ws-agent --presets lists them) or a program;
                   default: the workspace board's agent, else claude
@@ -79,18 +85,25 @@ Have an agent do something later, from a folder in the workspace:
                   the automation doesn't start until they do. Tell them.
   --card          also put a card for each run on the workspace's board
   --workspace ID  default: the workspace holding the current folder
+  --global        for every workspace, not this one: it runs in each, in that
+                  workspace's root (or --folder, from the root), unless the
+                  workspace has its own automation of the same name. Only
+                  when the person asks for all their workspaces
   prompt          the agent's whole task, or - to read it from stdin. The agent
                   starts fresh, without this conversation: say everything it
                   needs (what to check, where, what to do, how to report).
 
-  herdr-ws-run --off NAME       turn one off (the file stays)
+  herdr-ws-run --off NAME       turn one off (the file stays); one that's for
+                                every workspace goes off in this one only,
+                                unless you add --global
   herdr-ws-run --on NAME        turn it back on; a one-time one whose time has
                                 passed needs --at TIME, its new time
   herdr-ws-run --list           every automation, with its when: line
   herdr-ws-run WS NAME [text]   start one now
 
-Times are this computer's clock. Herdr must be open: a run missed while it was
-closed or the Mac slept starts when it can, if that's within 12 hours.
+Times are this computer's clock. Herdr must be open, or its background runner on
+(herdr-ws-runner --on): a run missed while neither ran or the Mac slept starts
+when it can, if that's within 12 hours.
 EOF
 }
 
@@ -220,6 +233,17 @@ resolve() {
 # A front matter value in double quotes, on one line.
 q() { printf '"%s"' "$(printf '%s' "$1" | tr '\r\n' '  ' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"; }
 
+# The global automation file $1 with workspace $2 in its off: line ($3 = add) or out of it.
+set_here() {
+  rest=$(front "$1" off | tr ',' '\n' | sed -e 's/^ *//' -e 's/ *$//' | awk -v w="$2" 'NF && $0 != w' | paste -sd, - | sed 's/,/, /g')
+  [ "$3" != add ] || rest=${rest:+$rest, }$2
+  awk -v v="$rest" 'NR == 1 && /^---[ \t\r]*$/ { h = 1; print; next }
+       h && /^off[ \t]*:/ { next }
+       h && /^---[ \t\r]*$/ { if (v != "") print "off: " v; h = 0 }
+       { print }' "$1" > "$1.$$.tmp"
+  mv "$1.$$.tmp" "$1"
+}
+
 case "${1:-}" in -h|--help) help; exit 0 ;; esac
 
 if [ "${1:-}" = --list ]; then
@@ -233,6 +257,16 @@ if [ "${1:-}" = --list ]; then
     printf '%s %s  %s%s\n' "${ws%%/*}" "${name%.md}" "$(front "$f" when)" "$off"
     found=1
   done
+  # Those for every workspace, as "*": a workspace's own of the same name replaces one there.
+  for f in "$global"/*.md; do
+    [ -f "$f" ] || continue
+    name=${f##*/}
+    off=
+    case $(front "$f" enabled) in false|no|off|0) off="  (off)" ;; esac
+    [ -n "$off" ] || { o=$(front "$f" off); [ -z "$o" ] || off="  (off in $o)"; }
+    printf '* %s  %s%s\n' "${name%.md}" "$(front "$f" when)" "$off"
+    found=1
+  done
   [ -n "$found" ] || echo "No automations yet: add one with --add, or in Herdr's Automations screen."
   exit 0
 fi
@@ -240,7 +274,7 @@ fi
 if [ "${1:-}" = --add ] || [ "${1:-}" = --off ] || [ "${1:-}" = --on ]; then
   mode=${1#--}
   shift
-  at= when= name= agent= model= effort= folder= card= wsid= desc= auto= check=
+  at= when= name= agent= model= effort= folder= card= wsid= desc= auto= check= glob=
   while [ $# -gt 0 ]; do
     case $1 in
       --at|--when|--name|--agent|--model|--effort|--folder|--workspace|--description|--check)
@@ -252,6 +286,7 @@ if [ "${1:-}" = --add ] || [ "${1:-}" = --off ] || [ "${1:-}" = --on ]; then
         esac
         shift 2 ;;
       --card) card=1; shift ;;
+      --global) glob=1; shift ;;
       --) shift; break ;;
       -) break ;;
       -*) die "unknown option $1
@@ -261,31 +296,53 @@ $usage" ;;
   done
 
   cwd=$(pwd -P) fromcwd=
-  [ -n "$wsid" ] || { wsid=$(workspace_of "$cwd"); fromcwd=1; }
-  [ -n "$wsid" ] || die "this folder ($cwd) isn't in a Herdr workspace: run it from one, or pass --workspace <id> (ls ~/.herdr/workspaces)"
-  case $wsid in */*|.*) die "\"$wsid\" is a workspace's folder name, not a path" ;; esac
-  [ -d "$dir/$wsid" ] || die "there's no workspace \"$wsid\" (ls ~/.herdr/workspaces)"
+  if [ -n "$glob" ]; then
+    [ -z "$wsid" ] || die "give --global or --workspace, not both"
+    autos=$global where="every workspace"
+  else
+    [ -n "$wsid" ] || { wsid=$(workspace_of "$cwd"); fromcwd=1; }
+    [ -n "$wsid" ] || die "this folder ($cwd) isn't in a Herdr workspace: run it from one, or pass --workspace <id> (ls ~/.herdr/workspaces)"
+    case $wsid in */*|.*) die "\"$wsid\" is a workspace's folder name, not a path" ;; esac
+    [ -d "$dir/$wsid" ] || die "there's no workspace \"$wsid\" (ls ~/.herdr/workspaces)"
+    autos=$dir/$wsid/automations where=$wsid
+  fi
   case $name in */*|.*) die "\"$name\" is a name, not a path" ;; esac
+
+  # One that's for every workspace, turned off or on from inside a workspace: here only.
+  if [ "$mode" != add ] && [ -z "$glob" ] && [ -n "$name" ] && [ ! -f "$autos/$name.md" ] && [ -f "$global/$name.md" ]; then
+    [ -z "$at" ] || die "\"$name\" is for every workspace: --at would change it everywhere, so add --global"
+    if [ "$mode" = off ]; then
+      set_here "$global/$name.md" "$wsid" add
+      echo "Turned off \"$name\" in $wsid. It's for every workspace and stays on in the others (--global turns it off everywhere). herdr-ws-run --on $name turns it back on here."
+    else
+      set_here "$global/$name.md" "$wsid" remove
+      case $(front "$global/$name.md" enabled) in
+        false|no|off|0) echo "\"$name\" is for every workspace and is off in all of them: herdr-ws-run --on $name --global turns it on." ;;
+        *) echo "Turned on \"$name\" in $wsid ($(front "$global/$name.md" when))." ;;
+      esac
+    fi
+    exit 0
+  fi
 
   if [ "$mode" = off ]; then
     [ -n "$name" ] || die "which one? herdr-ws-run --list shows them"
-    file=$dir/$wsid/automations/$name.md
-    [ -f "$file" ] || die "there's no automation \"$name\" in \"$wsid\" (herdr-ws-run --list shows them)"
-    tmp=$dir/$wsid/automations/.$name.$$.tmp
+    file=$autos/$name.md
+    [ -f "$file" ] || die "there's no automation \"$name\" in $where (herdr-ws-run --list shows them)"
+    tmp=$autos/.$name.$$.tmp
     awk 'NR == 1 && !/^---[ \t\r]*$/ { print "---"; print "enabled: false"; print "---" }
          NR == 1 && /^---[ \t\r]*$/ { h = 1; print; next }
          h && /^enabled[ \t]*:/ { next }
          h && /^---[ \t\r]*$/ { print "enabled: false"; h = 0 }
          { print }' "$file" > "$tmp"
     mv "$tmp" "$file"
-    echo "Turned off \"$name\" in $wsid. herdr-ws-run --on $name turns it back on."
+    echo "Turned off \"$name\" in $where. herdr-ws-run --on $name${glob:+ --global} turns it back on."
     exit 0
   fi
 
   if [ "$mode" = on ]; then
     [ -n "$name" ] || die "which one? herdr-ws-run --list shows them"
-    file=$dir/$wsid/automations/$name.md
-    [ -f "$file" ] || die "there's no automation \"$name\" in \"$wsid\" (herdr-ws-run --list shows them)"
+    file=$autos/$name.md
+    [ -f "$file" ] || die "there's no automation \"$name\" in $where (herdr-ws-run --list shows them)"
     cur=$(front "$file" when)
     once=
     case $cur in once\ *|ONCE\ *|Once\ *) once=1 ;; esac
@@ -306,7 +363,7 @@ $usage" ;;
         die "\"$name\" ran once, at $was. Give it a new time: herdr-ws-run --on $name --at \"tomorrow 6am\""
       fi
     fi
-    tmp=$dir/$wsid/automations/.$name.$$.tmp
+    tmp=$autos/.$name.$$.tmp
     awk -v new="$new" 'NR == 1 && /^---[ \t\r]*$/ { h = 1; print; next }
          h && /^enabled[ \t]*:/ { next }
          h && new != "" && /^when[ \t]*:/ { print "when: \"" new "\""; next }
@@ -315,9 +372,9 @@ $usage" ;;
     mv "$tmp" "$file"
     if [ -n "$new" ]; then
       pretty=$(fmt "$t" "%a %d %b %Y at %H:%M" | sed 's/ 0\([0-9]\) / \1 /')
-      echo "Turned on \"$name\" in $wsid: it runs once, ${pretty:-$t}, then turns itself off."
+      echo "Turned on \"$name\" in $where: it runs once, ${pretty:-$t}, then turns itself off."
     else
-      echo "Turned on \"$name\" in $wsid ($cur)."
+      echo "Turned on \"$name\" in $where ($cur)."
     fi
     exit 0
   fi
@@ -358,32 +415,38 @@ $usage" ;;
 
   # Where it runs: --folder, else this folder when it's in the workspace, else
   # the root. Written from the root when it's under it, else in full.
-  root=$(root_of "$wsid")
-  [ -z "$root" ] || root=$(real "$root")
-  if [ -n "$folder" ]; then
-    place=$(cd "$folder" 2>/dev/null && pwd -P) || die "there's no folder \"$folder\""
+  if [ -n "$glob" ]; then
+    # Each workspace has its own folders: only one written from the root can hold in all of them.
+    case $folder in /*|"~"*) die "one for every workspace runs in each workspace's root: give --folder from the root (api), or leave it out" ;; esac
+    rel=$folder
   else
-    place=$cwd
-  fi
-  if [ -n "$root" ] && [ "$place" = "$root" ]; then rel=
-  elif [ -n "$root" ] && holds "$place" "$root"; then rel=${place#"$root"/}
-  elif [ -n "$folder" ] || [ -n "$fromcwd" ]; then rel=$place
-  else rel=
+    root=$(root_of "$wsid")
+    [ -z "$root" ] || root=$(real "$root")
+    if [ -n "$folder" ]; then
+      place=$(cd "$folder" 2>/dev/null && pwd -P) || die "there's no folder \"$folder\""
+    else
+      place=$cwd
+    fi
+    if [ -n "$root" ] && [ "$place" = "$root" ]; then rel=
+    elif [ -n "$root" ] && holds "$place" "$root"; then rel=${place#"$root"/}
+    elif [ -n "$folder" ] || [ -n "$fromcwd" ]; then rel=$place
+    else rel=
+    fi
   fi
 
-  mkdir -p "$dir/$wsid/automations"
-  file=$dir/$wsid/automations/$name.md
+  mkdir -p "$autos"
+  file=$autos/$name.md
   if [ -e "$file" ]; then
-    [ -n "$auto" ] || die "there's already an automation \"$name\" in \"$wsid\": pick another --name"
+    [ -n "$auto" ] || die "there's already an automation \"$name\" in $where: pick another --name"
     n=2
-    while [ -e "$dir/$wsid/automations/$name-$n.md" ]; do n=$((n + 1)); done
+    while [ -e "$autos/$name-$n.md" ]; do n=$((n + 1)); done
     name=$name-$n
-    file=$dir/$wsid/automations/$name.md
+    file=$autos/$name.md
   fi
   [ -n "$desc" ] || desc=$(printf '%s\n' "$prompt" | sed -n '/[^[:space:]]/{p;q;}' | sed -E 's/^[[:space:]]+//; s/^(.{77}).+$/\1…/')
 
   # Written aside, then moved in, so Herdr never reads half a file.
-  tmp=$dir/$wsid/automations/.$name.$$.tmp
+  tmp=$autos/.$name.$$.tmp
   {
     echo ---
     echo "description: $(q "$desc")"
@@ -401,18 +464,25 @@ $usage" ;;
 
   if [ -n "$at" ]; then
     pretty=$(fmt "$t" "%a %d %b %Y at %H:%M" | sed 's/ 0\([0-9]\) / \1 /')
-    echo "Added \"$name\" in $wsid: it runs once, ${pretty:-$t}, then turns itself off."
+    echo "Added \"$name\" in $where: it runs once, ${pretty:-$t}, then turns itself off."
   else
-    echo "Added \"$name\" in $wsid: \"$when\". If Herdr can't read that line, its Automations screen says why."
+    echo "Added \"$name\" in $where: \"$when\". If Herdr can't read that line, its Automations screen says why."
   fi
   knobs=$model
   [ -z "$effort" ] || knobs="${knobs:+$knobs, }$effort effort"
-  echo "It starts ${agent:-the default agent}${knobs:+ ($knobs)} in ${rel:-the workspace root}, in a tab of the workspace's Automations space."
+  if [ -n "$glob" ]; then
+    who=$agent
+    [ -n "$who" ] || who="that board's agent"
+    echo "In each workspace it starts $who${knobs:+ ($knobs)} in ${rel:-the root}, in a tab of the workspace's Automations space. A workspace's own automation called \"$name\" replaces it there."
+  else
+    echo "It starts ${agent:-the default agent}${knobs:+ ($knobs)} in ${rel:-the workspace root}, in a tab of the workspace's Automations space."
+  fi
   [ -z "$check" ] || echo "Each time, Herdr first runs its check there ($check): the agent starts only if that prints something.
 The check needs the person's OK before it runs: Herdr asks them with a toast now, and Automations has Allow this check. Until then this automation doesn't start. Tell them."
   echo "File: $file"
-  echo "To cancel: herdr-ws-run --off $name --workspace $wsid"
-  herdr-app status >/dev/null 2>&1 ||
+  if [ -n "$glob" ]; then echo "To cancel: herdr-ws-run --off $name --global"
+  else echo "To cancel: herdr-ws-run --off $name --workspace $wsid"; fi
+  herdr-app status >/dev/null 2>&1 || [ "$(cat "$HOME/.herdr/runner/switch" 2>/dev/null)" = on ] ||
     echo "Herdr isn't open: it has to be open then (a run missed while it's closed starts when it opens, within 12 hours)." >&2
   exit 0
 fi
@@ -423,7 +493,7 @@ shift 2
 case "$ws/$name" in
   */*/*|.*|*/.*) echo "herdr-ws-run: \"$ws\" and \"$name\" are names, not paths" >&2; exit 2 ;;
 esac
-[ -f "$dir/$ws/automations/$name.md" ] || {
+[ -f "$dir/$ws/automations/$name.md" ] || { [ -d "$dir/$ws" ] && [ -f "$global/$name.md" ]; } || {
   echo "herdr-ws-run: there's no automation \"$name\" in \"$ws\" (herdr-ws-run --list shows them)" >&2
   exit 1
 }
@@ -436,7 +506,7 @@ call="$dir/.inbox/$stamp-$$"
 printf '%s\n%s\n%s000\n%s\n' "$ws" "$name" "$stamp" "$text" > "$call.tmp"
 mv "$call.tmp" "$call.run"
 
-if herdr-app status >/dev/null 2>&1; then
+if herdr-app status >/dev/null 2>&1 || [ "$(cat "$HOME/.herdr/runner/switch" 2>/dev/null)" = on ]; then
   echo "Asked Herdr to start $name in $ws."
 else
   echo "Herdr isn't open: $name starts when it opens, if that's within an hour." >&2

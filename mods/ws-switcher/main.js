@@ -16,9 +16,17 @@
 //   workspaces.last      workspace id -> the space last shown in it
 //   workspaces.create    a time: the menu asks this block to make a workspace
 //
-// It also runs each workspace's automations (automations.js): the one runner lives
-// in this sidebar copy and ticks on its timer. So does what follows board cards'
-// pull requests on GitHub (prs.js).
+// It also runs each workspace's automations (automations.js) and follows board cards'
+// pull requests on GitHub (prs.js): the one runner of each lives in this sidebar
+// copy and ticks on its timer. Unless the background runner is on
+// (bin/herdr-ws-runner, ~/.herdr/runner/switch): then a process herdr-core holds
+// runs both, Herdr open or closed, and this copy only passes things between it and
+// the window (background()): it starts it when it isn't running, copies what it
+// publishes (~/.herdr/runner/state.json) into shared state, shows its notes as
+// toasts, names the tabs and spaces of the runs it started, and hands it the
+// screen's Run now and allowed checks as files in the inbox.
+//   workspaces.runner      { on, running }: the background runner, for the screens
+//   workspaces.runner.set  { on, at }: a screen asks to turn it on or off
 //
 // A space joins a workspace once and stays: when its first terminal is under the
 // workspace's root or one of its folders (a herdr worktree goes by its repo's
@@ -28,11 +36,12 @@ import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input } from "gpui-base";
 import {
   spaces, panes, machines, run, theme, shared, setShared, props, openOverlay, closeOverlay,
-  home, layout, watchFolder, readTextFile, writeTextFile, pickFolder, exec, notify, window,
+  home, appHome, layout, watchFolder, readTextFile, writeTextFile, pickFolder, exec, notify, window,
 } from "herdr";
 import * as fs from "fs/promises";
-import { Runner } from "./automations.js";
+import { Runner, runnerDir, globalDir } from "./automations.js";
 import { PrWatcher } from "./prs.js";
+import { dir, expand, tilde, under, base, subdirs, loadDefs, templatesDir, loadPresetDir, presetsFor, presetLaunch, withTask } from "./defs.js";
 
 // "Edit" opens the workspace's folder in the first of these that's installed,
 // else with the system's opener (Finder, the file manager, Explorer).
@@ -43,7 +52,6 @@ const PALETTE = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
 const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b7cf6", ansi2: "#3fae6a", ansi1: "#d9649a" };
 const URGENT = { blocked: 2, done: 1 };
 
-const dir = () => `${home()}/.herdr/workspaces`;
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -56,91 +64,6 @@ function find(node, id) {
 // The sidebar's rail goes by its width, as in the other sidebar mods.
 const narrow = () => (find(layout(), "sidebar")?.size?.px ?? Infinity) < 160;
 
-function expand(p) {
-  const s = String(p ?? "").trim();
-  if (!s) return "";
-  const full = s === "~" ? home() : s.startsWith("~/") ? home() + s.slice(1) : s;
-  return full.length > 1 ? full.replace(/\/+$/, "") : full;
-}
-const tilde = (p) => (p === home() ? "~" : p.startsWith(home() + "/") ? "~" + p.slice(home().length) : p);
-const under = (p, d) => Boolean(p && d) && (p === d || p.startsWith(d === "/" ? d : d + "/"));
-const base = (p) => p.replace(/\/+$/, "").split("/").pop();
-
-// JSON with // and /* */ comments and trailing commas.
-function parseJsonc(text) {
-  const pass = (s, other) => {
-    let out = "";
-    for (let i = 0; i < s.length;) {
-      if (s[i] === '"') {
-        let j = i + 1;
-        while (j < s.length && s[j] !== '"') j += s[j] === "\\" ? 2 : 1;
-        out += s.slice(i, j + 1);
-        i = j + 1;
-      } else {
-        const r = other(s, i);
-        out += r.text;
-        i = r.next;
-      }
-    }
-    return out;
-  };
-  const uncommented = pass(text, (s, i) => {
-    if (s.startsWith("//", i)) { const e = s.indexOf("\n", i); return { text: "", next: e < 0 ? s.length : e }; }
-    if (s.startsWith("/*", i)) { const e = s.indexOf("*/", i + 2); return { text: "", next: e < 0 ? s.length : e + 2 }; }
-    return { text: s[i], next: i + 1 };
-  });
-  return JSON.parse(pass(uncommented, (s, i) => {
-    if (s[i] !== ",") return { text: s[i], next: i + 1 };
-    let j = i + 1;
-    while (j < s.length && /\s/.test(s[j])) j++;
-    return { text: s[j] === "}" || s[j] === "]" ? "" : ",", next: i + 1 };
-  }));
-}
-
-async function subdirs(path) {
-  try {
-    return (await fs.readdir(path, { withFileTypes: true }))
-      .filter((d) => d.isDirectory() && !d.name.startsWith(".")).map((d) => d.name).sort();
-  } catch { return []; }
-}
-
-async function loadDefs() {
-  const defs = [];
-  for (const id of await subdirs(dir())) {
-    const at = `${dir()}/${id}`;
-    const text = await readTextFile(`${at}/workspace.jsonc`);
-    if (text === null) continue;
-    try {
-      const c = parseJsonc(text);
-      const root = expand(c.root);
-      const folders = (Array.isArray(c.folders) ? c.folders : []).map((f) => {
-        const e = expand(f);
-        return e.startsWith("/") ? e : `${root}/${e}`;
-      });
-      const told = expand(c.instructions || "AGENTS.md");
-      defs.push({
-        id, dir: at, name: String(c.name || id), color: c.color ? String(c.color) : null, root, folders,
-        children: root ? await subdirs(root) : [], instructions: told.startsWith("/") ? told : `${at}/${told}`,
-        board: c.board && typeof c.board === "object" ? c.board : null,
-      });
-    } catch (e) {
-      defs.push({ id, dir: at, name: id, color: null, root: "", folders: [], children: [], instructions: "", error: String(e?.message ?? e) });
-    }
-  }
-  // Where each root and folder really is, when a symlink leads there (macOS's /tmp
-  // is /private/tmp): terminals report the real path. `real`: path -> real path.
-  const paths = [...new Set(defs.flatMap((d) => [d.root, ...d.folders]).filter(Boolean))];
-  let real = {};
-  if (paths.length && window()?.platform !== "windows") {
-    try {
-      const r = await exec("sh", ["-c", 'for p; do (cd "$p" 2>/dev/null && pwd -P) || printf "%s\\n" "$p"; done', "sh", ...paths]);
-      const out = r.stdout.split("\n");
-      paths.forEach((p, i) => { if (out[i] && out[i] !== p) real[p] = out[i]; });
-    } catch {}
-  }
-  for (const d of defs) d.real = Object.fromEntries([d.root, ...d.folders].filter((p) => real[p]).map((p) => [p, real[p]]));
-  return defs;
-}
 
 // A folder of the workspace and, when a symlink leads there, where it really is.
 function realOf(def, path) {
@@ -165,95 +88,6 @@ function indexText(defs) {
   return lines.join("\n") + "\n";
 }
 
-// --- agent presets ---
-// herdr-core's templates are the global presets (`hc run <name> "<task>"` starts
-// one too); a workspace's own are ~/.herdr/workspaces/<id>/agents/<name>.md and
-// win by name. Same format as hc's: front matter `description` and `command` (a
-// shell line, values taken as written), instructions as the body.
-const templatesDir = () => `${home()}/.config/herdr-core/templates`;
-
-function parsePreset(name, file, text, scope) {
-  const t = text.replace(/\r\n/g, "\n");
-  const end = t.startsWith("---\n") ? t.indexOf("\n---", 3) : -1;
-  if (end < 0) return { name, file, scope, description: "", command: "", body: "", error: "no front matter (start the file with ---)" };
-  const fields = {};
-  for (const line of t.slice(4, end).split("\n")) {
-    const i = line.indexOf(":");
-    if (i > 0) fields[line.slice(0, i).trim()] = line.slice(i + 1).trim();
-  }
-  const body = t.slice(end + 4).replace(/^\n/, "").replace(/<!--[\s\S]*?-->/g, "").trim();
-  return { name, file, scope, description: fields.description ?? "", command: fields.command ?? "", body, error: fields.command ? null : "no command" };
-}
-
-async function loadPresetDir(path, scope) {
-  let names = [];
-  try { names = (await fs.readdir(path)).filter((n) => n.endsWith(".md") && !n.startsWith(".")).sort(); } catch { return []; }
-  const out = [];
-  for (const n of names) {
-    const text = await readTextFile(`${path}/${n}`);
-    if (text !== null) out.push(parsePreset(n.slice(0, -3), `${path}/${n}`, text, scope));
-  }
-  return out;
-}
-
-// The presets a workspace offers: its own, then the global ones it doesn't override.
-function presetsFor(id) {
-  const p = shared("workspaces.presets") ?? {};
-  const own = (id && p.workspaces?.[id]) || [];
-  return [...own, ...(p.global ?? []).filter((g) => !own.some((o) => o.name === g.name))].filter((x) => !x.error);
-}
-
-// A shell line as words: quotes and backslashes as sh reads them.
-function words(line) {
-  const out = [];
-  let cur = null, q = null;
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i];
-    if (q === "'") { if (c === "'") q = null; else cur += c; continue; }
-    if (q === '"') {
-      if (c === '"') q = null;
-      else if (c === "\\" && i + 1 < line.length && '"\\$`'.includes(line[i + 1])) cur += line[++i];
-      else cur += c;
-      continue;
-    }
-    if (/\s/.test(c)) { if (cur !== null) { out.push(cur); cur = null; } continue; }
-    cur ??= "";
-    if (c === "'" || c === '"') q = c;
-    else if (c === "\\" && i + 1 < line.length) cur += line[++i];
-    else cur += c;
-  }
-  if (cur !== null) out.push(cur);
-  return out;
-}
-
-// How Herdr starts a preset: { argv, task }. With the launcher, Claude and Codex
-// get the instructions as system instructions (--instructions) and the task as
-// the first message; other agents get both in the first message, as hc does.
-function presetLaunch(preset, task) {
-  let argv = words(preset.command);
-  // `VAR=x cmd` (or `env VAR=x cmd`): the assignments go first, before the launcher.
-  if (argv[0] === "env") argv = argv.slice(1);
-  const assigns = [];
-  while (argv[0] && /^[A-Za-z_][A-Za-z0-9_]*=/.test(argv[0])) assigns.push(argv.shift());
-  if (base(argv[0] ?? "") === "herdr-ws-agent") argv = argv.slice(1);
-  const agent = base(argv[0] ?? "");
-  const launcher = shared("workspaces.launcher") === true;
-  const system = launcher && (agent === "claude" || agent === "codex") && Boolean(preset.body);
-  if (launcher) argv = ["herdr-ws-agent", ...(system ? ["--instructions", preset.file] : []), ...argv];
-  if (assigns.length) argv = ["env", ...assigns, ...argv];
-  const told = preset.body && `You are the "${preset.name}" agent, started from the Herdr agent preset of that name (${preset.file}). Its instructions:\n\n${preset.body}`;
-  return { argv, task: system ? task : [told, task].filter(Boolean).join("\n\n") };
-}
-
-// The first message, for the launcher: as --task, not last on the command line where
-// Herdr would put it, so a restart brings the agent back without sending it again
-// (bin/herdr-ws-resume). Other commands keep Herdr's task.
-function withTask(argv, task) {
-  let i = argv[0] === "env" ? 1 : 0;
-  while (argv[i] && /^[A-Za-z_][A-Za-z0-9_]*=/.test(argv[i])) i++;
-  if (!task || base(argv[i] ?? "") !== "herdr-ws-agent") return { argv, task };
-  return { argv: [...argv.slice(0, i + 1), "--task", task, ...argv.slice(i + 1)], task: "" };
-}
 
 // Starts a preset as a tab named after it in the shown space (its focused
 // terminal's folder), else as a new space in the workspace's root. `prompt`:
@@ -412,23 +246,41 @@ export default class Workspaces extends View {
     this.launchAsked = shared("workspaces.launch")?.at;
     this.boardAsked = shared("workspaces.board")?.at;
     this.runAsked = shared("workspaces.automation.run")?.at;
+    this.allowAsked = shared("workspaces.automation.allow")?.at;
+    this.setAsked = shared("workspaces.runner.set")?.at;
     // A space the runner makes for its runs joins that workspace at once.
-    this.runner = new Runner({
+    this.hooks = {
       presetsFor, presetLaunch, withTask,
       claim: (space, ws) => {
         this.known.add(space);
         setShared("workspaces.assigned", { ...(shared("workspaces.assigned") ?? {}), [space]: ws });
       },
-    });
+    };
+    this.runner = new Runner(this.hooks);
     this.prs = new PrWatcher();
+    // known: the switch has been read once (nothing runs here before that).
+    // owner: the background runner runs them, not this copy.
+    this.bg = { known: false, owner: false, rev: null, tries: 0, tried: 0, failed: false };
+    try { this.adopted = new Set(JSON.parse(localStorage.getItem("adopted") ?? "[]")); } catch { this.adopted = new Set(); }
     this.reload(cx);
+    this.background(cx);
+    cx.timer.every(2000, (cx) => this.background(cx));
     cx.spawn(async (cx) => {
       for (;;) {
         let paths;
         try { paths = await watchFolder(dir()); }
-        catch { cx.timer.every(5000, (cx) => { this.reload(cx); this.runner.changed([dir()], cx); }); return; }
+        catch { cx.timer.every(5000, (cx) => { this.reload(cx); if (this.mine()) this.runner.changed([dir()], cx); }); return; }
         this.reload(cx);
-        this.runner.changed(paths ?? [], cx);
+        if (this.mine()) this.runner.changed(paths ?? [], cx);
+      }
+    });
+    // The automations for every workspace (~/.herdr/automations), made if it isn't there.
+    cx.spawn(async (cx) => {
+      await exec("mkdir", ["-p", globalDir()]).catch(() => {});
+      for (;;) {
+        try { await watchFolder(globalDir()); }
+        catch { cx.timer.every(10000, (cx) => { if (this.mine()) this.reload(cx); }); return; }
+        if (this.mine()) this.reload(cx);
       }
     });
     // herdr-core's templates: the global presets. The folder may not exist yet.
@@ -441,7 +293,7 @@ export default class Workspaces extends View {
     });
     // Placing and following also run here: Herdr doesn't draw while its window is
     // in the background, and a new space waits SETTLE for its folder.
-    cx.timer.every(500, (cx) => { this.sync(); this.requests(cx); this.runner.tick(cx); this.prs.tick(cx); if (spaces().some((s) => !this.known.has(s.id))) cx.notify(); });
+    cx.timer.every(500, (cx) => { this.sync(); this.requests(cx); if (this.mine()) { this.runner.tick(cx); this.prs.tick(cx); } if (spaces().some((s) => !this.known.has(s.id))) cx.notify(); });
   }
 
   reload(cx) {
@@ -456,10 +308,123 @@ export default class Workspaces extends View {
         if (old !== text) await writeTextFile(index, text, old);
       } catch {} // a stale snapshot: the next change writes it
       await this.loadPresets(defs);
-      await this.runner?.load(cx);
-      await this.prs?.load();
+      if (this.mine()) {
+        await this.runner?.load(cx);
+        await this.prs?.load();
+      }
       cx.notify();
     });
+  }
+
+  // This copy runs the automations and follows the pull requests itself.
+  mine() { return this.bg.known && !this.bg.owner; }
+
+  // Every 2s: who runs them, and, when it's the background runner, what it has for the window.
+  background(cx) {
+    if (this.bgBusy) return;
+    this.bgBusy = true;
+    cx.spawn(async (cx) => {
+      try {
+        const at = runnerDir(), b = this.bg, now = Date.now();
+        const on = ((await readTextFile(`${at}/switch`)) ?? "").trim() === "on";
+        let alive = null;
+        try { alive = JSON.parse((await readTextFile(`${at}/alive`)) ?? "null"); } catch {}
+        const running = Boolean(alive && now - alive.at < 30000);
+        if (!on || running) { b.tries = 0; b.failed = false; }
+        // On but not running (the computer restarted, or it stopped): start it. After
+        // three tries, this copy runs them while Herdr is open, and says so once.
+        if (on && !running && !b.failed && now - b.tried > 20000) {
+          if (b.tries >= 3) {
+            b.failed = true;
+            notify({
+              title: "The background runner didn't start", level: "warning",
+              body: `${b.why || "It gave no reason."} Herdr runs your automations itself while it's open. herdr-ws-runner --status says more.`,
+            });
+          } else {
+            b.tries++;
+            b.tried = now;
+            const r = await exec(`${appHome()}/mods/ws-switcher/bin/herdr-ws-runner`, ["--start"], { timeout: 60000 }).catch((e) => ({ code: 1, stderr: String(e?.message ?? e) }));
+            b.why = r.code === 0 ? null : String(r.stderr ?? "").trim().split("\n").pop();
+          }
+        }
+        const owner = on && !b.failed;
+        if (!b.known || owner !== b.owner) {
+          b.known = true;
+          b.owner = owner;
+          b.rev = null;
+          // Ours again (or for the first time): from what the file remembers.
+          if (!owner) { this.runner = new Runner(this.hooks); this.prs = new PrWatcher(); this.reload(cx); }
+        }
+        if (owner && running && alive.rev !== b.rev) {
+          let state = null;
+          try { state = JSON.parse((await readTextFile(`${at}/state.json`)) ?? "null"); } catch {}
+          if (state) {
+            b.rev = alive.rev;
+            for (const [key, value] of [["workspaces.automations", state.automations ?? {}], ["workspaces.automations.global", state.global ?? []], ["workspaces.automation.runs", state.runs ?? []], ["workspaces.prs", state.prs ?? {}]]) {
+              if (JSON.stringify(value) !== JSON.stringify(shared(key) ?? null)) setShared(key, value);
+            }
+          }
+        }
+        await this.notes();
+        this.adopt();
+        const say = { on, running };
+        if (JSON.stringify(say) !== JSON.stringify(shared("workspaces.runner") ?? null)) setShared("workspaces.runner", say);
+      } finally {
+        this.bgBusy = false;
+      }
+      cx.notify();
+    });
+  }
+
+  // The background runner's toasts: files it left, shown once. Many at once (Herdr
+  // was closed) become one.
+  async notes() {
+    const at = `${runnerDir()}/notes`;
+    let names = [];
+    try { names = (await fs.readdir(at)).filter((n) => n.endsWith(".json")).sort(); } catch { return; }
+    if (!names.length) return;
+    const list = [];
+    for (const n of names) {
+      try { const note = JSON.parse((await readTextFile(`${at}/${n}`)) ?? "null"); if (note?.title) { delete note.at; list.push(note); } } catch {}
+    }
+    await exec("rm", ["-f", ...names.map((n) => `${at}/${n}`)]).catch(() => {});
+    if (list.length <= 3) { for (const n of list) notify(n); return; }
+    notify({
+      title: `${list.length} updates from your automations`,
+      body: `${list.slice(-6).map((n) => n.title).join("; ")}${list.length > 6 ? "; and earlier ones" : ""}.`,
+      level: list.some((n) => n.level === "error" || n.level === "warning") ? "warning" : "info",
+      action: { name: "mod.open", args: { name: "ws-automations" } },
+    });
+  }
+
+  // Runs the background runner started arrive as bare terminals with Herdr's labels:
+  // their space joins the workspace and is called Automations, their tab is called
+  // after the automation. Once each, so a name you change stays.
+  adopt() {
+    const runs = (shared("workspaces.automation.runs") ?? []).filter((r) => r.adopt && r.space && r.tab);
+    if (!runs.length) return;
+    const sp = spaces();
+    let changed = false;
+    // A space that's gone is forgotten: the runner makes it again under the same id
+    // for a later run, and it's then claimed and named as the first time.
+    if (sp.length) for (const k of [...this.adopted]) if (k.startsWith("s:") && !sp.some((x) => x.id === k.slice(2))) { this.adopted.delete(k); changed = true; }
+    for (const r of runs) {
+      const s = sp.find((x) => x.id === r.space);
+      if (!s) continue;
+      if (!this.adopted.has(`s:${s.id}`)) {
+        this.adopted.add(`s:${s.id}`);
+        changed = true;
+        this.hooks.claim(s.id, r.ws);
+        if (!s.named) run("space.rename", { id: s.id, name: "Automations" });
+      }
+      if (this.adopted.has(r.id)) continue;
+      const tab = (s.tabs ?? []).find((t) => t.id === r.tab);
+      if (!tab) continue;
+      this.adopted.add(r.id);
+      changed = true;
+      if (tab.name !== r.name) run("tab.rename", { id: tab.id, name: r.name });
+    }
+    if (changed) { try { localStorage.setItem("adopted", JSON.stringify([...this.adopted].slice(-300))); } catch {} }
   }
 
   reloadPresets(cx) {
@@ -511,8 +476,23 @@ export default class Workspaces extends View {
 
     // A key, a toast or space.next showed a space elsewhere: go with it. Not while
     // an automation's tab is being made: that shows it for a moment.
+    const order = this.order ?? [];
+    this.order = sp.map((s) => s.id);
     if (this.runner?.holding()) return;
     const shown = sp.find((s) => s.active)?.id ?? null;
+    // The shown space was closed and Herdr showed its next one, from another
+    // workspace: stay, on the closed one's neighbour here (none left: the
+    // workspace's empty list, with whatever Herdr shows beside it).
+    const closed = this.shown && !sp.some((s) => s.id === this.shown) ? this.shown : null;
+    if (closed && active && shown && assigned[shown] !== active) {
+      this.shown = shown;
+      const live = new Set(sp.filter((s) => assigned[s.id] === active).map((s) => s.id));
+      const at = order.indexOf(closed);
+      const next = [...order.slice(at + 1), ...order.slice(0, Math.max(at, 0)).reverse()].find((id) => live.has(id))
+        ?? [...live][0];
+      if (next) run("space.select", { id: next });
+      return;
+    }
     if (shown && shown !== this.shown && this.known.has(shown)) {
       this.shown = shown;
       const owner = defs.some((d) => d.id === assigned[shown]) ? assigned[shown] : null;
@@ -696,8 +676,26 @@ export default class Workspaces extends View {
     const runAsk = shared("workspaces.automation.run") ?? null;
     if (runAsk?.at !== this.runAsked) {
       this.runAsked = runAsk?.at;
-      const a = runAsk && Date.now() - runAsk.at < 15000 && this.runner?.find(runAsk.workspace, runAsk.name);
+      const recent = runAsk && Date.now() - runAsk.at < 15000;
+      const a = recent && this.mine() && this.runner?.find(runAsk.workspace, runAsk.name);
       if (a) this.runner.fire(cx, runAsk.workspace, a, "Started by hand", {}, { manual: true });
+      else if (recent && this.bg.owner) this.pass(cx, "run", `${runAsk.workspace}\n${runAsk.name}\n${Date.now()} hand\n`);
+    }
+    // An allowed check: this copy's runner reads the request itself; the background one gets a file.
+    const allowAsk = shared("workspaces.automation.allow") ?? null;
+    if (allowAsk?.at !== this.allowAsked) {
+      this.allowAsked = allowAsk?.at;
+      if (allowAsk && Date.now() - allowAsk.at < 15000 && this.bg.owner) this.pass(cx, "allow", JSON.stringify({ workspace: allowAsk.workspace, name: allowAsk.name, check: allowAsk.check }));
+    }
+    const setAsk = shared("workspaces.runner.set") ?? null;
+    if (setAsk?.at !== this.setAsked) {
+      this.setAsked = setAsk?.at;
+      if (setAsk && Date.now() - setAsk.at < 15000) cx.spawn(async (cx) => {
+        const r = await exec(`${appHome()}/mods/ws-switcher/bin/herdr-ws-runner`, [setAsk.on ? "--on" : "--off"], { timeout: 60000 }).catch((e) => ({ code: 1, stderr: String(e?.message ?? e) }));
+        if (r.code !== 0) notify({ title: `Couldn't turn the background runner ${setAsk.on ? "on" : "off"}`, body: String(r.stderr ?? "").trim().split("\n").pop() || "herdr-ws-runner gave no reason.", level: "error" });
+        this.bg.tries = 0; this.bg.tried = 0; this.bg.failed = false;
+        this.background(cx);
+      });
     }
     const boardAsk = shared("workspaces.board") ?? null;
     if (boardAsk?.at !== this.boardAsked) {
@@ -706,16 +704,24 @@ export default class Workspaces extends View {
     }
   }
 
+  // A request for the background runner: a file in the inbox it reads.
+  pass(cx, kind, text) {
+    cx.spawn(async () => {
+      try { await writeTextFile(`${dir()}/.inbox/${Date.now()}-${Math.random().toString(36).slice(2, 7)}.${kind}`, text, null); }
+      catch (e) { notify({ title: "Couldn't reach the background runner", body: String(e?.message ?? e), level: "error" }); }
+    });
+  }
+
   // Shows the workspace's board tab: the one already open in one of its spaces,
   // else a new one in the shown space (if it's in the workspace), its first space,
-  // or a new space in its root.
-  openBoard(id, cx) {
+  // or a new space in its root. `screen`: another tab of the workspace's, the same way.
+  openBoard(id, cx, screen = { mod: "ws-board", name: "Board" }) {
     const def = (shared("workspaces.defs") ?? []).find((d) => d.id === id);
     if (!def) return;
     const assigned = shared("workspaces.assigned") ?? {};
     const sp = spaces();
     const spaceOfTab = (tab) => sp.find((s) => (s.tabs ?? []).some((c) => c.id === tab));
-    const open = panes().find((p) => p.mod === "ws-board" && assigned[spaceOfTab(p.tab)?.id] === id);
+    const open = panes().find((p) => p.mod === screen.mod && assigned[spaceOfTab(p.tab)?.id] === id);
     if (open) {
       run("space.select", { id: spaceOfTab(open.tab).id });
       run("tab.select", { id: open.tab });
@@ -731,9 +737,9 @@ export default class Workspaces extends View {
           if (!space) throw new Error(r.stderr.trim() || "couldn't make a space");
         }
         run("space.select", { id: space });
-        run("tab.new", { space, name: "Board", mod: "ws-board", props: { workspace: id } });
+        run("tab.new", { space, name: screen.name, mod: screen.mod, props: { workspace: id } });
       } catch (e) {
-        notify({ title: `Couldn't open the ${def.name} board`, body: String(e?.message ?? e), level: "error" });
+        notify({ title: `Couldn't open the ${def.name} ${screen.name.toLowerCase()}`, body: String(e?.message ?? e), level: "error" });
       }
       cx.notify();
     });

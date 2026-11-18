@@ -1,0 +1,43 @@
+#!/bin/sh
+# Makes a release: CHANGELOG.md's "## [Unreleased]" becomes "## [<version>] - <today>",
+# VERSION and mods/ws-switcher/VERSION say <version>, and it's committed and tagged
+# v<version>. Nothing leaves this computer unless you add --publish, which pushes
+# the commit and tag and makes a GitHub release with that version's notes (people
+# watching the repo's releases are notified).
+#
+#   scripts/release.sh 0.2.0             # local: commit and tag
+#   scripts/release.sh 0.2.0 --publish   # also push and make the GitHub release
+#   scripts/release.sh --notes 0.2.0     # print a version's notes
+#
+# Versions: the middle number for anything new, the last for fixes only.
+set -eu
+cd "$(dirname "$0")/.."
+
+notes() { # the lines under "## [$1]", up to the next version
+  awk -v v="$1" '/^## \[/ { on = index($0, "## [" v "]") == 1; next } on' CHANGELOG.md |
+    sed -e '/./,$!d' | awk 'NF { for (; n > 0; n--) print ""; print; next } { n++ }'
+}
+
+if [ "${1:-}" = --notes ]; then notes "${2:?version}"; exit; fi
+v=${1:?usage: release.sh <version> [--publish]}
+publish=${2:-}
+echo "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "release: $v isn't x.y.z" >&2; exit 1; }
+git rev-parse -q --verify "refs/tags/v$v" >/dev/null && { echo "release: v$v is already tagged" >&2; exit 1; }
+[ -z "$(git status --porcelain)" ] || { echo "release: commit or stash your changes first" >&2; exit 1; }
+grep -q '^## \[Unreleased\]' CHANGELOG.md || { echo "release: CHANGELOG.md has no ## [Unreleased]" >&2; exit 1; }
+[ -n "$(notes Unreleased)" ] || { echo "release: ## [Unreleased] is empty" >&2; exit 1; }
+
+sed -i.bak "s/^## \[Unreleased\]/## [$v] - $(date +%F)/" CHANGELOG.md && rm CHANGELOG.md.bak
+echo "$v" > VERSION
+cp VERSION mods/ws-switcher/VERSION
+git add CHANGELOG.md VERSION mods/ws-switcher/VERSION
+git commit -q -m "release: $v"
+git tag -a "v$v" -m "Workspaces $v"
+echo "release: committed and tagged v$v"
+
+if [ "$publish" = --publish ]; then
+  git push -q origin HEAD "v$v"
+  notes "$v" | gh release create "v$v" --title "Workspaces $v" --notes-file -
+else
+  echo "release: not pushed. To publish: git push origin HEAD v$v && scripts/release.sh --notes $v | gh release create v$v --title \"Workspaces $v\" --notes-file -"
+fi

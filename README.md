@@ -16,16 +16,27 @@ or a review arrives, and moves to done when it merges. Agent presets
 workspace, are managed in the Agent presets screen (model and effort included;
 open it from the sidebar footer), and start from the tab bar's + menu or a
 card's Start;
-`examples/presets/` has three to start from, among them an orchestrator that
+`examples/presets/` has four to start from, among them a watcher that can't
+push or write to GitHub (for automations that only look) and an orchestrator that
 splits a task across helper agents with herdr-core's `hc`; its helpers show
 under it in the Agents list. Automations start an agent by
 themselves: on a schedule (once or repeating), when a task enters a board
 column, when an agent finishes or needs you, when files change, when a PR or
 issue is opened on GitHub (asked every 2 minutes through `gh`), or when another
-app calls `herdr-ws-run`. A schedule missed while the Mac was off runs when Herdr
+app calls `herdr-ws-run`. They run while Herdr is open, or all the time once you
+turn on Keep running at the foot of the Automations list: a background process
+that herdr-core keeps going while Herdr is closed (it needs Node 20.6 or newer).
+A schedule missed while nothing was running runs when Herdr
 opens if it was due in the last 12 hours; older ones are reported as missed, with
 a toast, for Run now. Each run is a tab in the workspace's Automations space;
-`examples/automations/` has two to start from. An automation can have a check, a
+The Automations screen lists seven ready-made ones to start from (issue to
+pull request, PR review, a broken default branch, a morning review and more):
+open one, read it, and Create adds it. Like presets, an automation is
+either one workspace's own (`~/.herdr/workspaces/<id>/automations/`) or for
+every workspace (`~/.herdr/automations/`): a global one runs in each workspace
+as that workspace's own, a workspace's own of the same name replaces it there,
+and its switch turns it off for one workspace alone. `github * issue opened`
+watches every repo of the workspace it runs in. An automation can have a check, a
 command that runs first, so no agent starts when there's nothing to do; it runs only once you've allowed it. You make one by saying what it
 should do and when, in your own words: Claude drafts the trigger, the agent,
 its model and the prompt, and you read the draft before it's saved. Agents in a
@@ -51,6 +62,7 @@ says how), or by hand:
    ```sh
    ln -s ~/.config/herdr-app/mods/ws-switcher/bin/herdr-ws-agent ~/.local/bin/
    ln -s ~/.config/herdr-app/mods/ws-switcher/bin/herdr-ws-run ~/.local/bin/
+   ln -s ~/.config/herdr-app/mods/ws-switcher/bin/herdr-ws-runner ~/.local/bin/
    ```
    ```json
    { "programs": { "claude": { "run": ["herdr-ws-agent", "claude"] },
@@ -76,21 +88,29 @@ says how), or by hand:
    - presets for every workspace: `examples/presets/*.md` to
      `~/.config/herdr-core/templates/` (where `hc run <name>` finds them too);
    - presets for one workspace: to `~/.herdr/workspaces/<id>/agents/`;
-   - automations: `examples/automations/*.md` to
-     `~/.herdr/workspaces/<id>/automations/`. Both use the `reviewer` preset and
-     a folder called `api`: change that to one of the workspace's folders (the
-     note at the end of each file says where). A copied automation is on, so add
-     `enabled: false` to its front matter if you'd rather read it first.
+   - automations need no copying: the Automations screen lists the ready-made
+     ones (`mods/ws-automations/starters/`), and Create adds the one you open.
+     They're written for the `implementer` and `reviewer` presets.
 
 **What it touches:** it reads `~/.herdr/workspaces` and the folders of
-each workspace's root. It writes `~/.herdr/workspaces/.index`, a new
+each workspace's root. Two of the ready-made automations (`issue-to-pr`,
+`main-is-red`) tell their agent to make git worktrees under
+`~/.herdr/worktrees/` and to push branches and open pull requests with your
+`gh` login; two have a check that runs `git log` and `gh` in the workspace's
+folders, and `morning-review`'s also runs `git fetch` in each repo. It writes `~/.herdr/workspaces/.index`, a new
 workspace's files when you make one, its `workspace.jsonc` when you rename it,
 task files in `~/.herdr/workspaces/<id>/tasks/` and automation files in
-`~/.herdr/workspaces/<id>/automations/` (from the Automations screen, from
+`~/.herdr/workspaces/<id>/automations/` and `~/.herdr/automations/` (the
+ones for every workspace; from the Automations screen, a ready-made one
+included, from
 `herdr-ws-run --add`, `--off` and `--on`, and `enabled: false` after a one-time
 one runs). Following a card's pull request writes `pr:` into its task and, when
 it merges, its `status:`, and types a message into the card's agent with
-`hc send` when a check fails, a review arrives or it conflicts. Deleting a workspace, a task or an
+`hc send` when a check fails, a review arrives or it conflicts. With Keep running
+on, that work is done by a Node process herdr-core holds as the terminal
+`herdr-ws-runner`: it writes `~/.herdr/runner/`, starts runs with `hc run`, ends
+old run terminals with `hc kill`, and reads herdr-core's terminal list, the app's
+layout document, `shared.json` and `programs.json`. Deleting a workspace, a task or an
 automation (after a confirmation) moves it to the Trash. The board's Worktree runs
 `git worktree add` on a new `task/…` branch; otherwise your repos aren't
 touched. It runs `sh` (editor, Trash, symlinked folders), `herdr-app do` (the
@@ -117,6 +137,21 @@ Built for Herdr 0.1.14; `ws-spaces`, `ws-agents`, `ws-tabs`, `ws-new-menu` and
 `ws-chrome` are copies of that version's `spaces`, `agents`, `tabs`, `new-menu`
 and `workspace-chrome`.
 
+## Updating
+
+`CHANGELOG.md` lists what changed in each version, and your copy says which
+one you have in `~/.config/herdr-app/mods/ws-switcher/VERSION` (none: older
+than 0.1.0's notes, so read them all). To hear about new versions, watch the
+repo on GitHub for releases (Watch → Custom → Releases).
+
+- **You copied the files as they are:** copy `layouts/workspaces.json` and the
+  nine folders in `mods/` again, and do what the new versions' notes say
+  (a new script to link, say). Your workspaces, tasks, presets and automations
+  live elsewhere and aren't touched.
+- **You or your agent changed them:** tell your agent "apply what's in this
+  repo's `CHANGELOG.md` after version <yours>, keeping my changes", with
+  `RECIPE.md` for the details of each one.
+
 ## License
 
 Apache License 2.0. `ws-spaces`, `ws-agents`, `ws-tabs`, `ws-new-menu` and
@@ -126,3 +161,16 @@ Apache License 2.0. `ws-spaces`, `ws-agents`, `ws-tabs`, `ws-new-menu` and
 
 Edit the live files in `~/.config/herdr-app`, then copy them here with
 `scripts/sync-from-home.sh`.
+
+Every change people would notice gets a line under `## [Unreleased]` in
+`CHANGELOG.md`, in the same commit. `scripts/release.sh <version>` turns that
+into a version (the middle number for anything new, the last for fixes only),
+writes `VERSION`, commits and tags it; `--publish` also pushes and makes the
+GitHub release from those notes.
+
+To try a change without touching your own window, `scripts/sandbox.sh up`
+opens a second Herdr with its own core, home and two demo workspaces under
+`/tmp/herdr-ws-sandbox`, running copies of the live mods. `sandbox.sh app …`
+and `sandbox.sh hc …` talk to it, `sync` copies the live mods in again, and
+`down` ends and deletes it. Agents and `gh` aren't signed in there: Claude
+stops at its first-run question, which is enough to see a run start.

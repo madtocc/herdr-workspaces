@@ -5,7 +5,10 @@
 //
 // An automation is ~/.herdr/workspaces/<id>/automations/<name>.md: front matter
 // (description, when, agent, model, effort, folder, check, card, enabled), then
-// its prompt. This screen writes the files. The switcher's runner
+// its prompt. One for every workspace is ~/.herdr/automations/<name>.md, the same
+// file plus `off:` (the workspaces it's off in); the list shows the workspace's
+// own first, then those, as agent presets are shown. A workspace's own of the same
+// name replaces a global one there. This screen writes the files. The switcher's runner
 // (mods/ws-switcher/automations.js) reads them, starts the runs, and publishes
 // both in shared "workspaces.automations" and "workspaces.automation.runs". Run
 // now asks it through "workspaces.automation.run", because a dialog's tasks end
@@ -27,10 +30,11 @@
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
-import { theme, shared, setShared, props, closeOverlay, home, readTextFile, writeTextFile, exec, notify, agents, terminals, run } from "herdr";
+import { theme, shared, setShared, props, closeOverlay, home, appHome, readTextFile, writeTextFile, exec, notify, agents, terminals, run } from "herdr";
 import { parseWhen, describe, nextAt, shortTime } from "./when.js";
 import { KNOBS, words, programOf, knobsIn } from "./knobs.js";
 import { runCheck } from "./check.js";
+import * as fs from "fs/promises";
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const MODEL_WORD = /^[A-Za-z0-9._:/@-]+$/;
@@ -42,12 +46,18 @@ if command -v trash >/dev/null 2>&1; then trash "$1" && echo Trash && exit 0; fi
 if command -v gio >/dev/null 2>&1; then gio trash "$1" && echo Trash && exit 0; fi
 mkdir -p "$2" && mv "$1" "$2/" && echo "$2"`;
 
+const globalDir = () => `${home()}/.herdr/automations`;
+const scopeOf = (a) => a?.scope ?? "workspace";
+const namesIn = (v) => String(v ?? "").split(",").map((w) => w.trim()).filter(Boolean);
 const tilde = (p) => (p === home() ? "~" : p.startsWith(home() + "/") ? "~" + p.slice(home().length) : p);
 const message = (e) => String(e?.message ?? e);
 const oneLine = (s) => String(s ?? "").replace(/\s*\n\s*/g, " ").trim();
 const label = (c) => c.charAt(0).toUpperCase() + c.slice(1).replace(/[-_]+/g, " ");
 const pad = (n) => String(n).padStart(2, "0");
 const defOf = (id) => (shared("workspaces.defs") ?? []).find((d) => d.id === id) ?? null;
+// With no workspace shown, the screen is about the automations for every workspace
+// alone: this stands in for the workspace, so the editor has something to ask.
+const nowhere = () => ({ none: true, id: "", name: "", root: home(), dir: "", folders: [], children: [], board: {} });
 const columnsOf = (def) => (Array.isArray(def?.board?.columns) && def.board.columns.length ? def.board.columns : COLUMNS).map((c) => String(c).toLowerCase());
 const rel = (def, path) => (path === def.root ? "" : path.startsWith(def.root + "/") ? path.slice(def.root.length + 1) : tilde(path));
 const folderChoices = (def) => (def.folders.length ? def.folders : def.children.map((c) => `${def.root}/${c}`)).map((f) => rel(def, f));
@@ -81,9 +91,9 @@ const DRAFT_TIMEOUT = 120e3;
 // What Claude answers with: every field, as strings (card a boolean).
 const SCHEMA = {
   type: "object", additionalProperties: false,
-  required: ["name", "description", "when", "agent", "model", "effort", "folder", "check", "card", "prompt", "note"],
+  required: ["scope", "name", "description", "when", "agent", "model", "effort", "folder", "check", "card", "prompt", "note"],
   properties: {
-    name: { type: "string" }, description: { type: "string" }, when: { type: "string" },
+    scope: { type: "string", enum: ["workspace", "global"] }, name: { type: "string" }, description: { type: "string" }, when: { type: "string" },
     agent: { type: "string" }, model: { type: "string" }, effort: { type: "string" }, folder: { type: "string" },
     check: { type: "string" }, card: { type: "boolean" }, prompt: { type: "string" }, note: { type: "string" },
   },
@@ -91,6 +101,7 @@ const SCHEMA = {
 const GUIDE = `You set up automations for Herdr, a desktop app for terminals and coding agents. An automation starts a coding agent by itself, with a prompt, as a new tab in the workspace's "Automations" space, while Herdr is open. The person says what they want in their own words; you answer with the automation's fields. Nothing is saved until they have read your draft and clicked Create or Save.
 
 Fields:
+- scope: "workspace" (this workspace only) or "global" (every workspace). Keep the scope you're given unless the person says otherwise: "global" when they say it's for all or every workspace, each project, or everywhere; "workspace" when they say only here. A global one runs in each workspace separately, as that workspace's own, so nothing in it may belong to this workspace alone: its prompt and check name no path or repo from the lists below and use {{folder}}, {{workspace}} and commands that work from the folder they run in; folder is ""; agent is "" or a preset marked global; a github trigger is "github * pr opened" or "github * issue opened".
 - name: a short file name in lowercase words joined by dashes, saying what it does (board-sync, morning-review). Not one of the names taken.
 - description: one line, under 80 characters: what it does.
 - when: what sets it off, in exactly one of these forms:
@@ -101,7 +112,7 @@ Fields:
   - task enters <column>: a task on the workspace's board moves into that column
   - agent done, agent blocked: an agent in the workspace finishes, or needs the person; a tab name after it listens to that tab only
   - files <folder>: something changes under that folder (from the root)
-  - github <folder or owner/name> pr opened, github <folder or owner/name> issue opened, optionally followed by "by others" (leaves out the person's own) and label:<name>: a new pull request or issue on GitHub. It only sees new ones, never edits, comments, moves, assignments or closes; for those, use a schedule whose prompt checks GitHub.
+  - github <folder or owner/name> pr opened, github <folder or owner/name> issue opened, optionally followed by "by others" (leaves out the person's own) and label:<name>: a new pull request or issue on GitHub. It only sees new ones, never edits, comments, moves, assignments or closes; for those, use a schedule whose prompt checks GitHub. "github * issue opened" watches every folder of the workspace that has a GitHub remote.
   - link: only when started by hand (Run now) or from a script
   Prefer the plain forms. Use cron only when they can't say it: every 30 minutes on weekdays from 9:00 to 18:30 is */30 9-18 * * 1-5.
 - agent: "" for the board's agent, else exactly one of the presets or installed agents listed. A preset that fits the job wins (a reviewer for reviews).
@@ -167,7 +178,8 @@ function runState(r, ag, tm) {
   const a = ag.find((x) => x.address === r.terminal);
   if (a) return STATE[a.status] ?? a.status;
   // Not an agent (or not one that reports): its tab is still open, or it's gone.
-  return tm.some((x) => x.address === r.terminal && x.state === "live") ? "open" : "closed";
+  // `stuck`: an agent that reported nothing a minute in, so it's asking something first.
+  return tm.some((x) => x.address === r.terminal && x.state === "live") ? (r.stuck ? "needs you" : "open") : "closed";
 }
 
 // shared "workspaces.automations" with one changed or (null) gone, until the runner confirms it.
@@ -178,6 +190,15 @@ function updateShared(ws, name, record) {
   if (i >= 0) list.splice(i, 1);
   if (record) { list.push(record); list.sort((a, b) => a.name.localeCompare(b.name)); }
   setShared("workspaces.automations", all);
+}
+
+// shared "workspaces.automations.global" the same way: the global ones as their files have them.
+function updateGlobal(name, record) {
+  const list = JSON.parse(JSON.stringify(shared("workspaces.automations.global") ?? []));
+  const i = list.findIndex((x) => x.name === name);
+  if (i >= 0) list.splice(i, 1);
+  if (record) { list.push(record); list.sort((a, b) => a.name.localeCompare(b.name)); }
+  setShared("workspaces.automations.global", list);
 }
 
 function presetsFor(id) {
@@ -206,7 +227,7 @@ export default class Automations extends View {
     if (!props()?.workspace) {
       const all = shared("workspaces.automations") ?? {};
       const ws = [this.workspace, ...Object.keys(all)].find((id) => id && (all[id] ?? []).some((a) => a.allowed === false));
-      if (ws) { this.workspace = ws; waiting = all[ws].find((a) => a.allowed === false).name; }
+      if (ws) { this.workspace = ws; const a = all[ws].find((x) => x.allowed === false); waiting = { scope: scopeOf(a), name: a.name }; }
     }
     this.nameIn = InputState.new({ value: "", placeholder: "daily-review" });
     this.descIn = InputState.new({ value: "", placeholder: "What it does, in one line" });
@@ -231,9 +252,10 @@ export default class Automations extends View {
       input.on("focus", (_e, cx) => { this.focusedIn = input; cx.notify(); });
       input.on("blur", (_e, cx) => { if (this.focusedIn === input) this.focusedIn = null; cx.notify(); });
     }
-    this.sel = null;  // { name, isNew }
-    this.snap = null; // what was loaded: { text, file, name, description, when, agent, model, effort, folder, check, card, enabled, body }
-    this.choice = { agent: "", model: "", effort: "", folder: "", card: false, enabled: true };
+    this.sel = null;  // { scope: "workspace" | "global", name, isNew }
+    this.snap = null; // what was loaded: { text, file, name, description, when, agent, model, effort, folder, check, card, enabled, off, offHere, body }
+    // enabled: as its file says. offHere (a global one): off in this workspace, by its file's `off:` line.
+    this.choice = { agent: "", model: "", effort: "", folder: "", card: false, enabled: true, offHere: false };
     this.details = false; // the fields shown, not just the summary
     this.manual = false;  // a new one being filled in by hand, before any draft
     this.drafting = null; // the selection a draft is for, while Claude works
@@ -251,8 +273,30 @@ export default class Automations extends View {
       this.codexModels = [...new Set([...(text ?? "").matchAll(/^\s*model\s*=\s*"([^"]+)"/gm)].map((m) => m[1]))];
       cx.notify();
     });
+    // The ready-made ones that come with this mod (starters/*.md): listed under the
+    // others until one of that name exists, and opened as a new automation, filled in.
+    this.starters = [];
+    cx.spawn(async (cx) => {
+      const dir = `${appHome()}/mods/ws-automations/starters`;
+      let names = [];
+      try { names = (await fs.readdir(dir)).filter((n) => n.endsWith(".md") && !n.startsWith(".")).sort(); } catch {}
+      for (const n of names) {
+        const text = await readTextFile(`${dir}/${n}`).catch(() => null);
+        if (text === null) continue;
+        const { head, body } = split(text);
+        const when = oneLine(field(head, "when") ?? "");
+        const trigger = parseWhen(when);
+        if (!NAME.test(n.slice(0, -3)) || trigger.kind === "error") continue;
+        this.starters.push({
+          name: n.slice(0, -3), description: field(head, "description") ?? "", when, summary: describe(trigger),
+          agent: field(head, "agent") ?? "", model: field(head, "model") ?? "", effort: field(head, "effort") ?? "",
+          check: oneLine(field(head, "check") ?? ""), card: /^(true|yes|on|1)$/i.test(field(head, "card") ?? ""), body: body.trim(),
+        });
+      }
+      cx.notify();
+    });
     const def = defOf(this.workspace);
-    if (def && waiting) this.pick({ name: waiting, isNew: false }, null, cx);
+    if (def && waiting) this.pick({ ...waiting, isNew: false }, null, cx);
     if (def) cx.spawn(async (cx) => {
       for (const f of folderChoices(def)) {
         const path = f.startsWith("/") || f.startsWith("~") ? f.replace(/^~/, home()) : `${def.root}/${f}`;
@@ -264,11 +308,31 @@ export default class Automations extends View {
     });
   }
 
-  def() { return defOf(this.workspace); }
+  def() { return defOf(this.workspace) ?? nowhere(); }
+  none() { return !defOf(this.workspace); }
   // A new one shows only the Describe box until it's drafted or you choose to fill it in.
   blank() { return Boolean(this.sel?.isNew && !this.drafted && !this.manual); }
   askState() { return this.blank() ? this.askIn : this.changeIn; }
-  list() { return (shared("workspaces.automations") ?? {})[this.workspace] ?? []; }
+  // This workspace's: its own, then the global ones it doesn't replace. With no
+  // workspace, the global ones as their files have them.
+  list() {
+    if (this.none()) return this.globals().map((g) => ({ ...g, everywhere: g.enabled }));
+    return (shared("workspaces.automations") ?? {})[this.workspace] ?? [];
+  }
+  globals() { return shared("workspaces.automations.global") ?? []; }
+  // The saved one the selection names. A global one this workspace replaces isn't in
+  // its list: that comes as its file has it, marked `replaced`.
+  lookup(sel) {
+    if (!sel || sel.isNew) return null;
+    const a = this.list().find((x) => x.name === sel.name && scopeOf(x) === sel.scope);
+    if (a || sel.scope !== "global") return a ?? null;
+    const g = this.globals().find((x) => x.name === sel.name);
+    return g ? { ...g, replaced: true, everywhere: g.enabled, enabled: false, next: null, warning: null } : null;
+  }
+  same(a) { return Boolean(this.sel && !this.sel.isNew && this.sel.name === a.name && this.sel.scope === scopeOf(a)); }
+  taken(scope) { return new Set((scope === "global" ? this.globals() : this.list().filter((a) => scopeOf(a) === "workspace")).map((a) => a.name)); }
+  dirOf(scope) { return scope === "global" ? globalDir() : `${this.def()?.dir}/automations`; }
+  globalPresets() { return (shared("workspaces.presets")?.global ?? []).filter((x) => !x.error); }
 
   dirty() {
     const s = this.snap, c = this.choice;
@@ -276,7 +340,8 @@ export default class Automations extends View {
     return (this.sel?.isNew && this.nameIn.value().trim() !== s.name)
       || this.descIn.value() !== s.description || this.whenIn.value() !== s.when || this.bodyIn.value().trim() !== s.body
       || oneLine(this.checkIn.value()) !== s.check
-      || c.agent !== s.agent || c.model !== s.model || c.effort !== s.effort || c.folder !== s.folder || c.card !== s.card || c.enabled !== s.enabled;
+      || c.agent !== s.agent || c.model !== s.model || c.effort !== s.effort || c.folder !== s.folder || c.card !== s.card || c.enabled !== s.enabled
+      || c.offHere !== (s.offHere ?? false);
   }
 
   // Opens an automation (or a new one) in the editor; unsaved edits ask for a second click.
@@ -310,16 +375,18 @@ export default class Automations extends View {
       this.whenIn.set_value(snap.when);
       this.checkIn.set_value(snap.check);
       this.bodyIn.set_value(snap.body);
-      this.choice = { agent: snap.agent, model: snap.model, effort: snap.effort, folder: snap.folder, card: snap.card, enabled: snap.enabled };
+      this.choice = { agent: snap.agent, model: snap.model, effort: snap.effort, folder: snap.folder, card: snap.card, enabled: snap.enabled, offHere: snap.offHere ?? false };
       cx.notify();
     };
-    if (fill) return load({ text: null, file: null, ...fill }, cx);
-    const file = `${this.def()?.dir}/automations/${sel.name}.md`;
+    if (fill) return load({ text: null, file: null, off: [], offHere: false, ...fill }, cx);
+    const file = `${this.dirOf(sel.scope)}/${sel.name}.md`;
     cx.spawn(async (cx) => {
       const text = await readTextFile(file);
       if (text === null) { this.error = `${tilde(file)} is gone.`; cx.notify(); return; }
       const { head, body } = split(text);
+      const off = sel.scope === "global" ? namesIn(field(head, "off")) : [];
       load({
+        off, offHere: off.includes(this.workspace),
         text, file, name: sel.name, description: field(head, "description") ?? "", when: field(head, "when") ?? "",
         agent: field(head, "agent") ?? "", model: field(head, "model") ?? "", effort: field(head, "effort") ?? "", folder: field(head, "folder") ?? "",
         check: oneLine(field(head, "check") ?? ""),
@@ -330,13 +397,28 @@ export default class Automations extends View {
   }
 
   fresh(cx) {
-    const names = new Set(this.list().map((a) => a.name));
+    const names = new Set([...this.list(), ...this.globals()].map((a) => a.name));
     let n = 1;
     while (names.has(`automation-${n}`)) n++;
-    this.pick({ name: "", isNew: true }, {
+    this.pick({ scope: this.none() ? "global" : "workspace", name: "", isNew: true }, {
       name: `automation-${n}`, description: "", when: "weekdays 09:00", agent: "", model: "", effort: "", folder: "", check: "", card: false, enabled: true, body: "",
     }, cx);
     this.askIn.focus();
+  }
+
+  // A ready-made one, as a new automation with its fields filled in. Nothing is
+  // written until Create. An agent this workspace doesn't have is left out (the board's agent).
+  useStarter(s, cx) {
+    const def = this.def();
+    const known = !s.agent || presetsFor(def.id).some((p) => p.name === s.agent) || installedAgents().some((a) => a.key === s.agent);
+    this.pick({ scope: this.none() ? "global" : "workspace", name: "", isNew: true, starter: s.name }, {
+      name: s.name, description: s.description, when: s.when, agent: known ? s.agent : "", model: known ? s.model : "", effort: known ? s.effort : "",
+      folder: "", check: s.check, card: s.card, enabled: true, body: s.body,
+    }, cx);
+    // Unsaved changes elsewhere asked for a second click first.
+    if (this.sel?.starter !== s.name) return;
+    this.manual = true;
+    if (!known) this.notice = `It names the "${s.agent}" preset, which isn't here, so it starts the board's agent. Details has the agents you can pick.`;
   }
 
   // --- Describe it ---
@@ -346,13 +428,16 @@ export default class Automations extends View {
     const presets = presetsFor(def.id);
     const d = new Date();
     const lines = [
-      `Workspace: ${def.name} (id ${def.id}). Root: ${def.root}`,
-      `Folders, from the root: ${folderChoices(def).join(", ") || "none"}`,
-      `GitHub repos: ${this.ghRepos.map((g) => `${g.folder} is ${g.repo}`).join("; ") || "none found"}`,
+      ...(def.none ? ["No workspace is shown, so this one is for every workspace: its scope is global. It runs in each workspace's root, or in a folder named from that root."] : [
+        `Workspace: ${def.name} (id ${def.id}). Root: ${def.root}`,
+        `Folders, from the root: ${folderChoices(def).join(", ") || "none"}`,
+        `GitHub repos: ${this.ghRepos.map((g) => `${g.folder} is ${g.repo}`).join("; ") || "none found"}`,
+      ]),
       `Board columns: ${columnsOf(def).join(", ")}. The board's agent: ${boardAgentOf(def)}`,
-      `Presets: ${presets.map((p) => `${p.name} (runs: ${p.command ?? "?"})${p.description ? `: ${p.description}` : ""}`).join("; ") || "none"}`,
+      `Presets: ${presets.map((p) => `${p.name} (${p.scope === "global" ? "global" : "this workspace's"}; runs: ${p.command ?? "?"})${p.description ? `: ${p.description}` : ""}`).join("; ") || "none"}`,
       `Installed agents: ${installedAgents().map((a) => a.key).join(", ") || "claude"}`,
-      `Names taken: ${this.list().map((a) => a.name).join(", ") || "none"}`,
+      `Names taken: ${[...new Set([...this.list(), ...this.globals()].map((a) => a.name))].join(", ") || "none"}`,
+      `Scope now: ${this.sel.scope} (${this.sel.scope === "global" ? "every workspace" : "this workspace only"})${this.sel.isNew ? "" : ". It's saved, so the scope stays as it is"}`,
       `Now: ${d.toLocaleDateString("en-GB", { weekday: "short" })} ${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}, this computer's clock`,
     ];
     if (current) lines.push("", "The current automation (change only what's asked):", JSON.stringify(current, null, 2));
@@ -372,7 +457,7 @@ export default class Automations extends View {
   current() {
     const c = this.choice;
     return {
-      name: this.sel.isNew ? this.nameIn.value().trim() : this.sel.name, description: this.descIn.value(), when: this.whenIn.value(),
+      scope: this.sel.scope, name: this.sel.isNew ? this.nameIn.value().trim() : this.sel.name, description: this.descIn.value(), when: this.whenIn.value(),
       agent: c.agent, model: c.model, effort: c.effort, folder: c.folder, check: oneLine(this.checkIn.value()), card: c.card, prompt: this.bodyIn.value().trim(),
     };
   }
@@ -413,10 +498,13 @@ export default class Automations extends View {
   // A draft into the editor, kept to what this workspace has: anything else stays as it was.
   apply(def, d) {
     const s = (v) => (typeof v === "string" ? v.trim() : "");
+    // In place: the draft belongs to this selection object.
+    if (this.sel.isNew && (d.scope === "global" || d.scope === "workspace")) this.sel.scope = def.none ? "global" : d.scope;
+    const global = this.sel.scope === "global";
     if (this.sel.isNew) {
       const base = s(d.name).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[-._]+|[-._]+$/g, "").slice(0, 60);
       if (NAME.test(base)) {
-        const taken = new Set(this.list().map((a) => a.name));
+        const taken = new Set([...this.list(), ...this.globals()].map((a) => a.name));
         let name = base, n = 2;
         while (taken.has(name)) name = `${base}-${n++}`;
         this.nameIn.set_value(name);
@@ -430,9 +518,10 @@ export default class Automations extends View {
     this.tried = null;
     const c = this.choice;
     const agent = s(d.agent);
-    const okAgent = !agent || presetsFor(def.id).some((p) => p.name === agent) || installedAgents().some((a) => a.key === agent) ? agent : c.agent;
+    // A global one runs in every workspace: only what they all have (global presets, a folder from the root).
+    const okAgent = !agent || (global ? this.globalPresets() : presetsFor(def.id)).some((p) => p.name === agent) || installedAgents().some((a) => a.key === agent) ? agent : global ? "" : c.agent;
     const folder = s(d.folder);
-    const okFolder = !folder || folderChoices(def).includes(folder) ? folder : c.folder;
+    const okFolder = global ? (/^[/~]/.test(folder) ? "" : folder) : !folder || folderChoices(def).includes(folder) ? folder : c.folder;
     const knobs = KNOBS[programOf(commandOf(def, okAgent).argv)];
     const model = knobs && MODEL_WORD.test(s(d.model)) ? s(d.model) : "";
     const effort = knobs && knobs.effort.levels.includes(s(d.effort)) ? s(d.effort) : "";
@@ -447,33 +536,45 @@ export default class Automations extends View {
     const trigger = parseWhen(when);
     const showDetails = (why) => { this.error = why; this.details = true; cx.notify(); };
     if (!NAME.test(name)) return showDetails("A name is letters, digits, dots, dashes or underscores, starting with a letter or digit.");
-    if (sel.isNew && this.list().some((a) => a.name === name)) return showDetails(`There's already an automation called "${name}".`);
+    const scope = sel.scope, global = scope === "global";
+    if (sel.isNew && this.taken(scope).has(name)) return showDetails(`There's already an automation called "${name}"${global ? " for every workspace" : ` in ${def.name}`}.`);
     if (trigger.kind === "error") return showDetails(trigger.error);
     const c = this.choice;
-    const file = `${def.dir}/automations/${name}.md`;
+    const file = `${this.dirOf(scope)}/${name}.md`;
     const body = this.bodyIn.value();
     const check = oneLine(this.checkIn.value());
+    // A global one's `off:` line: the other workspaces as they were, and this one as chosen.
+    const off = global ? [...(this.snap.off ?? []).filter((w) => w !== def.id), ...(c.offHere ? [def.id] : [])] : [];
     const text = automationText(sel.isNew ? null : this.snap.text, {
       description: this.descIn.value(), when, agent: c.agent, model: c.model, effort: c.effort, folder: c.folder,
-      check, card: c.card ? "true" : null, enabled: c.enabled ? null : "false",
+      check, card: c.card ? "true" : null, enabled: c.enabled ? null : "false", ...(global ? { off: off.join(", ") } : {}),
     }, body);
     this.busy = true;
     cx.spawn(async (cx) => {
       try {
         // You've read it here and saved it: that line may run. Said first, so the runner knows when it reads the file.
-        if (check) setShared("workspaces.automation.allow", { workspace: def.id, name, check, at: Date.now() });
+        if (check) setShared("workspaces.automation.allow", { workspace: global ? "*" : def.id, name, check, at: Date.now() });
         await writeTextFile(file, text, sel.isNew ? null : this.snap.text);
-        updateShared(def.id, name, {
-          name, file, description: oneLine(this.descIn.value()), when, trigger, summary: describe(trigger),
+        const record = {
+          name, file, scope, description: oneLine(this.descIn.value()), when, trigger, summary: describe(trigger),
           agent: c.agent || null, model: c.model || null, effort: c.effort || null, folder: c.folder || null, check: check || null, card: c.card, enabled: c.enabled,
           body: body.replace(/<!--[\s\S]*?-->/g, "").trim(), error: null, next: null, warning: null, allowed: true,
-        });
-        this.sel = { name, isNew: false };
-        this.snap = { text, file, name, description: this.descIn.value(), when: this.whenIn.value(), ...c, check, body: body.trim() };
+        };
+        if (global) {
+          updateGlobal(name, { ...record, off });
+          // Not where this workspace has its own of that name: that one runs here.
+          if (!def.none && !this.taken("workspace").has(name)) updateShared(def.id, name, { ...record, off, everywhere: c.enabled, enabled: c.enabled && !c.offHere });
+        } else updateShared(def.id, name, record);
+        this.sel = { scope, name, isNew: false };
+        this.snap = { text, file, name, description: this.descIn.value(), when: this.whenIn.value(), ...c, off, check, body: body.trim() };
         this.drafted = false;
         this.draftNote = null;
         this.error = null;
-        this.notice = c.enabled ? "Saved. It's on." : "Saved. It's off: only Run now and herdr-ws-run start it.";
+        const others = off.filter((w) => w !== def.id).map((w) => defOf(w)?.name ?? w);
+        this.notice = !c.enabled ? `Saved. It's off${global ? " in every workspace" : ""}: only Run now and herdr-ws-run start it.`
+          : !global ? "Saved. It's on."
+          : c.offHere ? `Saved. It's off in ${def.name}, and on in the other workspaces${others.length ? ` but ${others.join(", ")}` : ""}.`
+          : `Saved. It's on in every workspace${others.length ? ` but ${others.join(", ")}` : ""}.`;
       } catch (e) {
         this.error = sel.isNew
           ? `Couldn't save: an automation called "${name}" may already be there (${message(e)}).`
@@ -493,8 +594,9 @@ export default class Automations extends View {
       try {
         const r = await exec("sh", ["-c", TRASH, "sh", this.snap.file, `${home()}/.herdr/workspaces/.trash`]);
         if (r.code !== 0) throw new Error(r.stderr.trim() || `exit ${r.code}`);
-        updateShared(this.workspace, sel.name, null);
-        notify({ title: `Deleted the ${sel.name} automation`, body: r.stdout.trim() === "Trash" ? "Its file is in the Trash." : `Its file is in ${tilde(r.stdout.trim())}.`, level: "success" });
+        if (sel.scope === "global") updateGlobal(sel.name, null);
+        if (!this.none() && (sel.scope !== "global" || !this.taken("workspace").has(sel.name))) updateShared(this.workspace, sel.name, null);
+        notify({ title: `Deleted the ${sel.name} automation${sel.scope === "global" ? " from every workspace" : ""}`, body: r.stdout.trim() === "Trash" ? "Its file is in the Trash." : `Its file is in ${tilde(r.stdout.trim())}.`, level: "success" });
         this.sel = null;
         this.snap = null;
       } catch (e) {
@@ -507,24 +609,39 @@ export default class Automations extends View {
   }
 
   // A row's switch: turns it on or off at once, rewriting only its `enabled` line.
+  // A global one's row is about this workspace: it rewrites the `off:` line. One that's
+  // off everywhere, turned on here, comes on here alone (off in each other workspace).
+  // With no workspace shown, a global one's row is about them all: its `enabled` line.
   toggle(a, cx) {
-    const open = this.sel && !this.sel.isNew && this.sel.name === a.name;
+    const open = this.same(a);
     if (open && this.dirty()) { this.error = "Save or discard this automation's changes first."; cx.notify(); return; }
-    const on = !a.enabled, ws = this.workspace;
-    updateShared(ws, a.name, { ...a, enabled: on, next: on ? a.next : null });
+    const none = this.none();
+    const on = !a.enabled, ws = this.workspace, global = scopeOf(a) === "global" && !none;
+    const { everywhere: _e, ...asFiled } = a;
+    const show = (enabled) => (none ? updateGlobal(a.name, { ...asFiled, enabled })
+      : updateShared(ws, a.name, enabled === a.enabled ? a : { ...a, enabled, next: enabled ? a.next : null, ...(global && enabled ? { everywhere: true } : {}) }));
+    show(on);
     cx.notify();
     cx.spawn(async (cx) => {
       try {
         const old = await readTextFile(a.file);
         if (old === null) throw new Error(`${tilde(a.file)} is gone.`);
-        const text = automationText(old, { enabled: on ? null : "false" }, split(old).body);
+        let fields = { enabled: on ? null : "false" }, off = [];
+        if (global) {
+          const head = split(old).head;
+          const was = namesIn(field(head, "off")).filter((w) => w !== ws);
+          const everywhere = !/^(false|no|off|0)$/i.test(field(head, "enabled") ?? "");
+          off = !on ? [...was, ws] : everywhere ? was : (shared("workspaces.defs") ?? []).map((d) => d.id).filter((w) => w !== ws);
+          fields = { ...(on ? { enabled: null } : {}), off: off.join(", ") };
+        }
+        const text = automationText(old, fields, split(old).body);
         await writeTextFile(a.file, text, old);
-        if (this.sel && !this.sel.isNew && this.sel.name === a.name && this.snap) {
-          this.snap = { ...this.snap, text, enabled: on };
-          this.choice.enabled = on;
+        if (this.same(a) && this.snap) {
+          this.snap = global ? { ...this.snap, text, enabled: true, off, offHere: !on } : { ...this.snap, text, enabled: on };
+          if (global) { this.choice.enabled = true; this.choice.offHere = !on; } else this.choice.enabled = on;
         }
       } catch (e) {
-        updateShared(ws, a.name, a);
+        show(a.enabled);
         notify({ title: `Couldn't turn ${a.name} ${on ? "on" : "off"}`, body: message(e), level: "error" });
       }
       cx.notify();
@@ -542,10 +659,12 @@ export default class Automations extends View {
   // Allows the saved check as it's shown: the runner may run that line from now on.
   allow(cx) {
     const def = this.def(), sel = this.sel;
-    const saved = sel && !sel.isNew ? this.list().find((a) => a.name === sel.name) : null;
+    const saved = this.lookup(sel);
     if (!def || !saved?.check) return;
-    setShared("workspaces.automation.allow", { workspace: def.id, name: saved.name, check: saved.check, at: Date.now() });
-    updateShared(def.id, saved.name, { ...saved, allowed: true, warning: null });
+    const global = scopeOf(saved) === "global";
+    setShared("workspaces.automation.allow", { workspace: global ? "*" : def.id, name: saved.name, check: saved.check, at: Date.now() });
+    if (!saved.replaced && !def.none) updateShared(def.id, saved.name, { ...saved, allowed: true, warning: null });
+    if (global) { const g = this.globals().find((x) => x.name === saved.name); if (g) updateGlobal(g.name, { ...g, allowed: true }); }
     this.error = null;
     this.notice = "Allowed. Its check runs before each start from now on.";
     cx.notify();
@@ -558,7 +677,7 @@ export default class Automations extends View {
     const cmd = oneLine(this.checkIn.value());
     if (!def || !sel || !cmd || this.trying) return;
     const w = parseWhen(this.whenIn.value());
-    const repo = w.kind === "github" ? this.ghRepos.find((g) => g.folder === w.repo || g.repo === w.repo)?.folder : null;
+    const repo = w.kind === "github" ? (w.repo === "*" ? this.ghRepos[0] : this.ghRepos.find((g) => g.folder === w.repo || g.repo === w.repo))?.folder : null;
     const f = this.choice.folder || repo || "";
     const folder = !f ? def.root : f.startsWith("/") || f.startsWith("~") ? f.replace(/^~/, home()) : `${def.root}/${f}`;
     const d = new Date();
@@ -577,11 +696,25 @@ export default class Automations extends View {
     });
   }
 
+  // A global one, as a new one of the same name for this workspace only: saved, it
+  // replaces the global one here.
+  copyHere(cx) {
+    const s = this.snap;
+    if (!s || !this.sel || this.sel.scope !== "global") return;
+    this.pick({ scope: "workspace", name: "", isNew: true }, {
+      name: s.name, description: s.description, when: s.when, agent: s.agent, model: s.model, effort: s.effort, folder: s.folder,
+      check: s.check, card: s.card, enabled: true, body: s.body,
+    }, cx);
+    this.manual = true;
+  }
+
   // The switcher's sidebar copy starts it: this dialog's tasks end when it closes.
   runNow(cx) {
-    if (!this.sel || this.sel.isNew) return;
+    if (!this.sel || this.sel.isNew || this.none()) return;
     if (this.dirty()) { this.error = "Save it first: Run now starts what's saved."; cx.notify(); return; }
-    if (this.list().find((a) => a.name === this.sel.name)?.allowed === false) { this.error = "Allow its check first: it doesn't start until then."; cx.notify(); return; }
+    const saved = this.lookup(this.sel);
+    if (saved?.replaced) { this.error = `${this.def()?.name ?? "This workspace"} has its own "${saved.name}", which is the one that runs here. Open that one to run it.`; cx.notify(); return; }
+    if (saved?.allowed === false) { this.error = "Allow its check first: it doesn't start until then."; cx.notify(); return; }
     setShared("workspaces.automation.run", { workspace: this.workspace, name: this.sel.name, at: Date.now() });
     this.error = null;
     this.notice = this.snap?.check ? "Starting it as a tab in the Automations space, whatever its check says…" : "Starting it as a tab in the Automations space…";
@@ -594,6 +727,27 @@ export default class Automations extends View {
     run("tab.select", { id: r.tab });
   }
 
+
+  // At the foot of the list: whether automations (and board cards' pull requests) keep
+  // running while Herdr is closed. The switcher turns the background runner on or
+  // off (herdr-ws-runner) and says how it is: shared "workspaces.runner".
+  runnerRow(t) {
+    const r = shared("workspaces.runner") ?? { on: false, running: false };
+    const note = !r.on ? "Off: they run while Herdr is open" : r.running ? "On: running in the background" : "On, but not running yet";
+    return v_flex().flex_none().border_t(1).border_color(t.border).pb(8)
+      .child(div().px(14).pt(10).pb(4).text_size(11).text_color(t.dim).child("While Herdr is closed"))
+      .child(h_flex().id("a-runner").mx(6).px(8).py(6).gap(9).rounded(7).items_center().cursor_pointer()
+        .hover((s) => s.bg(t.hover))
+        .tooltip(r.on ? "Automations and pull requests are followed by a background process that herdr-core keeps going. Click to turn it off: Herdr then runs them itself, while it's open."
+          : "Schedules, GitHub checks and pull requests stop when you close Herdr. Click to keep them going in the background (needs Node).")
+        .on_click(() => setShared("workspaces.runner.set", { on: !r.on, at: Date.now() }))
+        .child(v_flex().flex_1().min_w(0).gap(2)
+          .child(div().truncate().child("Keep running"))
+          .child(div().truncate().text_size(11).text_color(r.on && !r.running ? t.blocked : t.dim).child(note)))
+        .child(h_flex().w(26).h(15).p(2).flex_none().rounded_full().items_center()
+          .bg(r.on ? t.accent : t.input).when(r.on, (el) => el.justify_end())
+          .child(div().size(11).rounded_full().bg(t.background))));
+  }
   render() {
     const t = theme();
     const def = this.def();
@@ -604,32 +758,48 @@ export default class Automations extends View {
       .child(h_flex().h(50).flex_none().px(18).gap(8).items_center().border_b(1).border_color(t.border)
         .child(svg("mods/ws-automations/automations.svg").size(16).text_color(t.muted))
         .child(div().text_size(15).font_semibold().child("Automations"))
-        .when(Boolean(def), (el) => el.child(div().text_size(12.5).text_color(t.dim).child(`for ${def.name}`)))
+        .child(div().text_size(12.5).text_color(t.dim).child(def.none ? "for every workspace" : `for ${def.name}`))
         .child(div().flex_1())
         .child(div().text_size(11).text_color(t.dim).child("Esc")));
-    if (!def) {
-      return shell.child(div().p(18).text_color(t.muted).child("Automations belong to a workspace. Pick one in the switcher first, then open this again."));
-    }
     const autos = this.list();
+    const own = autos.filter((a) => scopeOf(a) === "workspace");
+    // Those for every workspace: the ones that run here, then the ones this workspace replaces.
+    const forAll = [...autos.filter((a) => scopeOf(a) === "global"),
+      ...this.globals().filter((g) => own.some((o) => o.name === g.name)).map((g) => ({ ...g, replaced: true, everywhere: g.enabled, enabled: false, next: null }))];
     const runs = (shared("workspaces.automation.runs") ?? []).filter((r) => r.ws === def.id);
     const ag = agents(), tm = terminals();
     // On or off at a click: a track with its knob at the right when it's on.
-    const toggle = (a) => h_flex().id(`a-sw-${a.name}`).w(26).h(15).p(2).flex_none().rounded_full().items_center().cursor_pointer()
+    const toggle = (a) => h_flex().id(`a-sw-${scopeOf(a)}-${a.name}`).w(26).h(15).p(2).flex_none().rounded_full().items_center().cursor_pointer()
       .bg(a.enabled ? t.accent : t.input).when(a.enabled, (el) => el.justify_end())
-      .tooltip(a.enabled ? "On. Click to turn it off" : "Off. Click to turn it on")
+      .tooltip(def.none ? (a.enabled ? "On. Click to turn it off in every workspace" : "Off in every workspace. Click to turn it on")
+        : scopeOf(a) !== "global" ? (a.enabled ? "On. Click to turn it off" : "Off. Click to turn it on")
+        : a.enabled ? `On in ${def.name}. Click to turn it off here; the other workspaces keep it`
+        : a.everywhere === false ? `Off in every workspace. Click to turn it on in ${def.name} only`
+        : `Off in ${def.name}. Click to turn it on here`)
       .on_click((_e, cx) => { cx.stop_propagation(); this.toggle(a, cx); })
       .child(div().size(11).rounded_full().bg(t.background));
     const item = (a) => {
-      const on = this.sel && !this.sel.isNew && this.sel.name === a.name;
+      const on = this.same(a);
       const dot = a.error ? t.blocked : a.enabled ? t.done : t.dim;
-      // Its newest run, while that's working or waiting on you.
-      const now = runState(runs.find((r) => r.name === a.name && r.status === "started"), ag, tm);
+      // Its newest run, while that's working or waiting on you. (A replaced one doesn't run here.)
+      const now = a.replaced ? null : runState(runs.find((r) => r.name === a.name && r.status === "started"), ag, tm);
       const busy = now === "working" || now === "needs you" ? now : null;
       // Missed while the Mac was off, and nothing has run since.
-      const missed = runs.find((r) => r.name === a.name)?.status === "missed";
-      return h_flex().id(`a-${a.name}`).h(46).mx(6).px(8).gap(9).rounded(7).items_center().cursor_pointer()
+      const missed = !a.replaced && runs.find((r) => r.name === a.name)?.status === "missed";
+      if (a.replaced) {
+        return h_flex().id(`a-global-${a.name}`).h(46).mx(6).px(8).gap(9).rounded(7).items_center().cursor_pointer()
+          .when(on, (el) => el.bg(t.selected)).when(!on, (el) => el.hover((s) => s.bg(t.hover)))
+          .tooltip(`${def.name} has its own "${a.name}", which is the one that runs here`)
+          .on_click((_e, cx) => this.pick({ scope: "global", name: a.name, isNew: false }, null, cx))
+          .child(div().size(7).flex_none().rounded_full().bg(t.dim))
+          .child(v_flex().flex_1().min_w(0).gap(2)
+            .child(div().truncate().text_color(t.muted).child(a.name))
+            .child(div().truncate().text_size(11).text_color(t.dim).child(a.summary)))
+          .child(div().flex_none().text_size(11).text_color(t.dim).child("replaced here"));
+      }
+      return h_flex().id(`a-${scopeOf(a)}-${a.name}`).h(46).mx(6).px(8).gap(9).rounded(7).items_center().cursor_pointer()
         .when(on, (el) => el.bg(t.selected)).when(!on, (el) => el.hover((s) => s.bg(t.hover)))
-        .on_click((_e, cx) => this.pick({ name: a.name, isNew: false }, null, cx))
+        .on_click((_e, cx) => this.pick({ scope: scopeOf(a), name: a.name, isNew: false }, null, cx))
         .child(div().size(7).flex_none().rounded_full().bg(dot))
         .child(v_flex().flex_1().min_w(0).gap(2)
           .child(div().truncate().text_color(a.enabled ? t.foreground : t.muted).child(a.name))
@@ -638,13 +808,43 @@ export default class Automations extends View {
           .child(busy ?? (a.allowed === false ? "allow?" : missed ? "missed" : !a.enabled ? "off" : a.next ? shortTime(a.next) : "")))
         .child(toggle(a));
     };
+    // The ready-made ones nobody has made yet, here or for every workspace.
+    const taken = new Set([...autos, ...this.globals()].map((a) => a.name));
+    const ready = this.starters.filter((s) => !taken.has(s.name));
+    const starter = (s) => {
+      const on = Boolean(this.sel?.isNew && this.sel.starter === s.name);
+      return h_flex().id(`a-ready-${s.name}`).h(46).mx(6).px(8).gap(9).rounded(7).items_center().cursor_pointer()
+        .when(on, (el) => el.bg(t.selected)).when(!on, (el) => el.hover((st) => st.bg(t.hover)))
+        .tooltip(`${s.description}. Click to read it; nothing runs until you create it`)
+        .on_click((_e, cx) => this.useStarter(s, cx))
+        .child(div().size(7).flex_none().rounded_full().border_1().border_color(t.dim))
+        .child(v_flex().flex_1().min_w(0).gap(2)
+          .child(div().truncate().text_color(t.muted).child(s.name))
+          .child(div().truncate().text_size(11).text_color(t.dim).child(s.summary)))
+        .child(div().flex_none().text_size(11).text_color(t.dim).child("add"));
+    };
+    const group = (text) => div().px(14).pb(4).text_size(11).text_color(t.dim).truncate().child(text);
+    // A new one each time: an element can only be added once.
+    const none = () => div().px(14).pb(2).text_size(12).text_color(t.dim).child("None yet.");
     const list = v_flex().w(260).flex_none().min_h(0).border_r(1).border_color(t.border).bg(t.chrome)
       .child(div().p(10).child(h_flex().id("a-new").h(30).px(12).gap(6).items_center().justify_center().rounded(8).cursor_pointer()
         .bg(t.solid).text_color(t.solid_foreground).text_size(12.5).font_medium().hover((s) => s.opacity(0.88))
         .on_click((_e, cx) => this.fresh(cx)).child(svg("mods/workspace-chrome/plus.svg").size(13)).child("New automation")))
       .child(v_flex().id("a-list").flex_1().min_h(0).pb(10).overflow_y_scrollbar()
-        .children(autos.map(item))
-        .when(!autos.length, (el) => el.child(div().px(14).pt(4).text_size(12).text_color(t.dim).child("None yet."))));
+        .when(!def.none, (el) => el
+          .child(group(def.name))
+          .children(own.map(item))
+          .when(!own.length, (el) => el.child(none()))
+          .child(div().h(12)))
+        .child(group("Every workspace"))
+        .children(forAll.map(item))
+        .when(!forAll.length, (el) => el.child(none()))
+        .when(Boolean(def.none), (el) => el.child(div().px(14).pt(12).text_size(11.5).text_color(t.dim).child("Show a workspace to see its own, and each one's runs.")))
+        .when(ready.length > 0, (el) => el
+          .child(div().h(12))
+          .child(group("Ready-made"))
+          .children(ready.map(starter))))
+      .child(this.runnerRow(t));
     return shell.child(h_flex().flex_1().min_h(0).items_stretch().child(list).child(this.editor(t, def)));
   }
 
@@ -655,13 +855,17 @@ export default class Automations extends View {
         .child(div().text_size(14).font_semibold().text_color(t.foreground).child("Pick an automation, or make a new one."))
         .child(div().child(`An automation starts an agent by itself: on a schedule, when a task enters a board column, when an agent finishes or needs you, when files change, when a PR or issue is opened on GitHub, or when another app calls it.`))
         .child(div().child(`New automation asks what it should do, in your words. Claude drafts it, and nothing is saved until you've read it.`))
-        .child(div().child(`Each run is a tab in ${def.name}'s Automations space, made the first time. Your view stays where it is.`))
+        .child(div().child(`The ready-made ones under the list are a place to start: open one to read it, change what you like, and Create adds it${def.none ? " for every workspace" : ` to ${def.name} or to every workspace`}.`))
+        .child(div().child(`Each run is a tab in ${def.none ? "its workspace" : def.name}'s Automations space, made the first time. Your view stays where it is.`))
         .child(div().child(`An automation can have a check: a command Herdr runs first, so no agent starts when there's nothing to do.`))
-        .child(div().child(`They run while Herdr is open. A schedule missed while it was closed or the Mac slept runs once when it can, if that's within 12 hours. A one-time schedule turns itself off after it runs.`))
-        .child(div().child(`The files are in ${tilde(def.dir)}/automations.`));
+        .child(div().child(`They run while Herdr is open, or all the time with Keep running on, under the list. A schedule missed while nothing was running or the Mac slept runs once when it can, if that's within 12 hours. A one-time schedule turns itself off after it runs.`))
+        .child(div().child(`One made for every workspace runs in each of them, as that workspace's own; a workspace's own automation of the same name replaces it there, and its switch in the list turns it off for that workspace alone.`))
+        .child(div().child(def.none ? `No workspace is shown, so these are the ones for every workspace. Their files are in ${tilde(globalDir())}.`
+          : `${def.name}'s files are in ${tilde(def.dir)}/automations, and the ones for every workspace in ${tilde(globalDir())}.`));
     }
     const sel = this.sel, c = this.choice;
-    const saved = sel.isNew ? null : this.list().find((a) => a.name === sel.name) ?? null;
+    const global = sel.scope === "global";
+    const saved = this.lookup(sel);
     const dirty = this.dirty();
     const w = parseWhen(this.whenIn.value());
     const kind = w.kind === "error" ? null : kindOf(w);
@@ -691,21 +895,24 @@ export default class Automations extends View {
     };
     const columns = columnsOf(def);
     const finish = String(def.board?.finish ?? "review").toLowerCase();
-    const firstOf = { github: `github ${this.ghRepos[0]?.folder ?? "owner/name"} pr opened`, schedule: "weekdays 09:00", board: `task enters ${columns.includes(finish) ? finish : columns[columns.length - 1]}`, agent: "agent done", files: `files ${folderChoices(def)[0] ?? "inbox"}`, link: "link" };
+    const firstOf = { github: `github ${global ? "*" : this.ghRepos[0]?.folder ?? "owner/name"} pr opened`, schedule: "weekdays 09:00", board: `task enters ${columns.includes(finish) ? finish : columns[columns.length - 1]}`, agent: "agent done", files: `files ${folderChoices(def)[0] ?? "inbox"}`, link: "link" };
     const quick = kind === "schedule" ? [...SCHEDULES.map((s) => pick(`a-q-${s}`, s, this.whenIn.value().trim() === s, () => setWhen(s))),
       pick("a-q-once", "once tomorrow 09:00", w.kind === "once", () => setWhen(onceTomorrow()))]
       : kind === "board" ? columns.map((col) => pick(`a-q-${col}`, label(col), w.column === col, () => setWhen(`task enters ${col}`)))
       : kind === "agent" ? [pick("a-q-done", "Finishes", w.status === "done", () => setWhen("agent done")), pick("a-q-blocked", "Needs you", w.status === "blocked", () => setWhen("agent blocked"))]
-      : kind === "files" ? folderChoices(def).map((f) => pick(`a-q-f-${f}`, f, w.folder === f, () => setWhen(`files ${f}`)))
+      : kind === "files" ? (global ? [] : folderChoices(def)).map((f) => pick(`a-q-f-${f}`, f, w.folder === f, () => setWhen(`files ${f}`)))
       : kind === "github" ? [
-        ...this.ghRepos.map((g) => pick(`a-q-gh-${g.folder}`, g.folder, w.repo === g.folder || w.repo === g.repo, () => setGithub({ repo: g.folder }))),
+        pick("a-q-gh-all", "Every repo", w.repo === "*", () => setGithub({ repo: "*" })),
+        ...(global ? [] : this.ghRepos).map((g) => pick(`a-q-gh-${g.folder}`, g.folder, w.repo === g.folder || w.repo === g.repo, () => setGithub({ repo: g.folder }))),
         div().w(8),
         pick("a-q-gh-pr", "Pull requests", w.what === "pr", () => setGithub({ what: "pr" })),
         pick("a-q-gh-issue", "Issues", w.what === "issue", () => setGithub({ what: "issue" })),
         pick("a-q-gh-others", "By others only", w.others, () => setGithub({ others: !w.others })),
       ]
       : [];
-    const presets = presetsFor(def.id);
+    // A global one runs in every workspace: only the presets and folders they all have.
+    const presets = global ? this.globalPresets() : presetsFor(def.id);
+    const folders = global ? [] : folderChoices(def);
     const boardAgent = boardAgentOf(def);
     // The agent it starts, and the model and effort that will run: its own, else what its command sets.
     const cmd = commandOf(def, c.agent);
@@ -714,14 +921,14 @@ export default class Automations extends View {
     const own = knobsIn(cmd.argv);
     const models = knobs ? [...new Set([...knobs.models, ...(own.model ? [own.model] : []), ...(c.model ? [c.model] : [])])] : [];
     const model = c.model || own.model, effort = c.effort || own.effort;
-    const who = `${c.agent || boardAgent}${cmd.preset && program && program !== cmd.name ? ` (${program})` : ""}`;
+    const who = `${c.agent || (global ? "each board's agent" : boardAgent)}${cmd.preset && program && program !== cmd.name ? ` (${program})` : ""}`;
     const knobText = [model && `on ${model}`, effort && `${effort} effort`].filter(Boolean).join(", ");
-    const where = c.folder || (kind === "github" ? "its repo's folder" : "the root");
+    const where = c.folder || (kind === "github" ? "its repo's folder" : global ? "each workspace's root" : "the root");
     const checkCmd = oneLine(this.checkIn.value());
     const runsText = `Starts ${who}${knobText ? ` ${knobText}` : ""}, in ${where}${c.card ? ", with a board card each run" : ""}.`;
     const noKnobs = !knobs && (c.model || c.effort);
 
-    const runs = saved ? (shared("workspaces.automation.runs") ?? []).filter((r) => r.ws === def.id && r.name === saved.name).slice(0, 4) : [];
+    const runs = saved && !saved.replaced ? (shared("workspaces.automation.runs") ?? []).filter((r) => r.ws === def.id && r.name === saved.name).slice(0, 4) : [];
     const ag = agents(), tm = terminals();
     const runRow = (r) => {
       const state = runState(r, ag, tm);
@@ -811,8 +1018,8 @@ export default class Automations extends View {
       .child(chips(...KINDS.map(([k, text]) => pick(`a-k-${k}`, text, kind === k, () => { if (kind !== k) setWhen(firstOf[k]); }))))
       .child(div().pt(8).child(box(this.whenIn, true)))
       .when(quick.length > 0, (el) => el.child(div().pt(8).child(chips(...quick))))
-      .child(label_("Agent: a preset, or the board's agent"))
-      .child(chips(pick("a-ag-default", `Board's (${boardAgent})`, !c.agent, () => { c.agent = ""; }),
+      .child(label_(global ? "Agent: a preset for every workspace, or each board's agent" : "Agent: a preset, or the board's agent"))
+      .child(chips(pick("a-ag-default", global ? "Each board's" : `Board's (${boardAgent})`, !c.agent, () => { c.agent = ""; }),
         ...presets.map((p) => pick(`a-ag-${p.name}`, p.name, c.agent === p.name, () => { c.agent = p.name; })),
         ...(c.agent && !presets.some((p) => p.name === c.agent) ? [pick("a-ag-other", c.agent, true, () => {})] : [])))
       .when(Boolean(knobs), (el) => el
@@ -825,22 +1032,53 @@ export default class Automations extends View {
         .child(h_flex().gap(6).flex_wrap()
           .child(pick("a-effort-default", own.effort ? `Default (${own.effort})` : "Default", !c.effort, () => { c.effort = ""; }))
           .children(knobs.effort.levels.map((l) => pick(`a-effort-${l}`, l, c.effort === l, () => { c.effort = l; })))))
-      .child(label_("Folder: where it runs"))
+      .child(label_(global ? "Folder: where it runs, in each workspace" : "Folder: where it runs"))
       .child(chips(pick("a-fo-root", kind === "github" ? "Its repo's folder" : "Root", !c.folder, () => { c.folder = ""; }),
-        ...folderChoices(def).map((f) => pick(`a-fo-${f}`, f, c.folder === f, () => { c.folder = f; })),
-        ...(c.folder && !folderChoices(def).includes(c.folder) ? [pick("a-fo-other", c.folder, true, () => {})] : [])))
+        ...folders.map((f) => pick(`a-fo-${f}`, f, c.folder === f, () => { c.folder = f; })),
+        ...(c.folder && !folders.includes(c.folder) ? [pick("a-fo-other", c.folder, true, () => {})] : [])))
       .child(checkField)
       .child(label_("Each run"))
       .child(chips(pick("a-card-no", "Just its tab", !c.card, () => { c.card = false; }), pick("a-card-yes", "A tab and a board card", c.card, () => { c.card = true; })));
 
+    // A global one: the other workspaces it's off in; whether this workspace's own replaces it;
+    // and for a workspace's own, the global one of the same name it replaces.
+    const offElsewhere = global ? (this.snap?.off ?? []).filter((x) => x !== def.id).map((x) => defOf(x)?.name ?? x) : [];
+    const typed = sel.isNew ? this.nameIn.value().trim() : sel.name;
+    const replacedHere = global && typed && this.taken("workspace").has(typed);
+    const replacesGlobal = !global && !blank && typed && this.globals().some((g) => g.name === typed) ? typed : null;
     // Its own id per automation, so each opens scrolled to the top.
     const title = sel.isNew ? (this.drafted || this.manual ? this.nameIn.value().trim() || "New automation" : "New automation") : sel.name;
-    const form = v_flex().id(`a-form-${sel.isNew ? "+new" : sel.name}`).flex_1().min_h(0).px(18).pt(18).pb(8).overflow_y_scrollbar()
+    const form = v_flex().id(`a-form-${sel.isNew ? "+new" : `${sel.scope}-${sel.name}`}`).flex_1().min_h(0).px(18).pt(18).pb(8).overflow_y_scrollbar()
       .child(h_flex().gap(10).items_center()
         .child(div().text_size(16).font_semibold().child(title))
+        .when(!sel.isNew || Boolean(def.none), (el) => el.child(div().px(8).h(22).flex().flex_none().items_center().rounded(11).bg(t.raised).text_size(11.5).text_color(t.muted)
+          .child(global ? "Every workspace" : `Only in ${def.name}`)))
         .when(dirty && !blank, (el) => el.child(div().text_size(11.5).text_color(t.working).child(this.drafted ? "drafted, not saved" : "unsaved")))
         .child(div().flex_1())
-        .when(!blank, (el) => el.child(chips(pick("a-on", "On", c.enabled, () => { c.enabled = true; }), pick("a-off", "Off", !c.enabled, () => { c.enabled = false; })))))
+        .when(!blank && !global, (el) => el.child(chips(pick("a-on", "On", c.enabled, () => { c.enabled = true; }), pick("a-off", "Off", !c.enabled, () => { c.enabled = false; })))))
+      // A new one: where it runs. Changing it keeps only what the other kind can have.
+      .when(sel.isNew && !def.none, (el) => el.child(h_flex().pt(10).pb(6).gap(8).items_center()
+        .child(div().text_size(11.5).text_color(t.dim).child("Runs in"))
+        .child(chips(
+          pick("a-scope-ws", `Only ${def.name}`, !global, () => { sel.scope = "workspace"; c.offHere = false; }),
+          pick("a-scope-global", "Every workspace", global, () => {
+            sel.scope = "global";
+            if (c.agent && !this.globalPresets().some((x) => x.name === c.agent) && !installedAgents().some((a) => a.key === c.agent)) c.agent = "";
+            if (/^[/~]/.test(c.folder)) c.folder = "";
+          })))))
+      // A global one: on, off here, or off everywhere.
+      .when(global && !blank, (el) => el.child(h_flex().pt(10).gap(8).items_center()
+        .child(chips(...[
+          pick("a-on", "On", c.enabled && !c.offHere, () => { c.enabled = true; c.offHere = false; }),
+          !def.none && pick("a-off-here", `Off in ${def.name}`, c.enabled && c.offHere, () => { c.enabled = true; c.offHere = true; }),
+          pick("a-off", "Off everywhere", !c.enabled, () => { c.enabled = false; })].filter(Boolean)))
+        .when(c.enabled && offElsewhere.length > 0, (el) => el.child(div().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(`${def.none ? "Off" : "Also off"} in ${offElsewhere.join(", ")}`)))))
+      .when(Boolean(sel.isNew && sel.starter), (el) => el.child(div().pt(8).text_size(11.5).text_color(t.dim)
+        .child("A ready-made automation. Nothing runs until you create it: read it, choose where it runs and change what you like.")))
+      .when(Boolean(replacedHere), (el) => el.child(div().pt(8).text_size(11.5).text_color(t.working)
+        .child(`${def.name} has its own "${sel.name}", which is the one that runs here. This one runs in the other workspaces.`)))
+      .when(Boolean(replacesGlobal), (el) => el.child(div().pt(8).text_size(11.5).text_color(t.working)
+        .child(`There's a "${replacesGlobal}" for every workspace. This one replaces it in ${def.name}.`)))
       .child(askBox)
       .child(askNotes)
       .when(!blank, (el) => el
@@ -856,19 +1094,20 @@ export default class Automations extends View {
         .when(this.details, (el) => el.child(details))
         .when(Boolean(saved), (el) => el
           .child(label_("Recent runs"))
-          .when(!runs.length, (el) => el.child(div().text_size(12).text_color(t.dim).child("None yet.")))
+          .when(!runs.length, (el) => el.child(div().text_size(12).text_color(t.dim).child(def.none ? "Each workspace lists its own runs of it." : "None yet.")))
           .children(runs.map(runRow))
           .child(label_("From another app or a script"))
-          .child(div().text_size(11.5).text_color(t.muted).font_family("JetBrains Mono").child(`herdr-ws-run ${def.id} ${saved.name} "optional text"`))));
+          .child(div().text_size(11.5).text_color(t.muted).font_family("JetBrains Mono").child(`herdr-ws-run ${def.none ? "<workspace>" : def.id} ${saved.name} "optional text"`))));
     return pane
       .child(form)
       .child(v_flex().flex_none().px(18).pb(14).pt(8).border_t(1).border_color(t.border)
         .when(Boolean(this.error), (el) => el.child(div().pb(8).text_size(11.5).text_color(t.blocked).child(this.error)))
         .when(!this.error && Boolean(this.notice), (el) => el.child(div().pb(8).text_size(11.5).text_color(t.done).child(this.notice)))
         .child(h_flex().gap(8).items_center()
-          .when(!sel.isNew, (el) => el.child(button("a-delete", this.confirming ? "Click again to delete" : "Delete", "danger", (_e, cx) => this.remove(cx))))
+          .when(!sel.isNew, (el) => el.child(button("a-delete", this.confirming ? (global ? "Click again: gone from every workspace" : "Click again to delete") : "Delete", "danger", (_e, cx) => this.remove(cx))))
+          .when(!sel.isNew && global && !replacedHere && !def.none, (el) => el.child(button("a-custom", `Change for ${def.name}`, "plain", (_e, cx) => this.copyHere(cx), !dirty)))
           .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(this.snap?.file ? tilde(this.snap.file) : ""))
-          .when(!sel.isNew, (el) => el.child(button("a-run", "Run now", "plain", (_e, cx) => this.runNow(cx))))
+          .when(!sel.isNew && !def.none, (el) => el.child(button("a-run", "Run now", "plain", (_e, cx) => this.runNow(cx), !saved?.replaced)))
           .child(button("a-save", sel.isNew ? "Create" : "Save", "primary", (_e, cx) => this.save(cx), !blank && (sel.isNew || dirty)))));
   }
 }

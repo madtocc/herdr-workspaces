@@ -1,5 +1,9 @@
 // Automations: agents a workspace starts by itself. Each is a file,
-// ~/.herdr/workspaces/<id>/automations/<name>.md:
+// ~/.herdr/workspaces/<id>/automations/<name>.md, or, for every workspace,
+// ~/.herdr/automations/<name>.md (a global one). A global one runs in each
+// workspace as if it were that workspace's own: its root, board, presets and
+// Automations space. A workspace's own of the same name replaces it there, and
+// its `off:` line names the workspaces it's off in.
 //
 //   ---
 //   description: Review yesterday's changes
@@ -12,11 +16,13 @@
 //                               folder: no agent starts unless it prints something (check.js)
 //   card: true                  each run also adds a card to the board
 //   enabled: false              off: only Run now and herdr-ws-run start it
+//   off: client-a, client-b     (a global one) the workspaces it's off in
 //   ---
 //   The prompt: the agent's task. {{event}} and the other {{…}} are filled in.
 //
-// The switcher's sidebar copy owns the one Runner and ticks it on its 500ms timer:
-// Herdr doesn't draw in the background, and a dialog's tasks end when it closes.
+// One Runner runs them. With the background runner on (bin/herdr-ws-runner), that's
+// a process herdr-core keeps going while Herdr is closed (runner/main.js); else the
+// switcher's sidebar copy owns it and ticks it on its 500ms timer, while Herdr is open.
 // A run is a tab in the workspace's "Automations" space (made the first time).
 // A one-time schedule (`when: once …`) writes `enabled: false` in its file when
 // its time comes, so it doesn't stay on.
@@ -30,18 +36,23 @@
 // Making a tab shows it, so the runner puts your view back straight after.
 //
 // Published (shared), for the ws-automations screen:
-//   workspaces.automations       { <workspace>: [automation, …] }, each with `next`
+//   workspaces.automations       { <workspace>: [automation, …] }, each with `next`:
+//                                its own (scope "workspace"), then the global ones it
+//                                doesn't replace (scope "global"; `enabled` is for
+//                                that workspace, `everywhere` is the file's)
+//   workspaces.automations.global  the global ones as their files have them
 //   workspaces.automation.runs   the last 100 runs, newest first
 // Asked for (shared), by the screen's Run now (the switcher passes it on):
 //   workspaces.automation.run    { workspace, name, at }
 // … and by its Create, Save and Allow this check (read here):
-//   workspaces.automation.allow  { workspace, name, check, at }
-// Outside calls (bin/herdr-ws-run) are files in ~/.herdr/workspaces/.inbox.
+//   workspaces.automation.allow  { workspace, name, check, at }; workspace "*": a global one
+// Outside calls (bin/herdr-ws-run) are files in ~/.herdr/workspaces/.inbox; with the
+// background runner on, the switcher passes Run now and an allowed check on as files there too.
 // GitHub automations ask GitHub with `gh api` every POLL, one call per repo.
-// What it remembers (when each last ran, when Herdr last ticked, the runs) is in
-// this copy's localStorage.
+// What it remembers (when each last ran, when it last ticked, the runs) is in
+// ~/.herdr/runner/automations.json, the same file whichever of the two runs.
 
-import { spaces, agents, focused, run, shared, setShared, home, readTextFile, writeTextFile, watchFolder, exec, notify, knownAgents } from "herdr";
+import { spaces, agents, terminals, focused, run, shared, setShared, home, readTextFile, writeTextFile, watchFolder, exec, notify, knownAgents } from "herdr";
 import * as fs from "fs/promises";
 import { parseWhen, describe, due, nextAt, shortTime } from "./when.js";
 import { withKnobs } from "./knobs.js";
@@ -59,8 +70,44 @@ const POLL = 120e3;         // how often GitHub automations look at their repos
 const MAX_NEW = 10;         // new PRs and issues one look starts at most, per repo
 const MAX_BODY = 4000;      // characters of a PR's or issue's description passed on
 const STORE = "automations";
+const STALL = 60e3;         // an agent that has reported nothing this long after its run started is taken to be asking something first
+const ASK_AFTER = 5000;     // an unallowed check is asked about once it has stayed that way this long
 // Changes a files automation doesn't count: git's and dependency folders, dotfiles.
 const IGNORED = /\/(\.git|node_modules)(\/|$)|\/\.[^/]*$/;
+
+export const runnerDir = () => `${home()}/.herdr/runner`;
+export const globalDir = () => `${home()}/.herdr/automations`;
+
+// What a runner remembers: ~/.herdr/runner/<name>.json. Whichever runs (the
+// switcher's copy or the background runner) reads it when it takes over. Before the
+// file existed it was the switcher copy's localStorage, read once.
+export class Store {
+  constructor(name) {
+    this.name = name;
+    this.file = `${runnerDir()}/${name}.json`;
+    this.old = null;
+    this.turn = Promise.resolve();
+  }
+  async read() {
+    this.old = await readTextFile(this.file).catch(() => null);
+    try {
+      if (this.old !== null) return JSON.parse(this.old);
+      return typeof localStorage === "undefined" ? null : JSON.parse(localStorage.getItem(this.name) ?? "null");
+    } catch { return null; }
+  }
+  // The newest value wins; writes take turns.
+  write(value) {
+    const text = JSON.stringify(value);
+    this.next = text;
+    this.turn = this.turn.then(async () => {
+      if (this.next !== text || text === this.old) return;
+      for (let i = 0; i < 2; i++) {
+        try { await writeTextFile(this.file, text, this.old); this.old = text; return; }
+        catch { this.old = await readTextFile(this.file).catch(() => null); } // changed under us
+      }
+    });
+  }
+}
 
 export const wsDir = () => `${home()}/.herdr/workspaces`;
 const tasksDir = (id) => `${wsDir()}/${id}/tasks`;
@@ -178,28 +225,28 @@ async function herdr(command, args) {
 const yes = (v) => /^(true|yes|on|1)$/i.test(String(v ?? "").trim());
 const no = (v) => /^(false|no|off|0)$/i.test(String(v ?? "").trim());
 
-export function parseAutomation(name, file, text) {
+export function parseAutomation(name, file, text, scope = "workspace") {
   const { head, body } = split(text.replace(/\r\n/g, "\n"));
   const when = field(head, "when") ?? "";
   const trigger = parseWhen(when);
   return {
-    name, file, description: field(head, "description") ?? "", when, trigger, summary: describe(trigger),
+    name, file, scope, description: field(head, "description") ?? "", when, trigger, summary: describe(trigger),
     agent: field(head, "agent") || null, model: field(head, "model") || null, effort: field(head, "effort") || null,
     folder: field(head, "folder") || null, check: field(head, "check") || null,
     card: yes(field(head, "card")), enabled: !no(field(head, "enabled")),
+    ...(scope === "global" ? { off: (field(head, "off") ?? "").split(",").map((w) => w.trim()).filter(Boolean) } : {}),
     body: body.replace(/<!--[\s\S]*?-->/g, "").trim(),
     error: trigger.kind === "error" ? trigger.error : null,
   };
 }
 
-async function loadAutomations(def) {
-  const at = `${def.dir}/automations`;
+async function loadAutomations(at, scope) {
   let names = [];
   try { names = (await fs.readdir(at)).filter((n) => n.endsWith(".md") && !n.startsWith(".")).sort(); } catch { return []; }
   const out = [];
   for (const n of names) {
     const text = await readTextFile(`${at}/${n}`);
-    if (text !== null) out.push(parseAutomation(n.slice(0, -3), `${at}/${n}`, text));
+    if (text !== null) out.push(parseAutomation(n.slice(0, -3), `${at}/${n}`, text, scope));
   }
   return out;
 }
@@ -234,6 +281,25 @@ async function repoOf(def, spec) {
   return { error: `There's no folder ${spec} in this workspace, and it isn't owner/name.` };
 }
 
+// `github * …`: every repo of the workspace with a GitHub remote, each once: its root's
+// and its folders' (the `folders` list, else the root's subfolders), at the repo's top folder.
+const repoFolders = (def) => (def ? [def.root, ...(def.folders.length ? def.folders : def.children.map((c) => `${def.root}/${c}`))].filter(Boolean) : []);
+async function everyRepo(def) {
+  const folders = repoFolders(def);
+  const all = [];
+  const r = folders.length ? await exec("sh", ["-c",
+    'for f; do t=$(git -C "$f" rev-parse --show-toplevel 2>/dev/null) || continue; u=$(git -C "$t" remote get-url origin 2>/dev/null) || continue; printf "%s\\t%s\\n" "$t" "$u"; done',
+    "sh", ...folders], { timeout: 60000 }).catch(() => null) : null;
+  for (const line of (r?.stdout ?? "").split("\n")) {
+    const [folder, url] = line.split("\t");
+    const m = /github\.com[:/]([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/.exec(url?.trim() ?? "");
+    if (m && !all.some((x) => x.repo === m[1])) all.push({ repo: m[1], folder });
+  }
+  return { all, sig: JSON.stringify(folders) };
+}
+// The repos a github automation watches, from what load() found: [{ repo, folder }].
+const watchedOf = (r) => r?.all ?? (r?.repo ? [r] : []);
+
 // What a run gets about a new PR or issue: {{pr}} or {{issue}} (and {{event}}) is all of it.
 function itemVars(repo, it) {
   const isPr = Boolean(it.pull_request);
@@ -255,9 +321,12 @@ const fill = (text, vars) => text.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (all, k) =>
 
 export class Runner {
   // h: { presetsFor(workspace), presetLaunch(preset, task), withTask(argv, task), claim(space, workspace) }
+  // The background runner also gives open(...) and tidy(...), its own ways to start and
+  // close a run's tab without the window, and away, what it calls the time it wasn't running.
   constructor(h) {
     this.h = h;
-    this.list = {};             // workspace -> its automations
+    this.list = {};             // workspace -> its automations: its own, then the global ones it doesn't replace
+    this.globals = [];          // the global ones, as their files have them
     this.tasks = {};            // workspace -> { file: task }, where a board automation watches
     this.statuses = null;       // agent address -> status at the last tick
     this.minute = Math.floor(Date.now() / 60e3);
@@ -275,14 +344,18 @@ export class Runner {
     this.me = null;             // your GitHub login, for "by others"
     this.hold = 0;
     this.loaded = false;
-    const empty = { last: {}, base: {}, seen: 0, runs: [], github: {}, printed: {}, allowed: {}, asked: {} };
-    try { this.state = { ...empty, ...JSON.parse(localStorage.getItem(STORE) ?? "{}") }; } catch { this.state = empty; }
+    this.unasked = {};          // "<workspace>/<name>" -> a check nobody has allowed, and since when
+    this.state = { last: {}, base: {}, seen: 0, runs: [], github: {}, printed: {}, allowed: {}, asked: {}, spaces: {} };
+    this.store = new Store(STORE);
+    this.restored = false;
     this.allowAsked = shared("workspaces.automation.allow")?.at;
   }
 
-  save() { try { localStorage.setItem(STORE, JSON.stringify(this.state)); } catch {} }
+  save() { if (this.restored) this.store.write(this.state); }
   // Its check may run: it has none, or you allowed the line as it's written now.
-  allowed(ws, a) { return !a.check || this.state.allowed[`${ws}/${a.name}`] === a.check; }
+  // A global one's line is allowed once, for every workspace: "*/<name>".
+  akey(ws, a) { return `${a.scope === "global" ? "*" : ws}/${a.name}`; }
+  allowed(ws, a) { return !a.check || this.state.allowed[this.akey(ws, a)] === a.check; }
   // The screen's Create, Save and Allow this check: that line, for that automation.
   approvals() {
     const ask = shared("workspaces.automation.allow") ?? null;
@@ -307,15 +380,56 @@ export class Runner {
   // address can come back for another one later (after a restart, say); a tab's id can't.
   busy(r) {
     const ag = r?.terminal ? agents().find((x) => x.address === r.terminal && (!r.tab || x.tab === r.tab)) : null;
-    return Boolean(ag && (ag.status === "working" || ag.status === "blocked"));
+    return Boolean(ag ? ag.status === "working" || ag.status === "blocked" : r?.stuck && this.there(r));
+  }
+  // A run's terminal is still there.
+  there(r) { return terminals().some((t) => t.address === r.terminal && t.state === "live"); }
+
+  // A run whose agent has reported nothing a minute in is most likely stopped at a
+  // question of its own, before its first message (Claude's "do you trust this
+  // folder?"): nothing else would say it needs you. Said once, and shown as
+  // "needs you" until the agent reports or its tab closes. Only for the agents
+  // Herdr knows (`expects`): a script's run never reports.
+  stalled(now) {
+    const list = agents();
+    let changed = false;
+    // A changed run is a new object: what's published may be these same ones.
+    const set = (r, patch) => { changed = true; return { ...r, ...patch }; };
+    this.state.runs = this.state.runs.map((r) => {
+      if (r.status !== "started" || !r.expects || !r.terminal || (r.up && !r.stuck)) return r;
+      const up = list.some((x) => x.address === r.terminal && (!r.tab || x.tab === r.tab));
+      if (r.stuck) return up || !this.there(r) ? set(r, { stuck: undefined, up: true }) : r;
+      // Reporting, gone, or too long ago to tell (the runner wasn't looking): not looked at again.
+      if (up || now - r.at > 10 * STALL) return set(r, { up: true });
+      if (now - r.at < STALL || !this.there(r)) return r;
+      notify({
+        title: `${r.name} is waiting in its terminal`, level: "warning",
+        body: "Its agent hasn't started on its task, so it's probably asking something first. Claude asks whether to trust a folder it hasn't worked in.",
+        ...(r.tab ? { action: { name: "tab.select", args: { id: r.tab } } } : {}),
+      });
+      return set(r, { stuck: true });
+    });
+    if (changed) { this.save(); this.publish(); }
   }
 
   // Every workspace's automations, read again (after the switcher's folder watch).
   async load(cx) {
+    if (!this.restored) {
+      this.state = { ...this.state, ...((await this.store.read()) ?? {}) };
+      this.restored = true;
+    }
     // Before the files: a save in the screen allows its check, then writes the file.
     this.approvals();
     const list = {};
-    for (const d of (shared("workspaces.defs") ?? []).filter((x) => !x.error)) list[d.id] = await loadAutomations(d);
+    const globals = await loadAutomations(globalDir(), "global");
+    for (const d of (shared("workspaces.defs") ?? []).filter((x) => !x.error)) {
+      const own = await loadAutomations(`${d.dir}/automations`, "workspace");
+      // A copy each: on here unless its file is off, or names this workspace in `off:`.
+      const forAll = globals.filter((g) => !own.some((o) => o.name === g.name))
+        .map((g) => ({ ...g, everywhere: g.enabled, enabled: g.enabled && !g.off.includes(d.id) }));
+      list[d.id] = [...own, ...forAll];
+    }
+    this.globals = globals;
     const now = Date.now();
     for (const [ws, autos] of Object.entries(list)) {
       if (autos.some((a) => a.trigger.kind === "board")) this.tasks[ws] ??= await loadTasks(ws);
@@ -329,9 +443,12 @@ export class Runner {
     for (const [ws, autos] of Object.entries(list)) {
       for (const a of autos) {
         if (a.trigger.kind !== "github") continue;
-        const k = `${ws}\t${a.trigger.repo}`;
-        this.repos[k] ??= await repoOf(this.def(ws), a.trigger.repo);
-        if (a.enabled && this.repos[k].repo) watched.add(this.repos[k].repo);
+        const k = `${ws}\t${a.trigger.repo}`, def = this.def(ws);
+        if (a.trigger.repo === "*") {
+          // Looked for again when the workspace's folders change.
+          if (this.repos[k]?.sig !== JSON.stringify(repoFolders(def))) this.repos[k] = await everyRepo(def);
+        } else this.repos[k] ??= await repoOf(def, a.trigger.repo);
+        if (a.enabled) for (const r of watchedOf(this.repos[k])) watched.add(r.repo);
       }
     }
     // A repo nothing watches forgets what it saw, so watching it again starts afresh.
@@ -344,31 +461,31 @@ export class Runner {
     // An allowed line, and having asked about one, go with their automation.
     for (const map of [this.state.allowed, this.state.asked]) {
       for (const k of Object.keys(map)) {
-        const i = k.indexOf("/");
-        if (list[k.slice(0, i)] && !list[k.slice(0, i)].some((a) => a.name === k.slice(i + 1) && a.check)) delete map[k];
+        const i = k.indexOf("/"), w = k.slice(0, i);
+        const autos = w === "*" ? globals : list[w]?.filter((a) => a.scope !== "global");
+        if (autos && !autos.some((a) => a.name === k.slice(i + 1) && a.check)) delete map[k];
       }
     }
     // A check nobody has allowed is asked about once, when it's first seen.
     for (const [ws, autos] of Object.entries(list)) {
       for (const a of autos) {
-        const k = `${ws}/${a.name}`;
-        if (!a.check || this.state.allowed[k] === a.check || this.state.asked[k] === a.check) continue;
-        this.state.asked[k] = a.check;
-        notify({
-          title: `Allow ${a.name}'s check?`,
-          body: `In ${this.def(ws)?.name ?? ws}. Before each start, Herdr would run: ${a.check.length > 160 ? `${a.check.slice(0, 160)}…` : a.check}. It doesn't start until you allow that in Automations.`,
-          level: "warning", action: { name: "mod.open", args: { name: "ws-automations" } },
-        });
+        const k = this.akey(ws, a);
+        if (!a.check || this.state.allowed[k] === a.check || this.state.asked[k] === a.check) { delete this.unasked[k]; continue; }
+        if (this.unasked[k]?.check !== a.check) this.unasked[k] = { check: a.check, at: now };
       }
+    }
+    for (const k of Object.keys(this.unasked)) {
+      const i = k.indexOf("/"), w = k.slice(0, i);
+      if (!(w === "*" ? globals : list[w])?.some((a) => a.name === k.slice(i + 1))) delete this.unasked[k];
     }
     // A workspace that's gone takes its runs and times with it (one with a broken
     // workspace.jsonc is still there).
     const there = new Set((shared("workspaces.defs") ?? []).map((d) => d.id));
     if (there.size) {
       this.state.runs = this.state.runs.filter((r) => there.has(r.ws));
-      for (const map of [this.state.last, this.state.base, this.state.allowed, this.state.asked]) for (const k of Object.keys(map)) if (!there.has(k.split("/")[0])) delete map[k];
+      for (const map of [this.state.last, this.state.base, this.state.allowed, this.state.asked]) for (const k of Object.keys(map)) if (!k.startsWith("*/") && !there.has(k.split("/")[0])) delete map[k];
     }
-    if (!this.loaded) { this.loaded = true; this.catchUp(this.state.seen || now, now, "while Herdr was closed"); }
+    if (!this.loaded) { this.loaded = true; this.catchUp(this.state.seen || now, now, this.h.away ?? "while Herdr was closed"); }
     this.save();
     this.watchFiles(cx);
     this.publish();
@@ -434,7 +551,8 @@ export class Runner {
     if (a.trigger.kind === "files") return def ? this.warnings[folderPath(def, a.trigger.folder)] ?? null : null;
     if (a.trigger.kind !== "github") return null;
     const r = this.repos[`${ws}\t${a.trigger.repo}`];
-    return r?.error ?? (r?.repo ? this.ghWarn[r.repo] ?? null : null);
+    if (r?.all && !r.all.length) return !a.enabled ? null : "Nothing to watch here: no folder of this workspace has a GitHub remote.";
+    return r?.error ?? watchedOf(r).map((x) => this.ghWarn[x.repo]).find(Boolean) ?? null;
   }
 
   publish() {
@@ -448,14 +566,36 @@ export class Runner {
       }));
     }
     if (JSON.stringify(out) !== JSON.stringify(shared("workspaces.automations") ?? null)) setShared("workspaces.automations", out);
+    const globals = this.globals.map((a) => ({ ...a, allowed: this.allowed("*", a) }));
+    if (JSON.stringify(globals) !== JSON.stringify(shared("workspaces.automations.global") ?? null)) setShared("workspaces.automations.global", globals);
     if (JSON.stringify(this.state.runs) !== JSON.stringify(shared("workspaces.automation.runs") ?? null)) setShared("workspaces.automation.runs", this.state.runs);
   }
 
-  // Every 500ms, from the switcher's timer.
+  // A check nobody has allowed is asked about once, a few seconds after it's first
+  // seen: the screen's own Save allows it, and that can arrive just after the file.
+  ask(now) {
+    for (const [k, u] of Object.entries(this.unasked)) {
+      if (now - u.at < ASK_AFTER) continue;
+      delete this.unasked[k];
+      const i = k.indexOf("/"), ws = k.slice(0, i);
+      const a = ws === "*" ? this.globals.find((g) => g.name === k.slice(i + 1)) : this.find(ws, k.slice(i + 1));
+      if (!a || a.check !== u.check || this.allowed(ws, a) || this.state.asked[k] === a.check) continue;
+      this.state.asked[k] = a.check;
+      this.save();
+      notify({
+        title: `Allow ${a.name}'s check?`,
+        body: `In ${ws === "*" ? "every workspace" : this.def(ws)?.name ?? ws}. Before each start, Herdr would run: ${a.check.length > 160 ? `${a.check.slice(0, 160)}…` : a.check}. It doesn't start until you allow that in Automations.`,
+        level: "warning", action: { name: "mod.open", args: { name: "ws-automations" } },
+      });
+    }
+  }
+
+  // Every 500ms: from the switcher's timer, or the background runner's.
   tick(cx) {
     if (!this.loaded) return;
     this.approvals();
     const now = Date.now();
+    this.ask(now);
     for (const p of this.pending.splice(0)) {
       const a = this.find(p.ws, p.name);
       if (a) this.fire(cx, p.ws, a, p.why);
@@ -474,6 +614,7 @@ export class Runner {
     }
     this.each((ws, a) => { if (a.trigger.kind === "every" && now >= this.next(ws, a, now)) this.fire(cx, ws, a, a.summary); });
     this.watchAgents(cx);
+    this.stalled(now);
     for (const [k, f] of Object.entries(this.files)) {
       if (now - f.at >= QUIET) { delete this.files[k]; this.filesFire(cx, f); }
     }
@@ -586,20 +727,23 @@ export class Runner {
     if (vars.event && !/\{\{\s*(event|text|task|task\.\w+|files?|agent|terminal|space|pr|issue|number|title|url|author|repo|labels)\s*\}\}/.test(a.body)) prompt = [prompt, vars.event].filter(Boolean).join("\n\n");
     // What the check printed goes last, unless the prompt says where with {{check}}.
     if (all.check && !/\{\{\s*check\s*\}\}/.test(a.body)) prompt = [prompt, `Before you were started, Herdr ran this automation's check (\`${a.check}\`). It printed:\n${all.check}`].filter(Boolean).join("\n\n");
-    const card = a.card ? await this.card(def, b, a, name, prompt, at) : null;
+    const card = a.card ? await this.card(def, b, a, name, prompt, at, vars) : null;
     const task = card ? brief(card, b) : prompt;
     const preset = this.h.presetsFor(ws).find((x) => x.name === name);
     let argv, first;
+    const known = await knownAgents().catch(() => []);
     if (preset) ({ argv, task: first } = this.h.presetLaunch(preset, task));
     else {
-      const known = await knownAgents().catch(() => []);
       argv = known.find((x) => x.key === name)?.run ?? [name];
       first = task;
     }
+    // One of the agents Herdr knows, which report what they're doing (see stalled).
+    const programs = new Set(known.flatMap((x) => [x.key, String(x.run?.[0] ?? "").split("/").pop()]));
+    const expects = argv.slice(0, 8).some((w) => programs.has(String(w).split("/").pop()));
     argv = withKnobs(argv, a.model, a.effort);
-    const made = await this.open(ws, a.name, folder, argv, first);
+    const made = this.h.open ? await this.h.open(ws, a.name, folder, argv, first) : await this.open(ws, a.name, folder, argv, first);
     if (card) await this.updateCard(card.file, { terminal: made.terminal ?? null, tab: made.tab ?? null, started: today() });
-    this.log({ ws, name: a.name, at, why, status: "started", terminal: made.terminal ?? null, tab: made.tab ?? null, space: made.space ?? null, card: card?.id ?? null });
+    this.log({ ws, name: a.name, at, why, status: "started", terminal: made.terminal ?? null, tab: made.tab ?? null, space: made.space ?? null, card: card?.id ?? null, ...(made.adopt ? { adopt: true } : {}), ...(expects ? { expects: true } : {}) });
     this.tidy(ws, a.name);
     notify({
       title: `${a.name} started`, body: `${why}. In ${def.name} › ${SPACE}.`, level: "info",
@@ -629,9 +773,11 @@ export class Runner {
   }
 
   // The run's card: a new task in the board's start column, with the prompt as its notes.
-  async card(def, b, a, agent, prompt, at) {
+  // Its title is the PR's or issue's for a github run, else the automation's with the time.
+  async card(def, b, a, agent, prompt, at, vars = {}) {
     const d = new Date(at);
-    const title = `${a.description || a.name} (${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())})`;
+    const title = vars.number && vars.title ? `${vars.pr ? "PR" : "Issue"} #${vars.number}: ${String(vars.title).slice(0, 120)}`
+      : `${a.description || a.name} (${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())})`;
     for (let i = 0; i < 5; i++) {
       const id = await nextId(def.id, b.prefix);
       const file = `${tasksDir(def.id)}/${id}.md`;
@@ -654,6 +800,10 @@ export class Runner {
 
   // Closes this automation's older run tabs whose agent isn't working or waiting on you.
   tidy(ws, name) {
+    if (this.h.tidy) {
+      this.h.tidy(this.state.runs.filter((r) => r.ws === ws && r.name === name && r.status === "started" && r.tab), KEEP_TABS, (r) => this.busy(r));
+      return;
+    }
     const live = new Set(spaces().flatMap((s) => (s.tabs ?? []).map((t) => t.id)));
     const runs = this.state.runs.filter((r) => r.ws === ws && r.name === name && r.status === "started" && r.tab && live.has(r.tab));
     for (const r of runs.slice(KEEP_TABS)) if (!this.busy(r)) run("tab.close", { id: r.tab, confirmed: true });
@@ -816,10 +966,10 @@ export class Runner {
     const watch = new Map(); // repo -> [{ ws, a, folder }]
     this.each((ws, a) => {
       if (a.trigger.kind !== "github") return;
-      const r = this.repos[`${ws}\t${a.trigger.repo}`];
-      if (!r?.repo) return;
-      if (!watch.has(r.repo)) watch.set(r.repo, []);
-      watch.get(r.repo).push({ ws, a, folder: r.folder });
+      for (const r of watchedOf(this.repos[`${ws}\t${a.trigger.repo}`])) {
+        if (!watch.has(r.repo)) watch.set(r.repo, []);
+        watch.get(r.repo).push({ ws, a, folder: r.folder });
+      }
     });
     if (!watch.size) return;
     this.ghBusy = true;
@@ -872,13 +1022,27 @@ export class Runner {
       try {
         const at = `${wsDir()}/.inbox`;
         let names = [];
-        try { names = (await fs.readdir(at)).filter((n) => n.endsWith(".run")).sort(); } catch {}
+        try { names = (await fs.readdir(at)).filter((n) => n.endsWith(".run") || n.endsWith(".allow")).sort(); } catch {}
         for (const n of names) {
           const path = `${at}/${n}`;
           const text = await readTextFile(path);
           await exec("rm", ["-f", path]).catch(() => {});
           if (text === null) continue;
-          const [ws = "", name = "", when = "", ...rest] = text.split("\n");
+          // The screen's Create, Save and Allow this check, passed on by the switcher
+          // while the background runner runs: { workspace, name, check }.
+          if (n.endsWith(".allow")) {
+            let ask = null;
+            try { ask = JSON.parse(text); } catch {}
+            if (ask?.workspace && ask.name && ask.check) {
+              this.state.allowed[`${ask.workspace}/${ask.name}`] = String(ask.check);
+              this.save();
+              this.publish();
+            }
+            continue;
+          }
+          const [ws = "", name = "", stamp = "", ...rest] = text.split("\n");
+          // "<ms> hand": the screen's Run now, passed on the same way.
+          const [when = "", mark = ""] = stamp.trim().split(/\s+/);
           const a = this.find(ws.trim(), name.trim());
           const body = rest.join("\n").trim();
           if (!a) {
@@ -890,7 +1054,7 @@ export class Runner {
             this.log({ ws: ws.trim(), name: a.name, at: Date.now(), why: "Called from outside", status: "skipped", note: `Called at ${shortTime(asked)}, while Herdr was closed.` });
             continue;
           }
-          this.fire(cx, ws.trim(), a, "Called from outside", body ? { text: body, event: body } : {}, { manual: true });
+          this.fire(cx, ws.trim(), a, mark === "hand" ? "Started by hand" : "Called from outside", body ? { text: body, event: body } : {}, { manual: true });
         }
       } finally {
         this.polling = false;

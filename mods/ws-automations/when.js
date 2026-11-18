@@ -12,6 +12,7 @@
 //   files inbox                            something changes under a folder (from the root)
 //   github api pr opened                   a pull request (or `issue`) is opened on GitHub, in a
 //   github owner/name issue opened by others label:bug   workspace folder's repo or owner/name
+//   github * issue opened                  … in any of the workspace's folders that has a GitHub remote
 //   link                                   only Run now and herdr-ws-run start it
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -185,7 +186,7 @@ export function describe(w) {
     case "board": return `When a task enters ${label(w.column)}`;
     case "agent": return `When an agent ${w.status === "done" ? "finishes" : "needs you"}${w.name ? ` (tabs named ${w.name})` : ""}`;
     case "files": return `When files change in ${w.folder}`;
-    case "github": return `When ${w.what === "pr" ? "a pull request" : "an issue"} is opened in ${w.repo}${w.others ? " by someone else" : ""}${w.label ? ` with the label ${w.label}` : ""}`;
+    case "github": return `When ${w.what === "pr" ? "a pull request" : "an issue"} is opened in ${w.repo === "*" ? "any repo here" : w.repo}${w.others ? " by someone else" : ""}${w.label ? ` with the label ${w.label}` : ""}`;
     case "link": return "Only when started by hand or called from outside";
     default: return w.error ?? HELP;
   }

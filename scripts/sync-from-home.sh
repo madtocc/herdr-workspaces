@@ -29,4 +29,6 @@ for mod in ws-switcher ws-spaces ws-agents ws-board ws-presets ws-chrome ws-auto
       cp -p "$src/mods/$mod/$f" "$dst/mods/$mod/$f"
     done
 done
+# Your copy says which version it is, so CHANGELOG.md can tell you what's new since.
+cp "$dst/VERSION" "$dst/mods/ws-switcher/VERSION"
 echo "synced from $src"
