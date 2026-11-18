@@ -17,6 +17,12 @@
 # Any other agent, or a folder outside every workspace, runs unchanged. The workspaces come from the index
 # the ws-switcher mod keeps in ~/.herdr/workspaces/.index while Herdr runs.
 #
+# ~/.herdr/AGENTS.md, when it's there, is the global guide: what every agent
+# started this way should know about Herdr (automations, hc helpers, the board).
+# Claude and Codex get it first, before the workspace's instructions, in or out of
+# a workspace (up to 16 KB, else a line naming the file). It replaces the built-in
+# line about herdr-ws-run; inside a workspace they're then told its name instead.
+#
 # A workspace can also hold a BRIEF.md beside its AGENTS.md: where its work stands
 # right now (what happened lately, what's open), kept by whatever knows: an
 # automation, a script, you. AGENTS.md is what holds always; the brief is what
@@ -153,6 +159,7 @@ told() {
 
 templates=${XDG_CONFIG_HOME:-$HOME/.config}/herdr-core/templates
 wsdir=$HOME/.herdr/workspaces/$ws
+guide=$HOME/.herdr/AGENTS.md
 # A front matter field of a preset file.
 front() { awk -v k="$2" 'NR == 1 && /^---[ \t\r]*$/ { h = 1; next } h && /^---[ \t\r]*$/ { exit }
   h && index($0, k ":") == 1 { v = substr($0, length(k) + 2); sub(/^[ \t]+/, "", v); sub(/[ \t\r]+$/, "", v); print v; exit }' "$1"; }
@@ -227,9 +234,18 @@ fi
 given=$#
 name=${agent##*/}
 if [ "$name" = claude ] || [ "$name" = codex ]; then
-  # The workspace's instructions, then each preset's, a blank line apart.
-  text=
-  [ -n "$ws" ] && [ -r "$instructions" ] && text=$(told "$instructions")
+  # The global guide (what every agent here should know about Herdr: automations,
+  # hc helpers, the board), then the workspace's instructions, then each preset's,
+  # a blank line apart. A guide over 16 KB is only pointed at.
+  text= guided=
+  if [ -s "$guide" ] && [ -r "$guide" ] && [ -n "$(told "$guide")" ]; then
+    guided=1
+    if [ "$(wc -c < "$guide")" -le 16384 ]; then text=$(told "$guide")
+    else text="How to work in Herdr (automations, hc helpers, the board) is in $guide. Read it before using any of them."; fi
+  fi
+  [ -n "$ws" ] && [ -r "$instructions" ] && more=$(told "$instructions") && [ -n "$more" ] && text=${text:+$text
+
+}$more
   while IFS= read -r file; do
     [ -n "$file" ] && [ -r "$file" ] || continue
     more=$(told "$file")
@@ -259,8 +275,14 @@ EOF
 
 }$stands
   fi
-  # In a workspace, the agent can leave work for later: a Herdr automation.
-  if [ -n "$ws" ] && command -v herdr-ws-run >/dev/null 2>&1; then
+  # In a workspace, the agent can leave work for later: a Herdr automation. With a
+  # guide, the guide says how; the agent is only told which workspace it's in.
+  if [ -n "$ws" ] && [ -n "$guided" ]; then
+    later="You're working in the Herdr workspace \"$ws\" (its config, board cards and automations: $wsdir)."
+    text=${text:+$text
+
+}$later
+  elif [ -n "$ws" ] && command -v herdr-ws-run >/dev/null 2>&1; then
     later="You're working in the Herdr workspace \"$ws\". When you're asked to do something later or on a schedule (\"tomorrow at 6, check X and if so do Y\"), set it up as a Herdr automation with herdr-ws-run --add; run herdr-ws-run --help first. It starts a new agent at that time, so its prompt must say everything that agent needs."
     text=${text:+$text
 

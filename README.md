@@ -100,7 +100,9 @@ says how), or by hand:
    - presets for one workspace: to `~/.herdr/workspaces/<id>/agents/`;
    - automations need no copying: the Automations screen lists the ready-made
      ones (`mods/ws-automations/starters/`), and Create adds the one you open.
-     They're written for the `implementer` and `reviewer` presets.
+     They're written for the `implementer` and `reviewer` presets;
+   - a guide for every agent the launcher starts (how to use automations, hc
+     helpers and the board): `examples/guide.md` to `~/.herdr/AGENTS.md`.
 
 **What it touches:** it reads `~/.herdr/workspaces` and the folders of
 each workspace's root. Two of the ready-made automations (`issue-to-pr`,
@@ -137,7 +139,7 @@ folders included, to the Trash with it. A repo's two
 worktree scripts (`~/.herdr/workspaces/<id>/worktrees.json`) are shell lines Herdr
 runs as you: setup in a new worktree the board makes, archive before a removal.
 Like a check, only a line you saved or allowed in the screen runs
-(`~/.herdr/workspaces/.worktree-scripts.json`). The launcher lets Claude and Codex read and edit
+(`~/.herdr/workspaces/.worktree-scripts.json`). The launcher reads `~/.herdr/AGENTS.md`, your global guide, and lets Claude and Codex read and edit
 the workspace's root, its folders elsewhere and its `tasks` folder. Automations watch the folders a files automation
 names, read calls `herdr-ws-run` leaves in `~/.herdr/workspaces/.inbox` (and
 delete them), and close an automation's older run tabs once their agent is done.

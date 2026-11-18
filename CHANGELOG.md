@@ -7,6 +7,9 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 
 ## [Unreleased]
 
+### New
+- **A guide for every agent.** Write what every agent should know about Herdr (how to set up automations, start hc helpers, keep a card's notes) in `~/.herdr/AGENTS.md`, and Claude and Codex started through the launcher get it first, before the workspace's instructions: from the + menu, a preset, a card, an automation or `hc run`. It replaces the built-in line about `herdr-ws-run --add`. `examples/guide.md` is a start: copy it to `~/.herdr/AGENTS.md` and change it. To update, copy `mods/ws-switcher`.
+
 ### Fixed
 - **Picking Scratch in the switcher menu shows it.** A click on the Scratch workspace did nothing: its row and New scratch space shared an id inside the menu, so the click got lost. Picking it from All spaces still worked. Every workspace row now has an id of its own, which also covers a workspace you call new, all, edit, move, rename or delete. To update, copy `mods/ws-switcher`.
 
