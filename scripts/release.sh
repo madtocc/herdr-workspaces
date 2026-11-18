@@ -24,10 +24,16 @@ publish=${2:-}
 echo "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "release: $v isn't x.y.z" >&2; exit 1; }
 git rev-parse -q --verify "refs/tags/v$v" >/dev/null && { echo "release: v$v is already tagged" >&2; exit 1; }
 [ -z "$(git status --porcelain)" ] || { echo "release: commit or stash your changes first" >&2; exit 1; }
+# The drawing changed since the last release but its picture didn't: render it first.
+last=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
+if [ -n "$last" ] && ! git diff --quiet "$last" -- mods/ws-switcher/preview.svg && git diff --quiet "$last" -- preview.png; then
+  echo "release: mods/ws-switcher/preview.svg changed since $last but preview.png didn't: run scripts/render-preview.sh" >&2; exit 1
+fi
 grep -q '^## \[Unreleased\]' CHANGELOG.md || { echo "release: CHANGELOG.md has no ## [Unreleased]" >&2; exit 1; }
 [ -n "$(notes Unreleased)" ] || { echo "release: ## [Unreleased] is empty" >&2; exit 1; }
 
-sed -i.bak "s/^## \[Unreleased\]/## [$v] - $(date +%F)/" CHANGELOG.md && rm CHANGELOG.md.bak
+# The version takes Unreleased's notes, and an empty Unreleased waits above it for the next change.
+awk -v v="$v" -v d="$(date +%F)" '/^## \[Unreleased\]/ && !done { print; print ""; print "## [" v "] - " d; done = 1; next } { print }' CHANGELOG.md > CHANGELOG.md.new && mv CHANGELOG.md.new CHANGELOG.md
 echo "$v" > VERSION
 cp VERSION mods/ws-switcher/VERSION
 git add CHANGELOG.md VERSION mods/ws-switcher/VERSION

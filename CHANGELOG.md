@@ -5,6 +5,11 @@ describes the whole thing as it is now; this file says what's new since the
 version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 "Updating" in the README.
 
+## [Unreleased]
+
+### Fixed
+- **The layout's picture shows today's look:** the board button, Automations and Agent presets in the footer, and the switcher menu's current rows, in the README and in Herdr's layout settings.
+
 ## [0.3.0] - 2026-11-18
 
 ### New

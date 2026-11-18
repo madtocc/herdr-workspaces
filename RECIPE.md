@@ -626,7 +626,7 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
 - `--add-dir <root>` lets the agent read and edit the whole workspace, sibling repos included. That's the point of a multi-repo workspace, but it's broader than one repo. `--add-dir <tasks folder>` lets it edit every card of its workspace, not only its own.
 - Codex gets the instructions through `developer_instructions`. The TOML quoting is checked; how a given Codex version weighs those instructions is up to Codex.
 - A popup's tasks end when it closes. That's why "New workspace" goes through `workspaces.create` to the sidebar copy, and why "Edit" is a single `exec`.
-- `preview.png` is a drawing of the layout with demo names, not a screenshot.
+- `preview.png` is a drawing of the layout with demo names, not a screenshot: `mods/ws-switcher/preview.svg` (also the layout's picture in Herdr's settings) rendered by `scripts/render-preview.sh`. Redraw it when the sidebar, the switcher menu or the tab bar changes.
 - The board needs `herdr-app` on `PATH` (an installed macOS app makes the `~/.local/bin` link) to learn the terminal a Start made. Without it, Start shows an error toast.
 - The brief is the agent's last argument, so it's limited by the system's argument length; very long notes are better as a file the notes link to.
 - An agent can break a task's front matter. The card then falls back to the file name for its id and the notes' first line for its title, and its status goes to the first column.

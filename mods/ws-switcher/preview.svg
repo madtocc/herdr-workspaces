@@ -13,14 +13,15 @@
   <circle cx="20" cy="24" r="6" fill="#ff5f57"/><circle cx="40" cy="24" r="6" fill="#febc2e"/><circle cx="60" cy="24" r="6" fill="#28c840"/>
   <text x="124" y="30" fill="#e8e9eb" font-size="15" font-weight="600">Herdr</text>
 
-  <!-- the switcher -->
-  <rect x="10" y="60" width="268" height="40" rx="8" fill="#232428"/>
+  <!-- the switcher and the board button -->
+  <rect x="10" y="60" width="234" height="40" rx="8" fill="#232428"/>
   <rect x="20" y="70" width="20" height="20" rx="5" fill="#5b8def"/>
   <text x="30" y="85" fill="#fff" font-size="11" font-weight="700" text-anchor="middle">A</text>
   <text x="52" y="85" fill="#e8e9eb" font-size="14" font-weight="500">Acme</text>
-  <circle cx="226" cy="80" r="3" fill="#e5534b"/>
-  <text x="242" y="85" fill="#7d8089" font-size="11.5">3</text>
-  <path d="M256 78 l4 4 l4 -4" stroke="#7d8089" stroke-width="1.5" fill="none"/>
+  <circle cx="194" cy="80" r="3" fill="#e5534b"/>
+  <text x="208" y="85" fill="#7d8089" font-size="11.5">3</text>
+  <path d="M222 78 l4 4 l4 -4" stroke="#7d8089" stroke-width="1.5" fill="none"/>
+  <g transform="translate(253 72.5) scale(0.6250)" fill="none" stroke="#a5a8ae" stroke-width="1.87" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M15 3v18"/><path d="M5.5 7h1.5"/><path d="M11.5 7h1.5"/><path d="M11.5 11h1.5"/><path d="M17.5 7h1"/></g>
 
   <!-- spaces -->
   <text x="19" y="128" fill="#7d8089" font-size="12">Spaces</text>
@@ -43,11 +44,17 @@
   <text x="19" y="562" fill="#7d8089" font-size="12">Working 1</text>
   <rect x="20" y="577" width="16" height="16" rx="4" fill="#d97757"/>
   <text x="46" y="590" fill="#e8e9eb" font-size="13.5">api</text><text x="74" y="590" fill="#7d8089" font-size="13">· Fix login redirect</text>
-  <text x="19" y="764" fill="#a5a8ae" font-size="13">⚙  Settings</text>
+  <!-- footer -->
+  <rect y="675" width="288" height="1" fill="#25272b"/>
+  <g transform="translate(19 688) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4.5 13.5H12L11 22l8.5-11.5H12z"/></g><text x="44" y="700" fill="#a5a8ae" font-size="13">Automations</text>
+  <g transform="translate(19 716) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></g><text x="44" y="728" fill="#a5a8ae" font-size="13">Agent presets</text>
+  <g transform="translate(19 744) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915" /> <circle cx="12" cy="12" r="3" /></g><text x="44" y="756" fill="#a5a8ae" font-size="13">Settings</text>
+  <g transform="translate(19 772) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g><text x="44" y="784" fill="#a5a8ae" font-size="13">Add machine</text>
 
   <!-- tab bar and pane -->
   <rect x="300" y="8" width="78" height="32" rx="8" fill="#26272c"/>
   <text x="330" y="29" fill="#e8e9eb" font-size="13">1</text>
+  <g transform="translate(1064 17) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g>
   <text x="1110" y="29" fill="#a5a8ae" font-size="13">Files</text><text x="1182" y="29" fill="#a5a8ae" font-size="13">Changes</text>
   <rect x="300.5" y="56.5" width="969" height="735" rx="10" fill="#1b1c20" stroke="#8ab4f8"/>
   <rect x="301" y="57" width="968" height="34" rx="10" fill="#1d1e22"/>
@@ -65,36 +72,34 @@
 
   <!-- the open switcher menu -->
   <g filter="url(#shadow)">
-    <rect x="96" y="96" width="290" height="512" rx="10" fill="#202125" stroke="#303237"/>
+    <rect x="96" y="96" width="290" height="548" rx="10" fill="#202125" stroke="#303237"/>
   </g>
   <g font-size="13">
-    <text x="112" y="122" fill="#7d8089" font-size="11">Workspaces</text>
-    <rect x="109" y="134" width="18" height="18" rx="5" fill="none" stroke="#3a3c42"/>
-    <text x="138" y="148" fill="#e8e9eb">All spaces</text><text x="356" y="148" fill="#7d8089" font-size="11" text-anchor="end">7</text>
-    <rect x="101" y="160" width="280" height="30" rx="7" fill="#2a2b31"/>
-    <rect x="109" y="166" width="18" height="18" rx="5" fill="#5b8def"/><text x="118" y="179" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">A</text>
-    <text x="138" y="180" fill="#e8e9eb">Acme</text><text x="346" y="180" fill="#7d8089" font-size="11" text-anchor="end">3</text>
-    <path d="M356 175 l3 3 l6 -6" stroke="#8ab4f8" stroke-width="1.6" fill="none"/>
-    <rect x="109" y="196" width="18" height="18" rx="5" fill="#e3814f"/><text x="118" y="209" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">G</text>
-    <text x="138" y="210" fill="#e8e9eb">Globex</text><circle cx="328" cy="206" r="3" fill="#e5534b"/><text x="346" y="210" fill="#7d8089" font-size="11" text-anchor="end">2</text>
-    <rect x="109" y="226" width="18" height="18" rx="5" fill="#3fae6a"/><text x="118" y="239" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">I</text>
-    <text x="138" y="240" fill="#e8e9eb">Initech</text><text x="346" y="240" fill="#7d8089" font-size="11" text-anchor="end">2</text>
-    <rect x="100" y="256" width="282" height="1" fill="#303237"/>
-    <text x="112" y="280" fill="#a5a8ae">◇</text><text x="138" y="280" fill="#e8e9eb">Move “api” to…</text><text x="362" y="280" fill="#7d8089" text-anchor="end">›</text>
-    <text x="112" y="310" fill="#a5a8ae">＋</text><text x="138" y="310" fill="#e8e9eb">New workspace from a folder…</text>
-    <text x="112" y="340" fill="#a5a8ae">▤</text><text x="138" y="340" fill="#e8e9eb">Open Acme's files</text>
-    <text x="112" y="370" fill="#a5a8ae">✎</text><text x="138" y="370" fill="#e8e9eb">Rename Acme…</text>
-    <text x="112" y="400" fill="#e5534b">⌫</text><text x="138" y="400" fill="#e5534b">Delete Acme…</text>
-    <rect x="100" y="414" width="282" height="1" fill="#303237"/>
-    <text x="112" y="438" fill="#7d8089" font-size="11">Acme folders</text>
-    <text x="138" y="464" fill="#e8e9eb">api</text><text x="362" y="464" fill="#7d8089" font-size="11" text-anchor="end">Go</text>
-    <text x="138" y="494" fill="#e8e9eb">web</text><text x="362" y="494" fill="#7d8089" font-size="11" text-anchor="end">Go</text>
-    <text x="138" y="524" fill="#e8e9eb">docs</text><text x="362" y="524" fill="#7d8089" font-size="11" text-anchor="end">Go</text>
-    <text x="138" y="554" fill="#e8e9eb">infra</text><text x="362" y="554" fill="#7d8089" font-size="11" text-anchor="end">Open</text>
-    <text x="138" y="584" fill="#e8e9eb">design-system</text><text x="362" y="584" fill="#7d8089" font-size="11" text-anchor="end">Open</text>
-    <g fill="none" stroke="#a5a8ae" stroke-width="1.2">
-      <path d="M112 454 h5 l2 2 h8 v10 h-15 z"/><path d="M112 484 h5 l2 2 h8 v10 h-15 z"/><path d="M112 514 h5 l2 2 h8 v10 h-15 z"/>
-      <path d="M112 544 h5 l2 2 h8 v10 h-15 z"/><path d="M112 574 h5 l2 2 h8 v10 h-15 z"/>
-    </g>
+    <g transform="translate(111 111) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M12 10v6" /> <path d="M9 13h6" /> <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" /></g><text x="138" y="122" fill="#e8e9eb">New workspace from a folder…</text>
+    <rect x="100" y="136" width="282" height="1" fill="#303237"/>
+    <text x="112" y="160" fill="#7d8089" font-size="11">Workspaces</text>
+    <rect x="109" y="172" width="18" height="18" rx="5" fill="none" stroke="#3a3c42"/>
+    <text x="138" y="186" fill="#e8e9eb">All spaces</text><text x="356" y="186" fill="#7d8089" font-size="11" text-anchor="end">7</text>
+    <rect x="101" y="198" width="280" height="30" rx="7" fill="#2a2b31"/>
+    <rect x="109" y="204" width="18" height="18" rx="5" fill="#5b8def"/><text x="118" y="217" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">A</text>
+    <text x="138" y="218" fill="#e8e9eb">Acme</text><text x="346" y="218" fill="#7d8089" font-size="11" text-anchor="end">3</text>
+    <path d="M356 213 l3 3 l6 -6" stroke="#8ab4f8" stroke-width="1.6" fill="none"/>
+    <rect x="109" y="234" width="18" height="18" rx="5" fill="#e3814f"/><text x="118" y="247" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">G</text>
+    <text x="138" y="248" fill="#e8e9eb">Globex</text><circle cx="328" cy="244" r="3" fill="#e5534b"/><text x="346" y="248" fill="#7d8089" font-size="11" text-anchor="end">2</text>
+    <rect x="109" y="264" width="18" height="18" rx="5" fill="#3fae6a"/><text x="118" y="277" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">I</text>
+    <text x="138" y="278" fill="#e8e9eb">Initech</text><text x="346" y="278" fill="#7d8089" font-size="11" text-anchor="end">2</text>
+    <rect x="100" y="294" width="282" height="1" fill="#303237"/>
+    <g transform="translate(111 307) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6a9 9 0 0 0-9 9V3" /> <circle cx="18" cy="6" r="3" /> <circle cx="6" cy="18" r="3" /></g><text x="138" y="318" fill="#e8e9eb">Open Acme worktrees</text>
+    <g transform="translate(111 337) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z" /> <path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12" /> <path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17" /></g><text x="138" y="348" fill="#e8e9eb">Move “api” to…</text><text x="362" y="348" fill="#7d8089" text-anchor="end">›</text>
+    <g transform="translate(111 367) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" /> <path d="M14 2v4a2 2 0 0 0 2 2h4" /> <path d="M10 9H8" /> <path d="M16 13H8" /> <path d="M16 17H8" /></g><text x="138" y="378" fill="#e8e9eb">Open Acme's files</text>
+    <g transform="translate(111 397) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /> <path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z" /></g><text x="138" y="408" fill="#e8e9eb">Rename Acme…</text>
+    <g transform="translate(111 427) scale(0.5833)" fill="none" stroke="#e5534b" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></g><text x="138" y="438" fill="#e5534b">Delete Acme…</text>
+    <rect x="100" y="452" width="282" height="1" fill="#303237"/>
+    <text x="112" y="476" fill="#7d8089" font-size="11">Acme folders</text>
+    <g transform="translate(111 491) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" /></g><text x="138" y="502" fill="#e8e9eb">api</text><text x="362" y="502" fill="#7d8089" font-size="11" text-anchor="end">Go</text>
+    <g transform="translate(111 521) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" /></g><text x="138" y="532" fill="#e8e9eb">web</text><text x="362" y="532" fill="#7d8089" font-size="11" text-anchor="end">Go</text>
+    <g transform="translate(111 551) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" /></g><text x="138" y="562" fill="#e8e9eb">docs</text><text x="362" y="562" fill="#7d8089" font-size="11" text-anchor="end">Go</text>
+    <g transform="translate(111 581) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" /></g><text x="138" y="592" fill="#e8e9eb">infra</text><text x="362" y="592" fill="#7d8089" font-size="11" text-anchor="end">Open</text>
+    <g transform="translate(111 611) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" /></g><text x="138" y="622" fill="#e8e9eb">design-system</text><text x="362" y="622" fill="#7d8089" font-size="11" text-anchor="end">Open</text>
   </g>
 </svg>

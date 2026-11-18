@@ -166,6 +166,9 @@ Apache License 2.0. `ws-spaces`, `ws-agents`, `ws-tabs`, `ws-new-menu` and
 
 ## Working on it
 
+`AGENTS.md` is the checklist for a change (for you or your agent): what to update
+with it, the picture, what the mods share, how to test and release.
+
 Edit the live files in `~/.config/herdr-app`, then copy them here with
 `scripts/sync-from-home.sh`.
 
@@ -174,6 +177,9 @@ Every change people would notice gets a line under `## [Unreleased]` in
 into a version (the middle number for anything new, the last for fixes only),
 writes `VERSION`, commits and tags it; `--publish` also pushes and makes the
 GitHub release from those notes.
+
+`preview.png` is drawn, not a screenshot: edit `mods/ws-switcher/preview.svg`
+(also the picture in Herdr's layout settings) and run `scripts/render-preview.sh`.
 
 To try a change without touching your own window, `scripts/sandbox.sh up`
 opens a second Herdr with its own core, home and two demo workspaces under
