@@ -1,0 +1,107 @@
+#!/bin/sh
+# A notification on the desktop, outside Herdr's window: for when you aren't
+# looking at Herdr, or it's closed. The ws-toast mod calls it for every toast
+# Herdr shows, and the background runner for its own while the window is closed.
+#
+#   herdr-ws-notify [--unless-front] [--sound] [--group ID] [--do NAME JSON] TITLE [BODY]
+#   herdr-ws-notify --on | --off | --status
+#
+# macOS: terminal-notifier when it's installed (a click brings Herdr forward
+# and, with --do, runs that Herdr command, e.g. agent.focus '{"terminal":"t7"}');
+# else osascript's "display notification" (shown as Script Editor's, and a click
+# does nothing). Linux: notify-send. Anywhere else, or with none of them: nothing.
+#
+#   --unless-front   nothing when Herdr is the app in front: its own toast shows
+#                    there. macOS only; elsewhere it can't tell, so it notifies.
+#   --sound          with the system's sound (Herdr plays its own while its
+#                    window is open, so the mod leaves this out)
+#   --group ID       a later one with the same ID replaces this one (terminal-notifier)
+#   --do NAME JSON   the Herdr command a click runs (terminal-notifier)
+#
+# Off (--off; kept in ~/.herdr/notify/switch) it does nothing, and Herdr's own
+# toasts and sounds are as before. It never fails its caller: it always exits 0.
+# Nothing here reaches the network.
+#
+# HERDR_WS_NOTIFY_DRY=1 prints the command, one word per line, instead of running it.
+
+dir=${HERDR_WS_NOTIFY_DIR:-$HOME/.herdr/notify}
+switch=$dir/switch
+app=dev.herdr.app
+
+case "${1:-}" in
+  --on | --off)
+    mkdir -p "$dir" && printf '%s\n' "${1#--}" > "$switch" || { echo "herdr-ws-notify: can't write $switch" >&2; exit 1; }
+    echo "Desktop notifications are ${1#--}."
+    exit 0 ;;
+  --status)
+    if [ "$(sed -n 1p "$switch" 2>/dev/null)" = off ]; then echo "off"; exit 0; fi
+    how=nothing
+    case "$(uname -s)" in
+      Darwin) if command -v terminal-notifier >/dev/null 2>&1; then how="terminal-notifier (a click goes to Herdr)"; elif command -v osascript >/dev/null 2>&1; then how="osascript (shown as Script Editor's; brew install terminal-notifier for a click that goes to Herdr)"; fi ;;
+      Linux) command -v notify-send >/dev/null 2>&1 && how=notify-send ;;
+    esac
+    echo "on, through $how"
+    exit 0 ;;
+  --help | -h) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+esac
+
+front= sound= group= do_name= do_args=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --unless-front) front=1; shift ;;
+    --sound) sound=1; shift ;;
+    --group) group=${2:-}; shift 2 2>/dev/null || shift ;;
+    --do) do_name=${2:-}; do_args=${3:-}; shift 3 2>/dev/null || shift $# ;;
+    --) shift; break ;;
+    *) break ;;
+  esac
+done
+
+[ "$(sed -n 1p "$switch" 2>/dev/null)" = off ] && exit 0
+
+# One line each, no control characters, not longer than a banner shows.
+clean() { printf '%s' "$1" | tr '\n\r\t' '   ' | tr -d '\000-\037' | cut -c1-"$2"; }
+title=$(clean "${1:-}" 120)
+body=$(clean "${2:-}" 300)
+[ -n "$title" ] || exit 0
+
+run() {
+  if [ -n "${HERDR_WS_NOTIFY_DRY:-}" ]; then printf '%s\n' "$@"; return 0; fi
+  "$@" >/dev/null 2>&1 &
+}
+
+case "$(uname -s)" in
+  Darwin)
+    if [ -n "$front" ] && command -v lsappinfo >/dev/null 2>&1; then
+      case "$(lsappinfo info -only bundleid "$(lsappinfo front 2>/dev/null)" 2>/dev/null)" in *"\"$app\""*) exit 0 ;; esac
+    fi
+    if command -v terminal-notifier >/dev/null 2>&1; then
+      # terminal-notifier reads a leading [ ( < or - as its own syntax.
+      lead() { case "$1" in '['* | '('* | '<'* | '-'*) printf '\\%s' "$1" ;; *) printf '%s' "$1" ;; esac; }
+      set -- terminal-notifier -title "$(lead "$title")" -message "$(lead "${body:-$title}")" -activate "$app"
+      [ -n "$body" ] || set -- terminal-notifier -title Herdr -message "$(lead "$title")" -activate "$app"
+      g=$(printf '%s' "${group:-$title}" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-80)
+      set -- "$@" -group "herdr.$g"
+      [ -n "$sound" ] && set -- "$@" -sound default
+      # The click's command: only a plain command name, its JSON in single quotes.
+      case "$do_name" in
+        '' | *[!a-z0-9._/-]*) ;;
+        *)
+          bin=$(command -v herdr-app 2>/dev/null)
+          if [ -n "$bin" ]; then
+            q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+            line="$(q "$bin") do $do_name $(q "${do_args:-{\}}")"
+            [ -n "${HERDR_APP_HOME:-}" ] && line="HERDR_APP_HOME=$(q "$HERDR_APP_HOME") $line"
+            set -- "$@" -execute "$line"
+          fi ;;
+      esac
+      run "$@"
+    elif command -v osascript >/dev/null 2>&1; then
+      if [ -n "$sound" ]; then say='display notification (item 2 of argv) with title (item 1 of argv) sound name "default"'
+      else say='display notification (item 2 of argv) with title (item 1 of argv)'; fi
+      run osascript -e 'on run argv' -e "$say" -e 'end run' "$title" "$body"
+    fi ;;
+  Linux)
+    command -v notify-send >/dev/null 2>&1 && run notify-send -a Herdr -- "$title" "$body" ;;
+esac
+exit 0

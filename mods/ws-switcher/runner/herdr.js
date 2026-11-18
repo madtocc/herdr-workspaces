@@ -15,6 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { randomBytes } from "node:crypto";
+import { fileURLToPath } from "node:url";
 
 export const home = () => os.homedir();
 export const appHome = () => process.env.HERDR_APP_HOME || `${home()}/.config/herdr-app`;
@@ -113,15 +114,36 @@ export const onShared = (fn) => listeners.push(fn);
 // --- notifications: files the switcher shows as toasts (now, or when Herdr next opens) ---
 
 const KEEP_NOTES = 40;
+// The window takes a note within a couple of seconds, and its toast reaches the
+// desktop too when Herdr isn't the app in front (the ws-toast mod). A note still
+// there after this long has no window to show it, so it goes to the desktop from
+// here (bin/herdr-ws-notify). The file stays: Herdr shows it when it next opens.
+const UNSEEN_MS = 6000;
+const DESKTOP = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "bin", "herdr-ws-notify");
+
 export function notify(note) {
   const at = `${runnerDir()}/notes`;
   (async () => {
     await nfs.mkdir(at, { recursive: true });
-    await writeTextFile(`${at}/${Date.now()}-${hex(5)}.json`, JSON.stringify({ ...note, at: Date.now() }));
+    const file = `${at}/${Date.now()}-${hex(5)}.json`;
+    await writeTextFile(file, JSON.stringify({ ...note, at: Date.now() }));
     const names = (await nfs.readdir(at)).filter((n) => n.endsWith(".json")).sort();
     for (const n of names.slice(0, Math.max(0, names.length - KEEP_NOTES))) await nfs.rm(`${at}/${n}`, { force: true });
     for (const fn of listeners) fn("notes");
+    setTimeout(() => desktop(file, note).catch(() => {}), UNSEEN_MS);
   })().catch((e) => console.error("note:", e?.message ?? e));
+}
+
+// The same words and the same click as the toast, with the system's sound: Herdr isn't there to play its own.
+async function desktop(file, note) {
+  try { await nfs.access(file); } catch { return; } // the window took it
+  if (!note?.title) return;
+  const args = ["--sound"];
+  const place = note.action?.args?.terminal ?? note.action?.args?.id;
+  if (place) args.push("--group", String(place));
+  if (note.action?.name) args.push("--do", String(note.action.name), JSON.stringify(note.action.args ?? {}));
+  args.push("--", String(note.title), String(note.body ?? ""));
+  await exec(DESKTOP, args, { timeout: 15000 });
 }
 
 // --- herdr-core: one `hc connect` kept open, asked every second ---

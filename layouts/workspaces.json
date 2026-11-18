@@ -1,5 +1,6 @@
 {
   "id": "root",
+  "toast": "ws-toast",
   "cloned_from": {
     "name": "main",
     "version": "0.1.14"

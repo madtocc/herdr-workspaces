@@ -7,4 +7,8 @@ mods/ws-new-menu are modified copies of the `spaces`, `agents`,
 License 2.0. The changes are described at the top of each file, and the icons
 in mods/ws-chrome and mods/ws-tabs are Herdr's own.
 
+mods/ws-toast is a modified copy of the `toast` mod shipped with Herdr
+(herdr-app 0.1.16), under the same license. Its change is described at the top
+of its file.
+
 The rest of this package is licensed under the Apache License 2.0 (LICENSE).

@@ -17,6 +17,14 @@
 # Any other agent, or a folder outside every workspace, runs unchanged. The workspaces come from the index
 # the ws-switcher mod keeps in ~/.herdr/workspaces/.index while Herdr runs.
 #
+# A workspace can also hold a BRIEF.md beside its AGENTS.md: where its work stands
+# right now (what happened lately, what's open), kept by whatever knows: an
+# automation, a script, you. AGENTS.md is what holds always; the brief is what
+# holds today. An agent started with no preset is yours to talk to and gets the
+# brief whole after the instructions (up to 16 KB; front matter and HTML comments
+# left out). A preset's agent has a job of its own, so it's only told where the
+# file is. No BRIEF.md, or an empty one, adds nothing.
+#
 # --instructions FILE adds a preset's instructions after the workspace's (its
 # body: front matter between --- lines and HTML comments left out), in or out of
 # a workspace, under a line naming the preset (the file's name without .md), so
@@ -237,6 +245,20 @@ $more"
   done <<EOF
 $presets
 EOF
+  # Where the workspace's work stands: its BRIEF.md, whole for an agent with no
+  # preset, a pointer for a preset's agent (and for a brief too long to hand over).
+  brief=$wsdir/BRIEF.md
+  if [ -n "$ws" ] && [ -s "$brief" ] && [ -r "$brief" ]; then
+    stands=
+    if [ -z "$(printf '%s' "$presets" | tr -d ' \t\n')" ] && [ "$(wc -c < "$brief")" -le 16384 ]; then
+      stands=$(told "$brief")
+    elif [ -n "$(told "$brief")" ]; then
+      stands="Where the work in this workspace stands (what happened lately, what's open or waiting on someone) is kept in $brief. Read it when that would help with what you're asked."
+    fi
+    [ -n "$stands" ] && text=${text:+$text
+
+}$stands
+  fi
   # In a workspace, the agent can leave work for later: a Herdr automation.
   if [ -n "$ws" ] && command -v herdr-ws-run >/dev/null 2>&1; then
     later="You're working in the Herdr workspace \"$ws\". When you're asked to do something later or on a schedule (\"tomorrow at 6, check X and if so do Y\"), set it up as a Herdr automation with herdr-ws-run --add; run herdr-ws-run --help first. It starts a new agent at that time, so its prompt must say everything that agent needs."

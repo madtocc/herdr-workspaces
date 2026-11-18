@@ -7,6 +7,10 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 
 ## [Unreleased]
 
+### New
+- **Notifications reach your desktop.** While Herdr isn't the app in front, every toast (an agent needs you or finished, an automation's news, a pull request's) also shows as a system notification with the same words, and a click on it brings Herdr forward and goes where the toast would. With Keep running on and Herdr closed, the background runner's news goes to the desktop too, with the system's sound. `herdr-ws-notify --off` turns them off. To update: copy the new `mods/ws-toast` folder, copy `layouts/workspaces.json` again (or add `"toast": "ws-toast"` at its root), and link `bin/herdr-ws-notify` into `~/.local/bin` like the other scripts. On macOS, `brew install terminal-notifier` makes a click go to Herdr; without it the notification shows under Script Editor's name and a click does nothing.
+- **A brief for each workspace.** `~/.herdr/workspaces/<id>/BRIEF.md` says where the workspace's work stands today, and whatever knows keeps it: an automation, a script, you. Claude and Codex started there with no preset get it after the workspace's instructions; a preset's agent is told where the file is. Nothing to do by hand: without the file nothing changes.
+
 ## [0.5.0] - 2026-11-18
 
 ### New

@@ -41,7 +41,7 @@ A mod can't import from another mod's folder, so some things are copied. Change 
 - **Shared state**: mods talk through Herdr's shared keys `workspaces.*`. The list and what each holds is at the top of `mods/ws-switcher/main.js`; add a new key there. A screen or popup asks the sidebar copy of the switcher to do work by setting a key to `{ …, at: Date.now() }`, because a popup's or dialog's tasks end when it closes.
 - **Config formats**: a workspace is `~/.herdr/workspaces/<id>/workspace.jsonc` plus `AGENTS.md`; presets are herdr-core templates (front matter `description` and `command`, the body is the instructions); automations and tasks are markdown with front matter. Build on these instead of inventing new files. `defs.js` loads workspaces and presets for both the app and the background runner.
 - **The background runner** runs `automations.js`, `prs.js` and `defs.js` under Node with stand-ins for the `herdr` module (`runner/herdr.js`). Code in those files may only use what the stand-ins provide.
-- **Copies of Herdr's own mods** (`ws-spaces`, `ws-agents`, `ws-tabs`, `ws-new-menu`, `ws-chrome`) are based on a stated Herdr version. Note every change at the top of the copy and in RECIPE's Built from, so they can be rebuilt on a newer Herdr.
+- **Copies of Herdr's own mods** (`ws-spaces`, `ws-agents`, `ws-tabs`, `ws-new-menu`, `ws-chrome`, `ws-toast`) are based on a stated Herdr version. Note every change at the top of the copy and in RECIPE's Built from, so they can be rebuilt on a newer Herdr.
 
 ## Testing
 

@@ -45,7 +45,12 @@ its model and the prompt, and you read the draft before it's saved. Agents in a
 workspace can add one themselves with `herdr-ws-run --add`, so you can tell one
 "tomorrow at 6, check X and if so do Y". After a reboot or a logout, the Claude
 agents you hadn't closed come back in their tabs, resumed with their
-conversations, helpers included.
+conversations, helpers included. While you're in another app, Herdr's
+notifications (an agent needs you or finished, an automation's news) also show
+on your desktop, and a click takes you to the agent; with Keep running on they
+come while Herdr is closed too. A workspace can hold a `BRIEF.md`, where its
+work stands today, which the agents you start there are given along with its
+instructions.
 
 ![Workspaces](preview.png)
 
@@ -56,15 +61,18 @@ conversations, helpers included.
 Ask your agent to add this layout (Herdr's own guide, `~/.config/herdr-app/AGENTS.md`,
 says how), or by hand:
 
-1. Copy `layouts/workspaces.json` to `~/.config/herdr-app/layouts/` and the ten
+1. Copy `layouts/workspaces.json` to `~/.config/herdr-app/layouts/` and the eleven
    folders in `mods/` to `~/.config/herdr-app/mods/` (rename them if a name is taken).
 2. For agent instructions from the + menu, put the launcher on your `PATH` and
    point `programs.json` at it. `herdr-ws-run` starts automations from other
-   apps and lets agents add them:
+   apps and lets agents add them, and `herdr-ws-notify --off` / `--on` is the
+   switch for the desktop notifications (on macOS, `brew install terminal-notifier`
+   makes a click on one go to Herdr):
    ```sh
    ln -s ~/.config/herdr-app/mods/ws-switcher/bin/herdr-ws-agent ~/.local/bin/
    ln -s ~/.config/herdr-app/mods/ws-switcher/bin/herdr-ws-run ~/.local/bin/
    ln -s ~/.config/herdr-app/mods/ws-switcher/bin/herdr-ws-runner ~/.local/bin/
+   ln -s ~/.config/herdr-app/mods/ws-switcher/bin/herdr-ws-notify ~/.local/bin/
    ```
    ```json
    { "programs": { "claude": { "run": ["herdr-ws-agent", "claude"] },
@@ -140,6 +148,14 @@ For restarts, the launcher keeps notes of the Claude agents it starts in
 of closed tabs, and gives Claude two hooks (`--settings`) that note its session
 and drop the note when you leave it. With the `shell` line in herdr-core's
 config, every new terminal starts through `herdr-ws-resume`.
+Every notification Herdr shows is also handed to `herdr-ws-notify`, and so is the
+background runner's news while no window is open. It asks macOS which app is in
+front (`lsappinfo`), then runs `terminal-notifier`, else `osascript`, or
+`notify-send` on Linux, with the notification's title and text, and nothing when
+none is installed. A click on a terminal-notifier one runs `herdr-app do` with
+the toast's own action. Its switch is `~/.herdr/notify/switch`. The launcher
+reads a workspace's `BRIEF.md`, when there is one, and puts it in the
+instructions of the agents started there.
 Three things use the network: GitHub automations (`gh api` with your login, every
 2 minutes per watched repo), cards with a `pr:` or `branch:` line (`gh pr view`
 with your login, every minute per open pull request), and the Automations screen's Draft it and Change it,
@@ -149,7 +165,7 @@ and, for a change, the automation as it stands.
 
 Built for Herdr 0.1.14; `ws-spaces`, `ws-agents`, `ws-tabs`, `ws-new-menu` and
 `ws-chrome` are copies of that version's `spaces`, `agents`, `tabs`, `new-menu`
-and `workspace-chrome`.
+and `workspace-chrome`. `ws-toast` is a copy of 0.1.16's `toast`.
 
 ## Updating
 
@@ -159,7 +175,7 @@ than 0.1.0's notes, so read them all). To hear about new versions, watch the
 repo on GitHub for releases (Watch → Custom → Releases).
 
 - **You copied the files as they are:** copy `layouts/workspaces.json` and the
-  ten folders in `mods/` again, and do what the new versions' notes say
+  eleven folders in `mods/` again, and do what the new versions' notes say
   (a new script to link, say). Your workspaces, tasks, presets and automations
   live elsewhere and aren't touched.
 - **You or your agent changed them:** tell your agent "apply what's in this
@@ -168,8 +184,8 @@ repo on GitHub for releases (Watch → Custom → Releases).
 
 ## License
 
-Apache License 2.0. `ws-spaces`, `ws-agents`, `ws-tabs`, `ws-new-menu` and
-`ws-chrome` are modified copies of Herdr's own mods, also Apache 2.0; see `NOTICE`.
+Apache License 2.0. `ws-spaces`, `ws-agents`, `ws-tabs`, `ws-new-menu`,
+`ws-chrome` and `ws-toast` are modified copies of Herdr's own mods, also Apache 2.0; see `NOTICE`.
 
 ## Working on it
 
