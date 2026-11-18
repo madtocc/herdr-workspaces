@@ -142,6 +142,7 @@ async function desktop(file, note) {
   const place = note.action?.args?.terminal ?? note.action?.args?.id;
   if (place) args.push("--group", String(place));
   if (note.action?.name) args.push("--do", String(note.action.name), JSON.stringify(note.action.args ?? {}));
+  if (note.action?.or?.name) args.push("--or", String(note.action.or.name), JSON.stringify(note.action.or.args ?? {}));
   args.push("--", String(note.title), String(note.body ?? ""));
   await exec(DESKTOP, args, { timeout: 15000 });
 }

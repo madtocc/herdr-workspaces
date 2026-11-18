@@ -281,14 +281,16 @@ export default class Workspaces extends View {
       trash: async (path) => (await exec("sh", ["-c", TRASH, "sh", path, `${home()}/.herdr/scratch/.trash`, `${base(path)}-${Date.now()}`])).stdout.trim(),
     });
     // Commands for this copy: "ws-switcher.scratch-new" (bind it to a key) makes a scratch
-    // space in the shown workspace; the scratch toast's Keep is "ws-switcher.scratch-keep/<workspace>/<folder>".
+    // space in the shown workspace; the scratch toast's Keep is "ws-switcher.scratch-keep/<workspace>/<folder>";
+    // a toast about one automation is "ws-switcher.automation/<workspace>/<name>" (automations.js: openAt).
     cx.spawn(async () => {
       for (;;) {
         const c = await nextCommand();
         try {
           if (c === "scratch-new") await this.scratch.create();
           else if (c.startsWith("scratch-keep/")) await this.scratch.keep(c);
-        } catch (e) { notify({ title: "Couldn't make a scratch space", body: String(e?.message ?? e), level: "error" }); }
+          else if (c.startsWith("automation/")) this.openAutomation(c);
+        } catch (e) { notify({ title: c.startsWith("automation/") ? "Couldn't open Automations" : "Couldn't make a scratch space", body: String(e?.message ?? e), level: "error" }); }
       }
     });
     // known: the switch has been read once (nothing runs here before that).
@@ -433,6 +435,23 @@ export default class Workspaces extends View {
       body: `${list.slice(-6).map((n) => n.title).join("; ")}${list.length > 6 ? "; and earlier ones" : ""}.`,
       level: list.some((n) => n.level === "error" || n.level === "warning") ? "warning" : "info",
       action: { name: "mod.open", args: { name: "ws-automations" } },
+    });
+  }
+
+  // "automation/<workspace>/<name>": a toast about one automation was clicked. Opens the
+  // Automations screen for that workspace with the automation picked ("-": one for every
+  // workspace, in the workspace on screen). The words come from a command's text, so they're
+  // only looked up among what's loaded. One that's gone since: the screen for its workspace,
+  // or as the footer opens it.
+  openAutomation(c) {
+    const [, ws, name] = c.split("/");
+    const defs = (shared("workspaces.defs") ?? []).filter((d) => !d.error);
+    const active = shared("workspaces.active") ?? null;
+    const workspace = ws === "-" ? active ?? defs[0]?.id ?? null : defs.some((d) => d.id === ws) ? ws : null;
+    const a = workspace ? ((shared("workspaces.automations") ?? {})[workspace] ?? []).find((x) => x.name === name && (ws !== "-" || x.scope === "global")) : null;
+    openOverlay({
+      mod: "ws-automations", kind: "dialog", width: 940, height: 680,
+      props: a ? { workspace, pick: { scope: a.scope ?? "workspace", name: a.name } } : { workspace: workspace ?? active },
     });
   }
 

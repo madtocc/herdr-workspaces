@@ -78,6 +78,17 @@ const IGNORED = /\/(\.git|node_modules)(\/|$)|\/\.[^/]*$/;
 export const runnerDir = () => `${home()}/.herdr/runner`;
 export const globalDir = () => `${home()}/.herdr/automations`;
 
+// What a click on a toast about one automation does: the Automations screen, on that
+// automation. The switcher's sidebar copy takes the command ("automation/<workspace>/<name>",
+// "-" for one that's for every workspace; main.js) and opens the screen there. A workspace
+// or a name that a command can't carry opens the screen as a toast about several does.
+// `or` is for a desktop notification clicked while the sidebar is hidden: Herdr doesn't know
+// the command then (the switcher isn't loaded), so the click opens the screen as it is.
+const PLAIN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const SCREEN = { name: "mod.open", args: { name: "ws-automations" } };
+export const openAt = (ws, a) => ((ws === "*" || PLAIN.test(ws)) && PLAIN.test(a.name)
+  ? { name: `ws-switcher.automation/${ws === "*" ? "-" : ws}/${a.name}`, args: {}, or: SCREEN } : SCREEN);
+
 // What a runner remembers: ~/.herdr/runner/<name>.json. Whichever runs (the
 // switcher's copy or the background runner) reads it when it takes over. Before the
 // file existed it was the switcher copy's localStorage, read once.
@@ -499,6 +510,7 @@ export class Runner {
     const cutoff = now - MISSED;
     const older = Math.max(from, now - LOOK_BACK);
     const report = [];
+    let one = null; // the automation the toast is about, when it's about one
     this.each((ws, a) => {
       if (a.trigger.kind !== "at" && a.trigger.kind !== "cron" && a.trigger.kind !== "once") return;
       const last = this.state.last[`${ws}/${a.name}`] ?? 0;
@@ -517,13 +529,14 @@ export class Runner {
       const when = `${count > 1 ? `${count} times, last ` : ""}${shortTime(latest, now)}`;
       this.log({ ws, name: a.name, at: now, why: `Missed ${when} ${reason}`, status: "missed", note: "Over 12 hours ago, so it didn't run late. Run now runs it" });
       report.push(`${a.name} (${this.def(ws)?.name ?? ws}, ${when})`);
+      one = report.length === 1 ? { ws, a } : null;
     });
     if (report.length) {
       notify({
         title: report.length === 1 ? "An automation didn't run" : `${report.length} automations didn't run`,
         body: `Missed over 12 hours ago ${reason}: ${report.join("; ")}. Run now in Automations runs one.`,
         level: "warning",
-        action: { name: "mod.open", args: { name: "ws-automations" } },
+        action: one ? openAt(one.ws, one.a) : SCREEN,
       });
     }
   }
@@ -585,7 +598,7 @@ export class Runner {
       notify({
         title: `Allow ${a.name}'s check?`,
         body: `In ${ws === "*" ? "every workspace" : this.def(ws)?.name ?? ws}. Before each start, Herdr would run: ${a.check.length > 160 ? `${a.check.slice(0, 160)}…` : a.check}. It doesn't start until you allow that in Automations.`,
-        level: "warning", action: { name: "mod.open", args: { name: "ws-automations" } },
+        level: "warning", action: openAt(ws, a),
       });
     }
   }
@@ -705,7 +718,7 @@ export class Runner {
       const again = this.repeat(ws, a, at, why, "waiting", "", (row) => `Its check hasn't been allowed${row}, so it didn't start`);
       if (manual || a.trigger.kind === "once" || !again) notify({
         title: `${a.name} didn't start`, body: "Its check hasn't been allowed yet. Read it in Automations, then allow it.", level: "warning",
-        action: { name: "mod.open", args: { name: "ws-automations" } },
+        action: openAt(ws, a),
       });
       return;
     }
@@ -818,7 +831,7 @@ export class Runner {
     const what = res.error ?? (res.same ? "same" : "");
     const again = this.repeat(ws, a, at, why, res.error ? "failed" : "quiet", what, (row) => (res.error ? `Its check failed${row}: ${what}`
       : `Its check printed ${res.same ? "the same as last time" : "nothing"}${row}, so no agent started`));
-    const open = { action: { name: "mod.open", args: { name: "ws-automations" } } };
+    const open = { action: openAt(ws, a) };
     if (res.error && !again) notify({ title: `${a.name}'s check failed`, body: `${what} No agent starts until the check works.`, level: "warning", ...open });
     // A one-time one won't be back: say that it came to nothing.
     if (!res.error && a.trigger.kind === "once") notify({ title: `${a.name} had nothing to do`, body: `${why}: its check printed nothing, so no agent started.`, level: "info", ...open });

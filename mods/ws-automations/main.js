@@ -25,8 +25,9 @@
 // since Herdr runs it by itself, and Try it under Details runs it here and now.
 // The runner runs only a line you've allowed. Create and Save allow the one they
 // write (shared "workspaces.automation.allow", set before the file is written);
-// one that came another way shows Allow this check. Opened by a toast (no props),
-// the screen goes to an automation whose check is waiting.
+// one that came another way shows Allow this check. A toast about one automation
+// opens the screen on it (props.pick, from the switcher); opened with no props (a
+// toast about several, a key), it goes to an automation whose check is waiting.
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
@@ -222,8 +223,9 @@ export default class Automations extends View {
     this.handle.focus();
     // From the footer, the shown workspace; opened on its own (a missed-runs toast), the same.
     this.workspace = props()?.workspace ?? shared("workspaces.active") ?? null;
-    // From a toast: to a check that's waiting to be allowed, in the shown workspace first.
-    let waiting = null;
+    // From a toast about one automation: that one ({ scope, name }, which the switcher looked up).
+    // With no props: to a check that's waiting to be allowed, in the shown workspace first.
+    let waiting = props()?.pick ?? null;
     if (!props()?.workspace) {
       const all = shared("workspaces.automations") ?? {};
       const ws = [this.workspace, ...Object.keys(all)].find((id) => id && (all[id] ?? []).some((a) => a.allowed === false));

@@ -4,7 +4,8 @@
 //   bin/herdr-ws-notify), which shows it unless Herdr is the app in front. So an
 //   agent that needs you or finished, and an automation's news, reach you while
 //   you're in another app. A click on the desktop one brings Herdr forward and
-//   runs the toast's own action. `herdr-ws-notify --off` turns them off.
+//   runs the toast's own action, or the action's `or` when Herdr refuses that one
+//   (a mod's command while the mod isn't shown). `herdr-ws-notify --off` turns them off.
 //
 // How notifications look. Anything can post one with notify({ title, body,
 // level, icon, action }); replace this mod to restyle them all. Click to
@@ -31,6 +32,7 @@ export default class Toast extends View {
     const place = p.action?.args?.terminal ?? p.action?.args?.id;
     if (place) args.push("--group", String(place));
     if (p.action?.name) args.push("--do", String(p.action.name), JSON.stringify(p.action.args ?? {}));
+    if (p.action?.or?.name) args.push("--or", String(p.action.or.name), JSON.stringify(p.action.or.args ?? {}));
     args.push("--", String(p.title), String(p.body ?? ""));
     exec(DESKTOP(), args, { timeout: 15000 }).catch(() => {});
   }

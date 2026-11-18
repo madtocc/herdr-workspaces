@@ -3,7 +3,7 @@
 # looking at Herdr, or it's closed. The ws-toast mod calls it for every toast
 # Herdr shows, and the background runner for its own while the window is closed.
 #
-#   herdr-ws-notify [--unless-front] [--sound] [--group ID] [--do NAME JSON] TITLE [BODY]
+#   herdr-ws-notify [--unless-front] [--sound] [--group ID] [--do NAME JSON [--or NAME JSON]] TITLE [BODY]
 #   herdr-ws-notify --on | --off | --status
 #
 # macOS: terminal-notifier when it's installed (a click brings Herdr forward
@@ -17,6 +17,8 @@
 #                    window is open, so the mod leaves this out)
 #   --group ID       a later one with the same ID replaces this one (terminal-notifier)
 #   --do NAME JSON   the Herdr command a click runs (terminal-notifier)
+#   --or NAME JSON   the command it runs when Herdr refuses that one: a mod's own
+#                    command isn't known while the mod isn't shown (a hidden sidebar)
 #
 # Off (--off; kept in ~/.herdr/notify/switch) it does nothing, and Herdr's own
 # toasts and sounds are as before. It never fails its caller: it always exits 0.
@@ -45,13 +47,14 @@ case "${1:-}" in
   --help | -h) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 esac
 
-front= sound= group= do_name= do_args=
+front= sound= group= do_name= do_args= or_name= or_args=
 while [ $# -gt 0 ]; do
   case "$1" in
     --unless-front) front=1; shift ;;
     --sound) sound=1; shift ;;
     --group) group=${2:-}; shift 2 2>/dev/null || shift ;;
     --do) do_name=${2:-}; do_args=${3:-}; shift 3 2>/dev/null || shift $# ;;
+    --or) or_name=${2:-}; or_args=${3:-}; shift 3 2>/dev/null || shift $# ;;
     --) shift; break ;;
     *) break ;;
   esac
@@ -85,13 +88,21 @@ case "$(uname -s)" in
       [ -n "$sound" ] && set -- "$@" -sound default
       # The click's command: only a plain command name, its JSON in single quotes.
       case "$do_name" in
-        '' | *[!a-z0-9._/-]*) ;;
+        '' | *[!A-Za-z0-9_./-]*) ;;
         *)
           bin=$(command -v herdr-app 2>/dev/null)
           if [ -n "$bin" ]; then
             q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
-            line="$(q "$bin") do $do_name $(q "${do_args:-{\}}")"
-            [ -n "${HERDR_APP_HOME:-}" ] && line="HERDR_APP_HOME=$(q "$HERDR_APP_HOME") $line"
+            cmd() {
+              c="$(q "$bin") do $1 $(q "${2:-{\}}")"
+              [ -n "${HERDR_APP_HOME:-}" ] && c="HERDR_APP_HOME=$(q "$HERDR_APP_HOME") $c"
+              printf '%s' "$c"
+            }
+            line=$(cmd "$do_name" "$do_args")
+            case "$or_name" in
+              '' | *[!A-Za-z0-9_./-]*) ;;
+              *) line="$line || $(cmd "$or_name" "$or_args")" ;;
+            esac
             set -- "$@" -execute "$line"
           fi ;;
       esac
