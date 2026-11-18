@@ -3,7 +3,9 @@
 // AGENTS.md its agents are told (bin/herdr-ws-agent adds it on launch).
 // This block sits above the spaces list and shows the chosen workspace; a click
 // opens the menu to switch. `ws-spaces` and `ws-agents` show only that workspace's
-// spaces and agents.
+// spaces and agents. While the shown workspace has no spaces, it shows the layout's
+// empty block (another copy of this mod, props.empty) in place of the work column,
+// which would otherwise show some other workspace's space (coverWork()).
 //
 // Files it writes: ~/.herdr/workspaces/.index (the workspaces' folders, for
 // bin/herdr-ws-agent) and, from "New workspace from a folder…", a new workspace's
@@ -236,6 +238,8 @@ const instructionsText = (name) => `<!-- What every agent (claude, codex) starte
 export default class Workspaces extends View {
   init(_props, cx) {
     this.handle = cx.focus_handle();
+    // The layout's empty block (beside the work column in the `center` stack): it only draws.
+    if (props()?.empty) return;
     if (props()?.popup) {
       this.handle.focus();
       return;
@@ -554,18 +558,51 @@ export default class Workspaces extends View {
       const at = order.indexOf(closed);
       const next = [...order.slice(at + 1), ...order.slice(0, Math.max(at, 0)).reverse()].find((id) => live.has(id))
         ?? [...live][0];
-      if (next) run("space.select", { id: next });
-      return;
+      if (next) { run("space.select", { id: next }); return; }
     }
-    if (shown && shown !== this.shown && this.known.has(shown)) {
+    const ownerOf = (id) => (defs.some((d) => d.id === assigned[id]) ? assigned[id] : null);
+    // A tab made and shown in the covered space (Cmd-T while the empty block shows): go with it.
+    const tabNow = sp.find((s) => s.id === shown)?.tabs?.find((c) => c.active)?.id ?? null;
+    const madeTab = Boolean(this.cover?.tabs) && shown === this.shown && tabNow && !this.cover.tabs.has(tabNow);
+    if (shown && (shown !== this.shown || madeTab) && this.known.has(shown)) {
       this.shown = shown;
-      const owner = defs.some((d) => d.id === assigned[shown]) ? assigned[shown] : null;
+      const owner = ownerOf(shown);
       if (owner !== active) { active = owner; setShared("workspaces.active", active); }
     }
     if (active && shown && assigned[shown] === active) {
       const last = shared("workspaces.last") ?? {};
       if (last[active] !== shown) setShared("workspaces.last", { ...last, [active]: shown });
     }
+    // Herdr always shows a space. While the shown workspace has none of its own here
+    // (its last one closed, or it was chosen empty), the empty block covers the other one's.
+    this.coverWork(this.loaded && Boolean(active) && (!shown || (this.known.has(shown) && ownerOf(shown) !== active)), sp.find((s) => s.id === shown));
+  }
+
+  // Shows the layout's empty block in place of the work column (tabs, terminals, status),
+  // or the work column again. An older copy of the layout, with no `center` stack, is left alone.
+  coverWork(on, space) {
+    const center = find(layout(), "center");
+    if (!center?.children?.some((c) => c.id === "empty")) return;
+    if (on && !this.cover) this.cover = { tabs: new Set((space?.tabs ?? []).map((c) => c.id)) };
+    if (!on) this.cover = null;
+    const want = on ? "empty" : "work";
+    if (center.active !== want) run("layout.select", { stack: "center", child: want });
+  }
+
+  // The empty block: the shown workspace has no spaces. A quiet line, and New space
+  // as the Spaces + does it (Scratch: a new scratch space, which the sidebar copy makes).
+  empty(t) {
+    const ws = (shared("workspaces.defs") ?? []).find((d) => d.id === shared("workspaces.active")) ?? null;
+    const make = () => {
+      if (ws?.scratch) setShared("workspaces.scratch", { at: Date.now() });
+      else run("space.new", ws?.root ? { folder: ws.root } : {});
+    };
+    return v_flex().size_full().items_center().justify_center().gap(10).text_size(12.8).text_color(t.dim)
+      .when(Boolean(ws), (el) => el.child(div().child(`No spaces in ${ws.name}`))
+        .child(div().id("empty-new").px(10).py(5).rounded(7).cursor_pointer().text_color(t.muted)
+          .border(1).border_color(t.border).hover((s) => s.bg(t.hover).text_color(t.foreground))
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+          .on_click(make).child(ws?.scratch ? "New scratch space" : "New space")));
   }
 
   async create() {
@@ -771,6 +808,7 @@ export default class Workspaces extends View {
 
   render(cx) {
     const t = theme();
+    if (props()?.empty) return this.empty(t);
     if (props()?.popup) return this.menu(t);
     if (props()?.dialog) return this.dialog(t);
     this.sync();

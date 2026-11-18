@@ -11,6 +11,7 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 - **A guide for every agent.** Write what every agent should know about Herdr (how to set up automations, start hc helpers, keep a card's notes) in `~/.herdr/AGENTS.md`, and Claude and Codex started through the launcher get it first, before the workspace's instructions: from the + menu, a preset, a card, an automation or `hc run`. It replaces the built-in line about `herdr-ws-run --add`. `examples/guide.md` is a start: copy it to `~/.herdr/AGENTS.md` and change it. To update, copy `mods/ws-switcher`.
 
 ### Fixed
+- **An empty workspace no longer shows another project's terminal.** Closing a workspace's last space (exiting its agent, then its shell) kept the workspace chosen but showed a space from another workspace beside it, tabs and all; choosing a workspace with no spaces did the same. The work area is now empty instead, with "No spaces in <workspace>" and a New space button, until you show a space or choose another workspace. To update, copy `layouts/workspaces.json` (it wraps the work column in a `center` stack beside an `empty` block) and `mods/ws-switcher`.
 - **Picking Scratch in the switcher menu shows it.** A click on the Scratch workspace did nothing: its row and New scratch space shared an id inside the menu, so the click got lost. Picking it from All spaces still worked. Every workspace row now has an id of its own, which also covers a workspace you call new, all, edit, move, rename or delete. To update, copy `mods/ws-switcher`.
 
 ## [0.6.1] - 2026-11-18
