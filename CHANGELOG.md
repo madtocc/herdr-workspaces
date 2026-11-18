@@ -7,6 +7,8 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-18
+
 ### Fixed
 - **A toast about an automation opens that automation.** "Allow <name>'s check?", "<name> didn't start", a failed check and a toast about one missed run opened the Automations screen on the first check waiting to be allowed, looking in the shown workspace first. With a check waiting in the workspace on screen, a toast about another workspace's automation landed on the wrong one. The click now opens that automation's workspace with it picked, from Herdr's toast and from the desktop notification. With the sidebar hidden, the desktop notification's click opens the screen as it did before. To update, copy `mods/ws-switcher`, `mods/ws-automations` and `mods/ws-toast`.
 
