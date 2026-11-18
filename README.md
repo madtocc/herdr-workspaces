@@ -1,60 +1,134 @@
 # Workspaces for Herdr
 
 A Herdr layout for multi-repo work: workspaces with their own agent
-instructions, a task board, agent presets, automations, and agents that come
-back after a restart.
-
-A workspace is a folder of repos, with its own agent instructions; it groups
-Herdr's spaces. A switcher at the top of the sidebar picks one; the
-spaces and agents lists show only what's in it. A Scratch workspace, always last in the
-switcher, holds throwaway spaces for ideas that belong to no project: each gets a
-fresh folder, tidied away when you're done unless you keep it. Each workspace has a task board (as columns or a list):
-one markdown file per task, cards that start an agent on their task (in the
-repo or a fresh worktree) and then show that agent's live status. A card also
-follows its pull request: it shows whether checks fail, changes are requested,
-it conflicts or it's ready to merge, tells the card's agent when a check fails
-or a review arrives, and moves to done when it merges. Agent presets
-(herdr-core templates: a command plus instructions) can be global or per
-workspace, are managed in the Agent presets screen (model and effort included;
-open it from the sidebar footer), and start from the tab bar's + menu or a
-card's Start;
-`examples/presets/` has four to start from, among them a watcher that can't
-push or write to GitHub (for automations that only look) and an orchestrator that
-splits a task across helper agents with herdr-core's `hc`; its helpers show
-under it in the Agents list. Automations start an agent by
-themselves: on a schedule (once or repeating), when a task enters a board
-column, when an agent finishes or needs you, when files change, when a PR or
-issue is opened on GitHub (asked every 2 minutes through `gh`), or when another
-app calls `herdr-ws-run`. They run while Herdr is open, or all the time once you
-turn on Keep running at the foot of the Automations list: a background process
-that herdr-core keeps going while Herdr is closed (it needs Node 20.6 or newer).
-A schedule missed while nothing was running runs when Herdr
-opens if it was due in the last 12 hours; older ones are reported as missed, with
-a toast, for Run now. Each run is a tab in the workspace's Automations space;
-The Automations screen lists seven ready-made ones to start from (issue to
-pull request, PR review, a broken default branch, a morning review and more):
-open one, read it, and Create adds it. Like presets, an automation is
-either one workspace's own (`~/.herdr/workspaces/<id>/automations/`) or for
-every workspace (`~/.herdr/automations/`): a global one runs in each workspace
-as that workspace's own, a workspace's own of the same name replaces it there,
-and its switch turns it off for one workspace alone. `github * issue opened`
-watches every repo of the workspace it runs in. An automation can have a check, a
-command that runs first, so no agent starts when there's nothing to do; it runs only once you've allowed it. You make one by saying what it
-should do and when, in your own words: Claude drafts the trigger, the agent,
-its model and the prompt, and you read the draft before it's saved. Agents in a
-workspace can add one themselves with `herdr-ws-run --add`, so you can tell one
-"tomorrow at 6, check X and if so do Y". After a reboot or a logout, the Claude
-agents you hadn't closed come back in their tabs, resumed with their
-conversations, helpers included. While you're in another app, Herdr's
-notifications (an agent needs you or finished, an automation's news) also show
-on your desktop, and a click takes you to the agent; with Keep running on they
-come while Herdr is closed too. A workspace can hold a `BRIEF.md`, where its
-work stands today, which the agents you start there are given along with its
-instructions.
+instructions, a task board that starts agents and follows their pull requests,
+your GitHub project board beside it, a worktrees tab, agent presets, automations,
+and agents that come back after a restart.
 
 ![Workspaces](preview.png)
 
-`RECIPE.md` describes it in full: it's the brief an agent builds it from.
+The pictures here are drawings with demo names, not screenshots. `RECIPE.md`
+describes everything in full: it's the brief an agent builds it from.
+
+## What you get
+
+### Workspaces
+
+A workspace is a folder of repos with its own agent instructions; it groups
+Herdr's spaces. The switcher at the top of the sidebar picks one, and the spaces
+and agents lists show only what's in it. A dot on the switcher says an agent in
+another workspace needs you or finished.
+
+- **New space**: a click on the Spaces + makes one in the workspace's root. Hold
+  it (or right-click) to name the space and choose its folder.
+- **Scratch**, always last in the switcher, holds throwaway spaces for ideas that
+  belong to no project. Each gets a fresh folder, tidied away when you're done
+  unless you keep it.
+- **Instructions**: a workspace's `AGENTS.md` goes to the agents you start
+  there. A `BRIEF.md` beside it, where the work stands today, goes with it, and
+  `~/.herdr/AGENTS.md` is a guide for the agents of every workspace.
+
+### A task board
+
+![The task board](previews/board.png)
+
+Each workspace has a board, as columns or as a list. A task is one markdown
+file, so agents can read and write them too.
+
+- **Start** on a card starts an agent on its task, in the repo or in a fresh git
+  worktree, with the preset you pick. The card then shows that agent's live
+  status, and Go to takes you to it.
+- **A card follows its pull request.** It shows whether checks fail, changes are
+  requested, it conflicts or it's ready to merge, tells the card's agent when a
+  check fails or a review arrives, and moves to the last column when it merges.
+
+### Your GitHub project board
+
+![The board's GitHub view](previews/github.png)
+
+Tasks | GitHub in the board's header shows the workspace's GitHub project board
+with its own status columns, or as a list with a section per status.
+
+- **Filters**: Everyone, Mine or Unassigned, one repo, a search, and Newest or
+  Oldest in place of the board's own order.
+- **Take** on any item, yours or not, makes a card on your board with the
+  issue's title, text, folder and priority. The card then shows the item's
+  status on GitHub, follows a changed title, moves to your last column when the
+  issue closes, and picks up a pull request of yours that closes it.
+- **It only reads.** Nothing changes on GitHub, so assign yourself there when
+  your team expects it. It needs `gh` with the `read:project` scope
+  (`gh auth refresh -s read:project`).
+- **A read is kept for 10 minutes**, so going back to the view shows the board
+  at once. Refresh reads it now.
+
+### Worktrees
+
+![The Worktrees tab](previews/worktrees.png)
+
+"Open … worktrees" in the switcher menu lists every git worktree of the
+workspace's repos, wherever it was made.
+
+- **Where each one stands**: merged, a pull request open, commits with no pull
+  request, uncommitted changes, and whether a card, a space or a terminal is in it.
+- **Remove N finished…** clears the merged, clean, unused ones; the branches
+  stay. Checkboxes pick any others to remove together.
+- **Scripts per repo**: a line to run in a new worktree (install, copy `.env`)
+  and one to run before a worktree is removed. Only a line you saved or allowed
+  runs.
+
+### Automations
+
+![The Automations screen](previews/automations.png)
+
+An automation starts an agent by itself. You make one by saying what it should
+do and when, in your own words: Claude drafts the trigger, the agent, its model
+and the prompt, and you read the draft before it's saved.
+
+- **What sets one off**: a schedule (once or repeating), a task entering a board
+  column, an agent finishing or needing you, files changing, a PR or issue
+  opened on GitHub (asked every 2 minutes through `gh`), or another app calling
+  `herdr-ws-run`.
+- **Seven ready-made ones** to start from (issue to pull request, PR review, a
+  broken default branch, a morning review and more): open one, read it, and
+  Create adds it.
+- **One workspace's own or for every workspace**
+  (`~/.herdr/workspaces/<id>/automations/` or `~/.herdr/automations/`). A global
+  one runs in each workspace as that workspace's own, a workspace's own of the
+  same name replaces it there, and its switch turns it off for one workspace
+  alone. `github * issue opened` watches every repo of the workspace it runs in.
+- **A check first**: a command that runs before the agent, so no agent starts
+  when there's nothing to do. It runs only once you've allowed it.
+- **Keep running**, at the foot of the list: a background process herdr-core
+  keeps going while Herdr is closed (it needs Node 20.6 or newer). Without it
+  they run while Herdr is open. A schedule missed while nothing was running
+  runs when Herdr opens if it was due in the last 12 hours; older ones are
+  reported as missed, with a toast, for Run now.
+- **Each run is a tab** in the workspace's Automations space.
+- **Agents can add one** themselves with `herdr-ws-run --add`, so you can tell
+  one "tomorrow at 6, check X and if so do Y".
+
+### Agent presets
+
+A preset is an agent you start by name: a command (the program, its model and
+effort) plus instructions. They're herdr-core templates, global or per
+workspace, managed in the Agent presets screen (open it from the sidebar
+footer), and they start from the tab bar's + menu, a card's Start or an
+automation.
+
+`examples/presets/` has four to start from: an implementer, a reviewer, a
+watcher that can't push or write to GitHub (for automations that only look),
+and an orchestrator that splits a task across helper agents with herdr-core's
+`hc`. Its helpers show under it in the Agents list, and a click on one opens it
+as a tab.
+
+### And when you're away
+
+- **After a reboot or a logout**, the Claude agents you hadn't closed come back
+  in their tabs, resumed with their conversations, helpers included.
+- **Desktop notifications**: while you're in another app, Herdr's notifications
+  (an agent needs you or finished, an automation's news) also show on your
+  desktop, and a click takes you to the agent. With Keep running on they come
+  while Herdr is closed too.
 
 ## Install
 
@@ -102,7 +176,9 @@ says how), or by hand:
      ones (`mods/ws-automations/starters/`), and Create adds the one you open.
      They're written for the `implementer` and `reviewer` presets;
    - a guide for every agent the launcher starts (how to use automations, hc
-     helpers and the board): `examples/guide.md` to `~/.herdr/AGENTS.md`.
+     helpers and the board): open Agent presets in the footer and pick
+     **Write one** under "Herdr guide", which writes the starter to
+     `~/.herdr/AGENTS.md` and opens it. The switch beside it turns it off.
 
 **What it touches:** it reads `~/.herdr/workspaces` and the folders of
 each workspace's root. Two of the ready-made automations (`issue-to-pr`,
@@ -139,7 +215,7 @@ folders included, to the Trash with it. A repo's two
 worktree scripts (`~/.herdr/workspaces/<id>/worktrees.json`) are shell lines Herdr
 runs as you: setup in a new worktree the board makes, archive before a removal.
 Like a check, only a line you saved or allowed in the screen runs
-(`~/.herdr/workspaces/.worktree-scripts.json`). The launcher reads `~/.herdr/AGENTS.md`, your global guide, and lets Claude and Codex read and edit
+(`~/.herdr/workspaces/.worktree-scripts.json`). The launcher reads `~/.herdr/AGENTS.md`, your global guide, and `~/.herdr/guide/switch`, which the Presets screen's guide switch writes; the screen's Write one creates the guide from the starter and opens it in your editor. The launcher lets Claude and Codex read and edit
 the workspace's root, its folders elsewhere and its `tasks` folder. Automations watch the folders a files automation
 names, read calls `herdr-ws-run` leaves in `~/.herdr/workspaces/.inbox` (and
 delete them), and close an automation's older run tabs once their agent is done.
@@ -158,9 +234,13 @@ none is installed. A click on a terminal-notifier one runs `herdr-app do` with
 the toast's own action. Its switch is `~/.herdr/notify/switch`. The launcher
 reads a workspace's `BRIEF.md`, when there is one, and puts it in the
 instructions of the agents started there.
-Three things use the network: GitHub automations (`gh api` with your login, every
+Four things use the network: GitHub automations (`gh api` with your login, every
 2 minutes per watched repo), cards with a `pr:` or `branch:` line (`gh pr view`
-with your login, every minute per open pull request), and the Automations screen's Draft it and Change it,
+with your login, every minute per open pull request), the board's GitHub view
+(`gh api graphql` and `gh project list` with your login: the linked project board
+when its last read is over 10 minutes old and the view is open, and the items you
+took every 5 minutes; it only reads, writes the board's link into `workspace.jsonc`
+and keeps the board as last read in `~/.herdr/cache/github-boards/`), and the Automations screen's Draft it and Change it,
 which run `claude -p` with your Claude login and no tools. That sends Anthropic
 your words, the workspace's name, root, folder names, GitHub repos and presets,
 and, for a change, the automation as it stands.
@@ -203,8 +283,10 @@ into a version (the middle number for anything new, the last for fixes only),
 writes `VERSION`, commits and tags it; `--publish` also pushes and makes the
 GitHub release from those notes.
 
-`preview.png` is drawn, not a screenshot: edit `mods/ws-switcher/preview.svg`
-(also the picture in Herdr's layout settings) and run `scripts/render-preview.sh`.
+The pictures are drawn, not screenshots: `preview.png` from
+`mods/ws-switcher/preview.svg` (also the picture in Herdr's layout settings), and
+the ones in `previews/` from the `preview*.svg` beside each mod. Edit the live
+drawing, sync, and run `scripts/render-preview.sh`.
 
 To try a change without touching your own window, `scripts/sandbox.sh up`
 opens a second Herdr with its own core, home and two demo workspaces under

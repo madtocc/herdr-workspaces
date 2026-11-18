@@ -1,0 +1,141 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800" font-family="Geist, -apple-system, 'Helvetica Neue', sans-serif">
+  <!-- The Automations screen: the workspace's automations, the ready-made ones, and one open. Demo names only. -->
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000" flood-opacity="0.45"/>
+    </filter>
+    <clipPath id="pane"><rect x="301" y="57" width="968" height="734" rx="10"/></clipPath>
+  </defs>
+  <rect x="0" y="0" width="1280" height="800" rx="0" fill="#111215"/>
+  <!-- sidebar -->
+  <rect width="288" height="800" fill="#17181b"/>
+  <rect x="288" width="1" height="800" fill="#25272b"/>
+  <circle cx="20" cy="24" r="6" fill="#ff5f57"/><circle cx="40" cy="24" r="6" fill="#febc2e"/><circle cx="60" cy="24" r="6" fill="#28c840"/>
+  <text x="124" y="30" fill="#e8e9eb" font-size="15" font-weight="600">Herdr</text>
+
+  <!-- the switcher and the board button -->
+  <rect x="10" y="60" width="234" height="40" rx="8" fill="#232428"/>
+  <rect x="20" y="70" width="20" height="20" rx="5" fill="#5b8def"/>
+  <text x="30" y="85" fill="#fff" font-size="11" font-weight="700" text-anchor="middle">A</text>
+  <text x="52" y="85" fill="#e8e9eb" font-size="14" font-weight="500">Acme</text>
+  <circle cx="194" cy="80" r="3" fill="#e5534b"/>
+  <text x="208" y="85" fill="#7d8089" font-size="11.5">3</text>
+  <path d="M222 78 l4 4 l4 -4" stroke="#7d8089" stroke-width="1.5" fill="none"/>
+  <g transform="translate(253 72.5) scale(0.6250)" fill="none" stroke="#a5a8ae" stroke-width="1.87" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M15 3v18"/><path d="M5.5 7h1.5"/><path d="M11.5 7h1.5"/><path d="M11.5 11h1.5"/><path d="M17.5 7h1"/></g>
+
+  <!-- spaces -->
+  <text x="19" y="128" fill="#7d8089" font-size="12">Spaces</text>
+  <text x="256" y="129" fill="#7d8089" font-size="16">+</text>
+  <rect x="10" y="144" width="268" height="34" rx="8" fill="#26272c"/>
+  <rect x="20" y="152" width="18" height="18" rx="5" fill="#22a99a"/><text x="29" y="165" fill="#fff" font-size="10.5" font-weight="700" text-anchor="middle">A</text>
+  <text x="50" y="166" fill="#e8e9eb" font-size="14">api</text>
+  <rect x="20" y="188" width="18" height="18" rx="5" fill="#e3814f"/><text x="29" y="201" fill="#fff" font-size="10.5" font-weight="700" text-anchor="middle">W</text>
+  <text x="50" y="202" fill="#e8e9eb" font-size="14">web</text><text x="268" y="202" fill="#7d8089" font-size="11.5" text-anchor="end">billing ↑2</text>
+  <rect x="20" y="224" width="18" height="18" rx="5" fill="#8b7cf6"/><text x="29" y="237" fill="#fff" font-size="10.5" font-weight="700" text-anchor="middle">D</text>
+  <text x="50" y="238" fill="#e8e9eb" font-size="14">docs</text>
+
+  <!-- agents -->
+  <rect y="420" width="288" height="1" fill="#25272b"/>
+  <text x="19" y="454" fill="#7d8089" font-size="12">Agents</text>
+  <text x="19" y="490" fill="#e5534b" font-size="12">Needs you 1</text>
+  <rect x="10" y="500" width="268" height="34" rx="8" fill="#1f2024"/>
+  <rect x="20" y="509" width="16" height="16" rx="4" fill="#d97757"/>
+  <text x="46" y="522" fill="#e8e9eb" font-size="13.5">web</text><text x="80" y="522" fill="#7d8089" font-size="13">· Add billing page</text>
+  <text x="19" y="562" fill="#7d8089" font-size="12">Working 1</text>
+  <rect x="20" y="577" width="16" height="16" rx="4" fill="#d97757"/>
+  <text x="46" y="590" fill="#e8e9eb" font-size="13.5">api</text><text x="74" y="590" fill="#7d8089" font-size="13">· Fix login redirect</text>
+  <!-- footer -->
+  <rect y="675" width="288" height="1" fill="#25272b"/>
+  <g transform="translate(19 688) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4.5 13.5H12L11 22l8.5-11.5H12z"/></g><text x="44" y="700" fill="#a5a8ae" font-size="13">Automations</text>
+  <g transform="translate(19 716) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></g><text x="44" y="728" fill="#a5a8ae" font-size="13">Agent presets</text>
+  <g transform="translate(19 744) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915" /> <circle cx="12" cy="12" r="3" /></g><text x="44" y="756" fill="#a5a8ae" font-size="13">Settings</text>
+  <g transform="translate(19 772) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g><text x="44" y="784" fill="#a5a8ae" font-size="13">Add machine</text>
+  <!-- tab bar and pane -->
+  <rect x="300" y="8" width="56.06" height="32" rx="8" fill="#26272c"/>
+  <text x="314" y="29" fill="#e8e9eb" font-size="13">1</text>
+  <g transform="translate(332.06 18.5) scale(0.4583)" fill="none" stroke="#7d8089" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18" /> <path d="m6 6 12 12" /></g>
+  <g transform="translate(1064 17) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g>
+  <text x="1110" y="29" fill="#a5a8ae" font-size="13">Files</text><text x="1182" y="29" fill="#a5a8ae" font-size="13">Changes</text>
+  <rect x="300.5" y="56.5" width="969" height="735" rx="10" fill="#1b1c20" stroke="#8ab4f8"/>
+  <g clip-path="url(#pane)">
+  <rect x="301" y="57" width="968" height="34" rx="0" fill="#1d1e22"/><rect x="301" y="91" width="968" height="1" rx="0" fill="#25272b"/>
+  <text x="322" y="79" fill="#e8e9eb" font-size="13" font-weight="500">Claude Code</text>
+  <text x="322" y="130" fill="#7d8089" font-size="15" font-family="'JetBrains Mono', Menlo, monospace">❯</text>
+  </g>
+  <rect x="300.5" y="56.5" width="969" height="735" rx="10" fill="none" stroke="#8ab4f8"/>
+  <rect width="1280" height="800" fill="#000" opacity="0.45"/>
+  <g filter="url(#shadow)"><rect x="150" y="44" width="980" height="712" rx="12" fill="#1d1e22" stroke="#303237"/></g>
+  <clipPath id="dialog"><rect x="150" y="44" width="980" height="712" rx="12"/></clipPath>
+  <g clip-path="url(#dialog)">
+  <rect x="150" y="44" width="980" height="52" rx="0" fill="#222328"/><rect x="150" y="96" width="980" height="1" rx="0" fill="#303237"/>
+  <g transform="translate(170 62) scale(0.6667)" fill="none" stroke="#a5a8ae" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4.5 13.5H12L11 22l8.5-11.5H12z"/></g>
+  <text x="196" y="76" fill="#e8e9eb" font-size="15" font-weight="600">Automations</text><text x="295" y="76" fill="#7d8089" font-size="13">for Acme</text>
+  <text x="1110" y="75" fill="#7d8089" font-size="11.5" text-anchor="end">Esc</text>
+  <rect x="150" y="97" width="268" height="659" rx="0" fill="#17181b"/><rect x="418" y="97" width="1" height="659" rx="0" fill="#303237"/>
+  <rect x="162" y="109" width="244" height="32" rx="7" fill="#ececed"/><g transform="translate(226 119) scale(0.5000)" fill="none" stroke="#17181b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g><text x="244" y="129.5" fill="#17181b" font-size="13" font-weight="500">New automation</text>
+  <text x="168" y="166" fill="#7d8089" font-size="11">Acme</text>
+  <rect x="158" y="176" width="252" height="46" rx="7" fill="#26272c"/>
+  <circle cx="171.5" cy="199" r="3.5" fill="#57ab5a"/>
+  <text x="184" y="196" fill="#e8e9eb" font-size="13">review-new-prs</text><text x="184" y="212" fill="#7d8089" font-size="11">When a pull request is ope…</text>
+  <text x="364" y="203" fill="#d9a441" font-size="11" text-anchor="end">working</text>
+  <rect x="372" y="191" width="28" height="16" rx="8" fill="#8ab4f8"/><circle cx="392" cy="199" r="5.5" fill="#17181b"/>
+  <circle cx="171.5" cy="245" r="3.5" fill="#57ab5a"/>
+  <text x="184" y="242" fill="#e8e9eb" font-size="13">issue-to-pr</text><text x="184" y="258" fill="#7d8089" font-size="11">When an issue is opened in…</text>
+  <rect x="372" y="237" width="28" height="16" rx="8" fill="#8ab4f8"/><circle cx="392" cy="245" r="5.5" fill="#17181b"/>
+  <circle cx="171.5" cy="291" r="3.5" fill="#57ab5a"/>
+  <text x="184" y="288" fill="#e8e9eb" font-size="13">morning-review</text><text x="184" y="304" fill="#7d8089" font-size="11">Weekdays at 09:00</text>
+  <text x="364" y="295" fill="#7d8089" font-size="11" text-anchor="end">09:00</text>
+  <rect x="372" y="283" width="28" height="16" rx="8" fill="#8ab4f8"/><circle cx="392" cy="291" r="5.5" fill="#17181b"/>
+  <circle cx="171.5" cy="337" r="3.5" fill="#7d8089"/>
+  <text x="184" y="334" fill="#e8e9eb" font-size="13">weekly-dependencies</text><text x="184" y="350" fill="#7d8089" font-size="11">Mondays at 09:30</text>
+  <text x="364" y="341" fill="#7d8089" font-size="11" text-anchor="end">off</text>
+  <rect x="372" y="329" width="28" height="16" rx="8" fill="#3a3c42"/><circle cx="380" cy="337" r="5.5" fill="#a5a8ae"/>
+  <text x="168" y="378" fill="#7d8089" font-size="11">Every workspace</text>
+  <circle cx="171.5" cy="411" r="3.5" fill="#57ab5a"/>
+  <text x="184" y="408" fill="#e8e9eb" font-size="13">friday-summary</text><text x="184" y="424" fill="#7d8089" font-size="11">Fridays at 16:00</text>
+  <text x="364" y="415" fill="#7d8089" font-size="11" text-anchor="end">Fri 16:00</text>
+  <rect x="372" y="403" width="28" height="16" rx="8" fill="#8ab4f8"/><circle cx="392" cy="411" r="5.5" fill="#17181b"/>
+  <text x="168" y="452" fill="#7d8089" font-size="11">Ready-made</text>
+  <circle cx="171.5" cy="485" r="3" fill="none" stroke="#7d8089"/>
+  <text x="184" y="482" fill="#a5a8ae" font-size="13">main-is-red</text><text x="184" y="498" fill="#7d8089" font-size="11">Every 30 minutes</text><text x="400" y="489" fill="#7d8089" font-size="11" text-anchor="end">add</text>
+  <circle cx="171.5" cy="531" r="3" fill="none" stroke="#7d8089"/>
+  <text x="184" y="528" fill="#a5a8ae" font-size="13">review-finished-task</text><text x="184" y="544" fill="#7d8089" font-size="11">When a task enters Review</text><text x="400" y="535" fill="#7d8089" font-size="11" text-anchor="end">add</text>
+  <rect x="150" y="674" width="268" height="1" rx="0" fill="#303237"/><text x="168" y="698" fill="#7d8089" font-size="11">While Herdr is closed</text>
+  <text x="168" y="722" fill="#e8e9eb" font-size="13">Keep running</text><text x="168" y="739" fill="#7d8089" font-size="11">On: running in the background</text><rect x="372" y="718" width="28" height="16" rx="8" fill="#8ab4f8"/><circle cx="392" cy="726" r="5.5" fill="#17181b"/>
+  <text x="446" y="132" fill="#e8e9eb" font-size="16" font-weight="600">review-new-prs</text>
+  <rect x="579.36" y="116" width="84.24" height="22" rx="11" fill="#2c2e34"/><text x="588.36" y="131.14" fill="#a5a8ae" font-size="11.5">Only in Acme</text>
+  <rect x="1060.08" y="115" width="41.92" height="24" rx="12" fill="none" stroke="#2f3137"/><text x="1071.08" y="131.32" fill="#a5a8ae" font-size="12">Off</text>
+  <rect x="1018.4" y="115" width="35.68" height="24" rx="12" fill="#26272c" stroke="#8ab4f8"/><text x="1029.4" y="131.32" fill="#e8e9eb" font-size="12">On</text>
+  <rect x="1019.75" y="152" width="82.25" height="34" rx="6" fill="none" stroke="#2f3137"/><text x="1033.75" y="173.5" fill="#a5a8ae" font-size="12.5">Change it</text>
+  <rect x="446" y="152" width="563.75" height="34" rx="7" fill="#17181b" stroke="#2f3137"/><text x="458" y="173.5" fill="#7d8089" font-size="12.5">Change it in words: make it hourly, only on Mondays, use opus…</text>
+  <text x="446" y="214" fill="#7d8089" font-size="11.5">What it does</text>
+  <text x="446" y="238" fill="#e8e9eb" font-size="13">When a pull request is opened in any repo here by someone else · looks every 2 minutes</text>
+  <text x="446" y="259" fill="#a5a8ae" font-size="12">Starts reviewer (claude) on sonnet, in its repo's folder.</text>
+  <text x="446" y="289" fill="#7d8089" font-size="11.5">Prompt: the agent's task</text>
+  <rect x="446" y="301" width="656" height="150" rx="7" fill="#17181b" stroke="#2f3137"/>
+  <text x="458" y="325" fill="#e8e9eb" font-size="13">A pull request was just opened:</text>
+  <text x="458" y="345" fill="#e8e9eb" font-size="13"></text>
+  <text x="458" y="365" fill="#e8e9eb" font-size="13">{{pr}}</text>
+  <text x="458" y="385" fill="#e8e9eb" font-size="13"></text>
+  <text x="458" y="405" fill="#e8e9eb" font-size="13">Review it: read the change against what the pull request says it</text>
+  <text x="458" y="425" fill="#e8e9eb" font-size="13">does, run the tests, and write what you would change. Don't push.</text>
+  <text x="446" y="471" fill="#7d8089" font-size="11.5">Fill-ins: {{pr}} (number, title, author, link and description), {{number}} {{title}} {{url}} {{author}} {{repo}}</text>
+  <rect x="446" y="493" width="656" height="1" rx="0" fill="#303237"/>
+  <g transform="translate(446 508) scale(0.5417)" fill="none" stroke="#a5a8ae" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6" /></g><text x="466" y="519" fill="#e8e9eb" font-size="12.5" font-weight="500">Details</text><text x="522" y="519" fill="#7d8089" font-size="11.5">when, agent, model, folder, check</text>
+  <text x="446" y="553" fill="#7d8089" font-size="11.5">Recent runs</text>
+  <text x="446" y="584" fill="#7d8089" font-size="12">Today 14:02</text><text x="566" y="584" fill="#e8e9eb" font-size="12.5">web #31 opened by dana</text><text x="952" y="584" fill="#d9a441" font-size="12" text-anchor="end">working</text>
+  <rect x="1055.48" y="569" width="46.52" height="24" rx="6" fill="none" stroke="#2f3137"/><text x="1064.48" y="585.14" fill="#e8e9eb" font-size="11.5">Go to</text>
+  <rect x="1006.41" y="569" width="43.07" height="24" rx="6" fill="none" stroke="#2f3137"/><text x="1015.41" y="585.14" fill="#e5534b" font-size="11.5">Stop</text>
+  <rect x="446" y="597" width="656" height="1" rx="0" fill="#26282d"/>
+  <text x="446" y="617" fill="#7d8089" font-size="12">Today 11:40</text><text x="566" y="617" fill="#e8e9eb" font-size="12.5">api #12 opened by sam</text><text x="952" y="617" fill="#57ab5a" font-size="12" text-anchor="end">finished</text>
+  <rect x="1055.48" y="602" width="46.52" height="24" rx="6" fill="none" stroke="#2f3137"/><text x="1064.48" y="618.14" fill="#e8e9eb" font-size="11.5">Go to</text>
+  <rect x="446" y="630" width="656" height="1" rx="0" fill="#26282d"/>
+  <text x="446" y="650" fill="#7d8089" font-size="12">Yesterday 16:15</text><text x="566" y="650" fill="#e8e9eb" font-size="12.5">api #11 opened by dana</text><text x="952" y="650" fill="#7d8089" font-size="12" text-anchor="end">closed</text>
+  <rect x="446" y="663" width="656" height="1" rx="0" fill="#26282d"/>
+  <rect x="419" y="700" width="711" height="56" rx="0" fill="#1d1e22"/><rect x="419" y="700" width="711" height="1" rx="0" fill="#303237"/>
+  <rect x="446" y="714" width="61.5" height="28" rx="6" fill="none" stroke="#2f3137"/><text x="458" y="732.5" fill="#e5534b" font-size="12.5">Delete</text>
+  <text x="521.5" y="732.5" fill="#7d8089" font-size="11.5">~/.herdr/workspaces/acme/automations/review-new-prs.md</text>
+  <rect x="1046.75" y="714" width="55.25" height="28" rx="6" fill="#ececed"/><text x="1060.75" y="732.5" fill="#17181b" font-size="12.5" font-weight="500">Save</text>
+  <rect x="968.25" y="714" width="70.5" height="28" rx="6" fill="none" stroke="#2f3137"/><text x="980.25" y="732.5" fill="#e8e9eb" font-size="12.5">Run now</text>
+  </g>
+</svg>

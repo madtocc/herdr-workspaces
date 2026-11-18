@@ -24,11 +24,17 @@ publish=${2:-}
 echo "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "release: $v isn't x.y.z" >&2; exit 1; }
 git rev-parse -q --verify "refs/tags/v$v" >/dev/null && { echo "release: v$v is already tagged" >&2; exit 1; }
 [ -z "$(git status --porcelain)" ] || { echo "release: commit or stash your changes first" >&2; exit 1; }
-# The drawing changed since the last release but its picture didn't: render it first.
+# A drawing changed since the last release but its picture didn't: render it first. The same list as render-preview.sh.
 last=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
-if [ -n "$last" ] && ! git diff --quiet "$last" -- mods/ws-switcher/preview.svg && git diff --quiet "$last" -- preview.png; then
-  echo "release: mods/ws-switcher/preview.svg changed since $last but preview.png didn't: run scripts/render-preview.sh" >&2; exit 1
-fi
+for pair in mods/ws-switcher/preview.svg:preview.png mods/ws-board/preview.svg:previews/board.png \
+            mods/ws-board/preview-github.svg:previews/github.png mods/ws-worktrees/preview.svg:previews/worktrees.png \
+            mods/ws-automations/preview.svg:previews/automations.png; do
+  svg=${pair%%:*} png=${pair#*:}
+  [ -e "$png" ] || { echo "release: $png is missing: run scripts/render-preview.sh" >&2; exit 1; }
+  if [ -n "$last" ] && ! git diff --quiet "$last" -- "$svg" && git diff --quiet "$last" -- "$png"; then
+    echo "release: $svg changed since $last but $png didn't: run scripts/render-preview.sh" >&2; exit 1
+  fi
+done
 grep -q '^## \[Unreleased\]' CHANGELOG.md || { echo "release: CHANGELOG.md has no ## [Unreleased]" >&2; exit 1; }
 [ -n "$(notes Unreleased)" ] || { echo "release: ## [Unreleased] is empty" >&2; exit 1; }
 
