@@ -1,9 +1,8 @@
 <!--
-An example of Herdr's global guide. Copy it to ~/.herdr/AGENTS.md and change it
-to suit you. herdr-ws-agent hands that file to every Claude and Codex it starts
-(the + menu, presets, board cards, automations, hc helpers), before the
+Herdr's global guide. herdr-ws-agent hands this file to every Claude and Codex
+it starts (the + menu, presets, board cards, automations, hc helpers), before the
 workspace's own AGENTS.md. Keep it short: every agent pays for it. Details belong
-in skills and in each tool's --help.
+in the skills and in each tool's --help.
 -->
 
 # Working in Herdr

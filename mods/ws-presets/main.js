@@ -7,6 +7,9 @@
 // ~/.herdr/workspaces/<id>/agents and win over a global one by name. The format
 // is herdr-core's: front matter `description` and `command` (values as written),
 // instructions as the body. Other front matter lines (ready, submit, …) are kept.
+// `guide: off` leaves Herdr's global guide (~/.herdr/AGENTS.md) out for that
+// preset; the editor's "Herdr guide" choice writes it, and the list's foot has the
+// switch for every agent (ws-switcher/bin/herdr-ws-agent --guide on|off).
 //
 // The switcher loads presets into shared "workspaces.presets"; this writes the
 // files and updates that list at once, and the switcher's folder watch confirms
@@ -124,9 +127,9 @@ const field = (head, key) => {
   return line === undefined ? "" : line.slice(line.indexOf(":") + 1).trim();
 };
 // The file with description and command set (as written, one line) and the rest kept.
-function presetText(old, description, command, body) {
+function presetText(old, description, command, body, guide = true) {
   const head = split(old).head;
-  for (const [key, value] of [["description", oneLine(description)], ["command", oneLine(command)]]) {
+  for (const [key, value] of [["description", oneLine(description)], ["command", oneLine(command)], ["guide", guide ? "" : "off"]]) {
     const i = head.findIndex((l) => l.split(":")[0].trim() === key);
     if (!value) { if (i >= 0) head.splice(i, 1); continue; }
     if (i >= 0) head[i] = `${key}: ${value}`;
@@ -165,6 +168,24 @@ async function resumeState() {
   }
   const config = await readTextFile(`${home()}/.config/herdr-core/config.toml`).catch(() => null);
   return { on, count, ready: (config ?? "").includes("herdr-ws-resume") };
+}
+
+// Herdr's global guide (ws-switcher/bin/herdr-ws-agent): whether agents get it
+// (~/.herdr/guide/switch), and the file's size in characters (0: no guide yet).
+const agentBin = () => `${home()}/.config/herdr-app/mods/ws-switcher/bin/herdr-ws-agent`;
+const guideFile = () => `${home()}/.herdr/AGENTS.md`;
+const guideStarter = () => `${home()}/.config/herdr-app/mods/ws-switcher/guide.md`;
+async function guideState() {
+  const on = ((await readTextFile(`${home()}/.herdr/guide/switch`).catch(() => null)) ?? "").trim() !== "off";
+  const text = await readTextFile(guideFile()).catch(() => null);
+  return { on, bytes: text ? text.length : 0 };
+}
+const EDITORS = ["zed", "cursor", "code", "subl"]; // as in ws-switcher
+// Opens a file in the first installed editor of EDITORS, else the system's opener.
+function openFile(path) {
+  if (window()?.platform === "windows") return exec("explorer", [path]).catch(() => {});
+  const editors = EDITORS.map((e) => `command -v ${e} >/dev/null 2>&1 && exec ${e} "$1";`).join(" ");
+  return exec("sh", ["-c", `${editors} command -v open >/dev/null 2>&1 && exec open "$1"; exec xdg-open "$1"`, "sh", path]).catch(() => {});
 }
 
 // Opens the Start dialog for a preset (from this screen or the switcher's New agent).
@@ -216,6 +237,38 @@ export default class Presets extends View {
     const readResume = async (cx) => { this.resume = await resumeState(); cx.notify(); };
     cx.spawn(readResume);
     cx.timer.every(3000, readResume);
+    // The guide's switch and file, read again every 3s too.
+    this.guide = null; // { on, bytes }
+    this.guideIn = true; // the editor's choice: this preset gets the guide
+    const readGuide = async (cx) => { this.guide = await guideState(); cx.notify(); };
+    cx.spawn(readGuide);
+    cx.timer.every(3000, readGuide);
+  }
+
+  // Give every agent the guide, or none: herdr-ws-agent --guide on / off.
+  flipGuide(cx) {
+    const on = !this.guide?.on;
+    this.guide = { ...this.guide, on };
+    cx.notify();
+    cx.spawn(async (cx) => {
+      const r = await exec(agentBin(), ["--guide", on ? "on" : "off"]).catch((e) => ({ code: 1, stdout: "", stderr: String(e) }));
+      if (r.code !== 0) notify({ title: "Couldn't change it", body: (r.stderr || r.stdout).trim() || `${tilde(agentBin())} failed.`, level: "error" });
+      this.guide = await guideState();
+      cx.notify();
+    });
+  }
+
+  // Edit opens the guide; with none yet, it's first written from the starter.
+  editGuide(cx) {
+    cx.spawn(async (cx) => {
+      if (!this.guide?.bytes) {
+        const starter = await readTextFile(guideStarter()).catch(() => null);
+        await writeTextFile(guideFile(), starter ?? "# Working in Herdr\n", null).catch(() => {});
+        this.guide = await guideState();
+        cx.notify();
+      }
+      openFile(guideFile());
+    });
   }
 
   // Bring agents back after a restart, or not: herdr-ws-resume --on / --off.
@@ -250,7 +303,7 @@ export default class Presets extends View {
     if (!this.snap) return false;
     return (this.sel?.isNew && this.nameIn.value().trim() !== this.snap.name)
       || this.descIn.value() !== this.snap.description || this.cmdIn.value() !== this.snap.command
-      || this.bodyIn.value().trim() !== this.snap.body;
+      || this.bodyIn.value().trim() !== this.snap.body || this.guideIn !== (this.snap.guide ?? true);
   }
 
   // Opens a preset (or a new one) in the editor; unsaved edits ask for a second click.
@@ -274,6 +327,7 @@ export default class Presets extends View {
       this.descIn.set_value(snap.description);
       this.cmdIn.set_value(snap.command);
       this.bodyIn.set_value(snap.body);
+      this.guideIn = snap.guide ?? true;
       cx.notify();
     };
     if (fill) return load({ text: null, file: null, ...fill }, cx);
@@ -282,7 +336,7 @@ export default class Presets extends View {
       const text = await readTextFile(file);
       if (text === null) { this.error = `${tilde(file)} is gone.`; cx.notify(); return; }
       const { head, body } = split(text);
-      load({ text, file, name: sel.name, description: field(head, "description"), command: field(head, "command"), body }, cx);
+      load({ text, file, name: sel.name, description: field(head, "description"), command: field(head, "command"), body, guide: field(head, "guide") !== "off" }, cx);
     });
   }
 
@@ -295,7 +349,7 @@ export default class Presets extends View {
 
   copy(scope, name, cx) {
     this.pick({ scope, name, isNew: true }, {
-      name, description: this.descIn.value(), command: this.cmdIn.value(), body: this.bodyIn.value().trim(),
+      name, description: this.descIn.value(), command: this.cmdIn.value(), body: this.bodyIn.value().trim(), guide: this.guideIn,
     }, cx);
   }
 
@@ -308,7 +362,8 @@ export default class Presets extends View {
     if (!oneLine(command)) { this.error = "A preset needs a command."; cx.notify(); return; }
     if (sel.scope === "workspace" && !this.def()) { this.error = "There's no workspace for a workspace preset."; cx.notify(); return; }
     const file = `${this.dirOf(sel.scope)}/${name}.md`;
-    const text = presetText(sel.isNew ? null : this.snap.text, description, command, body);
+    const guide = this.guideIn;
+    const text = presetText(sel.isNew ? null : this.snap.text, description, command, body, guide);
     this.busy = true;
     cx.spawn(async (cx) => {
       try {
@@ -318,7 +373,7 @@ export default class Presets extends View {
           body: body.replace(/<!--[\s\S]*?-->/g, "").trim(), error: null,
         });
         this.sel = { scope: sel.scope, name, isNew: false };
-        this.snap = { text, file, name, description, command, body: body.trim() };
+        this.snap = { text, file, name, description, command, body: body.trim(), guide };
         this.error = null;
         this.notice = "Saved.";
       } catch (e) {
@@ -445,6 +500,7 @@ export default class Presets extends View {
         .child(head("Every workspace"))
         .children(global.map((p) => item(p, "global", p.error ? "error" : own.some((o) => o.name === p.name) ? "replaced here" : "")))
         .when(!global.length, (el) => el.child(div().px(14).text_size(12).text_color(t.dim).child("None yet."))))
+      .when(Boolean(this.guide), (el) => el.child(this.guideRow(t)))
       .when(Boolean(this.resume), (el) => el.child(this.resumeRow(t)));
 
     return v_flex().id("presets").track_focus(this.handle).size_full().min_h(0).bg(t.popover).text_size(13).text_color(t.foreground)
@@ -457,6 +513,30 @@ export default class Presets extends View {
         .child(div().flex_1())
         .child(div().text_size(11).text_color(t.dim).child("Esc")))
       .child(h_flex().flex_1().min_h(0).items_stretch().child(list).child(this.editor(t, def, own, iconOf)));
+  }
+
+  // At the foot of the list: the switch for Herdr's global guide, and Edit for its file.
+  guideRow(t) {
+    const g = this.guide;
+    const size = g.bytes < 1024 ? `${g.bytes} bytes` : `${(g.bytes / 1024).toFixed(1)} KB`;
+    const note = !g.bytes ? "No guide yet" : g.on ? `On: ${size} for every Claude and Codex` : "Off: agents go without it";
+    return v_flex().flex_none().border_t(1).border_color(t.border)
+      .child(h_flex().px(14).pt(10).pb(4).items_center()
+        .child(div().flex_1().text_size(11).text_color(t.dim).child("Herdr guide"))
+        .child(div().id("p-guide-edit").text_size(11).text_color(t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground))
+          .tooltip(g.bytes ? `Open ${tilde(guideFile())}` : `Write ${tilde(guideFile())} from the starter, then open it`)
+          .on_click((_e, cx) => this.editGuide(cx)).child(g.bytes ? "Edit" : "Write one")))
+      .child(h_flex().id("p-guide").mx(6).px(8).py(6).gap(9).rounded(7).items_center().cursor_pointer()
+        .hover((s) => s.bg(t.hover))
+        .tooltip(g.on ? `Claude and Codex started through Herdr get ${tilde(guideFile())} first: how to use automations, hc helpers and the board. A preset can leave it out. Click to turn it off for every agent.`
+          : "Agents start without the guide. Click to give it to every Claude and Codex again.")
+        .on_click((_e, cx) => this.flipGuide(cx))
+        .child(v_flex().flex_1().min_w(0).gap(2)
+          .child(div().truncate().child("Give agents the guide"))
+          .child(div().truncate().text_size(11).text_color(t.dim).child(note)))
+        .child(h_flex().w(26).h(15).p(2).flex_none().rounded_full().items_center()
+          .bg(g.on ? t.accent : t.input).when(g.on, (el) => el.justify_end())
+          .child(div().size(11).rounded_full().bg(t.background))));
   }
 
   // At the foot of the list: the switch for bringing Claude agents back after a restart.
@@ -554,6 +634,11 @@ export default class Presets extends View {
         .child(h_flex().gap(6).flex_wrap()
           .child(pick("p-effort-default", "Default", effort === null, () => this.setEffort("")))
           .children(knobs.effort.levels.map((l) => pick(`p-effort-${l}`, l, effort === l, () => this.setEffort(l))))))
+      .when(system, (el) => el
+        .child(label(this.guide && !this.guide.on ? "Herdr guide (off for every agent right now)" : "Herdr guide: how to use automations, hc helpers and the board"))
+        .child(h_flex().gap(6).flex_wrap()
+          .child(pick("p-guide-in", "Gets it", this.guideIn, () => { this.guideIn = true; }))
+          .child(pick("p-guide-out", "Goes without", !this.guideIn, () => { this.guideIn = false; }))))
       .child(label(system
         ? "Instructions: Claude and Codex get these as system instructions, after the workspace's"
         : "Instructions: sent as the agent's first message, before any task"))

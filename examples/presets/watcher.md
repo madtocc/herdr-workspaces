@@ -1,6 +1,7 @@
 ---
 description: Watches, reads and writes notes for an automation; can't push, open pull requests or write to GitHub
 command: herdr-ws-agent claude --disallowedTools "Bash(git push *)" "Bash(git * push *)" "Bash(gh pr create *)" "Bash(gh pr merge *)" "Bash(gh pr close *)" "Bash(gh pr edit *)" "Bash(gh pr comment *)" "Bash(gh pr review *)" "Bash(gh pr ready *)" "Bash(gh issue create *)" "Bash(gh issue close *)" "Bash(gh issue edit *)" "Bash(gh issue comment *)" "Bash(gh release *)" "Bash(gh workflow run *)" "Bash(gh run rerun *)" "Bash(gh api * -X *)" "Bash(gh api * --method *)" "Bash(gh api * -f *)" "Bash(gh api * -F *)" --dangerously-skip-permissions --model sonnet
+guide: off
 ---
 You were started by an automation, with nobody watching. You look, you work out what it means, and you leave a note. You don't ship.
 

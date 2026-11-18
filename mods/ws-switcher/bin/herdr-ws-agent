@@ -22,6 +22,10 @@
 # Claude and Codex get it first, before the workspace's instructions, in or out of
 # a workspace (up to 16 KB, else a line naming the file). It replaces the built-in
 # line about herdr-ws-run; inside a workspace they're then told its name instead.
+# --guide off (or the switch in the Agent presets screen) leaves it out for every
+# agent, --guide on puts it back, --guide status says which. A preset with
+# guide: off in its front matter goes without it. Without it, agents get what they
+# would with no guide, the herdr-ws-run line included.
 #
 # A workspace can also hold a BRIEF.md beside its AGENTS.md: where its work stands
 # right now (what happened lately, what's open), kept by whatever knows: an
@@ -61,8 +65,24 @@
 
 usage="usage: herdr-ws-agent [--instructions FILE]... [--task TEXT] <agent> [args...]
        herdr-ws-agent --preset NAME [task...]
-       herdr-ws-agent --presets"
+       herdr-ws-agent --presets
+       herdr-ws-agent --guide on|off|status"
 presets= mode= pname= agent= task=
+# The global guide's switch: off is "off" in ~/.herdr/guide/switch; anything else is on.
+guide=$HOME/.herdr/AGENTS.md
+switch=$HOME/.herdr/guide/switch
+guide_on() { [ "$(sed -n 1p "$switch" 2>/dev/null)" != off ]; }
+if [ "${1:-}" = --guide ]; then
+  case "${2:-status}" in
+    on | off) mkdir -p "${switch%/*}" && printf '%s\n' "$2" > "$switch" || exit 1 ;;
+    status) ;;
+    *) echo "$usage" >&2; exit 2 ;;
+  esac
+  if ! guide_on; then echo "Off: agents don't get the guide ($guide)."
+  elif [ ! -s "$guide" ]; then echo "On, but there's no guide yet: write one in $guide."
+  else echo "On: Claude and Codex get $guide ($(wc -c < "$guide" | tr -d ' ') bytes), except presets with guide: off."; fi
+  exit 0
+fi
 case "${1:-}" in
   --presets) mode=list; shift ;;
   --preset) [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }; mode=preset; pname=$2; shift 2 ;;
@@ -159,7 +179,6 @@ told() {
 
 templates=${XDG_CONFIG_HOME:-$HOME/.config}/herdr-core/templates
 wsdir=$HOME/.herdr/workspaces/$ws
-guide=$HOME/.herdr/AGENTS.md
 # A front matter field of a preset file.
 front() { awk -v k="$2" 'NR == 1 && /^---[ \t\r]*$/ { h = 1; next } h && /^---[ \t\r]*$/ { exit }
   h && index($0, k ":") == 1 { v = substr($0, length(k) + 2); sub(/^[ \t]+/, "", v); sub(/[ \t\r]+$/, "", v); print v; exit }' "$1"; }
@@ -237,8 +256,16 @@ if [ "$name" = claude ] || [ "$name" = codex ]; then
   # The global guide (what every agent here should know about Herdr: automations,
   # hc helpers, the board), then the workspace's instructions, then each preset's,
   # a blank line apart. A guide over 16 KB is only pointed at.
-  text= guided=
-  if [ -s "$guide" ] && [ -r "$guide" ] && [ -n "$(told "$guide")" ]; then
+  # Left out while the switch is off, and for a preset with guide: off in its front
+  # matter (a small job that doesn't need it).
+  text= guided= noguide=
+  guide_on || noguide=1
+  while IFS= read -r file; do
+    [ -n "$file" ] && [ -r "$file" ] && [ "$(front "$file" guide)" = off ] && noguide=1
+  done <<EOF
+$presets
+EOF
+  if [ -z "$noguide" ] && [ -s "$guide" ] && [ -r "$guide" ] && [ -n "$(told "$guide")" ]; then
     guided=1
     if [ "$(wc -c < "$guide")" -le 16384 ]; then text=$(told "$guide")
     else text="How to work in Herdr (automations, hc helpers, the board) is in $guide. Read it before using any of them."; fi
