@@ -1,6 +1,6 @@
 // @ts-nocheck
 // The background runner: the workspaces' automations (../automations.js) and
-// board cards' pull requests (../prs.js), run by Node instead of by Herdr's window,
+// board cards' pull requests (../prs.js) and GitHub board items (../ghboard.js), run by Node instead of by Herdr's window,
 // so they keep going while Herdr is closed. bin/herdr-ws-runner starts it as a
 // terminal herdr-core holds (`hc ls` shows it, `hc read herdr-ws-runner` is its log).
 //
@@ -10,9 +10,9 @@
 //                     the switcher takes "fresh" to mean this is running, and reads
 //                     state.json again when rev moves
 //   state.json        what the Automations screen and the board show, which the
-//                     switcher copies into shared state: { automations, global, runs, prs }
+//                     switcher copies into shared state: { automations, global, runs, prs, github }
 //   notes/*.json      toasts for the window, shown now or when Herdr next opens
-//   automations.json, prs.json   what the two remember (see Store)
+//   automations.json, prs.json, github.json   what they remember (see Store)
 // Requests come as files in ~/.herdr/workspaces/.inbox (automations.js).
 //
 // A run starts as a core terminal with Herdr's labels, which is how Herdr adopts
@@ -28,6 +28,7 @@ import {
 } from "./herdr.js";
 import { Runner, globalDir } from "../automations.js";
 import { PrWatcher } from "../prs.js";
+import { GhWatcher } from "../ghboard.js";
 import { dir, loadDefs, templatesDir, loadPresetDir, presetsFor, presetLaunch, withTask } from "../defs.js";
 
 const SPACE = "Automations";
@@ -84,7 +85,7 @@ function tidy(runs, keep, busy) {
 // --- what the window shows: state.json, and alive ---
 
 let rev = 0, dirty = false, noted = false;
-const published = ["workspaces.automations", "workspaces.automations.global", "workspaces.automation.runs", "workspaces.prs"];
+const published = ["workspaces.automations", "workspaces.automations.global", "workspaces.automation.runs", "workspaces.prs", "workspaces.github"];
 onShared((key) => { if (key === "notes") noted = true; else if (published.includes(key)) dirty = true; });
 
 async function beat() {
@@ -93,7 +94,7 @@ async function beat() {
     dirty = false;
     rev++;
     await writeTextFile(`${runnerDir()}/state.json`, JSON.stringify({
-      rev, automations: shared("workspaces.automations") ?? {}, global: shared("workspaces.automations.global") ?? [], runs: shared("workspaces.automation.runs") ?? [], prs: shared("workspaces.prs") ?? {},
+      rev, automations: shared("workspaces.automations") ?? {}, global: shared("workspaces.automations.global") ?? [], runs: shared("workspaces.automation.runs") ?? [], prs: shared("workspaces.prs") ?? {}, github: shared("workspaces.github") ?? {},
     }));
   }
   if (noted) { noted = false; rev++; }
@@ -106,6 +107,7 @@ async function reload() {
   await presets();
   await runner.load(cx);
   await prs.load();
+  await gh.load();
 }
 
 async function presets() {
@@ -136,7 +138,7 @@ async function alone() {
   try { process.kill(a.pid, 0); return false; } catch { return true; }
 }
 
-let prs = null;
+let prs = null, gh = null;
 async function main() {
   await nfs.mkdir(runnerDir(), { recursive: true });
   await nfs.mkdir(`${dir()}/.inbox`, { recursive: true });
@@ -146,6 +148,7 @@ async function main() {
   await refresh(true).catch((e) => log("herdr-core:", said(e)));
   runner = new Runner({ presetsFor, presetLaunch, withTask, claim() {}, open, tidy, away: "while Herdr's runner wasn't running" });
   prs = new PrWatcher();
+  gh = new GhWatcher();
   dirty = true;
   await reload();
   await beat();
@@ -182,7 +185,7 @@ async function main() {
     if (busy) return;
     busy = true;
     try { await refresh(); } catch {} // herdr-core is away: the schedules still tick
-    try { runner.tick(cx); prs.tick(cx); } catch (e) { log("tick failed:", said(e)); }
+    try { runner.tick(cx); prs.tick(cx); gh.tick(cx); } catch (e) { log("tick failed:", said(e)); }
     busy = false;
     if (dirty || noted) beat().catch(() => {});
   }, 500);

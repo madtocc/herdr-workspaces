@@ -22,8 +22,11 @@
 //   workspaces.worktrees { id, at }: the menu asks this block to show a workspace's
 //                        Worktrees tab (ws-worktrees), as workspaces.board does the board
 //
+//   workspaces.prs       task file -> its pull request's one status (prs.js), drawn by ws-board
+//   workspaces.github    task file -> its GitHub board item's status (ghboard.js), drawn by ws-board
+//
 // It also runs each workspace's automations (automations.js) and follows board cards'
-// pull requests on GitHub (prs.js): the one runner of each lives in this sidebar
+// pull requests (prs.js) and GitHub board items (ghboard.js): the one runner of each lives in this sidebar
 // copy and ticks on its timer. Unless the background runner is on
 // (bin/herdr-ws-runner, ~/.herdr/runner/switch): then a process herdr-core holds
 // runs both, Herdr open or closed, and this copy only passes things between it and
@@ -47,6 +50,7 @@ import {
 import * as fs from "fs/promises";
 import { Runner, runnerDir, globalDir } from "./automations.js";
 import { PrWatcher } from "./prs.js";
+import { GhWatcher } from "./ghboard.js";
 import { Scratch, isScratch, scratchDef } from "./scratch.js";
 import { dir, expand, tilde, under, base, subdirs, loadDefs, templatesDir, loadPresetDir, presetsFor, presetLaunch, withTask } from "./defs.js";
 
@@ -280,6 +284,7 @@ export default class Workspaces extends View {
     };
     this.runner = new Runner(this.hooks);
     this.prs = new PrWatcher();
+    this.gh = new GhWatcher();
     this.scratch = new Scratch({
       home, exec, spaces, panes, run, notify, shared, setShared, readTextFile, writeTextFile, wsDir: dir,
       trash: async (path) => (await exec("sh", ["-c", TRASH, "sh", path, `${home()}/.herdr/scratch/.trash`, `${base(path)}-${Date.now()}`])).stdout.trim(),
@@ -332,7 +337,7 @@ export default class Workspaces extends View {
     });
     // Placing and following also run here: Herdr doesn't draw while its window is
     // in the background, and a new space waits SETTLE for its folder.
-    cx.timer.every(500, (cx) => { this.sync(); this.requests(cx); if (this.mine()) { this.runner.tick(cx); this.prs.tick(cx); } this.scratch.tick(cx); if (spaces().some((s) => !this.known.has(s.id))) cx.notify(); });
+    cx.timer.every(500, (cx) => { this.sync(); this.requests(cx); if (this.mine()) { this.runner.tick(cx); this.prs.tick(cx); this.gh.tick(cx); } this.scratch.tick(cx); if (spaces().some((s) => !this.known.has(s.id))) cx.notify(); });
   }
 
   reload(cx) {
@@ -356,6 +361,7 @@ export default class Workspaces extends View {
       if (this.mine()) {
         await this.runner?.load(cx);
         await this.prs?.load();
+        await this.gh?.load();
       }
       cx.notify();
     });
@@ -398,14 +404,14 @@ export default class Workspaces extends View {
           b.owner = owner;
           b.rev = null;
           // Ours again (or for the first time): from what the file remembers.
-          if (!owner) { this.runner = new Runner(this.hooks); this.prs = new PrWatcher(); this.reload(cx); }
+          if (!owner) { this.runner = new Runner(this.hooks); this.prs = new PrWatcher(); this.gh = new GhWatcher(); this.reload(cx); }
         }
         if (owner && running && alive.rev !== b.rev) {
           let state = null;
           try { state = JSON.parse((await readTextFile(`${at}/state.json`)) ?? "null"); } catch {}
           if (state) {
             b.rev = alive.rev;
-            for (const [key, value] of [["workspaces.automations", state.automations ?? {}], ["workspaces.automations.global", state.global ?? []], ["workspaces.automation.runs", state.runs ?? []], ["workspaces.prs", state.prs ?? {}]]) {
+            for (const [key, value] of [["workspaces.automations", state.automations ?? {}], ["workspaces.automations.global", state.global ?? []], ["workspaces.automation.runs", state.runs ?? []], ["workspaces.prs", state.prs ?? {}], ["workspaces.github", state.github ?? {}]]) {
               if (JSON.stringify(value) !== JSON.stringify(shared(key) ?? null)) setShared(key, value);
             }
           }

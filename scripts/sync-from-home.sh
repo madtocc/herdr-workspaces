@@ -23,6 +23,12 @@ cmp -s "$src/mods/ws-worktrees/treescripts.js" "$src/mods/ws-board/treescripts.j
   exit 1
 }
 
+# The board's GitHub view and the watcher of taken cards read GitHub by the same rules.
+cmp -s "$src/mods/ws-switcher/ghfacts.js" "$src/mods/ws-board/ghfacts.js" || {
+  echo "mods/ws-switcher/ghfacts.js and mods/ws-board/ghfacts.js differ: make them the same first" >&2
+  exit 1
+}
+
 mkdir -p "$dst/layouts"
 cp "$src/layouts/workspaces.json" "$dst/layouts/workspaces.json"
 

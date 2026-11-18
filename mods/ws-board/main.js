@@ -18,15 +18,27 @@
 // card moves to `start`, and the agent is asked to set `finish` when it's done.
 //
 // The same mod opens its task dialog: props { dialog: "task", workspace, task? , status? }.
+//
+// Tasks | GitHub in the header switches to the workspace's GitHub project board
+// ("board": { "github": "<its link>" }, which the view's own link box writes): its
+// columns and items, read with your gh login (`gh api graphql`), nothing written.
+// It shows as columns or as a list, in the board's order or by when each item was opened.
+// Take makes a card here from any item, with `github:` (its link) and `github_item:`
+// (the board item's id); the switcher then keeps that card current (ghboard.js) and
+// publishes its status as shared "workspaces.github". ghfacts.js has the rules.
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
 import {
   spaces, panes, agents, terminals, run, theme, shared, props, openOverlay, closeOverlay,
-  home, watchFolder, readTextFile, writeTextFile, exec, notify, knownAgents,
+  home, watchFolder, readTextFile, writeTextFile, exec, notify, knownAgents, checking,
 } from "herdr";
 import * as fs from "fs/promises";
 import { setUp } from "./treescripts.js";
+import {
+  BOARD_QUERY, itemsQuery, parseBoard, repoOfRemote, shape, boardFrom, columnsOf, filterItems, reposOf, doneLike, shortRepo, refOf, whoOf,
+  taskOf, takeColumn, taskBody, taskFields, withBoardLink, ago, ghError, ORDERS, sortItems, age, FRESH, keptText, keptBoard,
+} from "./ghfacts.js";
 
 const COLUMNS = ["backlog", "todo", "doing", "review", "done"];
 const PRIORITY = { high: 3, medium: 2, low: 1 };
@@ -57,6 +69,12 @@ const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(
 const label = (c) => c.charAt(0).toUpperCase() + c.slice(1).replace(/[-_]+/g, " ");
 const slug = (s) => s.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
 const message = (e) => String(e?.message ?? e);
+// Where a GitHub board is kept between reads (ghfacts.js: keptText), one file per board, for every board tab.
+const keptFile = (ref) => `${home()}/.herdr/cache/github-boards/${ref.kind}-${ref.owner}-${ref.number}.json`;
+// Opens a GitHub page in the browser (nothing else: the links come from files and from GitHub).
+const openLink = (url) => {
+  if (/^https:\/\/github\.com\//.test(String(url ?? ""))) exec("sh", ["-c", 'command -v open >/dev/null 2>&1 && exec open "$1"; exec xdg-open "$1"', "sh", url]).catch(() => {});
+};
 
 // --- the workspace's board settings ---
 
@@ -139,6 +157,8 @@ async function loadTasks(id) {
       worktree: field(head, "worktree"),
       branch: field(head, "branch"),
       pr: field(head, "pr"),
+      github: field(head, "github"),
+      github_item: field(head, "github_item"),
       body: body.trim(),
     });
   }
@@ -324,6 +344,9 @@ export default class Board extends View {
     this.view = localStorage.getItem("view") === "list" ? "list" : "board";
     const folded = localStorage.getItem("folded");
     this.folded = folded ? new Set(JSON.parse(folded)) : null;
+    // Tasks (this board) or GitHub (the workspace's GitHub project board).
+    this.source = localStorage.getItem("source") === "github" ? "github" : "tasks";
+    this.initGithub(cx);
     this.load(cx);
     cx.spawn(async (cx) => {
       for (;;) {
@@ -423,17 +446,23 @@ export default class Board extends View {
     const columnOf = (task) => (b.columns.includes(task.status) ? task.status : b.columns[0]);
     const open = this.tasks.filter((x) => columnOf(x) !== b.columns[b.columns.length - 1]).length;
 
+    const github = this.source === "github";
     const header = h_flex().h(48).flex_none().px(16).gap(10).items_center().border_b(1).border_color(t.border)
       .child(mark(def, t, 20))
-      .child(div().font_semibold().child(`${def.name} board`))
-      .child(div().text_size(12).text_color(t.dim).child(`${open} open · ${this.tasks.length - open} done`))
+      .child(div().flex_none().font_semibold().child(`${def.name} board`))
+      .child(this.sourceToggle(t))
+      .child(div().min_w(0).truncate().text_size(12).text_color(t.dim)
+        .child(github ? (this.gh.board && this.ghRef(def) ? `${this.gh.board.title} on GitHub` : "") : `${open} open · ${this.tasks.length - open} done`))
       .child(div().flex_1())
-      .child(this.viewToggle(t))
-      .child(h_flex().id("board-new").h(30).px(12).gap(6).items_center().rounded(8).cursor_pointer()
-        .bg(t.solid).text_color(t.solid_foreground).text_size(12.5).font_medium().hover((s) => s.opacity(0.88))
-        .on_click(() => this.openTask(null, b.columns[0]))
-        .child(svg("mods/workspace-chrome/plus.svg").size(13)).child("New task"));
+      .children(github ? this.ghTools(def, t) : [
+        this.viewToggle(t),
+        h_flex().id("board-new").h(30).px(12).gap(6).flex_none().items_center().rounded(8).cursor_pointer()
+          .bg(t.solid).text_color(t.solid_foreground).text_size(12.5).font_medium().hover((s) => s.opacity(0.88))
+          .on_click(() => this.openTask(null, b.columns[0]))
+          .child(svg("mods/workspace-chrome/plus.svg").size(13)).child("New task"),
+      ]);
 
+    if (github) return shell.child(header).child(this.github(def, b, t));
     if (this.view === "list") return shell.child(header).child(this.list(b, t, ag, tm, columnOf));
     const columns = b.columns.map((col) => this.column(col, this.tasks.filter((x) => columnOf(x) === col), def, b, t, ag, tm));
     return shell
@@ -442,14 +471,15 @@ export default class Board extends View {
       .child(h_flex().id("board-columns").flex_1().min_h(0).items_stretch().p(12).gap(10).children(columns));
   }
 
-  // Board | List, as two segments.
-  viewToggle(t) {
-    const segment = (view, text, icon) => h_flex().id(`view-${view}`).h(26).px(10).gap(6).items_center().rounded(6).cursor_pointer()
-      .text_size(12).when(this.view === view, (el) => el.bg(t.selected).text_color(t.foreground))
-      .when(this.view !== view, (el) => el.text_color(t.muted).hover((s) => s.text_color(t.foreground)))
+  // Board | List, as two segments: for the tasks, or (github) for the GitHub view, each remembered apart.
+  viewToggle(t, github = false) {
+    const now = github ? this.gh.view : this.view;
+    const segment = (view, text, icon) => h_flex().id(`${github ? "gh-" : ""}view-${view}`).h(26).px(10).gap(6).items_center().rounded(6).cursor_pointer()
+      .text_size(12).when(now === view, (el) => el.bg(t.selected).text_color(t.foreground))
+      .when(now !== view, (el) => el.text_color(t.muted).hover((s) => s.text_color(t.foreground)))
       .on_click((_e, cx) => {
-        this.view = view;
-        localStorage.setItem("view", view);
+        if (github) this.gh.view = view; else this.view = view;
+        localStorage.setItem(github ? "gh.view" : "view", view);
         cx.notify();
       })
       .child(svg(icon).size(13)).child(text);
@@ -494,11 +524,13 @@ export default class Board extends View {
     const pr = task.priority && PRIORITY[task.priority] ? task.priority : null;
     const prColor = pr === "high" ? t.blocked : pr === "medium" ? t.working : t.dim;
     const pull = this.prChip(task, t, true);
+    const hub = this.ghChip(task, t);
     return h_flex().id(`row-${task.id}`).h(40).flex_none().pl(36).pr(12).gap(12).items_center()
       .border_b(1).border_color(t.border).cursor_pointer().hover((s) => s.bg(t.hover))
       .on_click(() => this.openTask(task))
       .child(div().w(64).flex_none().text_size(11.5).text_color(t.dim).child(task.id))
       .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(t.foreground).child(task.title))
+      .when(Boolean(hub), (el) => el.child(hub))
       .when(Boolean(pull), (el) => el.child(pull))
       .child(div().w(52).flex_none().text_size(11.5).text_color(prColor).child(pr ?? ""))
       .child(h_flex().w(120).flex_none().gap(6).items_center().text_size(11).text_color(t.dim)
@@ -576,7 +608,7 @@ export default class Board extends View {
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .on_click((_e, cx) => {
         cx.stop_propagation();
-        if (/^https:\/\/github\.com\//.test(pr.url)) exec("sh", ["-c", 'command -v open >/dev/null 2>&1 && exec open "$1"; exec xdg-open "$1"', "sh", pr.url]).catch(() => {});
+        openLink(pr.url);
       });
     const number = () => div().flex_none().text_color(t.muted).child(`#${pr.number}`);
     const status = pr.label ? div().text_color(t[pr.tone] ?? t.muted).child(pr.label) : null;
@@ -597,6 +629,7 @@ export default class Board extends View {
     const prColor = pr === "high" ? t.blocked : pr === "medium" ? t.working : t.dim;
     const foot = this.agentArea(task, last, b, t, ag, tm, false);
     const pull = this.prChip(task, t, false);
+    const hub = this.ghChip(task, t);
 
     return v_flex().id(`card-${task.id}`).flex_none().gap(7).p(10).rounded(8).bg(t.background).border_1().border_color(t.border)
       .cursor_pointer().hover((s) => s.border_color(t.input))
@@ -611,8 +644,496 @@ export default class Board extends View {
         .child(div().flex_1())
         .when(Boolean(pr), (el) => el.child(div().flex_none().text_color(prColor).child(pr))))
       .child(div().text_size(13).text_color(t.foreground).child(task.title))
+      .when(Boolean(hub), (el) => el.child(h_flex().min_w(0).child(hub.max_w_full())))
       .when(Boolean(pull), (el) => el.child(pull))
       .when(Boolean(foot), (el) => el.child(foot));
+  }
+
+  // --- the GitHub view: the workspace's GitHub project board, read with your gh login ---
+  // Nothing here writes to GitHub. Take makes a card on this board from an item.
+
+  initGithub(cx) {
+    const who = localStorage.getItem("gh.who");
+    let folds = {};
+    try { folds = JSON.parse(localStorage.getItem("gh.folds") ?? "{}") ?? {}; } catch {}
+    this.gh = {
+      board: null, link: null, at: 0, tried: 0, drawn: 0, loading: false, opening: false, error: null,
+      who: ["all", "mine", "none"].includes(who) ? who : "all", repo: localStorage.getItem("gh.repo") ?? "", folds,
+      view: localStorage.getItem("gh.view") === "list" ? "list" : "board",
+      order: ORDERS.some(([o]) => o === localStorage.getItem("gh.order")) ? localStorage.getItem("gh.order") : "board",
+      taking: {}, all: {}, folders: null, foldersKey: null,
+      found: null, finding: false, linking: false, linkError: null, relink: false, pending: null, pendingAt: 0,
+    };
+    this.ghSearch = InputState.new({ value: "", placeholder: "Search issues" });
+    this.ghSearch.on("change", (_e, cx) => cx.notify());
+    this.ghLink = InputState.new({ value: "", placeholder: "https://github.com/orgs/acme/projects/1" });
+    this.ghLink.on("change", (_e, cx) => { if (this.gh.linkError) { this.gh.linkError = null; cx.notify(); } });
+    this.ghLink.on("submit", (_e, cx) => this.linkBoard(this.ghLink.value(), cx));
+    if (checking()) return;
+    cx.timer.every(2000, (cx) => this.ghBeat(cx));
+  }
+
+  // The board the view shows: the workspace's, or the one just linked (until its file is read again).
+  ghRef(def) {
+    const g = this.gh;
+    if (g.relink) return null;
+    return parseBoard(def?.board?.github) ?? (g.pending ? parseBoard(g.pending) : null);
+  }
+
+  // Every 2s while the view is the GitHub one: a newly shown board is opened (from
+  // its kept copy when there is one), one read more than 10 minutes ago is read
+  // again, and "Read 3 min ago" keeps moving.
+  ghBeat(cx) {
+    if (this.source !== "github") return;
+    const def = defOf(this.workspace);
+    if (!def) return;
+    const g = this.gh, now = Date.now();
+    const saved = parseBoard(def.board?.github);
+    if (g.pending && (saved?.url === g.pending || now - g.pendingAt > 15000)) { g.pending = null; cx.notify(); }
+    const ref = saved ?? (g.pending ? parseBoard(g.pending) : null);
+    if (!ref) { if (!g.found && !g.finding) this.findBoards(def, cx); return; }
+    if (g.loading || g.opening) return;
+    if (g.link !== ref.url) { g.board = null; g.error = null; g.link = ref.url; g.at = 0; g.tried = 0; g.all = {}; this.openGithub(ref, cx); return; }
+    if (now - g.tried > FRESH) { this.openGithub(ref, cx); return; }
+    if (now - g.drawn > 60e3) { g.drawn = now; cx.notify(); }
+  }
+
+  setSource(source, cx) {
+    this.source = source;
+    localStorage.setItem("source", source);
+    this.ghBeat(cx);
+    cx.notify();
+  }
+
+  // Which of the workspace's folders is each GitHub repo: by its origin remote.
+  async repoFolders(def) {
+    const g = this.gh, places = [...folderChoices(def), def.root].filter(Boolean);
+    const key = places.join("|");
+    if (g.folders && g.foldersKey === key) return g.folders;
+    const map = {};
+    for (const f of places) {
+      const r = await exec("git", ["-C", f, "remote", "get-url", "origin"], { timeout: 10000 }).catch(() => null);
+      const repo = r?.code === 0 ? repoOfRemote(r.stdout) : null;
+      if (repo && !(repo in map)) map[repo] = rel(def, f);
+    }
+    g.folders = map;
+    g.foldersKey = key;
+    return map;
+  }
+
+  // The card's folder for an item: its repo's folder here, else one of the same name.
+  folderOf(def, item) {
+    if (!item.repo) return "";
+    const known = this.gh.folders?.[item.repo];
+    if (known !== undefined) return known;
+    const same = folderChoices(def).find((f) => base(f) === shortRepo(item.repo));
+    return same ? rel(def, same) : "";
+  }
+
+  // The board from its kept copy when that's newer than what's shown: any board tab's
+  // read counts, also one from before Herdr restarted. GitHub is read only when the
+  // newest copy is older than 10 minutes (it's shown meanwhile), or there is none.
+  openGithub(ref, cx) {
+    const g = this.gh;
+    if (g.opening || g.loading) return;
+    g.opening = true;
+    cx.spawn(async (cx) => {
+      let kept = null;
+      try { kept = keptBoard(await readTextFile(keptFile(ref)), ref.url, Date.now()); } catch {}
+      g.opening = false;
+      if (g.link !== ref.url) return;
+      if (kept && kept.at > g.at) {
+        Object.assign(g, { board: kept.board, at: kept.at, tried: Math.max(g.tried, kept.at), drawn: Date.now(), error: null });
+        cx.notify();
+      }
+      if (Date.now() - g.tried > FRESH) this.readGithub(ref, cx);
+    });
+  }
+
+  readGithub(ref, cx) {
+    const def = defOf(this.workspace), g = this.gh;
+    if (!def || !ref || g.loading) return;
+    g.loading = true;
+    g.tried = Date.now();
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        await this.repoFolders(def).catch(() => {});
+        const pages = [];
+        let after = null;
+        for (let i = 0; i < 30; i++) {
+          const args = ["api", "graphql", "-f", `query=${BOARD_QUERY}`, "-f", `owner=${ref.owner}`, "-F", `number=${ref.number}`, ...(after ? ["-f", `after=${after}`] : [])];
+          let r;
+          try { r = await exec("gh", args, { timeout: 60000 }); }
+          catch (x) { r = { code: 1, stdout: "", stderr: /start|not found|ENOENT/i.test(message(x)) ? "gh isn't installed" : message(x) }; }
+          let page = null;
+          try { page = JSON.parse(r.stdout); } catch {}
+          const project = page?.data?.repositoryOwner?.projectV2;
+          if (!project) {
+            if (page?.data && !page.errors?.length) throw new Error("GitHub has no such board, or your gh login can't see it.");
+            throw new Error(ghError(r.stderr || page?.errors?.[0]?.message || r.stdout));
+          }
+          pages.push(page);
+          if (!project.items?.pageInfo?.hasNextPage) break;
+          after = project.items.pageInfo.endCursor;
+        }
+        const board = boardFrom(pages);
+        if (board.error) throw new Error(board.error);
+        if (g.link === ref.url) { g.board = board; g.at = Date.now(); g.drawn = g.at; g.error = null; }
+        // Kept for the next time the view opens. A write names the text it replaces: twice, for another board tab's write in between.
+        const file = keptFile(ref), text = keptText(board, ref.url, Date.now());
+        for (let n = 0; n < 2; n++) {
+          try { await writeTextFile(file, text, await readTextFile(file)); break; } catch {}
+        }
+      } catch (e) {
+        // A failed read is tried again after 5 minutes, not 10.
+        if (g.link === ref.url) { g.error = message(e); g.tried = Date.now() - FRESH / 2; }
+      }
+      g.loading = false;
+      cx.notify();
+    });
+  }
+
+  // For the link screen: the open boards of the owners of this workspace's repos.
+  findBoards(def, cx) {
+    const g = this.gh;
+    if (g.finding) return;
+    g.finding = true;
+    cx.spawn(async (cx) => {
+      const found = [];
+      try {
+        const map = await this.repoFolders(def);
+        const owners = [...new Set(Object.keys(map).map((r) => r.split("/")[0]))].filter((o) => /^[A-Za-z0-9][A-Za-z0-9-]*$/.test(o)).slice(0, 4);
+        for (const o of owners) {
+          const r = await exec("gh", ["project", "list", "--owner", o, "--format", "json", "--limit", "30"], { timeout: 30000 }).catch(() => null);
+          let list = [];
+          try { list = JSON.parse(r.stdout).projects ?? []; } catch {}
+          for (const p of list) {
+            const ref = parseBoard(p.url);
+            if (ref && !p.closed) found.push({ title: String(p.title ?? `#${p.number}`), url: ref.url, owner: o });
+          }
+        }
+      } catch {}
+      g.found = found.slice(0, 12);
+      g.finding = false;
+      cx.notify();
+    });
+  }
+
+  // Saves the board's link as "board": { "github": … } in the workspace's file.
+  linkBoard(link, cx) {
+    const def = defOf(this.workspace), g = this.gh, ref = parseBoard(link);
+    if (!def || g.linking) return;
+    if (!ref) {
+      g.linkError = "That isn't a GitHub project board's link. One looks like https://github.com/orgs/acme/projects/1.";
+      cx.notify();
+      return;
+    }
+    g.linking = true;
+    g.linkError = null;
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        const file = `${def.dir}/workspace.jsonc`;
+        for (let i = 0; ; i++) {
+          const old = await readTextFile(file);
+          if (old === null) throw new Error("its workspace.jsonc is gone");
+          try { await writeTextFile(file, withBoardLink(old, ref.url), old); break; }
+          catch (e) { if (i >= 2) throw e; }
+        }
+        g.pending = ref.url;
+        g.pendingAt = Date.now();
+        g.relink = false;
+      } catch (e) {
+        g.linkError = `Couldn't save the link: ${message(e)}`;
+      }
+      g.linking = false;
+      this.ghBeat(cx);
+      cx.notify();
+    });
+  }
+
+  // A card on this board from a GitHub item: its text is read now, and the card
+  // keeps the item's link, which the switcher follows from then on (ghboard.js).
+  take(item, cx) {
+    const def = defOf(this.workspace), g = this.gh;
+    if (!def || g.taking[item.item] || taskOf(item, this.tasks)) return;
+    g.taking[item.item] = true;
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        const b = boardOf(def);
+        const query = itemsQuery([item.item], true);
+        let r;
+        try { r = await exec("gh", ["api", "graphql", "-f", `query=${query}`], { timeout: 60000 }); }
+        catch (x) { r = { code: 1, stdout: "", stderr: /start|not found|ENOENT/i.test(message(x)) ? "gh isn't installed" : message(x) }; }
+        let nodes = null;
+        try { nodes = JSON.parse(r.stdout)?.data?.nodes ?? null; } catch {}
+        if (!Array.isArray(nodes)) throw new Error(ghError(r.stderr || r.stdout));
+        const got = shape(nodes[0]);
+        if (!got) throw new Error("It isn't on the GitHub board any more. Refresh to see the board as it is now.");
+        if (taskOf(got, await loadTasks(def.id))) return;
+        const f = taskFields(got);
+        for (let i = 0; ; i++) {
+          const id = await nextId(def.id, b.prefix);
+          const text = withFields("---\n---\n", {
+            id, title: f.title, status: takeColumn(b.columns), folder: this.folderOf(def, got), priority: f.priority, created: today(),
+            github: f.github, github_item: f.github_item,
+          }, taskBody(got));
+          try {
+            await writeTextFile(`${tasksDir(def.id)}/${id}.md`, text, null);
+            notify({ title: `Took ${refOf(got)} as ${id}`, body: `${got.title}. Its card is in ${label(takeColumn(b.columns))} on your board; nothing changed on GitHub.`, level: "success" });
+            break;
+          } catch (e) { if (i >= 2) throw e; } // the ID was just taken: the next one
+        }
+        this.tasks = await loadTasks(def.id);
+      } catch (e) {
+        notify({ title: `Couldn't take ${refOf(item)}`, body: message(e), level: "error" });
+      } finally {
+        delete g.taking[item.item];
+        cx.notify();
+      }
+    });
+  }
+
+  // Tasks | GitHub, as two segments.
+  sourceToggle(t) {
+    const segment = (source, text) => h_flex().id(`source-${source}`).h(26).px(10).items_center().rounded(6).cursor_pointer()
+      .text_size(12).when(this.source === source, (el) => el.bg(t.selected).text_color(t.foreground))
+      .when(this.source !== source, (el) => el.text_color(t.muted).hover((s) => s.text_color(t.foreground)))
+      .on_click((_e, cx) => this.setSource(source, cx)).child(text);
+    return h_flex().flex_none().p(2).gap(2).rounded(8).border_1().border_color(t.border).bg(t.chrome)
+      .child(segment("tasks", "Tasks")).child(segment("github", "GitHub"));
+  }
+
+  ghButton(t, id, text, action, tip) {
+    return div().id(id).h(26).px(10).flex().flex_none().items_center().rounded(7).border_1().border_color(t.input)
+      .text_size(12).text_color(t.muted).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .when(Boolean(tip), (el) => el.tooltip(tip))
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_click((_e, cx) => { cx.stop_propagation(); action(cx); }).child(text);
+  }
+
+  // The header's right side in the GitHub view: when it was read, Refresh, Open, Change board.
+  ghTools(def, t) {
+    const g = this.gh, ref = this.ghRef(def);
+    if (!ref) return [];
+    return [
+      this.viewToggle(t, true),
+      g.loading
+        ? h_flex().flex_none().gap(6).items_center().text_size(11.5).text_color(t.dim)
+          .child(svg("mods/workspace-chrome/spinner.svg").size(13).spin(900)).child("Reading…")
+        : div().flex_none().text_size(11.5).text_color(t.dim).child(g.at ? `Read ${ago(g.at, Date.now())}` : ""),
+      this.ghButton(t, "gh-refresh", "Refresh", (cx) => this.readGithub(ref, cx), "Read the board from GitHub now. Otherwise it's read again 10 minutes after the last read."),
+      this.ghButton(t, "gh-open", "Open on GitHub", () => openLink(ref.url), ref.url),
+      this.ghButton(t, "gh-change", "Change board", (cx) => { g.relink = true; g.found = null; this.ghLink.set_value(ref.url); this.findBoards(def, cx); cx.notify(); }, "Show another GitHub board here"),
+    ];
+  }
+
+  github(def, b, t) {
+    const g = this.gh, ref = this.ghRef(def);
+    const middle = () => v_flex().flex_1().min_h(0).items_center().justify_center().gap(10).px(24);
+    if (!ref) return this.linkScreen(def, t);
+    if (!g.board) {
+      if (g.error) {
+        return middle()
+          .child(div().text_size(13).text_color(t.foreground).child("Couldn't read the board"))
+          .child(div().max_w(520).text_size(12).text_color(t.muted).child(g.error))
+          .child(this.ghButton(t, "gh-again", "Try again", (cx) => this.readGithub(ref, cx)));
+      }
+      return middle().child(h_flex().gap(8).items_center().text_size(12.5).text_color(t.dim)
+        .child(svg("mods/workspace-chrome/spinner.svg").size(14).spin(900)).child("Reading the board from GitHub…"));
+    }
+    const board = g.board, me = board.me;
+    const { repos, drafts } = reposOf(board.items);
+    const repo = g.repo === "draft" ? (drafts ? "draft" : "") : repos.includes(g.repo) ? g.repo : "";
+    const shown = sortItems(filterItems(board.items, { who: g.who, repo, text: this.ghSearch.value() }, me), g.order);
+    const chip = (id, text, on, action) => div().id(id).h(24).px(9).flex().flex_none().items_center().rounded(12).border_1()
+      .border_color(on ? t.accent : t.input).bg(on ? t.selected : t.background).text_size(11.5)
+      .text_color(on ? t.foreground : t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground))
+      .on_click((_e, cx) => { action(); cx.notify(); }).child(text);
+    const setWho = (who) => () => { g.who = who; localStorage.setItem("gh.who", who); };
+    const setRepo = (value) => () => { g.repo = value; localStorage.setItem("gh.repo", value); };
+    const setOrder = (value) => () => { g.order = value; localStorage.setItem("gh.order", value); };
+    const choices = repos.length + (drafts ? 1 : 0) > 1;
+    const bar = h_flex().min_h(44).py(8).flex_none().flex_wrap().px(16).gap(6).items_center().border_b(1).border_color(t.border)
+      .child(chip("gh-who-all", "Everyone", g.who === "all", setWho("all")))
+      .child(chip("gh-who-mine", "Mine", g.who === "mine", setWho("mine")))
+      .child(chip("gh-who-none", "Unassigned", g.who === "none", setWho("none")))
+      .when(choices, (el) => el
+        .child(div().w(1).h(16).mx(4).flex_none().bg(t.border))
+        .child(chip("gh-repo-all", "All repos", repo === "", setRepo("")))
+        .children(repos.slice(0, 6).map((r) => chip(`gh-repo-${r}`, shortRepo(r), repo === r, setRepo(r))))
+        .when(drafts, (el) => el.child(chip("gh-repo-draft", "Drafts", repo === "draft", setRepo("draft")))))
+      .child(div().w(1).h(16).mx(4).flex_none().bg(t.border))
+      .children(ORDERS.map(([value, text]) => chip(`gh-order-${value}`, text, g.order === value, setOrder(value))))
+      .child(div().flex_1())
+      .child(div().flex_none().text_size(11.5).text_color(t.dim).child(shown.length === board.items.length ? `${shown.length} items` : `${shown.length} of ${board.items.length}`))
+      .child(h_flex().w(200).h(28).flex_none().px(8).gap(6).items_center().rounded(8).border_1().border_color(t.input).bg(t.background)
+        .child(svg("mods/workspace-chrome/search.svg").size(12).flex_none().text_color(t.dim))
+        .child(Input.new(this.ghSearch).flex_1().min_w(0).text_size(12).text_color(t.foreground)));
+    const cols = columnsOf(board, shown);
+    return v_flex().flex_1().min_h(0)
+      .child(bar)
+      .when(Boolean(g.error), (el) => el.child(div().px(16).py(6).flex_none().text_size(11.5).text_color(t.blocked).child(`Couldn't read it again: ${g.error} Showing what was read ${ago(g.at, Date.now())}.`)))
+      .child(g.view === "list"
+        ? this.ghList(cols, b, t, me)
+        : h_flex().id("gh-columns").flex_1().min_h(0).items_stretch().p(12).gap(10).overflow_x_scrollbar().children(cols.map((c) => this.ghColumn(c, b, t, me))));
+  }
+
+  // Finished columns (Done, Canceled, …) start folded, in the columns and in the list alike.
+  ghFolded(name) {
+    const f = this.gh.folds;
+    return name in f ? f[name] === true : doneLike(name);
+  }
+
+  ghFold(name, cx) {
+    const g = this.gh;
+    g.folds = { ...g.folds, [name]: !this.ghFolded(name) };
+    localStorage.setItem("gh.folds", JSON.stringify(g.folds));
+    cx.notify();
+  }
+
+  // What an item offers on the right: Take, or the card it already is (a click opens the card).
+  ghAction(i, task, b, t) {
+    if (task) {
+      return div().id(`gh-card-${i.item}`).h(22).px(8).flex().flex_none().items_center().rounded(6).bg(t.selected)
+        .text_size(11.5).text_color(t.foreground).cursor_pointer().hover((s) => s.opacity(0.85)).tooltip("On your board: open its card")
+        .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).on_click((_e, cx) => { cx.stop_propagation(); this.openTask(task); })
+        .child(`${task.id} · ${label(b.columns.includes(task.status) ? task.status : b.columns[0])}`);
+    }
+    if (this.gh.taking[i.item]) return div().flex_none().text_size(11.5).text_color(t.dim).child("Taking…");
+    return this.ghButton(t, `gh-take-${i.item}`, "Take", (cx) => this.take(i, cx), "Make a card for it on your board. Nothing changes on GitHub.").h(24).px(9).text_size(11.5);
+  }
+
+  // The list: a section per column of the GitHub board (a click on its header folds it), a row per item.
+  ghList(cols, b, t, me) {
+    const g = this.gh, now = Date.now(), LIMIT = 60;
+    const rows = cols.flatMap((c) => {
+      const shut = this.ghFolded(c.name);
+      const head = h_flex().id(`ghsec-${c.name}`).h(34).flex_none().pl(14).pr(8).gap(8).items_center().cursor_pointer()
+        .bg(t.chrome).border_b(1).border_color(t.border).hover((s) => s.bg(t.hover))
+        .on_click((_e, cx) => this.ghFold(c.name, cx))
+        .child(svg(`mods/workspace-chrome/chevron-${shut ? "right" : "down"}.svg`).size(11).flex_none().text_color(t.dim))
+        .child(div().text_size(12).font_semibold().text_color(t.muted).child(c.name))
+        .child(div().text_size(11.5).text_color(t.dim).child(String(c.items.length)));
+      if (shut) return [head];
+      const all = g.all[c.name] === true || c.items.length <= LIMIT;
+      const more = all ? [] : [div().id(`ghsec-more-${c.name}`).h(34).flex().flex_none().items_center().pl(36).border_b(1).border_color(t.border)
+        .text_size(12).text_color(t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground))
+        .on_click((_e, cx) => { g.all[c.name] = true; cx.notify(); }).child(`Show all ${c.items.length}`)];
+      return [head, ...(all ? c.items : c.items.slice(0, LIMIT)).map((i) => this.ghRow(i, b, t, me, now)), ...more];
+    });
+    return v_flex().id("gh-list").flex_1().min_h(0).overflow_y_scrollbar().children(rows);
+  }
+
+  // One item as a row: where it is, its title, its pull request, priority, who has it, how long ago it was opened, Take.
+  ghRow(i, b, t, me, now) {
+    const shut = i.state === "closed" || i.state === "merged";
+    const rankColor = i.priority === "high" ? t.blocked : i.priority === "medium" ? t.working : t.dim;
+    return h_flex().id(`ghrow-${i.item}`).h(40).flex_none().pl(36).pr(12).gap(12).items_center().border_b(1).border_color(t.border)
+      .when(Boolean(i.url), (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click(() => openLink(i.url)))
+      .child(div().w(104).flex_none().truncate().text_size(11.5).text_color(t.dim).child(refOf(i)))
+      .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(shut ? t.muted : t.foreground).child(i.title))
+      .when(i.prs.length > 0, (el) => el.child(h_flex().flex_none().gap(3).items_center().text_size(11).text_color(t.dim).tooltip(`Pull request #${i.prs[0]?.number} (${i.prs[0]?.state})`)
+        .child(svg("mods/ws-board/pr.svg").size(11)).child(`#${i.prs[0]?.number}`)))
+      .child(div().w(52).flex_none().truncate().text_size(11.5).text_color(rankColor).child(i.rank ?? ""))
+      .child(div().w(120).flex_none().truncate().text_size(11.5).text_color(t.dim).child(whoOf(i, me)))
+      .child(div().w(48).flex_none().text_size(11.5).text_color(t.dim)
+        .when(Boolean(i.created), (el) => el.tooltip(`Opened ${String(i.created).slice(0, 10)}`)).child(age(i.created, now)))
+      .child(h_flex().w(124).flex_none().justify_end().child(this.ghAction(i, taskOf(i, this.tasks), b, t)));
+  }
+
+  // A column of the GitHub board. Finished ones (Done, Canceled, …) start folded to a strip.
+  ghColumn(c, b, t, me) {
+    const g = this.gh;
+    const folded = this.ghFolded(c.name);
+    const fold = (_e, cx) => this.ghFold(c.name, cx);
+    if (folded) {
+      return v_flex().id(`ghcol-${c.name}`).w(96).flex_none().min_h(0).rounded(10).bg(t.chrome).border_1().border_color(t.border)
+        .p(10).gap(4).cursor_pointer().hover((s) => s.border_color(t.input)).tooltip(`Show ${c.name}`).on_click(fold)
+        .child(div().text_size(12).font_semibold().text_color(t.muted).child(c.name))
+        .child(div().text_size(11.5).text_color(t.dim).child(String(c.items.length)));
+    }
+    const LIMIT = 60;
+    const all = g.all[c.name] === true || c.items.length <= LIMIT;
+    const items = all ? c.items : c.items.slice(0, LIMIT);
+    return v_flex().id(`ghcol-${c.name}`).w(288).flex_none().min_h(0).rounded(10).bg(t.chrome).border_1().border_color(t.border)
+      .child(h_flex().id(`ghcol-head-${c.name}`).h(38).flex_none().px(12).gap(6).items_center().cursor_pointer().tooltip("Fold this column").on_click(fold)
+        .child(div().min_w(0).truncate().text_size(12).font_semibold().text_color(t.muted).child(c.name))
+        .child(div().flex_none().text_size(11.5).text_color(t.dim).child(String(c.items.length))))
+      .child(v_flex().id(`ghcol-list-${c.name}`).flex_1().min_h(0).px(8).pb(8).gap(8).overflow_y_scrollbar()
+        .children(items.map((i) => this.ghCard(i, b, t, me)))
+        .when(!all, (el) => el.child(div().id(`ghcol-more-${c.name}`).flex_none().px(4).py(6).text_size(12).text_color(t.muted).cursor_pointer()
+          .hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => { g.all[c.name] = true; cx.notify(); })
+          .child(`Show all ${c.items.length}`)))
+        .when(!c.items.length, (el) => el.child(div().px(4).py(6).text_size(12).text_color(t.dim).child("Empty"))));
+  }
+
+  // One item of the GitHub board: a click opens it on GitHub, Take puts it on your
+  // board, and one already taken shows its card (a click opens the card).
+  ghCard(i, b, t, me) {
+    const g = this.gh;
+    const task = taskOf(i, this.tasks);
+    const shut = i.state === "closed" || i.state === "merged";
+    const rankColor = i.priority === "high" ? t.blocked : i.priority === "medium" ? t.working : t.dim;
+    return v_flex().id(`gh-${i.item}`).flex_none().gap(6).p(10).rounded(8).bg(t.background).border_1().border_color(task ? t.accent : t.border)
+      .when(Boolean(i.url), (el) => el.cursor_pointer().hover((s) => s.border_color(task ? t.accent : t.input)).on_click(() => openLink(i.url)))
+      .child(h_flex().gap(6).items_center().text_size(11).text_color(t.dim)
+        .child(div().min_w(0).truncate().child(refOf(i)))
+        .when(Boolean(i.rank), (el) => el.child(div().flex_none().text_color(rankColor).child(i.rank)))
+        .when(shut, (el) => el.child(div().flex_none().px(5).rounded(4).bg(t.raised).child(i.state)))
+        .when(g.order !== "board" && Boolean(i.created), (el) => el.child(div().flex_none().tooltip(`Opened ${String(i.created).slice(0, 10)}`).child(age(i.created, Date.now()))))
+        .child(div().flex_1())
+        .when(i.prs.length > 0, (el) => el.child(h_flex().flex_none().gap(3).items_center().tooltip(`Pull request #${i.prs[0].number} (${i.prs[0].state})`)
+          .child(svg("mods/ws-board/pr.svg").size(11)).child(`#${i.prs[0].number}`))))
+      .child(div().text_size(13).text_color(shut ? t.muted : t.foreground).child(i.title))
+      .child(h_flex().gap(6).items_center()
+        .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(whoOf(i, me)))
+        .child(this.ghAction(i, task, b, t)));
+  }
+
+  // No board yet (or Change board): paste its link, or pick one of your repos' owners' boards.
+  linkScreen(def, t) {
+    const g = this.gh;
+    const button = (id, text, primary, action) => h_flex().id(id).h(34).px(14).flex_none().items_center().rounded(8).border_1()
+      .border_color(primary ? t.solid : t.input).bg(primary ? t.solid : t.raised).text_color(primary ? t.solid_foreground : t.foreground)
+      .text_size(12.5).font_medium().cursor_pointer().when(g.linking, (el) => el.opacity(0.5)).hover((s) => s.opacity(0.88))
+      .on_click(action).child(text);
+    return v_flex().flex_1().min_h(0).items_center().justify_center().px(24)
+      .child(v_flex().w(560).max_w_full().gap(10)
+        .child(div().text_size(15).font_semibold().text_color(t.foreground).child("Show a GitHub project board here"))
+        .child(div().text_size(12.5).text_color(t.muted).child(`Paste the board's link. Herdr reads it with your gh login and changes nothing on GitHub. Take then puts any issue on your ${def.name} board.`))
+        .child(h_flex().gap(8).items_center()
+          .child(Input.new(this.ghLink).flex_1().min_w(0).h(34).px(10).rounded(8).border_1().border_color(t.input).bg(t.background).text_size(12.5).text_color(t.foreground))
+          .child(button("gh-link", g.linking ? "Linking…" : "Link board", true, (_e, cx) => this.linkBoard(this.ghLink.value(), cx)))
+          .when(g.relink, (el) => el.child(button("gh-link-cancel", "Cancel", false, (_e, cx) => { g.relink = false; g.linkError = null; cx.notify(); }))))
+        .when(Boolean(g.linkError), (el) => el.child(div().text_size(11.5).text_color(t.blocked).child(g.linkError)))
+        .when(Boolean(g.found?.length), (el) => el
+          .child(div().pt(8).text_size(11.5).text_color(t.dim).child("Or pick one: the boards of your repos' owners"))
+          .child(h_flex().gap(6).flex_wrap().children((g.found ?? []).map((f, n) => div().id(`gh-found-${n}`).h(26).px(10).flex().items_center().rounded(13).border_1()
+            .border_color(t.input).bg(t.background).text_size(12).text_color(t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground))
+            .tooltip(f.url).on_click((_e, cx) => this.linkBoard(f.url, cx)).child(`${f.title} · ${f.owner}`)))))
+        .when(g.finding, (el) => el.child(div().pt(8).text_size(11.5).text_color(t.dim).child("Looking for your repos' boards…")))
+        .child(div().pt(8).text_size(11).text_color(t.dim).child(`Saved as "board": { "github": … } in ${tilde(def.dir)}/workspace.jsonc.`)));
+  }
+
+  // The card's GitHub item, as the switcher reads it (shared "workspaces.github"):
+  // its number and its status on the GitHub board. A click opens it.
+  ghChip(task, t) {
+    if (!task.github && !task.github_item) return null;
+    const live = (shared("workspaces.github") ?? {})[task.file];
+    const number = live?.number ?? (/\/(?:issues|pull)\/(\d+)/.exec(task.github ?? "")?.[1] ?? null);
+    const url = live?.url ?? task.github ?? null;
+    const tone = live?.tone === "done" ? t.done : live?.tone === "dim" ? t.dim : t.muted;
+    return h_flex().id(`gh-chip-${task.id}`).h(20).px(6).gap(5).flex_none().items_center().rounded(5).bg(t.raised)
+      .text_size(11).text_color(t.muted).tooltip(live?.tip ?? "From the GitHub board. Its status shows here once it's been read.")
+      .when(Boolean(url), (el) => el.cursor_pointer().hover((s) => s.bg(t.hover))
+        .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+        .on_click((_e, cx) => { cx.stop_propagation(); openLink(url); }))
+      .child(svg("mods/ws-board/issue.svg").size(11).flex_none())
+      .child(div().flex_none().child(number ? `#${number}` : "Draft"))
+      .when(Boolean(live?.label), (el) => el.child(div().min_w(0).truncate().text_color(tone).child(live.label)));
   }
 
   // --- the task dialog ---
