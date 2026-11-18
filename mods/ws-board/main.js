@@ -13,7 +13,8 @@
 //              "prefix": "ACM", "agent": "claude", "start": "doing", "finish": "review" }
 // Every key is optional. A card's Start runs the workspace's agent on the task in
 // the task's folder (in that folder's space, else a new one); Worktree first makes
-// a branch and worktree for it, as Herdr's worktree menu does. Either way the
+// a branch and worktree for it, as Herdr's worktree menu does, and runs the repo's
+// setup script in it if it has one (treescripts.js). Either way the
 // card moves to `start`, and the agent is asked to set `finish` when it's done.
 //
 // The same mod opens its task dialog: props { dialog: "task", workspace, task? , status? }.
@@ -25,6 +26,7 @@ import {
   home, watchFolder, readTextFile, writeTextFile, exec, notify, knownAgents,
 } from "herdr";
 import * as fs from "fs/promises";
+import { setUp } from "./treescripts.js";
 
 const COLUMNS = ["backlog", "todo", "doing", "review", "done"];
 const PRIORITY = { high: 3, medium: 2, low: 1 };
@@ -280,11 +282,11 @@ async function makeWorktree(folder, task) {
   const repo = common.stdout.trim().replace(/\/\.git\/?$/, "");
   const branch = `task/${task.id.toLowerCase()}-${slug(task.title.toLowerCase()).slice(0, 40)}`.replace(/[-.]+$/, "");
   const path = `${home()}/.herdr/worktrees/${base(repo)}/${slug(branch)}`;
-  if (await fs.exists(path)) return { path, branch };
+  if (await fs.exists(path)) return { path, branch, repo };
   const exists = (await git(["show-ref", "--verify", "--quiet", `refs/heads/${branch}`])).code === 0;
   const r = await git(exists ? ["worktree", "add", path, branch] : ["worktree", "add", "-b", branch, path, "HEAD"]);
   if (r.code !== 0) throw new Error(r.stderr.trim() || "git worktree add failed");
-  return { path, branch };
+  return { path, branch, repo };
 }
 
 // The agent's first message: the task, then how to report back.
@@ -380,6 +382,9 @@ export default class Board extends View {
         let made, extra = {};
         if (worktree) {
           const wt = await makeWorktree(folder, task);
+          // The repo's setup script (the Worktrees screen's Scripts), once per worktree.
+          // If it fails the agent doesn't start; Worktree again tries it again.
+          await setUp({ home, readTextFile, writeTextFile, exec }, { ws: def.id, repo: base(wt.repo), path: wt.path, main: wt.repo, branch: wt.branch });
           made = await herdr("space.new", { folder: wt.path, tab: task.id, argv, ...(first ? { task: first } : {}) });
           extra = { worktree: tilde(wt.path), branch: wt.branch };
         } else {

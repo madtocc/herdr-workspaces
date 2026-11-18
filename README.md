@@ -54,7 +54,7 @@ conversations, helpers included.
 Ask your agent to add this layout (Herdr's own guide, `~/.config/herdr-app/AGENTS.md`,
 says how), or by hand:
 
-1. Copy `layouts/workspaces.json` to `~/.config/herdr-app/layouts/` and the nine
+1. Copy `layouts/workspaces.json` to `~/.config/herdr-app/layouts/` and the ten
    folders in `mods/` to `~/.config/herdr-app/mods/` (rename them if a name is taken).
 2. For agent instructions from the + menu, put the launcher on your `PATH` and
    point `programs.json` at it. `herdr-ws-run` starts automations from other
@@ -115,7 +115,14 @@ automation (after a confirmation) moves it to the Trash. The board's Worktree ru
 `git worktree add` on a new `task/…` branch; otherwise your repos aren't
 touched. It runs `sh` (editor, Trash, symlinked folders), `herdr-app do` (the
 board's and automations' new tabs) and, through the launcher, Start and
-automations, your agents. The launcher lets Claude and Codex read and edit
+automations, your agents. The Worktrees tab reads git in the workspace's repos and
+their worktrees (`worktree list`, `for-each-ref`, `status`) and each repo's pull
+requests with `gh pr list`. Removing a worktree there (after a confirmation)
+deletes its folder with `git worktree remove`; the branch stays. A repo's two
+worktree scripts (`~/.herdr/workspaces/<id>/worktrees.json`) are shell lines Herdr
+runs as you: setup in a new worktree the board makes, archive before a removal.
+Like a check, only a line you saved or allowed in the screen runs
+(`~/.herdr/workspaces/.worktree-scripts.json`). The launcher lets Claude and Codex read and edit
 the workspace's root, its folders elsewhere and its `tasks` folder. Automations watch the folders a files automation
 names, read calls `herdr-ws-run` leaves in `~/.herdr/workspaces/.inbox` (and
 delete them), and close an automation's older run tabs once their agent is done.
@@ -145,7 +152,7 @@ than 0.1.0's notes, so read them all). To hear about new versions, watch the
 repo on GitHub for releases (Watch → Custom → Releases).
 
 - **You copied the files as they are:** copy `layouts/workspaces.json` and the
-  nine folders in `mods/` again, and do what the new versions' notes say
+  ten folders in `mods/` again, and do what the new versions' notes say
   (a new script to link, say). Your workspaces, tasks, presets and automations
   live elsewhere and aren't touched.
 - **You or your agent changed them:** tell your agent "apply what's in this

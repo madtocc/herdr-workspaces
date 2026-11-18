@@ -42,7 +42,7 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
 - **The switcher menu**: a popup 288px wide and at most 600px tall, in theme `popover`, top to bottom:
   - "New workspace from a folder…" (the `folder-plus` icon), then a line;
   - "Workspaces" (11px, `dim`), then "All spaces" and every workspace, each a 30px row with an 18px mark, the name, the dot when one of its agents is blocked or finished, its count of spaces, and a check on the shown one;
-  - a line, then the actions: "Open <workspace> board" (only on the narrow rail, where the board button is hidden), "Move “<shown space>” to…", "Open <workspace>'s files" ("Open the workspaces folder" with none chosen) and, for the shown workspace, "Rename <workspace>…" and "Delete <workspace>…" (in theme `blocked`, with the `archive` icon);
+  - a line, then the actions: "Open <workspace> board" (only on the narrow rail, where the board button is hidden), "Open <workspace> worktrees" (the `git-branch.svg` icon), "Move “<shown space>” to…", "Open <workspace>'s files" ("Open the workspaces folder" with none chosen) and, for the shown workspace, "Rename <workspace>…" and "Delete <workspace>…" (in theme `blocked`, with the `archive` icon);
   - a line, then "<Workspace> folders": one row per folder, ending "Go" when a space is already there and "Open" when there isn't. It scrolls when long.
 - **The Start dialog** (`ws-presets` with `props: { start, workspace }`, 560×430):
   - "Start <name>" with the program icon, the preset's description, its command (mono, `dim`), and where it will run ("A new tab in “<space>”, in <folder>");
@@ -125,6 +125,23 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
     - Notes (a textarea that fills the rest);
     - a footer with Delete (in `blocked`; a second click deletes), the file's path, Cancel, and Save or "Add task".
 
+- **The Worktrees tab** (`ws-worktrees`), a tab named "Worktrees" whose only pane lists every git worktree of the workspace's repos, in theme `canvas`:
+  - **Header** (48px, bottom border): the workspace's 20px mark, "<name> worktrees" (semibold), "N in M repos" (12px, `dim`; "Reading…" before the first read), a 13px spinner while pull requests and changes are still being read, then on the right "Refresh" (26px, 1px border) and, when any are finished, "Remove N finished…" (theme `solid`). While rows are ticked, "Clear" and "Remove N selected…" (`solid`) take that button's place.
+  - **Filters** (44px): five 26px pills with a count each: All, Finished, Uncommitted, In use, Nothing to merge. The chosen one has an `accent` border on `selected`. At the right end, in `muted` 12px text, "Select all N" ("Select these N" under a filter; "Deselect these" when every row shown is ticked).
+  - **A section per repo**: a 40px header with the `git-branch.svg` icon, the repo's folder name (semibold), "N · against <base branch>" (`dim`; "2 of 6" under a filter), "A script is waiting to be allowed" in `blocked` when one is, and a button on the right: "Add scripts", "Scripts", or "Close scripts" while its panel is open. A repo with none says "No worktrees." Under All every repo shows, so one without worktrees can still get scripts; under the other filters only repos with matching rows show.
+  - **A 38px row per worktree**, most recently committed first, lighter on hover, in `selected` while ticked. Left to right:
+    - a 15px checkbox (4px corners, 1px `input` border; ticked: filled `accent` with the `check.svg` mark) in a 26px-wide click area the height of the row;
+    - a 7px dot: the most urgent status of the agents in it, `idle` when something is in it without a status, else nothing;
+    - the branch (the folder's name when it has none);
+    - the folder it sits in, 11.5px `dim`, truncated: from the workspace's root when it's inside it (`worktrees/api`), else with `~`. Its tooltip is the whole path;
+    - chips (20px, `raised`, 5px corners, 11.5px): the board card's id when a card runs there; "open" (or "2 terminals") in `accent` when a space or a terminal is in it; "N uncommitted" in `blocked`; then where its work stands, one of "Merged #12" (`done`), "#14 open" (`working`), "#4 closed" (`muted`), "Nothing to merge" (`dim`), "3 commits, no PR" (`foreground`; "No PR" when the count isn't known), "Changed since #12 merged", or "No branch";
+    - the age of its last commit (34px, `dim`: 21h, 6d, 2mo);
+    - buttons (24px, 1px border, 11.5px): "Set up" when the repo has an allowed setup script that hasn't run there ("Setting up…" while it does), "Open" ("Go to" when a space shows it), and "Remove…" in `blocked`.
+  - **The scripts panel**, under a repo's header (`surface`, 1px border, 8px corners): "After a worktree is made" and "Before a worktree is removed", each an input with a line of help under it, the placeholders `e.g. pnpm install && cp "$HERDR_REPO/.env" .` and `e.g. docker compose down`, then "Saved." or an error, and Save (`solid`). When a line came from outside the screen, a `blocked` line says so beside "Allow as written".
+  - **The remove dialog** (480×290, 320 for several; `popover`): "Remove the worktree <branch>?" with "Deletes <path>. The branch stays, so nothing committed is lost.", "It stands at: <its chip's words>.", then in `blocked` whatever applies (uncommitted changes will be lost; its space will be closed; terminals outside a space are in it), "Runs first: <the archive line>", and "↵ remove · esc cancel" at the foot. For the finished ones: "Remove N finished worktrees of <workspace>?" and the first four branch names. For ticked rows (480×380): "Remove N worktrees of <workspace>?", the names, then a line for each thing that applies, naming up to three: in `blocked`, how many have uncommitted changes that will be lost, how many are open as spaces that will be closed, and how many have a terminal in them outside a space; in `muted`, how many have commits that aren't merged and stay on their branches.
+    While it removes, a line above the foot says what it's doing, in `foreground`: "Deleting 5 of 18: <branch>" or "Running its script 5 of 18: <branch>" (no count for one), with "N couldn't be removed" in `blocked` on the right once any failed. Under it, for several, a 4px bar (`raised`, filled in `accent`) as wide as the share already done. The foot shows a spinner and "esc stops after this one" ("working…" for one; "stopping after this one…" after Esc).
+  - A 28px foot line in `dim` appears when a repo's pull requests couldn't be read.
+
 ## How it behaves
 
 - **Agent states** work as in Herdr's lists (working, blocked, done, idle). The switcher's dot only speaks up for blocked and done agents in workspaces that aren't shown. Blocked wins over done.
@@ -203,7 +220,7 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
 - **Start** runs the task's preset (its `agent:` field, set in the dialog), else `board.agent` (by default `claude`). Either one can be a preset's name, started as above, or a program from Herdr's agent list, started the way Herdr's + menu starts it (so through the launcher too). It runs in the task's folder:
   - as a new tab named after the task id in the workspace's space that holds that folder (the deepest one);
   - else as a new space there.
-- **Worktree** first runs `git worktree add -b task/<id>-<title-slug> ~/.herdr/worktrees/<repo>/<slug>` from the repo's HEAD, the same place Herdr's worktree menu uses. It reuses the branch or folder if they already exist, then opens a new space there with a tab named after the task id. That space joins the workspace through the worktree rule above.
+- **Worktree** first runs `git worktree add -b task/<id>-<title-slug> ~/.herdr/worktrees/<repo>/<slug>` from the repo's HEAD, the same place Herdr's worktree menu uses. It reuses the branch or folder if they already exist. If the repo has a setup script (Worktrees → Scripts) that hasn't run in that worktree, it runs now, before the agent: a failure, or a script still waiting to be allowed, stops the Start with a toast, and Worktree again tries again. It then opens a new space there with a tab named after the task id. That space joins the workspace through the worktree rule above.
 - **After either Start**, the card moves to `board.start` (default `doing`), and the task records:
   - `terminal`, the agent's address, and `tab`, the tab it's in;
   - `started`;
@@ -233,6 +250,30 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
 - **Ready to merge** gets you one toast per head commit.
 - **Merged**: the card moves to the last column and a toast says so. That also happens for one merged while Herdr was closed. **Closed** without merging gets a warning toast, and the card stays.
 - Names that come from GitHub (checks, people, titles, branches) are cut to one short line, without backticks or angle brackets, before they're shown or sent.
+
+**Worktrees:**
+- **Opening it** ("Open … worktrees" in the switcher menu) works as the board does: the Worktrees tab already open in one of the workspace's spaces, else a new one.
+- **Which worktrees.** The workspace's repos are the main checkouts found from its root, each folder directly in the root, and each of its `folders`; a folder that only sits inside a repo above the workspace doesn't count. For each repo it lists what `git worktree list` lists, minus the main checkout and ones whose folder is gone. So a worktree shows wherever it was made and whoever made it: Herdr's New worktree, the board, an agent, you.
+- **Where its work stands** comes from git and, when `gh` is signed in, the repo's newest 300 pull requests:
+  - *Merged*: its branch's pull request is merged and the branch hasn't moved since;
+  - *open* / *closed*: its pull request's state. A branch with nothing the base lacks says "Nothing to merge" even when a pull request was closed;
+  - *Nothing to merge*: no commits the base branch lacks (new, or merged without a pull request);
+  - *N commits, no PR*: commits of its own;
+  - *Changed since #n merged*: commits made after its pull request merged.
+
+  The base is the remote's default branch (`origin/HEAD`), else a local `main` or `master`. Pull requests from forks are ignored.
+- **Reading is in three steps**: git's list at once, then each repo's pull requests, then each worktree's uncommitted changes, six at a time. Rows show as soon as git answers and fill in. It reads when the tab opens, on Refresh and within a second of a removal; it doesn't poll git or GitHub. What's in a worktree (spaces, terminals, agents) is live.
+- **Finished** means all of: merged, nothing uncommitted (and already read), no space showing it and no terminal in it. "Remove N finished…" removes exactly those, after one confirmation, without `--force`: one that git won't remove cleanly stays and is named in the toast ("Removed 9 worktrees, 1 left").
+- **Ticking rows** picks any worktrees, finished or not, to remove together.
+  - A click on a row's checkbox ticks or unticks it. A shift-click gives every row from the one clicked last down (or up) to this one that row's state, so it ticks a run, or unticks one. The run follows the rows as shown under the filter that's on.
+  - "Select all N" ticks every row shown, so a filter plus that picks a whole kind ("Nothing to merge", say). Ticks stay when the filter changes, and a row that's gone after a read loses its tick.
+  - "Remove N selected…" asks once, after reading each one's changes again, and says what would be lost. Enter then removes each: its archive script, its spaces closed, `git worktree remove`, with `--force` only for the ones the dialog said have uncommitted changes. One that fails stays and is named in the toast.
+  - Removing several goes one worktree at a time, and deleting a big checkout takes a while, so the dialog names the one in hand and how far along it is. Esc during it doesn't close the dialog: it finishes the worktree in hand, leaves the rest (still ticked), and the toast says how many were left ("Removed 3 worktrees, stopped with 3 to go").
+- **Remove…** on a row asks first, re-reading its changes. Enter runs the repo's archive script in the worktree, closes the spaces showing it, and runs `git worktree remove` (with `--force` only when the dialog said changes would be lost). The branch is never deleted. If the script or git fails, the worktree stays, the dialog shows why, and Enter again skips the script and forces it.
+- **Open** shows the space that's in the worktree, else makes one there.
+- **Scripts** are per repo: one line of `sh` run in a new worktree (setup) and one run before a worktree is removed (archive). Each gets `$HERDR_WORKTREE`, `$HERDR_REPO` (the main checkout), `$HERDR_BRANCH` and `$HERDR_WORKSPACE`, and has 10 minutes.
+  - Setup runs when the board's Worktree makes a worktree, and from a row's "Set up" for worktrees made any other way. It runs once per worktree: a mark in the worktree's own git folder records it.
+  - Save allows the lines it writes. A line that got into the file any other way (an agent, an editor) doesn't run: the repo's header says one is waiting, the board's Worktree and Remove stop with the reason, and "Allow as written" in the panel allows it. Opening the panel reads the file again.
 
 **Automations:**
 - **What one is**: `~/.herdr/workspaces/<id>/automations/<name>.md`, front matter then the prompt (HTML comments left out):
@@ -413,6 +454,13 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
   shell = ["/bin/sh", "-c", "r=\"$HOME/.config/herdr-app/mods/ws-switcher/bin/herdr-ws-resume\"; [ -x \"$r\" ] && exec \"$r\"; exec \"${SHELL:-/bin/sh}\" -l"]
   ```
 
+**`mods/ws-worktrees`** (`mod.json`: `{ "place": "none", "title": "Worktrees" }`). A pane mod with `props: { workspace }`; the same mod draws its remove dialog (`props: { dialog: "remove", workspace, name, trees, picked }`, opened with `openOverlay`; `picked` marks rows ticked by hand), which does the removal itself and then sets shared `workspaces.worktrees.changed`. The tab compares that value on a 1-second `cx.timer` and reads again when it moved. The ticks are a `Set` of paths on the tab, and `pick(path, shift, cx)` works out the shown order itself (the trees under the current filter) so a shift-click's run doesn't depend on the last draw; the click's shift key is `event.modifiers.shift`.
+- **`facts.js`** has no imports, so `node` can test it: `parseList` (`git worktree list --porcelain`), `parseRefs` (`git for-each-ref --format=%(refname:short)%09%(committerdate:unix)%09%(ahead-behind:<base>)`), `parsePrs` (`gh pr list --state all --limit 300 --json headRefName,state,number,url,headRefOid,isCrossRepository`), `kindOf`, `labelOf`, `finished`, `ago`.
+- **`treescripts.js`** is the same file in `ws-worktrees` and `ws-board` (a mod can't import from another's folder; the sync script refuses when they differ). It takes `io = { home, readTextFile, writeTextFile, exec }`. Scripts are `~/.herdr/workspaces/<id>/worktrees.json`, `{ "<repo folder name>": { "setup": "…", "archive": "…" } }`; what's allowed is `~/.herdr/workspaces/.worktree-scripts.json`, `{ "<ws>/<repo>/<kind>": "<the exact line>" }`. A line runs as `env HERDR_…=… sh -c <line>` with the worktree as `cwd`. The set-up mark is the file `herdr-setup` in the worktree's git folder (`git rev-parse --absolute-git-dir`); the tab finds them all with one `sh` loop over `<repo>/.git/worktrees/*/`.
+- **The repos** come from one `sh` loop of `git -C <place> rev-parse --path-format=absolute --git-common-dir` over the root, its subfolders and `folders`.
+- **What's in a worktree** is `spaces()` by where each space is now, and `terminals()` by `cwd` (this machine's only).
+- **The switcher** opens the tab from its sidebar copy when the menu sets shared `workspaces.worktrees = { id, at }`, with the board's `openBoard` given `{ mod: "ws-worktrees", name: "Worktrees" }`.
+
 **The background runner** (`mods/ws-switcher/runner/`, `bin/herdr-ws-runner`): the same `automations.js`, `prs.js` and `defs.js`, run by Node.
 - **`bin/herdr-ws-runner`** (POSIX sh): `--on` writes `on` to `~/.herdr/runner/switch` and starts it; `--off` writes `off`, then `hc kill` and `hc rm`; `--status`; `--start` starts it if it's on and not alive; `--serve` is what the terminal runs: `node --import runner/register.js runner/main.js` in a loop that starts it again 5s after a crash and ends when it exits 0 (turned off, or another one is alive). Starting is `hc run --bg --no-parent --name herdr-ws-runner --cwd ~ -- $SHELL -lic 'exec "$0" --serve' <script>` (`-ic` off macOS, fish's `$argv[1]`), so it has your shell's `PATH` (node, gh, git). No `--keep` and no Herdr labels: it never shows in Herdr's screens, and after a restart it's simply gone until started again. It checks for Node 20.6+.
 - **`runner/register.js`, `hooks.js`**: a Node resolve hook that gives the mod's files `runner/herdr.js` for `"herdr"` and `runner/fs.js` (Node's `fs/promises` plus `exists`) for `"fs/promises"`. `package.json` (`"type": "module"`) makes Node read the mod's `.js` files as modules.
@@ -549,10 +597,13 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
   - `git remote get-url` and `gh api`, for GitHub automations;
   - `git remote get-url`, `gh pr view` and `gh api user`, for cards' pull requests, and `hc send`, which types a message into a card's agent;
   - `open` or `xdg-open`, for a click on a pull request chip;
-  - `git worktree add`, for a task's Worktree;
+  - `git worktree add`, for a task's Worktree, and the repo's setup script after it;
+  - for the Worktrees tab: `git rev-parse`, `worktree list`, `symbolic-ref`, `show-ref`, `for-each-ref` and `status` in the workspace's repos and worktrees, `gh pr list`, and, when you remove one, `git worktree remove` and the repo's archive script;
   - `explorer`, on Windows;
   - your agents, through the launcher, the board's Start and automations.
-- The network, three things:
+- The Worktrees tab writes `~/.herdr/workspaces/<id>/worktrees.json` and `~/.herdr/workspaces/.worktree-scripts.json` when you save or allow scripts, a `herdr-setup` file in a worktree's git folder after setup runs there, and deletes a worktree's folder when you remove it, after a confirmation.
+- The network, four things:
+  - the Worktrees tab, through `gh pr list` with your login, once per repo each time it reads;
   - GitHub automations, through `gh api` with your login, every 2 minutes per watched repo;
   - cards with a `pr:` or `branch:` line, through `gh pr view` with your login, every minute per open pull request;
   - the Automations screen's Draft it and Change it, through `claude -p`.
@@ -680,9 +731,24 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
 - `model:` replaces the preset's model but keeps the rest of its command. A model or effort the agent's CLI doesn't know fails when the run starts, in its tab.
 - Agents other than Claude, Codex and Pi ignore `model:` and `effort:`; the screen says so when one is set.
 
+- Worktrees: "Finished" needs pull requests. Without `gh`, signed out, or for a repo with no GitHub remote, nothing counts as finished and the foot line says so; the rest of the row still shows.
+- Worktrees: a branch merged without a pull request reads "Nothing to merge", the same as a branch nobody has committed to yet, so it is never in "Remove N finished…". Remove those by hand.
+- Worktrees: only the newest 300 pull requests of a repo are read. A worktree whose pull request is older than that reads as "N commits, no PR".
+- Worktrees: a squash merge leaves the branch's commits outside the base, so merged is taken from the pull request, not from git. A branch reused after its pull request merged reads "Changed since #n merged".
+- Worktrees: removing never deletes the branch, local or remote. A hundred removed worktrees leave a hundred branches.
+- Worktrees: the tab doesn't poll. A pull request that merges while it's open shows on the next Refresh.
+- Worktrees: a script is one line and has 10 minutes (`exec`'s limit). Put a longer job in a file and name the file. It runs with Herdr's environment, not a login shell's.
+- Worktrees: setup isn't run for worktrees Herdr's own New worktree dialog or an agent makes; their rows offer "Set up". Scripts are keyed by the repo's folder name, so two repos of one workspace with the same folder name share them.
+- Worktrees: a worktree with submodules can't be removed without `--force` (git's rule), so it is never removed in bulk; the row's Remove fails once and Enter again forces it.
+- Worktrees: don't start the re-read from `render`. Calling `cx.notify()` there leaves the tab stuck on "This view could not be re-rendered", and a `cx.spawn` task started there runs up to its first `await` and never continues, so the list stays on "reading" with its old rows. The tab watches `workspaces.worktrees.changed` on a timer instead.
+- Worktrees: "Remove N selected…" can take worktrees with uncommitted changes and unmerged commits; the dialog's red lines are the only warning. Commits survive on the branches; uncommitted files don't.
+- Worktrees: the dialog removes one worktree at a time. Closing it while it works would end its task with the list never told, so Esc only asks it to stop; nothing else closes it until it's done.
+- Worktrees: a Herdr window behind other windows doesn't redraw, so a capture taken there can show the list as it was before a removal.
+- Worktrees: git names a worktree by its real path. Where a symlink leads to the home or the root (macOS's `/tmp`), cards are matched through `pwd -P`, and folders outside the root show their real path instead of `~`.
+
 ## Done when
 
-- `herdr-app check` passes for `mods/ws-switcher`, `mods/ws-spaces`, `mods/ws-agents`, `mods/ws-board`, `mods/ws-tabs` and `mods/ws-new-menu`, and `herdr-app status` shows no errors with `layout.switch {"name": "workspaces"}`.
+- `herdr-app check` passes for `mods/ws-switcher`, `mods/ws-spaces`, `mods/ws-agents`, `mods/ws-board`, `mods/ws-worktrees`, `mods/ws-tabs` and `mods/ws-new-menu`, and `herdr-app status` shows no errors with `layout.switch {"name": "workspaces"}`.
 - With two workspaces whose roots hold existing spaces, those spaces show under their workspace and the counts in the menu add up to "All spaces".
 - Choosing a workspace with no spaces lists its folders in the sidebar, and clicking one makes a space that stays in that workspace.
 - `herdr-app do space.select --id <a space in another workspace>` switches the switcher to that workspace.
@@ -808,3 +874,16 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
 - In a workspace with no automations of its own and none for every workspace, Automations opens with "None yet." under both group names (not "This view could not be rendered").
 - With no automations, the list ends with "Ready-made" and seven rows. Opening `morning-review` and pressing Create writes `automations/morning-review.md` with the same `check:` line as `mods/ws-automations/starters/morning-review.md`, shows it under the workspace's name with its check allowed, and takes it out of Ready-made. Opening `issue-to-pr` where there's no `implementer` preset shows the note about the board's agent and saves no `agent:` line. Choosing "Every workspace" before Create writes it to `~/.herdr/automations`.
 - Each starter's `when:` reads (`parseWhen`): Fridays at 16:00, an issue opened in any repo here, every 30 minutes, weekdays at 09:00, a task enters Review, a pull request opened in any repo here by someone else, Mondays at 09:30.
+- "Open <workspace> worktrees" in the switcher menu opens a "Worktrees" tab; asked again, it goes to that tab instead of making a second.
+- With a repo that has worktrees both under `~/.herdr/worktrees/<repo>/` and somewhere else, both show under that repo, each with the folder it sits in.
+- With a stand-in `gh` that answers `pr list` (a merged, an open and a closed pull request whose `headRefOid` are the branches' tips), the rows read "Merged #n", "#n open" and "#n closed"; a branch with no commits reads "Nothing to merge"; one with three commits and an untracked file reads "3 commits, no PR" and "1 uncommitted".
+- "Remove N finished…" counts only the merged, clean, unused ones; Enter removes their folders, their branches are still there, and the list reads again without them.
+- Remove… on the worktree with an untracked file warns that it will be lost; Enter removes it.
+- Saving `touch .setup-ran` as a repo's setup writes it to `worktrees.json` and `.worktree-scripts.json`; "Set up" on a row makes `.setup-ran` in that worktree and the button goes.
+- Adding an `archive` line to `worktrees.json` by hand, then opening Scripts, shows "A script is waiting to be allowed"; Remove… on a row says so and Enter does nothing. After "Allow as written", removing a worktree runs the line first.
+- With an archive line of `exit 3`, Remove… keeps the worktree and shows the failure; Enter again removes it.
+- With a setup line saved, the board's Worktree on a card runs it in the new worktree before the agent starts; with a setup line of `exit 2`, the card doesn't start and a toast says setup failed.
+- Clicking one row's checkbox and shift-clicking the one three rows down ticks all four and the header offers "Remove 4 selected…"; unticking one in the middle and shift-clicking the first unticks that run. "Clear" unticks everything and "Remove N finished…" is back.
+- Under "Nothing to merge", "Select these N" ticks exactly the rows shown; back under All they're still ticked.
+- "Remove N selected…" with a merged row, one with an untracked file and one shown as a space names the last two in red; Enter removes all three folders, closes that space, keeps the three branches, and within a second the list shows without them and with nothing ticked.
+- With an archive line of `sleep 2` and six rows ticked, the dialog shows "Running its script 3 of 6: <branch>" and a bar a third full a few seconds in. Esc then leaves the dialog open until that worktree is gone, closes it, and the list shows the other three, still ticked.

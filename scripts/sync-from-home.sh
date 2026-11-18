@@ -17,10 +17,16 @@ for shared in when.js knobs.js check.js; do
   }
 done
 
+# The board runs a repo's setup script with the file the Worktrees tab writes them with.
+cmp -s "$src/mods/ws-worktrees/treescripts.js" "$src/mods/ws-board/treescripts.js" || {
+  echo "mods/ws-worktrees/treescripts.js and mods/ws-board/treescripts.js differ: make them the same first" >&2
+  exit 1
+}
+
 mkdir -p "$dst/layouts"
 cp "$src/layouts/workspaces.json" "$dst/layouts/workspaces.json"
 
-for mod in ws-switcher ws-spaces ws-agents ws-board ws-presets ws-chrome ws-automations ws-tabs ws-new-menu; do
+for mod in ws-switcher ws-spaces ws-agents ws-board ws-worktrees ws-presets ws-chrome ws-automations ws-tabs ws-new-menu; do
   rm -rf "$dst/mods/$mod"
   mkdir -p "$dst/mods/$mod"
   (cd "$src/mods/$mod" && find . -type f ! -name jsconfig.json ! -name gpui-kit.d.ts ! -name '.*' ! -name '*.error') |

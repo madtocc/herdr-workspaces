@@ -5,6 +5,12 @@ describes the whole thing as it is now; this file says what's new since the
 version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 "Updating" in the README.
 
+## [Unreleased]
+
+### New
+- **A Worktrees tab for each workspace.** "Open … worktrees" in the switcher menu lists every git worktree of the workspace's repos, wherever it was made, with where its work stands (merged, a pull request open, commits with no pull request), uncommitted changes and whether anything is in it. "Remove N finished…" clears the merged, clean, unused ones; the branches stay. Checkboxes (shift-click for a run of rows) pick any others to remove together. Copy the new `ws-worktrees` folder into your mods.
+- **Setup and archive scripts per repo.** A line to run in a new worktree (install, copy `.env`) and one to run before a worktree is removed, set under Scripts in the Worktrees tab. The board's Worktree runs setup before the agent starts.
+
 ## [0.2.0] - 2026-11-18
 
 ### New

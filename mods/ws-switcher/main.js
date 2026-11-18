@@ -15,6 +15,8 @@
 //   workspaces.assigned  space id -> workspace id (false: kept out of all of them)
 //   workspaces.last      workspace id -> the space last shown in it
 //   workspaces.create    a time: the menu asks this block to make a workspace
+//   workspaces.worktrees { id, at }: the menu asks this block to show a workspace's
+//                        Worktrees tab (ws-worktrees), as workspaces.board does the board
 //
 // It also runs each workspace's automations (automations.js) and follows board cards'
 // pull requests on GitHub (prs.js): the one runner of each lives in this sidebar
@@ -245,6 +247,7 @@ export default class Workspaces extends View {
     this.asked = shared("workspaces.create") ?? null;
     this.launchAsked = shared("workspaces.launch")?.at;
     this.boardAsked = shared("workspaces.board")?.at;
+    this.treesAsked = shared("workspaces.worktrees")?.at;
     this.runAsked = shared("workspaces.automation.run")?.at;
     this.allowAsked = shared("workspaces.automation.allow")?.at;
     this.setAsked = shared("workspaces.runner.set")?.at;
@@ -702,6 +705,11 @@ export default class Workspaces extends View {
       this.boardAsked = boardAsk?.at;
       if (boardAsk && Date.now() - boardAsk.at < 15000) this.openBoard(boardAsk.id, cx);
     }
+    const treesAsk = shared("workspaces.worktrees") ?? null;
+    if (treesAsk?.at !== this.treesAsked) {
+      this.treesAsked = treesAsk?.at;
+      if (treesAsk && Date.now() - treesAsk.at < 15000) this.openBoard(treesAsk.id, cx, { mod: "ws-worktrees", name: "Worktrees" });
+    }
   }
 
   // A request for the background runner: a file in the inbox it reads.
@@ -802,6 +810,10 @@ export default class Workspaces extends View {
       // The board opens from the sidebar copy: a popup's tasks end when it closes.
       items.push(row("ws-board-open", svg("mods/ws-board/board.svg").size(14).flex_none().text_color(t.muted), `Open ${active.name} board`, div(),
         () => setShared("workspaces.board", { id: active.id, at: Date.now() })));
+    }
+    if (active && !active.error) {
+      items.push(row("ws-trees-open", icon("git-branch"), `Open ${active.name} worktrees`, div(),
+        () => setShared("workspaces.worktrees", { id: active.id, at: Date.now() }), { tip: "Every worktree of its repos: what's finished, set up and clean up" }));
     }
     if (shown && defs.length) {
       items.push(row("ws-move", icon("layers"), `Move “${shown.name}” to…`, hint("›"),
