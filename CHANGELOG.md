@@ -7,6 +7,8 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-18
+
 ### New
 - **A Scratch workspace for ideas that belong to no project.** It's always last in the switcher. "New scratch space" (top of the switcher menu, from any workspace) opens a space there in a fresh folder under `~/.herdr/scratch/`, one per idea, and its kept folders are listed to go back to. Close one empty and its folder is deleted; with files, a toast offers Keep, and otherwise it goes to the Trash after 7 days unused. Delete Scratch… clears it all: its spaces close and its folders go to the Trash with it. Bind a key to `ws-switcher.scratch-new` to make one from the keyboard. Copy `ws-switcher` and `ws-spaces` again; Scratch appears on the next start.
 
