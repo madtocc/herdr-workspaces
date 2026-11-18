@@ -944,7 +944,7 @@ export default class Workspaces extends View {
         setShared("workspaces.active", to || null);
       };
       return frame([head(`Move “${shown.name}” to`),
-        ...defs.map((d) => row(`ws-to-${d.id}`, mark(d, defs, t, 18), d.name, hint(check(owner === d.id)), () => move(d.id))),
+        ...defs.map((d) => row(`ws-to-def-${d.id}`, mark(d, defs, t, 18), d.name, hint(check(owner === d.id)), () => move(d.id))),
         line(),
         row("ws-to-none", mark(null, defs, t, 18), "No workspace", hint(check(!owner)), () => move(false),
           { tip: "Shows only under All spaces, and doesn't join a workspace by its folder" })]);
@@ -962,7 +962,7 @@ export default class Workspaces extends View {
     for (const d of defs) {
       const mine = sp.filter((s) => assigned[s.id] === d.id);
       const status = urgent(mine);
-      items.push(row(`ws-${d.id}`, mark(d, defs, t, 18), d.name,
+      items.push(row(`ws-def-${d.id}`, mark(d, defs, t, 18), d.name,
         hint(status ? div().size(6).rounded_full().bg(t[status]) : div(), String(mine.length), check(active?.id === d.id)),
         () => choose(d.id), { dim: Boolean(d.error), tip: d.error ? `workspace.jsonc: ${d.error}` : tilde(d.root) }));
     }

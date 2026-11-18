@@ -7,6 +7,9 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 
 ## [Unreleased]
 
+### Fixed
+- **Picking Scratch in the switcher menu shows it.** A click on the Scratch workspace did nothing: its row and New scratch space shared an id inside the menu, so the click got lost. Picking it from All spaces still worked. Every workspace row now has an id of its own, which also covers a workspace you call new, all, edit, move, rename or delete. To update, copy `mods/ws-switcher`.
+
 ## [0.6.1] - 2026-11-18
 
 ### Fixed

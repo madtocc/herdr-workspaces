@@ -656,6 +656,7 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
 - With more agents and presets than fit in 85% of the window, the + menu's middle scrolls; New space and the worktree rows stay in view.
 - `ctrl-1…9` (`space.select:N`) and `space.next` still count every space. The switcher follows, so they jump between workspaces.
 - After closing a workspace's last space, the main area still shows the space Herdr picked, from another workspace, while the sidebar shows the empty workspace: Herdr always shows a space when it has one. Choosing that workspace, or a key that shows another space, puts them together again.
+- Every row in a menu needs an id of its own. Two rows with one id (a workspace row built from its id colliding with a fixed row, such as Scratch's `ws-scratch` and New scratch space) swallow each other's clicks, so workspace rows carry a prefix no fixed row uses.
 - Workspaces are folders on this computer. A space on another machine only joins a workspace when it's made while that workspace is shown, or with "Move to…".
 - Spaces keep their workspace, even after a `cd` elsewhere or when a nested workspace is added later. Use "Move to…".
 - `programs.json` runs a quoted command: `~` isn't expanded. Use a name on `PATH` or an absolute path.
@@ -802,6 +803,7 @@ Left to right, as in Herdr's `main` layout, with one row added to the sidebar:
 - `HERDR_WS_AGENT_DRY=1 herdr-ws-agent claude` in `~/.herdr/scratch/<name>` prints `workspace: scratch`.
 - Holding the Spaces `+` (or right-clicking it) in Acme opens "New space in Acme"; a quick click still makes a space in Acme's root at once. Name "billing spike" with the folder `~/work/blog/site` says "Joins Blog: its folder is there.", and Create makes a space "billing spike" there, under Blog, and shows Blog. `~/nope` says "There's no folder at ~/nope." and makes nothing. In Scratch, the name "bot idea" makes a scratch space called that.
 - With a stand-in `io` and `localStorage`, `node` shows: a used folder with files gets one toast; an empty one goes after 10s; one with files goes to the Trash at 7 days, not 6; one with `.keep` or still in use never does.
+- A click on each workspace row in the menu shows that workspace, Scratch included (its row and New scratch space must not share an element id: rows are `ws-def-<id>`, Move to's `ws-to-def-<id>`).
 - Choosing a workspace with no spaces lists its folders in the sidebar, and clicking one makes a space that stays in that workspace.
 - `herdr-app do space.select --id <a space in another workspace>` switches the switcher to that workspace.
 - With spaces A1, B1, A2 in that order (A and B workspaces) and A1 shown, `space.close {"id": A1, "confirmed": true}` leaves workspace A shown, on A2. Closing A2 then leaves A shown with "No spaces in A yet." and its folders.
