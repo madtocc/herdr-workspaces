@@ -1,5 +1,8 @@
-// Board: one workspace's tasks as a kanban board, in a tab of its own (the
-// switcher's "Open … board" makes it, with props { workspace }).
+// Board: one workspace's tasks as a kanban board. It's the workspace's own screen:
+// the layout holds one copy (props { screen: true }) that shows the board of the
+// workspace shown in the switcher and follows it, and the switcher's board button
+// shows it in place of the tabs, from any space. In a tab or pane of its own
+// (props { workspace }) it keeps to that workspace.
 //
 // A task is a markdown file, ~/.herdr/workspaces/<workspace>/tasks/<ID>.md:
 // front matter between --- lines (id, title, status, folder, priority, created,
@@ -332,35 +335,70 @@ export default class Board extends View {
   init(_props, cx) {
     this.handle = cx.focus_handle();
     if (props()?.dialog) return this.initDialog(cx);
-    this.workspace = props()?.workspace ?? shared("workspaces.active") ?? null;
+    // The layout's screen follows the shown workspace; a tab keeps the one it was made with.
+    this.follow = Boolean(props()?.screen);
+    this.workspace = (this.follow ? null : props()?.workspace) ?? shared("workspaces.active") ?? null;
+    this.reset();
+    this.initGithub(cx);
+    this.load(cx);
+    cx.spawn(async (cx) => {
+      for (;;) {
+        // The workspace's folder: tasks/ may not exist until the first task. The
+        // screen watches every workspace's, so it needn't start over when it changes.
+        try { await watchFolder(this.follow ? workspacesDir() : `${workspacesDir()}/${this.workspace}`); }
+        catch { cx.timer.every(5000, (cx) => this.load(cx)); return; }
+        this.load(cx);
+      }
+    });
+    // On a timer, not in render: a task started while rendering never gets to run.
+    if (this.follow && !checking()) cx.timer.every(400, (cx) => this.retarget(cx));
+  }
+
+  // A board's own state, as it opens.
+  reset() {
     this.tasks = [];
     this.loaded = false;
     this.busy = {}; // task id -> "start" | "worktree"
     this.drag = null; // { id, from, moved }
     this.over = null;
     this.dropped = 0;
-    // Remembered per board tab: which view, and the list's folded sections
+    // Remembered: which view, and the list's folded sections
     // (null until changed: the last column, done, starts folded).
-    this.view = localStorage.getItem("view") === "list" ? "list" : "board";
-    const folded = localStorage.getItem("folded");
+    this.view = this.pref("view") === "list" ? "list" : "board";
+    const folded = this.pref("folded");
     this.folded = folded ? new Set(JSON.parse(folded)) : null;
     // Tasks (this board) or GitHub (the workspace's GitHub project board).
-    this.source = localStorage.getItem("source") === "github" ? "github" : "tasks";
-    this.initGithub(cx);
+    this.source = this.pref("source") === "github" ? "github" : "tasks";
+  }
+
+  // What a board remembers: per tab, and the screen per workspace.
+  pref(key) { return localStorage.getItem(this.follow ? `${this.workspace}:${key}` : key); }
+  keep(key, value) { localStorage.setItem(this.follow ? `${this.workspace}:${key}` : key, value); }
+
+  // The screen: another workspace is shown, so it's that one's board from here.
+  // What was being read for the last one lands in the state left behind.
+  retarget(cx) {
+    // Shown in place of the terminals, it takes the keyboard from them: keys typed
+    // at a board mustn't land in a terminal nobody sees.
+    const showing = shared("workspaces.screen")?.screen === "board";
+    if (showing && !this.showing) this.handle.focus();
+    this.showing = showing;
+    const ws = shared("workspaces.active") ?? null;
+    if (ws === this.workspace) return;
+    this.workspace = ws;
+    this.reset();
+    this.ghReset();
     this.load(cx);
-    cx.spawn(async (cx) => {
-      for (;;) {
-        // The workspace's folder: tasks/ may not exist until the first task.
-        try { await watchFolder(`${workspacesDir()}/${this.workspace}`); }
-        catch { cx.timer.every(5000, (cx) => this.load(cx)); return; }
-        this.load(cx);
-      }
-    });
+    this.ghBeat(cx);
+    cx.notify();
   }
 
   load(cx) {
     cx.spawn(async (cx) => {
-      this.tasks = this.workspace ? await loadTasks(this.workspace) : [];
+      const ws = this.workspace;
+      const tasks = ws ? await loadTasks(ws) : [];
+      if (ws !== this.workspace) return;
+      this.tasks = tasks;
       this.loaded = true;
       cx.notify();
     });
@@ -436,10 +474,13 @@ export default class Board extends View {
     const t = theme();
     if (props()?.dialog) return this.dialog(t);
     const def = defOf(this.workspace);
-    const shell = v_flex().id("board").size_full().min_h(0).bg(t.canvas).text_size(13).text_color(t.foreground);
+    const shell = v_flex().id("board").size_full().min_h(0).bg(t.canvas).text_size(13).text_color(t.foreground)
+      .when(this.follow, (el) => el.track_focus(this.handle));
+    // Between two workspaces (retarget() is a moment behind): nothing of the last one.
+    if (this.follow && (shared("workspaces.active") ?? null) !== this.workspace) return shell;
     if (!def) {
       return shell.items_center().justify_center().text_color(t.dim)
-        .child(this.workspace ? "This board's workspace is gone." : "Open a board from the workspace switcher's menu.");
+        .child(this.workspace ? "This board's workspace is gone." : this.follow ? "Choose a workspace in the switcher to see its board." : "Open a board from the workspace switcher's menu.");
     }
     const b = boardOf(def);
     const ag = agents(), tm = terminals();
@@ -479,7 +520,7 @@ export default class Board extends View {
       .when(now !== view, (el) => el.text_color(t.muted).hover((s) => s.text_color(t.foreground)))
       .on_click((_e, cx) => {
         if (github) this.gh.view = view; else this.view = view;
-        localStorage.setItem(github ? "gh.view" : "view", view);
+        this.keep(github ? "gh.view" : "view", view);
         cx.notify();
       })
       .child(svg(icon).size(13)).child(text);
@@ -496,7 +537,7 @@ export default class Board extends View {
       const next = new Set(folded);
       next.has(col) ? next.delete(col) : next.add(col);
       this.folded = next;
-      localStorage.setItem("folded", JSON.stringify([...next]));
+      this.keep("folded", JSON.stringify([...next]));
       cx.notify();
     };
     const rows = b.columns.flatMap((col) => {
@@ -653,14 +694,21 @@ export default class Board extends View {
   // Nothing here writes to GitHub. Take makes a card on this board from an item.
 
   initGithub(cx) {
-    const who = localStorage.getItem("gh.who");
+    this.ghReset();
+    if (checking()) return;
+    cx.timer.every(2000, (cx) => this.ghBeat(cx));
+  }
+
+  // The view's state for the board's workspace, as it opens.
+  ghReset() {
+    const who = this.pref("gh.who");
     let folds = {};
-    try { folds = JSON.parse(localStorage.getItem("gh.folds") ?? "{}") ?? {}; } catch {}
+    try { folds = JSON.parse(this.pref("gh.folds") ?? "{}") ?? {}; } catch {}
     this.gh = {
       board: null, link: null, at: 0, tried: 0, drawn: 0, loading: false, opening: false, error: null,
-      who: ["all", "mine", "none"].includes(who) ? who : "all", repo: localStorage.getItem("gh.repo") ?? "", folds,
-      view: localStorage.getItem("gh.view") === "list" ? "list" : "board",
-      order: ORDERS.some(([o]) => o === localStorage.getItem("gh.order")) ? localStorage.getItem("gh.order") : "board",
+      who: ["all", "mine", "none"].includes(who) ? who : "all", repo: this.pref("gh.repo") ?? "", folds,
+      view: this.pref("gh.view") === "list" ? "list" : "board",
+      order: ORDERS.some(([o]) => o === this.pref("gh.order")) ? this.pref("gh.order") : "board",
       taking: {}, all: {}, folders: null, foldersKey: null,
       found: null, finding: false, linking: false, linkError: null, relink: false, pending: null, pendingAt: 0,
     };
@@ -669,8 +717,6 @@ export default class Board extends View {
     this.ghLink = InputState.new({ value: "", placeholder: "https://github.com/orgs/acme/projects/1" });
     this.ghLink.on("change", (_e, cx) => { if (this.gh.linkError) { this.gh.linkError = null; cx.notify(); } });
     this.ghLink.on("submit", (_e, cx) => this.linkBoard(this.ghLink.value(), cx));
-    if (checking()) return;
-    cx.timer.every(2000, (cx) => this.ghBeat(cx));
   }
 
   // The board the view shows: the workspace's, or the one just linked (until its file is read again).
@@ -685,6 +731,9 @@ export default class Board extends View {
   // again, and "Read 3 min ago" keeps moving.
   ghBeat(cx) {
     if (this.source !== "github") return;
+    // The screen stays in the layout once shown: it asks GitHub nothing while it isn't the one shown.
+    const scr = this.follow ? shared("workspaces.screen") : null;
+    if (this.follow && !(scr?.screen === "board" && scr.ws === this.workspace)) return;
     const def = defOf(this.workspace);
     if (!def) return;
     const g = this.gh, now = Date.now();
@@ -700,7 +749,7 @@ export default class Board extends View {
 
   setSource(source, cx) {
     this.source = source;
-    localStorage.setItem("source", source);
+    this.keep("source", source);
     this.ghBeat(cx);
     cx.notify();
   }
@@ -952,9 +1001,9 @@ export default class Board extends View {
       .border_color(on ? t.accent : t.input).bg(on ? t.selected : t.background).text_size(11.5)
       .text_color(on ? t.foreground : t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground))
       .on_click((_e, cx) => { action(); cx.notify(); }).child(text);
-    const setWho = (who) => () => { g.who = who; localStorage.setItem("gh.who", who); };
-    const setRepo = (value) => () => { g.repo = value; localStorage.setItem("gh.repo", value); };
-    const setOrder = (value) => () => { g.order = value; localStorage.setItem("gh.order", value); };
+    const setWho = (who) => () => { g.who = who; this.keep("gh.who", who); };
+    const setRepo = (value) => () => { g.repo = value; this.keep("gh.repo", value); };
+    const setOrder = (value) => () => { g.order = value; this.keep("gh.order", value); };
     const choices = repos.length + (drafts ? 1 : 0) > 1;
     const bar = h_flex().min_h(44).py(8).flex_none().flex_wrap().px(16).gap(6).items_center().border_b(1).border_color(t.border)
       .child(chip("gh-who-all", "Everyone", g.who === "all", setWho("all")))
@@ -990,7 +1039,7 @@ export default class Board extends View {
   ghFold(name, cx) {
     const g = this.gh;
     g.folds = { ...g.folds, [name]: !this.ghFolded(name) };
-    localStorage.setItem("gh.folds", JSON.stringify(g.folds));
+    this.keep("gh.folds", JSON.stringify(g.folds));
     cx.notify();
   }
 

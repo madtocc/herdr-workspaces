@@ -195,6 +195,54 @@
             }
           },
           "window_drag": true
+        },
+        {
+          "id": "screens",
+          "type": "column",
+          "resizable": false,
+          "children": [
+            {
+              "id": "screens-tabs",
+              "type": "block",
+              "content": {
+                "mod": "ws-tabs",
+                "props": {
+                  "screens": true
+                }
+              },
+              "size": {
+                "px": 42
+              },
+              "window_drag": true
+            },
+            {
+              "id": "screens-body",
+              "type": "stack",
+              "active": "screen-board",
+              "children": [
+                {
+                  "id": "screen-board",
+                  "type": "block",
+                  "content": {
+                    "mod": "ws-board",
+                    "props": {
+                      "screen": true
+                    }
+                  }
+                },
+                {
+                  "id": "screen-worktrees",
+                  "type": "block",
+                  "content": {
+                    "mod": "ws-worktrees",
+                    "props": {
+                      "screen": true
+                    }
+                  }
+                }
+              ]
+            }
+          ]
         }
       ]
     }

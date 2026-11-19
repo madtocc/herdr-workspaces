@@ -110,7 +110,9 @@ export function chip(f, stale) {
 //   { kind: "checks" }    a check failed; once per head commit (failures already there count)
 //   { kind: "conflicts" } it conflicts with its base; once per head commit
 //   { kind: "reviews", items: [{ by, state }] }  new reviews, after QUIET of quiet (at most HOLD)
-// notes are for the person: "ready" (once per head commit), "merged", "closed".
+// notes are for the person: "opened" (the first time it's seen open, once per pull
+// request: openColumn says where its card goes), "ready" (once per head commit),
+// "merged", "closed".
 // Not told: reviews already there the first time, a push by itself, checks that
 // pass, and reviews by you sent while the agent was working (they're its own replies).
 export function step(prev, f, ctx) {
@@ -120,6 +122,7 @@ export function step(prev, f, ctx) {
     : { ...prev, told: { ...prev.told }, seen: [...prev.seen] };
   const wakes = [], notes = [];
   if (f.state === "open") {
+    if (!s.told.open) { s.told.open = true; notes.push("opened"); }
     if (f.checks.failed.length && s.told.fail !== f.head) { s.told.fail = f.head; wakes.push({ kind: "checks" }); }
     if (f.mergeable === false && s.told.conflict !== f.head) { s.told.conflict = f.head; wakes.push({ kind: "conflicts" }); }
     const seen = new Set(s.seen);
@@ -142,6 +145,19 @@ export function step(prev, f, ctx) {
   s.state = f.state;
   s.url = f.url;
   return { s, wakes, notes };
+}
+
+// Where a card goes when its pull request is first seen open. Work that wasn't
+// begun with the card's Start (an orchestrator's, your own) leaves it in a column
+// before the board's start one, with nobody to move it: it goes to `finish`, or
+// to `start` while the pull request is a draft. null: it stays (it's at the start
+// column or past it, or in a column the board doesn't have).
+//   board: { columns, start, finish }, as boardOf gives it.
+export function openColumn(board, status, draft) {
+  const at = board.columns.indexOf(status), start = board.columns.indexOf(board.start);
+  if (at < 0 || start < 0 || at >= start) return null;
+  const to = draft ? board.start : board.finish;
+  return board.columns.indexOf(to) > at ? to : null;
 }
 
 // Wakes waiting for the agent to be free, as one: a kind once, reviews gathered.

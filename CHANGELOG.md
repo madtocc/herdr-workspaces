@@ -7,6 +7,12 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 
 ## [Unreleased]
 
+### New
+- **The board and the worktrees belong to the workspace, not to a space.** Opening either shows it in place of the tabs from whichever space you're in, and pins it as a pill before the tabs of every space of the workspace. A click on a tab, a space or an agent goes back to the terminals and the pill stays; its × closes it for the workspace. They open without making a tab or a space, so also in a workspace with no spaces. A Board or Worktrees tab you have open becomes the pill by itself. `ws-switcher.board` and `ws-switcher.worktrees` are commands a key in `keys.json` can run. The board's view, folds and GitHub filters are now remembered per workspace and start from the defaults. To update, copy `layouts/workspaces.json` (it adds a `screens` column to the `center` stack) and `mods/ws-switcher`, `mods/ws-tabs`, `mods/ws-board`, `mods/ws-worktrees`, `mods/ws-spaces` and `mods/ws-agents`. With the mods but an older layout, both still open as tabs.
+
+### Fixed
+- **A card whose work began without Start no longer sits in Todo.** When a pull request opens on a card that's still in a column before the board's start one, the card moves to the finish column (Review), or to the start one (Doing) for a draft, with a toast. That covers work an orchestrator or you did without pressing the card's Start, and a taken card that picked up your pull request. It happens once per pull request, so a card you drag back stays. After updating, each open pull request already on such a card moves it once. The starter guide (`mods/ws-switcher/guide.md`) now also asks agents to set a card's `status:` when its work starts and when it's done, however the work reached them. To update, copy `mods/ws-switcher`, and add that line to your own `~/.herdr/AGENTS.md` if you wrote one (it's the first under "The board and the brief" in the starter).
+
 ## [0.7.0] - 2026-11-18
 
 ### New

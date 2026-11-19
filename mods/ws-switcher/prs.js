@@ -9,6 +9,8 @@
 //     conflicts with its base, or when reviews arrive, once it's free;
 //   - you get a toast when it's ready to merge, was closed, or needs someone and
 //     the card has no agent left;
+//   - a card still in a column before the board's start one when its pull request
+//     opens moves to the finish column (the start one for a draft), once;
 //   - a merged one moves its card to the board's last column.
 //
 // prfacts.js has the rules. Like the automations runner, this is ticked every 500ms
@@ -18,7 +20,7 @@
 import { agents, shared, setShared, readTextFile, writeTextFile, exec, hc, notify } from "herdr";
 import * as fs from "fs/promises";
 import { wsDir, tilde, message, exists, expand, boardOf, split, field, withFields, folderPath, Store } from "./automations.js";
-import { FIELDS, clean, parsePr, repoOfRemote, facts, chip, step, mergeWakes, stillTrue, wakeText, wakeLines } from "./prfacts.js";
+import { FIELDS, clean, parsePr, repoOfRemote, facts, chip, step, openColumn, mergeWakes, stillTrue, wakeText, wakeLines } from "./prfacts.js";
 
 const OPEN = 60e3;    // how often an open pull request is read
 const SLOW = 300e3;   // … a closed one, or a branch that has none yet
@@ -214,8 +216,22 @@ export class PrWatcher {
     for (const n of out.notes) await this.note(n, t, f);
   }
 
-  // For the person: ready to merge, merged (its card moves), closed.
+  // For the person: opened (its card moves out of the columns before the start
+  // one), ready to merge, merged (its card moves), closed.
   async note(kind, t, f) {
+    if (kind === "opened") {
+      const def = this.def(t.ws);
+      const to = def ? openColumn(boardOf(def), t.status, f.draft) : null;
+      if (!to) return;
+      const from = t.status;
+      t.status = to;
+      await this.update(t, { status: to });
+      notify({
+        title: `${t.id}: pull request open`, level: "info",
+        body: `${f.draft ? "Draft pull request" : "Pull request"} #${f.number} is open, so its card moved from ${label(from)} to ${label(to)}.`,
+      });
+      return;
+    }
     if (kind === "ready") {
       const c = f.checks;
       notify({

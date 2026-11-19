@@ -4,7 +4,7 @@
     <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
       <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000" flood-opacity="0.45"/>
     </filter>
-    <clipPath id="pane"><rect x="301" y="57" width="968" height="734" rx="10"/></clipPath>
+    <clipPath id="pane"><rect x="289" y="49" width="991" height="751"/></clipPath>
   </defs>
   <rect x="0" y="0" width="1280" height="800" rx="0" fill="#111215"/>
   <!-- sidebar -->
@@ -50,23 +50,23 @@
   <g transform="translate(19 716) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></g><text x="44" y="728" fill="#a5a8ae" font-size="13">Agent presets</text>
   <g transform="translate(19 744) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915" /> <circle cx="12" cy="12" r="3" /></g><text x="44" y="756" fill="#a5a8ae" font-size="13">Settings</text>
   <g transform="translate(19 772) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g><text x="44" y="784" fill="#a5a8ae" font-size="13">Add machine</text>
-  <!-- tab bar and pane -->
-  <text x="314" y="29" fill="#a5a8ae" font-size="13">1</text>
-  <rect x="340.06" y="8" width="83.1" height="32" rx="8" fill="#26272c"/>
-  <text x="354.06" y="29" fill="#e8e9eb" font-size="13">Board</text>
-  <g transform="translate(399.16 18.5) scale(0.4583)" fill="none" stroke="#7d8089" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18" /> <path d="m6 6 12 12" /></g>
-  <g transform="translate(1064 17) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g>
-  <text x="1110" y="29" fill="#a5a8ae" font-size="13">Files</text><text x="1182" y="29" fill="#a5a8ae" font-size="13">Changes</text>
-  <rect x="300.5" y="56.5" width="969" height="735" rx="10" fill="#1b1c20" stroke="#8ab4f8"/>
-  <g clip-path="url(#pane)">
-  <rect x="301" y="57" width="968" height="34" rx="0" fill="#1d1e22"/><rect x="301" y="91" width="968" height="1" rx="0" fill="#25272b"/>
-  <text x="322" y="79" fill="#e8e9eb" font-size="13" font-weight="500">ws-board</text>
+  <!-- tab bar: the workspace's screens as pills before the space's tabs, then the shown screen -->
+  <rect x="300" y="8" width="101.1" height="32" rx="8" fill="#26272c"/>
+  <g transform="translate(312 17) scale(0.5833)" fill="none" stroke="#e8e9eb" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M15 3v18"/><path d="M5.5 7h1.5"/><path d="M11.5 7h1.5"/><path d="M11.5 11h1.5"/><path d="M17.5 7h1"/></g>
+  <text x="333" y="29" fill="#e8e9eb" font-size="13">Board</text>
+  <g transform="translate(378.1 18.5) scale(0.4583)" fill="none" stroke="#7d8089" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18" /> <path d="m6 6 12 12" /></g>
+  <rect x="409.1" y="16" width="1" height="16" fill="#2f3137"/>
+  <text x="428.1" y="29" fill="#a5a8ae" font-size="13">1</text>
+  <g transform="translate(1247 17) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g>
+  <rect x="289" y="48" width="991" height="1" fill="#25272b"/>
+  <rect x="289" y="49" width="991" height="751" fill="#111215"/>
+  <g clip-path="url(#pane)"><g transform="translate(289 49) scale(1.02376) translate(-301 -92)">
   <rect x="322" y="106" width="22" height="22" rx="5" fill="#5b8def"/><text x="333" y="122" fill="#fff" font-size="12" font-weight="700" text-anchor="middle">A</text><text x="354" y="122" fill="#e8e9eb" font-size="14.5" font-weight="600">Acme board</text><rect x="301" y="143" width="968" height="1" rx="0" fill="#25272b"/>
   <rect x="444.56" y="102" width="118.5" height="30" rx="8" fill="#17181b" stroke="#2f3137"/><rect x="447.56" y="105" width="53.75" height="24" rx="6" fill="#26272c"/><text x="457.56" y="121.5" fill="#e8e9eb" font-size="12.5">Tasks</text><text x="511.31" y="121.5" fill="#a5a8ae" font-size="12.5">GitHub</text>
   <text x="577.06" y="122" fill="#7d8089" font-size="12.5">7 open · 1 done</text>
   <rect x="1151.88" y="102" width="97.12" height="30" rx="6" fill="#ececed"/><g transform="translate(1163.88 110.5) scale(0.5417)" fill="none" stroke="#17181b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g><text x="1181.88" y="121.68" fill="#17181b" font-size="13" font-weight="500">New task</text>
   <rect x="1001.63" y="102" width="138.25" height="30" rx="8" fill="#17181b" stroke="#2f3137"/><rect x="1004.63" y="105" width="70.75" height="24" rx="6" fill="#26272c"/><g transform="translate(1013.63 110.5) scale(0.5417)" fill="none" stroke="#e8e9eb" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M15 3v18"/><path d="M5.5 7h1.5"/><path d="M11.5 7h1.5"/><path d="M11.5 11h1.5"/><path d="M17.5 7h1"/></g><text x="1031.63" y="121.5" fill="#e8e9eb" font-size="12.5">Board</text><g transform="translate(1084.38 110.5) scale(0.5417)" fill="none" stroke="#a5a8ae" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3.5 6h.01"/><path d="M3.5 12h.01"/><path d="M3.5 18h.01"/></g><text x="1102.38" y="121.5" fill="#a5a8ae" font-size="12.5">List</text>
-  <rect x="313" y="156" width="181" height="623" rx="10" fill="#17181b" stroke="#2a2c31"/>
+  <rect x="313" y="156" width="181" height="658" rx="10" fill="#17181b" stroke="#2a2c31"/>
   <text x="325" y="181" fill="#a5a8ae" font-size="12.5" font-weight="600">Backlog</text>
   <text x="378" y="181" fill="#7d8089" font-size="12">2</text>
   <g transform="translate(470 170) scale(0.5417)" fill="none" stroke="#7d8089" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g>
@@ -86,7 +86,7 @@
   <text x="331" y="382" fill="#e8e9eb" font-size="13.5">endpoint</text>
   <rect x="331" y="392" width="49.05" height="24" rx="6" fill="none" stroke="#2f3137"/><text x="340" y="408.14" fill="#e8e9eb" font-size="11.5">Start</text>
   <rect x="386.05" y="392" width="68.14" height="24" rx="6" fill="none" stroke="#2f3137"/><text x="395.05" y="408.14" fill="#e8e9eb" font-size="11.5">Worktree</text>
-  <rect x="504" y="156" width="181" height="623" rx="10" fill="#17181b" stroke="#2a2c31"/>
+  <rect x="504" y="156" width="181" height="658" rx="10" fill="#17181b" stroke="#2a2c31"/>
   <text x="516" y="181" fill="#a5a8ae" font-size="12.5" font-weight="600">Todo</text>
   <text x="552.25" y="181" fill="#7d8089" font-size="12">2</text>
   <g transform="translate(661 170) scale(0.5417)" fill="none" stroke="#7d8089" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g>
@@ -106,7 +106,7 @@
   <rect x="522" y="373" width="80.46" height="20" rx="5" fill="#2c2e34"/><g transform="translate(528 377.5) scale(0.4583)" fill="none" stroke="#a5a8ae" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="1"/></g><text x="543" y="386.96" fill="#a5a8ae" font-size="11">#201 Todo</text>
   <rect x="522" y="399" width="49.05" height="24" rx="6" fill="none" stroke="#2f3137"/><text x="531" y="415.14" fill="#e8e9eb" font-size="11.5">Start</text>
   <rect x="577.05" y="399" width="68.14" height="24" rx="6" fill="none" stroke="#2f3137"/><text x="586.05" y="415.14" fill="#e8e9eb" font-size="11.5">Worktree</text>
-  <rect x="695" y="156" width="181" height="623" rx="10" fill="#17181b" stroke="#2a2c31"/>
+  <rect x="695" y="156" width="181" height="658" rx="10" fill="#17181b" stroke="#2a2c31"/>
   <text x="707" y="181" fill="#a5a8ae" font-size="12.5" font-weight="600">Doing</text>
   <text x="747" y="181" fill="#7d8089" font-size="12">2</text>
   <g transform="translate(852 170) scale(0.5417)" fill="none" stroke="#7d8089" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g>
@@ -133,7 +133,7 @@
   <circle cx="716.5" cy="474" r="3.5" fill="#e5534b"/>
   <text x="726" y="478" fill="#a5a8ae" font-size="12">claude · needs you</text>
   <rect x="713" y="488" width="46.52" height="24" rx="6" fill="none" stroke="#2f3137"/><text x="722" y="504.14" fill="#e8e9eb" font-size="11.5">Go to</text>
-  <rect x="886" y="156" width="181" height="623" rx="10" fill="#17181b" stroke="#2a2c31"/>
+  <rect x="886" y="156" width="181" height="658" rx="10" fill="#17181b" stroke="#2a2c31"/>
   <text x="898" y="181" fill="#a5a8ae" font-size="12.5" font-weight="600">Review</text>
   <text x="947" y="181" fill="#7d8089" font-size="12">1</text>
   <g transform="translate(1043 170) scale(0.5417)" fill="none" stroke="#7d8089" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g>
@@ -149,7 +149,7 @@
   <circle cx="907.5" cy="314" r="3.5" fill="#57ab5a"/>
   <text x="917" y="318" fill="#a5a8ae" font-size="12">claude · finished</text>
   <rect x="904" y="328" width="46.52" height="24" rx="6" fill="none" stroke="#2f3137"/><text x="913" y="344.14" fill="#e8e9eb" font-size="11.5">Go to</text>
-  <rect x="1077" y="156" width="181" height="623" rx="10" fill="#17181b" stroke="#2a2c31"/>
+  <rect x="1077" y="156" width="181" height="658" rx="10" fill="#17181b" stroke="#2a2c31"/>
   <text x="1089" y="181" fill="#a5a8ae" font-size="12.5" font-weight="600">Done</text>
   <text x="1125.25" y="181" fill="#7d8089" font-size="12">1</text>
   <g transform="translate(1234 170) scale(0.5417)" fill="none" stroke="#7d8089" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g>
@@ -160,7 +160,6 @@
   <text x="1095" y="244" fill="#e8e9eb" font-size="13.5">Dark mode chart colors</text>
   <rect x="1095" y="254" width="63.52" height="20" rx="5" fill="#2c2e34"/><g transform="translate(1101 258.5) scale(0.4583)" fill="none" stroke="#57ab5a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><path d="M6 9v12"/></g><text x="1116" y="267.96" fill="#57ab5a" font-size="11">Merged</text>
   <text x="1164.52" y="268" fill="#a5a8ae" font-size="11">#27</text>
-  </g>
-  <rect x="300.5" y="56.5" width="969" height="735" rx="10" fill="none" stroke="#8ab4f8"/>
+  </g></g>
   
 </svg>

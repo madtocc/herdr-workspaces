@@ -4,8 +4,9 @@
 // ws-agents: Herdr's `agents` (0.1.14) showing only the agents in the workspace
 // chosen in `ws-switcher` (an agent is in its space's workspace, shared
 // "workspaces.assigned"). agent.next / agent.prev follow the same list. The
-// changes are inWorkspace(), the filter in render(), the empty text, and
-// open(): a click on a sub-agent keeps it as a tab instead of peeking at it.
+// changes are inWorkspace(), the filter in render(), the empty text,
+// open(): a click on a sub-agent keeps it as a tab instead of peeking at it, and
+// a click on an agent goes back to the tabs from one of the workspace's screens (showTabs()).
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
@@ -19,6 +20,10 @@ function inWorkspace(a, ws) {
   const assigned = shared("workspaces.assigned") ?? {};
   return assigned[a.space] === ws.id || (!(a.space in assigned) && spaces().some((s) => s.id === a.space && s.active));
 }
+
+// A click here means "show me this": one of the workspace's screens (its board, its
+// worktrees: ws-switcher's shared "workspaces.screen") gives way to the tabs.
+const showTabs = () => { if (shared("workspaces.screen")) setShared("workspaces.screen", null); };
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -189,6 +194,7 @@ export default class Agents extends View {
   // A click on a sub-agent: to its pane, or without one it gets a tab in its
   // parent's space (no peek first). Cmd-click (Ctrl elsewhere) peeks instead.
   open(k, root, e) {
+    showTabs();
     if (this.listed.has(k.address)) return run("pane.focus", { terminal: k.address });
     if (e?.modifiers?.platform || e?.modifiers?.control) return this.peek(k.address);
     // A second click while the tab is being made would only toast "in progress".
@@ -346,7 +352,7 @@ export default class Agents extends View {
           .items_center()
           .gap(4)
           .hover((s) => s.bg(t.hover))
-          .on_click(() => run("pane.focus", { pane: a.pane }))
+          .on_click(() => { showTabs(); run("pane.focus", { pane: a.pane }); })
           .child(div().flex_1().min_w(0).whitespace_nowrap().text_right().text_color(t.muted).child(String(i + 1)))
           .child(h_flex().w(14).flex_none().items_center().justify_center().child(this.status(t, a, true)));
       }
@@ -390,7 +396,7 @@ export default class Agents extends View {
           else if (this.hovered === a.address) this.hovered = null;
           cx.notify();
         })
-        .on_click(() => run("pane.focus", { pane: a.pane }))
+        .on_click(() => { showTabs(); run("pane.focus", { pane: a.pane }); })
         .when(Boolean(pic), el => el.child(div().id(`agent-fold-${a.address}`)
           .when(subs.length > 0, el => el.on_click((_e, cx) => {
             cx.stop_propagation();

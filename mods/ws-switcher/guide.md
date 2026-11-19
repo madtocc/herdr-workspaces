@@ -26,7 +26,7 @@ To hand work to another agent, use the hc skill (or read `hc --skill`, hc's own 
 
 ## The board and the brief
 
-- Board cards are markdown files in the workspace's `tasks/` folder. If your task came from a card, keep its notes current there. A card with `pr:` or `branch:` is watched: failing checks, reviews and conflicts on that pull request are sent to you.
+- Board cards are markdown files in the workspace's `tasks/` folder. If your work is a card's, however it reached you (the card's Start, the person, an orchestrator passing it on), keep the card current, or hand that to whoever holds it: its `status:` line is its column, so set it to `doing` when the work starts and to `review` when it's done and waiting for the person, and keep its notes current. A board with other columns names them under `board` in the workspace's `workspace.jsonc`. A card with `pr:` or `branch:` is watched: failing checks, reviews and conflicts on that pull request are sent to you.
 - A workspace's `BRIEF.md` (next to its `AGENTS.md`) says where its work stands. Read it when that helps.
 
 ## Always

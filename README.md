@@ -33,7 +33,9 @@ another workspace needs you or finished.
 ![The task board](previews/board.png)
 
 Each workspace has a board, as columns or as a list. A task is one markdown
-file, so agents can read and write them too.
+file, so agents can read and write them too. The board belongs to the workspace,
+not to one space: once opened, it's a pill before the tabs of every space of the
+workspace, and it opens even when the workspace has no spaces.
 
 - **Start** on a card starts an agent on its task, in the repo or in a fresh git
   worktree, with the preset you pick. The card then shows that agent's live
@@ -41,6 +43,7 @@ file, so agents can read and write them too.
 - **A card follows its pull request.** It shows whether checks fail, changes are
   requested, it conflicts or it's ready to merge, tells the card's agent when a
   check fails or a review arrives, and moves to the last column when it merges.
+  A card still in Todo when its pull request opens moves to Review.
 
 ### Your GitHub project board
 
@@ -66,7 +69,8 @@ with its own status columns, or as a list with a section per status.
 ![The Worktrees tab](previews/worktrees.png)
 
 "Open … worktrees" in the switcher menu lists every git worktree of the
-workspace's repos, wherever it was made.
+workspace's repos, wherever it was made. Like the board it belongs to the
+workspace: a pill in the tab bar of each of its spaces.
 
 - **Where each one stands**: merged, a pull request open, commits with no pull
   request, uncommitted changes, and whether a card, a space or a terminal is in it.
@@ -193,7 +197,7 @@ ones for every workspace; from the Automations screen, a ready-made one
 included, from
 `herdr-ws-run --add`, `--off` and `--on`, and `enabled: false` after a one-time
 one runs). Following a card's pull request writes `pr:` into its task and, when
-it merges, its `status:`, and types a message into the card's agent with
+it opens on a card still before the start column or merges, its `status:`, and types a message into the card's agent with
 `hc send` when a check fails, a review arrives or it conflicts. With Keep running
 on, that work is done by a Node process herdr-core holds as the terminal
 `herdr-ws-runner`: it writes `~/.herdr/runner/`, starts runs with `hc run`, ends

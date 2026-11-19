@@ -20,7 +20,13 @@
 //   workspaces.scratch   { at, name? }: the menu or the New space dialog asks this block for a scratch space (scratch.js)
 //   workspaces.scratch.folders  the Scratch workspace's folders, newest first, for the menu and ws-spaces
 //   workspaces.worktrees { id, at }: the menu asks this block to show a workspace's
-//                        Worktrees tab (ws-worktrees), as workspaces.board does the board
+//                        Worktrees screen (ws-worktrees), as workspaces.board does the board
+//   workspaces.screens   workspace id -> its open screens ("board", "worktrees"): the pills
+//                        ws-tabs draws before the tabs of every space of that workspace
+//   workspaces.screen    { ws, screen, at } or null: the screen shown in place of the tabs.
+//                        Anyone sets it (ws-tabs' pills; null from ws-spaces and ws-agents
+//                        when a space or agent is clicked); this block shows it (coverWork())
+//   workspaces.covered   true while the shown space isn't the shown workspace's (it has none)
 //
 //   workspaces.prs       task file -> its pull request's one status (prs.js), drawn by ws-board
 //   workspaces.github    task file -> its GitHub board item's status (ghboard.js), drawn by ws-board
@@ -45,7 +51,7 @@ import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input } from "gpui-base";
 import {
   spaces, panes, machines, run, theme, shared, setShared, props, openOverlay, closeOverlay,
-  home, appHome, layout, watchFolder, readTextFile, writeTextFile, pickFolder, exec, notify, window, nextCommand,
+  home, appHome, layout, watchFolder, readTextFile, writeTextFile, pickFolder, exec, notify, window, nextCommand, focused,
 } from "herdr";
 import * as fs from "fs/promises";
 import { Runner, runnerDir, globalDir } from "./automations.js";
@@ -58,6 +64,9 @@ import { dir, expand, tilde, under, base, subdirs, loadDefs, templatesDir, loadP
 // else with the system's opener (Finder, the file manager, Explorer).
 const EDITORS = ["zed", "cursor", "code", "subl"];
 const SETTLE = 1500; // ms a new space's first terminal takes to report its folder
+// A workspace's screens: they belong to the workspace, not to a space. The layout
+// holds each once, as the block `screen-<key>` in the `screens` column of `center`.
+const SCREENS = { board: { mod: "ws-board", name: "Board" }, worktrees: { mod: "ws-worktrees", name: "Worktrees" } };
 const PALETTE = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
 // The spaces list's avatar colors, so a workspace mark matches.
 const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b7cf6", ansi2: "#3fae6a", ansi1: "#d9649a" };
@@ -291,12 +300,15 @@ export default class Workspaces extends View {
     });
     // Commands for this copy: "ws-switcher.scratch-new" (bind it to a key) makes a scratch
     // space in the shown workspace; the scratch toast's Keep is "ws-switcher.scratch-keep/<workspace>/<folder>";
-    // a toast about one automation is "ws-switcher.automation/<workspace>/<name>" (automations.js: openAt).
-    cx.spawn(async () => {
+    // a toast about one automation is "ws-switcher.automation/<workspace>/<name>" (automations.js: openAt);
+    // "ws-switcher.board" and "ws-switcher.worktrees" (bind them to keys) show the shown workspace's
+    // screen, and go back to the tabs when it's the one shown.
+    cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
         try {
           if (c === "scratch-new") await this.scratch.create();
+          else if (SCREENS[c]) this.toggleScreen(c, cx);
           else if (c.startsWith("scratch-keep/")) await this.scratch.keep(c);
           else if (c.startsWith("automation/")) this.openAutomation(c);
         } catch (e) { notify({ title: c.startsWith("automation/") ? "Couldn't open Automations" : "Couldn't make a scratch space", body: String(e?.message ?? e), level: "error" }); }
@@ -581,18 +593,47 @@ export default class Workspaces extends View {
     }
     // Herdr always shows a space. While the shown workspace has none of its own here
     // (its last one closed, or it was chosen empty), the empty block covers the other one's.
-    this.coverWork(this.loaded && Boolean(active) && (!shown || (this.known.has(shown) && ownerOf(shown) !== active)), sp.find((s) => s.id === shown));
+    const covered = this.loaded && Boolean(active) && (!shown || (this.known.has(shown) && ownerOf(shown) !== active));
+    this.coverWork(covered, sp.find((s) => s.id === shown), this.screen(active, `${shown}/${tabNow}`, now));
+  }
+
+  // The screen to show in place of the tabs, or null. It goes back to the tabs when
+  // its workspace isn't the shown one, when it's closed there, and when the shown
+  // space or tab changes (a click, a key, a new tab): whoever asked wants to see that.
+  screen(active, view, now) {
+    const scr = shared("workspaces.screen") ?? null;
+    if (!scr) { this.screenKey = null; return null; }
+    if (!this.loaded) return SCREENS[scr.screen] ? scr.screen : null;
+    const open = (shared("workspaces.screens") ?? {})[scr.ws] ?? [];
+    const key = `${scr.ws}/${scr.screen}/${scr.at}`;
+    // Just shown (or Herdr just started): where the view is now is where it stays.
+    if (this.screenKey !== key || now - (scr.at ?? 0) < 800) { this.screenKey = key; this.screenView = view; }
+    if (!SCREENS[scr.screen] || scr.ws !== active || !open.includes(scr.screen) || view !== this.screenView) {
+      setShared("workspaces.screen", null);
+      this.screenKey = null;
+      return null;
+    }
+    return scr.screen;
   }
 
   // Shows the layout's empty block in place of the work column (tabs, terminals, status),
-  // or the work column again. An older copy of the layout, with no `center` stack, is left alone.
-  coverWork(on, space) {
+  // or the work column again; `screen`, one of the workspace's screens, goes over either.
+  // An older copy of the layout, with no `center` stack, is left alone.
+  coverWork(on, space, screen = null) {
     const center = find(layout(), "center");
     if (!center?.children?.some((c) => c.id === "empty")) return;
     if (on && !this.cover) this.cover = { tabs: new Set((space?.tabs ?? []).map((c) => c.id)) };
     if (!on) this.cover = null;
-    const want = on ? "empty" : "work";
-    if (center.active !== want) run("layout.select", { stack: "center", child: want });
+    if (Boolean(shared("workspaces.covered")) !== on) setShared("workspaces.covered", on);
+    const body = screen ? find(center, "screens-body") : null;
+    if (screen && !body?.children?.some((c) => c.id === `screen-${screen}`)) screen = null;
+    if (screen && body.active !== `screen-${screen}`) run("layout.select", { stack: "screens-body", child: `screen-${screen}` });
+    const want = screen ? "screens" : on ? "empty" : "work";
+    if (center.active === want) return;
+    run("layout.select", { stack: "center", child: want });
+    // Back from a screen, which had taken the keyboard: to the pane that had it before.
+    const pane = center.active === "screens" && want === "work" ? focused()?.pane : null;
+    if (pane) run("pane.focus", { pane });
   }
 
   // The empty block: the shown workspace has no spaces. A quiet line, and New space
@@ -846,7 +887,7 @@ export default class Workspaces extends View {
         .child(svg("mods/workspace-chrome/chevron-down.svg").size(11).flex_none().text_color(t.dim)))
       .when(Boolean(active), (el) => el.child(div().id("ws-board").size(28).ml(2).flex_none().flex().items_center().justify_center()
         .rounded(7).text_color(t.muted).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
-        .tooltip(`${active.name} board`).on_click((_e, cx) => this.openBoard(active.id, cx))
+        .tooltip(`${active.name} board`).on_click((_e, cx) => this.openScreen(active.id, "board", cx))
         .child(svg("mods/ws-board/board.svg").size(15))));
   }
 
@@ -906,13 +947,60 @@ export default class Workspaces extends View {
     const boardAsk = shared("workspaces.board") ?? null;
     if (boardAsk?.at !== this.boardAsked) {
       this.boardAsked = boardAsk?.at;
-      if (boardAsk && Date.now() - boardAsk.at < 15000) this.openBoard(boardAsk.id, cx);
+      if (boardAsk && Date.now() - boardAsk.at < 15000) this.openScreen(boardAsk.id, "board", cx);
     }
     const treesAsk = shared("workspaces.worktrees") ?? null;
     if (treesAsk?.at !== this.treesAsked) {
       this.treesAsked = treesAsk?.at;
-      if (treesAsk && Date.now() - treesAsk.at < 15000) this.openBoard(treesAsk.id, cx, { mod: "ws-worktrees", name: "Worktrees" });
+      if (treesAsk && Date.now() - treesAsk.at < 15000) this.openScreen(treesAsk.id, "worktrees", cx);
     }
+    this.takeTabs();
+  }
+
+  // A Board or Worktrees tab from before they were the workspace's own (or made by
+  // hand): it becomes the workspace's screen and the tab closes. Only a tab that
+  // holds nothing else, in a space that has other tabs.
+  takeTabs() {
+    if (!this.loaded || !find(layout(), "screens-body")) return;
+    const assigned = shared("workspaces.assigned") ?? {}, defs = shared("workspaces.defs") ?? [];
+    const ps = panes();
+    this.taken ??= new Set();
+    for (const p of ps) {
+      const key = Object.keys(SCREENS).find((k) => SCREENS[k].mod === p.mod);
+      if (!key || p.terminal || this.taken.has(p.pane)) continue;
+      const space = spaces().find((s) => (s.tabs ?? []).some((c) => c.id === p.tab));
+      const ws = space && !space.machine ? assigned[space.id] : null;
+      if (!ws || !defs.some((d) => d.id === ws) || space.tabs.length < 2 || ps.filter((x) => x.tab === p.tab).length !== 1) continue;
+      this.taken.add(p.pane);
+      const front = space.active && space.tabs.find((c) => c.id === p.tab)?.active && shared("workspaces.active") === ws;
+      this.pin(ws, key);
+      run("tab.close", { id: p.tab, confirmed: true });
+      if (front) setShared("workspaces.screen", { ws, screen: key, at: Date.now() });
+    }
+  }
+
+  // The key's way in: the shown workspace's screen, and back to the tabs from it.
+  toggleScreen(key, cx) {
+    const ws = shared("workspaces.active") ?? null, scr = shared("workspaces.screen") ?? null;
+    if (!ws) return;
+    if (scr?.ws === ws && scr.screen === key) setShared("workspaces.screen", null);
+    else this.openScreen(ws, key, cx);
+  }
+
+  pin(ws, key) {
+    const all = shared("workspaces.screens") ?? {};
+    if (!(all[ws] ?? []).includes(key)) setShared("workspaces.screens", { ...all, [ws]: [...(all[ws] ?? []), key] });
+  }
+
+  // Shows one of a workspace's screens (its board, its worktrees) in place of the
+  // tabs, and pins it in the tab bar of every space of the workspace. With an older
+  // copy of the layout, which has no place for screens, it's a tab in one space.
+  openScreen(id, key, cx) {
+    if (!find(layout(), "screens-body")?.children?.some((c) => c.id === `screen-${key}`)) return this.openBoard(id, cx, SCREENS[key]);
+    if (!(shared("workspaces.defs") ?? []).some((d) => d.id === id)) return;
+    this.pin(id, key);
+    if (shared("workspaces.active") !== id) choose(id);
+    setShared("workspaces.screen", { ws: id, screen: key, at: Date.now() });
   }
 
   // A request for the background runner: a file in the inbox it reads.
@@ -923,9 +1011,10 @@ export default class Workspaces extends View {
     });
   }
 
-  // Shows the workspace's board tab: the one already open in one of its spaces,
-  // else a new one in the shown space (if it's in the workspace), its first space,
-  // or a new space in its root. `screen`: another tab of the workspace's, the same way.
+  // The older way, for a layout without the `screens` column: the workspace's board
+  // tab, the one already open in one of its spaces, else a new one in the shown space
+  // (if it's in the workspace), its first space, or a new space in its root.
+  // `screen`: another tab of the workspace's, the same way.
   openBoard(id, cx, screen = { mod: "ws-board", name: "Board" }) {
     const def = (shared("workspaces.defs") ?? []).find((d) => d.id === id);
     if (!def) return;

@@ -7,8 +7,9 @@
 // `ws-switcher` (shared "workspaces.active", membership in "workspaces.assigned").
 // The changes are the workspace helpers, the filter in grouped(), the empty
 // workspace's folders, and new spaces starting in the workspace's root (in the
-// Scratch workspace, the + and the empty list use ws-switcher's scratch spaces), and
-// holding or right-clicking the + opens ws-switcher's New space dialog.
+// Scratch workspace, the + and the empty list use ws-switcher's scratch spaces),
+// holding or right-clicking the + opens ws-switcher's New space dialog, and a click
+// on a space goes back to the tabs from one of the workspace's screens (showTabs()).
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
@@ -22,6 +23,10 @@ function find(node, id) {
   }
   return null;
 }
+
+// A click here means "show me this": one of the workspace's screens (its board, its
+// worktrees: ws-switcher's shared "workspaces.screen") gives way to the tabs.
+const showTabs = () => { if (shared("workspaces.screen")) setShared("workspaces.screen", null); };
 
 // The sidebar's rail goes by its width, not a flag: dragging its edge narrows it too.
 const narrow = () => (find(layout(), "sidebar")?.size?.px ?? Infinity) < 160;
@@ -442,7 +447,7 @@ export default class Spaces extends View {
         if (from !== null && over === w.id && from !== w.id) {
           const index = spaces().findIndex(s => s.id === w.id);
           if (index !== -1) run("space.move", { id: from, index: index + 1 });
-        } else if (from === w.id) run("space.select", { id: w.id });
+        } else if (from === w.id) { showTabs(); run("space.select", { id: w.id }); }
         cx.notify();
       })
       .on_mouse_down("right", () => this.menu(w))
@@ -468,7 +473,7 @@ export default class Spaces extends View {
       .items_center()
       .when(w.active, (el) => el.bg(t.selected))
       .when(!w.active, (el) => el.hover((s) => s.bg(t.hover)))
-      .on_click(() => run("space.select", { id: w.id }))
+      .on_click(() => { showTabs(); run("space.select", { id: w.id }); })
       .child(div().text_color(w.active ? t.foreground : t.muted).child(String(i + 1)))
       .child(div().absolute().right(5).text_color(tone(t, w.status)).child(glyph(w.status))));
   }

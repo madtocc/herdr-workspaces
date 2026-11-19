@@ -1,5 +1,8 @@
-// Worktrees: every git worktree of one workspace's repos, in a tab of its own
-// (the switcher's "Open … worktrees" makes it, with props { workspace }).
+// Worktrees: every git worktree of one workspace's repos. It's the workspace's own
+// screen: the layout holds one copy (props { screen: true }) that shows the worktrees
+// of the workspace shown in the switcher and follows it, and the switcher menu's
+// "Open … worktrees" shows it in place of the tabs, from any space. In a tab or pane
+// of its own (props { workspace }) it keeps to that workspace.
 //
 // Which ones: git's own list (`git worktree list`) for each repo under the
 // workspace's root or among its folders, so a worktree shows wherever it was
@@ -126,31 +129,60 @@ function mark(def, t, size) {
     .text_size(Math.round(size * 0.55)).font_bold().text_color("#ffffff").child([...def.name][0]?.toUpperCase() ?? "?");
 }
 
+const STALE = 60e3; // ms after which the screen, shown again, reads the worktrees again
+
 export default class Worktrees extends View {
   init(_props, cx) {
     this.handle = cx.focus_handle();
     if (props()?.dialog) return this.initDialog(cx);
-    this.workspace = props()?.workspace ?? shared("workspaces.active") ?? null;
+    // The layout's screen follows the shown workspace; a tab keeps the one it was made with.
+    this.follow = Boolean(props()?.screen);
+    this.workspace = (this.follow ? null : props()?.workspace) ?? shared("workspaces.active") ?? null;
+    this.turn = 0;
+    this.readAt = Date.now();
+    this.showing = !this.follow;
+    this.reset();
+    this.changed = shared("workspaces.worktrees.changed") ?? null;
+    if (checking()) return;
+    this.load(cx);
+    // The dialog says when it removed something, and the screen's workspace may have
+    // changed. Looked at on a timer, not in render: a task started while rendering
+    // never gets to run.
+    cx.timer.every(this.follow ? 400 : 1000, (cx) => {
+      // The screen stays in the layout once shown. Reading every worktree is slow, so
+      // it reads nothing while it isn't the one shown, and catches up when it is again.
+      const scr = this.follow ? shared("workspaces.screen") ?? null : null;
+      const showing = !this.follow || scr?.screen === "worktrees";
+      const back = showing && !this.showing;
+      this.showing = showing;
+      if (!showing) return;
+      // In place of the terminals, it takes the keyboard from them: keys typed here
+      // mustn't land in a terminal nobody sees.
+      if (back) this.handle.focus();
+      const ws = this.follow ? shared("workspaces.active") ?? null : this.workspace;
+      const changed = shared("workspaces.worktrees.changed") ?? null;
+      if (ws !== this.workspace) {
+        // Another workspace is shown: its worktrees from here. A read under way is dropped (turn).
+        this.workspace = ws; this.changed = changed; this.turn++;
+        this.reset();
+        this.load(cx);
+        cx.notify();
+      } else if (changed !== this.changed || (back && !this.reading && Date.now() - this.readAt > STALE)) { this.changed = changed; this.load(cx); }
+    });
+  }
+
+  // The list's own state, as it opens.
+  reset() {
     this.repos = [];
     this.cards = new Map();
     this.scripts = null;
     this.loaded = false;
     this.reading = false;
-    this.turn = 0;
     this.filter = "all";
     this.editing = null; // the repo (its main checkout) whose scripts are open
     this.busy = {}; // worktree path -> "setup"
     this.selected = new Set(); // the paths ticked for Remove selected
     this.anchor = null; // the row ticked or unticked last, and which of the two: a shift-click runs from it
-    this.changed = shared("workspaces.worktrees.changed") ?? null;
-    if (checking()) return;
-    this.load(cx);
-    // The dialog says when it removed something. Looked at on a timer, not in
-    // render: a task started while rendering never gets to run.
-    cx.timer.every(1000, (cx) => {
-      const changed = shared("workspaces.worktrees.changed") ?? null;
-      if (changed !== this.changed) { this.changed = changed; this.load(cx); }
-    });
   }
 
   // Reads everything again, in a task of its own. Call it from a click, a timer
@@ -204,7 +236,7 @@ export default class Worktrees extends View {
       } catch (e) {
         notify({ title: "Couldn't read the worktrees", body: message(e), level: "error" });
       }
-      if (turn === this.turn) { this.reading = false; cx.notify(); }
+      if (turn === this.turn) { this.reading = false; this.readAt = Date.now(); cx.notify(); }
     }
   }
 
@@ -341,10 +373,13 @@ export default class Worktrees extends View {
     const t = theme();
     if (props()?.dialog) return this.dialog(t);
     const def = defOf(this.workspace);
-    const shell = v_flex().id("worktrees").size_full().min_h(0).bg(t.canvas).text_size(13).text_color(t.foreground);
+    const shell = v_flex().id("worktrees").size_full().min_h(0).bg(t.canvas).text_size(13).text_color(t.foreground)
+      .when(this.follow, (el) => el.track_focus(this.handle));
+    // Between two workspaces (the timer is a moment behind): nothing of the last one.
+    if (this.follow && (shared("workspaces.active") ?? null) !== this.workspace) return shell;
     if (!def) {
       return shell.items_center().justify_center().text_color(t.dim)
-        .child(this.workspace ? "This workspace is gone." : "Open the worktrees from the workspace switcher's menu.");
+        .child(this.workspace ? "This workspace is gone." : this.follow ? "Choose a workspace in the switcher to see its worktrees." : "Open the worktrees from the workspace switcher's menu.");
     }
     const live = this.live();
     const all = this.repos.flatMap((r) => r.trees);

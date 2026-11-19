@@ -52,8 +52,11 @@
   <g transform="translate(19 772) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g><text x="44" y="784" fill="#a5a8ae" font-size="13">Add machine</text>
 
   <!-- tab bar and pane -->
-  <rect x="300" y="8" width="78" height="32" rx="8" fill="#26272c"/>
-  <text x="330" y="29" fill="#e8e9eb" font-size="13">1</text>
+  <g transform="translate(312 17) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M15 3v18"/><path d="M5.5 7h1.5"/><path d="M11.5 7h1.5"/><path d="M11.5 11h1.5"/><path d="M17.5 7h1"/></g>
+  <text x="333" y="29" fill="#a5a8ae" font-size="13">Board</text>
+  <rect x="390.1" y="16" width="1" height="16" fill="#2f3137"/>
+  <rect x="399.1" y="8" width="78" height="32" rx="8" fill="#26272c"/>
+  <text x="429.1" y="29" fill="#e8e9eb" font-size="13">1</text>
   <g transform="translate(1064 17) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g>
   <text x="1110" y="29" fill="#a5a8ae" font-size="13">Files</text><text x="1182" y="29" fill="#a5a8ae" font-size="13">Changes</text>
   <rect x="300.5" y="56.5" width="969" height="735" rx="10" fill="#1b1c20" stroke="#8ab4f8"/>
