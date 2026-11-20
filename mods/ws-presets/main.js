@@ -428,7 +428,7 @@ export default class Presets extends View {
     const shown = spaces().find((s) => s.active);
     const where = shown ? `A new tab in “${shown.name}”, in ${tilde(focused()?.cwd || shown.folder || "~")}` : "A new space in the workspace's root";
     const launcher = shared("workspaces.launcher") === true;
-    const system = launcher && ["claude", "codex"].includes(programOf(preset?.command ?? ""));
+    const system = launcher && ["claude", "codex", "agy"].includes(programOf(preset?.command ?? ""));
     const button = (id, text, primary, action) => h_flex().id(id).h(32).px(14).items_center().rounded(8).border_1()
       .border_color(primary ? t.solid : t.input).bg(primary ? t.solid : t.raised).text_color(primary ? t.solid_foreground : t.foreground)
       .text_size(12.5).font_medium().cursor_pointer().hover((s) => s.opacity(0.88)).on_click(action).child(text);
@@ -519,7 +519,7 @@ export default class Presets extends View {
   guideRow(t) {
     const g = this.guide;
     const size = g.bytes < 1024 ? `${g.bytes} bytes` : `${(g.bytes / 1024).toFixed(1)} KB`;
-    const note = !g.bytes ? "No guide yet" : g.on ? `On: ${size} for every Claude and Codex` : "Off: agents go without it";
+    const note = !g.bytes ? "No guide yet" : g.on ? `On: ${size}` : "Off: agents go without it";
     return v_flex().flex_none().border_t(1).border_color(t.border)
       .child(h_flex().px(14).pt(10).pb(4).items_center()
         .child(div().flex_1().text_size(11).text_color(t.dim).child("Herdr guide"))
@@ -528,8 +528,8 @@ export default class Presets extends View {
           .on_click((_e, cx) => this.editGuide(cx)).child(g.bytes ? "Edit" : "Write one")))
       .child(h_flex().id("p-guide").mx(6).px(8).py(6).gap(9).rounded(7).items_center().cursor_pointer()
         .hover((s) => s.bg(t.hover))
-        .tooltip(g.on ? `Claude and Codex started through Herdr get ${tilde(guideFile())} first: how to use automations, hc helpers and the board. A preset can leave it out. Click to turn it off for every agent.`
-          : "Agents start without the guide. Click to give it to every Claude and Codex again.")
+        .tooltip(g.on ? `Claude, Codex and Antigravity started through Herdr get ${tilde(guideFile())} first: how to use automations, hc helpers and the board. A preset can leave it out. Click to turn it off for every agent.`
+          : "Agents start without the guide. Click to give it to Claude, Codex and Antigravity again.")
         .on_click((_e, cx) => this.flipGuide(cx))
         .child(v_flex().flex_1().min_w(0).gap(2)
           .child(div().truncate().child("Give agents the guide"))
@@ -574,7 +574,7 @@ export default class Presets extends View {
     }
     const sel = this.sel;
     const launcher = shared("workspaces.launcher") === true;
-    const system = launcher && ["claude", "codex"].includes(programOf(this.cmdIn.value()));
+    const system = launcher && ["claude", "codex", "agy"].includes(programOf(this.cmdIn.value()));
     const dirty = this.dirty();
     const label = (text) => div().pt(14).pb(6).text_size(11.5).text_color(t.dim).child(text);
     const box = (state, mono) => Input.new(state).h(34).px(10).rounded(8).border_1().border_color(this.focusedIn === state ? t.accent : t.input).bg(t.background)
@@ -640,7 +640,7 @@ export default class Presets extends View {
           .child(pick("p-guide-in", "Gets it", this.guideIn, () => { this.guideIn = true; }))
           .child(pick("p-guide-out", "Goes without", !this.guideIn, () => { this.guideIn = false; }))))
       .child(label(system
-        ? "Instructions: Claude and Codex get these as system instructions, after the workspace's"
+        ? "Instructions: this agent gets these as system instructions, after the workspace's"
         : "Instructions: sent as the agent's first message, before any task"))
       .child(div().flex_1().min_h(80).child(Textarea.new(this.bodyIn).size_full().p(10).rounded(8).border_1().border_color(this.focusedIn === this.bodyIn ? t.accent : t.input)
         .bg(t.background).text_size(12.5).text_color(t.foreground)))

@@ -25,7 +25,7 @@ another workspace needs you or finished.
   belong to no project. You name each one as you make it, and it gets a fresh
   folder carrying that name, tidied away when you're done unless you keep it.
 - **Instructions**: a workspace's `AGENTS.md` goes to the agents you start
-  there. A `BRIEF.md` beside it, where the work stands today, goes with it, and
+  there (Claude Code, Codex and Antigravity). A `BRIEF.md` beside it, where the work stands today, goes with it, and
   `~/.herdr/AGENTS.md` is a guide for the agents of every workspace.
 
 ### A task board
@@ -137,11 +137,23 @@ workspace, managed in the Agent presets screen (open it from the sidebar
 footer), and they start from the tab bar's + menu, a card's Start or an
 automation.
 
-`examples/presets/` has four to start from: an implementer, a reviewer, a
-watcher that can't push or write to GitHub (for automations that only look),
-and an orchestrator that splits a task across helper agents with herdr-core's
-`hc`. Its helpers show under it in the Agents list, and a click on one opens it
-as a tab.
+`examples/presets/` has seven to start from. Four are the usual roles: an
+implementer, a reviewer, a watcher that can't push or write to GitHub (for
+automations that only look), and an orchestrator that splits a task across
+helper agents with herdr-core's `hc`. Its helpers show under it in the Agents
+list, and a click on one opens it as a tab.
+
+The other three are for what an agent would otherwise hand to a subagent of its
+own, where you can't watch it or type to it:
+
+- a **scout** finds where something is and how it works in the code, and
+  answers with files and lines;
+- a **researcher** answers what the repo can't, from docs, source and the web,
+  with a source for each finding;
+- a **planner** reads the code and writes a plan an implementer can follow.
+
+None of them changes code. With the starter guide (see Install), Claude and
+Codex start one of these where they'd use their own subagent.
 
 ### And when you're away
 
@@ -174,6 +186,9 @@ says how), or by hand:
    { "programs": { "claude": { "run": ["herdr-ws-agent", "claude"] },
                    "codex":  { "run": ["herdr-ws-agent", "codex", "--no-daemon"] } } }
    ```
+   If you use Antigravity, add `"antigravity": { "run": ["herdr-ws-agent", "agy"] }`
+   too. Add only the agents you have: Herdr looks for the first word of the line,
+   here the launcher, so a missing agent would still show as installed.
 3. To bring Claude agents back after a restart, add this line to
    `~/.config/herdr-core/config.toml`. herdr-core then starts terminals through
    `herdr-ws-resume`, which resumes a terminal's agent, else runs your usual shell.
@@ -194,6 +209,10 @@ says how), or by hand:
    - presets for every workspace: `examples/presets/*.md` to
      `~/.config/herdr-core/templates/` (where `hc run <name>` finds them too);
    - presets for one workspace: to `~/.herdr/workspaces/<id>/agents/`;
+   - the scout, the researcher and the planner run Claude in auto mode
+     (`--permission-mode auto` in their commands), so a helper never waits for
+     someone to answer a prompt. If you can't use auto mode, change that word
+     in Agent presets;
    - automations need no copying: the Automations screen lists the ready-made
      ones (`mods/ws-automations/starters/`), and Create adds the one you open.
      They're written for the `implementer` and `reviewer` presets;
@@ -246,8 +265,8 @@ folders included, to the Trash with it. A repo's two
 worktree scripts (`~/.herdr/workspaces/<id>/worktrees.json`) are shell lines Herdr
 runs as you: setup in a new worktree the board makes, archive before a removal.
 Like a check, only a line you saved or allowed in the screen runs
-(`~/.herdr/workspaces/.worktree-scripts.json`). The launcher reads `~/.herdr/AGENTS.md`, your global guide, and `~/.herdr/guide/switch`, which the Presets screen's guide switch writes; the screen's Write one creates the guide from the starter and opens it in your editor. The launcher lets Claude and Codex read and edit
-the workspace's root, its folders elsewhere and its `tasks` folder; Claude gets Herdr's own folders in that one session's `--settings`, and no settings file is written. Automations watch the folders a files automation
+(`~/.herdr/workspaces/.worktree-scripts.json`). The launcher reads `~/.herdr/AGENTS.md`, your global guide, and `~/.herdr/guide/switch`, which the Presets screen's guide switch writes; the screen's Write one creates the guide from the starter and opens it in your editor. The launcher lets Claude, Codex and Antigravity read and edit
+the workspace's root, its folders elsewhere and its `tasks` folder; Claude gets Herdr's own folders in that one session's `--settings`, and no settings file is written. For Antigravity it writes the instructions as a rules file under `~/.herdr/agy/`, gives Antigravity that folder, and removes the folders there that no launch has used for 90 days. Automations watch the folders a files automation
 names, read calls `herdr-ws-run` leaves in `~/.herdr/workspaces/.inbox` (and
 delete them), and close an automation's older run tabs once their agent is done.
 An automation's `check:` is a shell command Herdr runs by itself, as you, in the
