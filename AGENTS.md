@@ -49,7 +49,7 @@ A mod can't import from another mod's folder, so some things are copied. Change 
 - **The sandbox**: `scripts/sandbox.sh up` is a second Herdr with its own core, home and demo workspaces (Acme, Blog) under `/tmp/herdr-ws-sandbox`, running copies of the live mods; `sync`, `app …`, `hc …` and `down`. Use it for screens and anything that opens a dialog. Its window does appear on the screen: say so before opening it, and take it `down` after.
 - **Reading state**: `herdr-app status` (shown space, overlays, errors), `herdr-app shot file.png` (the last rendered frame), and `shared.json` in the Herdr home for what mods published. In the sandbox, `sandbox.sh app status` and its own `shared.json`.
 - **Driving it**: `herdr-app do <command> '<json>'` (`herdr-app commands` lists them; `space.close` needs `"confirmed": true`). A stand-in agent is a script that prints `ESC ] 7501 ; state=working:app=x ESC \` (then `state=done`).
-- **Unit checks**: `facts.js` (worktrees), `prfacts.js` (pull requests) and `ghfacts.js` (GitHub boards) have no imports, so `node` can test them directly.
+- **Unit checks**: `facts.js` (worktrees), `prfacts.js` (pull requests), `ghfacts.js` (GitHub boards) and `ws-tabs/fit.js` (the side panel's width) have no imports, so `node` can test them directly.
 - **Quirks**: an edited mod may only reload on the next draw, so the first click after an edit can run the old code. `mod.open` shows a dialog only about 500px wide. A mod's `fs` only reads under home. A window behind others doesn't redraw, so wait and check `status` before trusting a `shot`.
 - **Never stop processes by a name pattern** (`pkill -f`): a person's agents and the background runner match more than you expect. Stop what you started, by its id.
 

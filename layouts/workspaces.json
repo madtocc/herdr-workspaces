@@ -133,7 +133,8 @@
                       "gap": 8,
                       "lone": true
                     }
-                  }
+                  },
+                  "min": 400
                 },
                 {
                   "id": "panel",
