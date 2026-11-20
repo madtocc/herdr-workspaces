@@ -1,9 +1,12 @@
 // The Scratch workspace: a workspace for trying ideas that belong to no project.
-// Its root is ~/.herdr/scratch, and each of its spaces gets a fresh folder there,
-// ~/.herdr/scratch/<YYYY-MM-DD-HHMM>, named "Scratch <time>". "New scratch space"
-// (the switcher menu, the Spaces + while Scratch is shown, or the command
-// ws-switcher.scratch-new) makes one from any workspace and shows it, so the
-// switcher follows it into Scratch.
+// Its root is ~/.herdr/scratch, and each of its spaces gets a fresh folder there.
+// "New scratch space" (the switcher menu, the Spaces + while Scratch is shown, or the
+// command ws-switcher.scratch-new) asks for a name first (ws-switcher's New space
+// dialog), then makes one from any workspace and shows it, so the switcher follows it
+// into Scratch. A space named "bot idea" gets ~/.herdr/scratch/<YYYY-MM-DD-HHMM>-bot-idea,
+// so a folder that outlives its space still says what it was for; with no name it is
+// "Scratch <time>" in ~/.herdr/scratch/<YYYY-MM-DD-HHMM>. The command
+// ws-switcher.scratch-new/<name> makes one at once, without the dialog (a script).
 //
 // The workspace is an ordinary one (~/.herdr/workspaces/scratch/workspace.jsonc with
 // "scratch": true), made the first time the switcher runs, so its instructions,
@@ -27,6 +30,17 @@ export const isScratch = (path, home) => Boolean(path?.startsWith(scratchRoot(ho
 export const scratchDef = (defs) => (defs ?? []).find((d) => d.scratch && !d.error) ?? null;
 
 const pad = (n) => String(n).padStart(2, "0");
+// A space's name as part of its folder's: "Bot idéa!" -> "bot-idea". "" when nothing
+// of it is a letter a-z or a digit; the folder then has only its date and time.
+export function scratchSlug(name) {
+  let s = String(name ?? "");
+  try { s = s.normalize("NFD").replace(/[\u0300-\u036f]/g, ""); } catch (_e) { /* an engine without normalize: accents drop out below */ }
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40).replace(/^-+|-+$/g, "");
+}
+// The name in a scratch folder's name, for the lists: ".../2026-11-20-1020-bot-idea" ->
+// "bot-idea". null for one made unnamed (only the date and time, or with its -2).
+// ws-spaces has the same rule (scratchName()): change both.
+export const scratchLabel = (folder) => String(folder ?? "").replace(/\/+$/, "").split("/").pop().match(/^\d{4}-\d\d-\d\d-\d{4}-(?!\d$)(.+)$/)?.[1] ?? null;
 const under = (path, dir) => path === dir || path.startsWith(dir + "/");
 
 export const scratchConfig = `// The Scratch workspace: for trying ideas that belong to no project. Each space
@@ -103,17 +117,19 @@ export class Scratch {
   async create(name = "") {
     const { home, exec, run } = this.io;
     await this.ensureWorkspace();
+    name = String(name ?? "").trim().slice(0, 80);
+    const slug = scratchSlug(name);
     const now = new Date();
     const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
     const parent = scratchRoot(home());
     // mkdir without -p fails on a taken name, so the first free one wins.
-    const r = await exec("sh", ["-c", `mkdir -p "$1" && for n in "" -2 -3 -4 -5 -6 -7 -8 -9; do mkdir "$1/$2$n" 2>/dev/null && echo "$1/$2$n" && exit 0; done; exit 1`, "sh", parent, stamp]);
+    const r = await exec("sh", ["-c", `mkdir -p "$1" && for n in "" -2 -3 -4 -5 -6 -7 -8 -9; do mkdir "$1/$2$n" 2>/dev/null && echo "$1/$2$n" && exit 0; done; exit 1`, "sh", parent, slug ? `${stamp}-${slug}` : stamp]);
     const folder = r.stdout.trim();
     if (r.code !== 0 || !folder) throw new Error(r.stderr.trim() || `couldn't make a folder in ${parent}`);
     this.used.add(folder); // so closing it, however soon, is noticed
     this.save();
-    // Two in the same minute: "Scratch 10:20 (2)", like the folder's -2.
-    const n = folder.match(/-(\d)$/)?.[1];
+    // Unnamed, two in the same minute: "Scratch 10:20 (2)", like the folder's -2.
+    const n = name ? null : folder.match(/-(\d)$/)?.[1];
     run("space.new", { folder, name: name || `Scratch ${pad(now.getHours())}:${pad(now.getMinutes())}${n ? ` (${n})` : ""}` });
     return folder;
   }

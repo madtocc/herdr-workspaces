@@ -22,8 +22,8 @@ another workspace needs you or finished.
 - **New space**: a click on the Spaces + makes one in the workspace's root. Hold
   it (or right-click) to name the space and choose its folder.
 - **Scratch**, always last in the switcher, holds throwaway spaces for ideas that
-  belong to no project. Each gets a fresh folder, tidied away when you're done
-  unless you keep it.
+  belong to no project. You name each one as you make it, and it gets a fresh
+  folder carrying that name, tidied away when you're done unless you keep it.
 - **Instructions**: a workspace's `AGENTS.md` goes to the agents you start
   there. A `BRIEF.md` beside it, where the work stands today, goes with it, and
   `~/.herdr/AGENTS.md` is a guide for the agents of every workspace.

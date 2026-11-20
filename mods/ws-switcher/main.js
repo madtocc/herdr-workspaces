@@ -17,7 +17,7 @@
 //   workspaces.assigned  space id -> workspace id (false: kept out of all of them)
 //   workspaces.last      workspace id -> the space last shown in it
 //   workspaces.create    a time: the menu asks this block to make a workspace
-//   workspaces.scratch   { at, name? }: the menu or the New space dialog asks this block for a scratch space (scratch.js)
+//   workspaces.scratch   { at, name? }: the New scratch space dialog asks this block for a scratch space (scratch.js)
 //   workspaces.scratch.folders  the Scratch workspace's folders, newest first, for the menu and ws-spaces
 //   workspaces.worktrees { id, at }: the menu asks this block to show a workspace's
 //                        Worktrees screen (ws-worktrees), as workspaces.board does the board
@@ -57,7 +57,7 @@ import * as fs from "fs/promises";
 import { Runner, runnerDir, globalDir } from "./automations.js";
 import { PrWatcher } from "./prs.js";
 import { GhWatcher } from "./ghboard.js";
-import { Scratch, isScratch, scratchDef } from "./scratch.js";
+import { Scratch, isScratch, scratchDef, scratchLabel } from "./scratch.js";
 import { dir, expand, tilde, under, base, subdirs, loadDefs, templatesDir, loadPresetDir, presetsFor, presetLaunch, withTask } from "./defs.js";
 
 // "Edit" opens the workspace's folder in the first of these that's installed,
@@ -195,6 +195,12 @@ function urgent(list) {
   return best;
 }
 
+// New scratch space, wherever it's asked for (the menu, the Spaces +, the empty work
+// area, the command): the New space dialog in its Scratch form, which asks for the name.
+// ws-spaces opens the same one (askNewSpace()); keep the two sizes alike.
+const askScratch = () => openOverlay({ mod: "ws-switcher", kind: "dialog", width: 460, height: 234,
+  props: { dialog: "new-space", id: scratchDef(shared("workspaces.defs"))?.id ?? null, scratch: true } });
+
 function mark(def, defs, t, size) {
   if (!def) {
     return h_flex().size(size).flex_none().rounded(5).border_1().border_color(t.input).items_center().justify_center()
@@ -298,8 +304,9 @@ export default class Workspaces extends View {
       home, exec, spaces, panes, run, notify, shared, setShared, readTextFile, writeTextFile, wsDir: dir,
       trash: async (path) => (await exec("sh", ["-c", TRASH, "sh", path, `${home()}/.herdr/scratch/.trash`, `${base(path)}-${Date.now()}`])).stdout.trim(),
     });
-    // Commands for this copy: "ws-switcher.scratch-new" (bind it to a key) makes a scratch
-    // space in the shown workspace; the scratch toast's Keep is "ws-switcher.scratch-keep/<workspace>/<folder>";
+    // Commands for this copy: "ws-switcher.scratch-new" (bind it to a key) asks for a scratch
+    // space's name, and "ws-switcher.scratch-new/<name>" makes one at once (a script; a blank
+    // name is "Scratch <time>"); the scratch toast's Keep is "ws-switcher.scratch-keep/<folder>";
     // a toast about one automation is "ws-switcher.automation/<workspace>/<name>" (automations.js: openAt);
     // "ws-switcher.board" and "ws-switcher.worktrees" (bind them to keys) show the shown workspace's
     // screen, and go back to the tabs when it's the one shown.
@@ -307,7 +314,8 @@ export default class Workspaces extends View {
       for (;;) {
         const c = await nextCommand();
         try {
-          if (c === "scratch-new") await this.scratch.create();
+          if (c === "scratch-new") askScratch();
+          else if (c.startsWith("scratch-new/")) await this.scratch.create(c.slice("scratch-new/".length));
           else if (SCREENS[c]) this.toggleScreen(c, cx);
           else if (c.startsWith("scratch-keep/")) await this.scratch.keep(c);
           else if (c.startsWith("automation/")) this.openAutomation(c);
@@ -637,11 +645,11 @@ export default class Workspaces extends View {
   }
 
   // The empty block: the shown workspace has no spaces. A quiet line, and New space
-  // as the Spaces + does it (Scratch: a new scratch space, which the sidebar copy makes).
+  // as the Spaces + does it (Scratch: the dialog that names a new scratch space).
   empty(t) {
     const ws = (shared("workspaces.defs") ?? []).find((d) => d.id === shared("workspaces.active")) ?? null;
     const make = () => {
-      if (ws?.scratch) setShared("workspaces.scratch", { at: Date.now() });
+      if (ws?.scratch) askScratch();
       else run("space.new", ws?.root ? { folder: ws.root } : {});
     };
     return v_flex().size_full().items_center().justify_center().gap(10).text_size(12.8).text_color(t.dim)
@@ -649,7 +657,7 @@ export default class Workspaces extends View {
         .child(div().id("empty-new").px(10).py(5).rounded(7).cursor_pointer().text_color(t.muted)
           .border(1).border_color(t.border).hover((s) => s.bg(t.hover).text_color(t.foreground))
           .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-          .on_click(make).child(ws?.scratch ? "New scratch space" : "New space")));
+          .on_click(make).child(ws?.scratch ? "New scratch space…" : "New space")));
   }
 
   async create() {
@@ -668,13 +676,16 @@ export default class Workspaces extends View {
   }
 
   // The New space dialog (holding or right-clicking the Spaces +): a name and a folder.
+  // Its Scratch form (props.scratch, or Scratch's id) has only the name, and is what
+  // every New scratch space opens (askScratch()).
   initNewSpace(cx) {
     const ws = (shared("workspaces.defs") ?? []).find((d) => d.id === props().id) ?? null;
+    const scratch = Boolean(props().scratch || ws?.scratch);
     const shown = spaces().find((s) => s.active);
     const start = ws?.root || (shown ? placeOf(shown, panes()) : "") || home();
     const now = new Date(), hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
-    this.nameIn = InputState.new({ value: "", placeholder: ws?.scratch ? `Scratch ${hhmm}` : "Called after its folder" });
-    this.folderIn = InputState.new({ value: ws?.scratch ? "" : tilde(start) });
+    this.nameIn = InputState.new({ value: "", placeholder: scratch ? `Scratch ${hhmm}` : "Called after its folder" });
+    this.folderIn = InputState.new({ value: scratch ? "" : tilde(start) });
     for (const input of [this.nameIn, this.folderIn]) {
       input.on("change", (_e, cx) => { this.error = null; cx.notify(); });
       input.on("submit", (_e, cx) => this.newSpace(cx));
@@ -689,7 +700,7 @@ export default class Workspaces extends View {
     const ws = (shared("workspaces.defs") ?? []).find((d) => d.id === p.id) ?? null;
     const name = this.nameIn.value().trim();
     if (this.busy) return;
-    if (ws?.scratch) {
+    if (p.scratch || ws?.scratch) {
       setShared("workspaces.scratch", { at: Date.now(), ...(name ? { name } : {}) });
       closeOverlay(p.overlay);
       return;
@@ -777,10 +788,11 @@ export default class Workspaces extends View {
     const defs = shared("workspaces.defs") ?? [];
     const field = (label, input) => [div().pt(14).pb(7).text_size(11.5).text_color(t.dim).child(label),
       Input.new(input).h(36).px(10).rounded(9).border_1().border_color(t.input).bg(t.background).text_size(12.8).text_color(t.foreground)];
-    const el = frame("ws-new-space", (cx) => this.newSpace(cx)).child(title(ws ? `New space in ${ws.name}` : "New space"));
+    const scratch = Boolean(props().scratch || ws?.scratch);
+    const el = frame("ws-new-space", (cx) => this.newSpace(cx)).child(title(scratch ? "New scratch space" : ws ? `New space in ${ws.name}` : "New space"));
     el.children(field("Name", this.nameIn));
-    if (ws?.scratch) {
-      return el.child(div().pt(10).text_size(11.5).text_color(t.dim).child("In a new scratch folder in ~/.herdr/scratch, tidied away when you're done unless you keep it."))
+    if (scratch) {
+      return el.child(div().pt(10).text_size(11.5).text_color(t.dim).child("Its new folder in ~/.herdr/scratch carries the name, and is tidied away when you're done unless you keep it. Blank name: Scratch and the time."))
         .when(Boolean(this.error), (e) => e.child(error()))
         .child(h_flex().pt(18).gap(8).justify_end()
           .child(button("ws-new-cancel", "Cancel", false, close))
@@ -1084,10 +1096,11 @@ export default class Workspaces extends View {
     }
 
     // Making a workspace comes first, above the list it adds to.
-    // A space in a new empty folder in the Scratch workspace (scratch.js); the sidebar copy makes it.
-    const scratchRow = row("ws-scratch", svg("mods/ws-switcher/scratch.svg").size(14).flex_none().text_color(t.muted), "New scratch space", div(),
-      () => setShared("workspaces.scratch", { at: Date.now() }),
-      { tip: "A space in a new empty folder in the Scratch workspace, for an idea that belongs to no project. Deleted when you close it empty; with files, kept 7 days unless you keep it." });
+    // A space in a new empty folder in the Scratch workspace (scratch.js): its dialog asks for
+    // the name, and the sidebar copy makes it.
+    const scratchRow = row("ws-scratch", svg("mods/ws-switcher/scratch.svg").size(14).flex_none().text_color(t.muted), "New scratch space…", div(),
+      () => askScratch(),
+      { tip: "Name an idea that belongs to no project, and it gets a space in a new empty folder in the Scratch workspace. Deleted when you close it empty; with files, kept 7 days unless you keep it." });
     const items = [row("ws-new", icon("folder-plus"), "New workspace from a folder…", div(), () => setShared("workspaces.create", Date.now())),
       scratchRow,
       line(), head("Workspaces"),
@@ -1133,8 +1146,10 @@ export default class Workspaces extends View {
       if (folders.length) items.push(line(), head(`${active.name} folders`));
       for (const f of folders) {
         const there = sp.find((s) => !s.machine && inFolder(active, placeOf(s, ps), f));
-        items.push(row(`ws-folder-${f}`, icon("folder"), base(f), hint(there ? "Go" : "Open"),
-          () => run(there ? "space.select" : "space.new", there ? { id: there.id } : { folder: f }), { tip: tilde(f) }));
+        // A named scratch folder shows its name, and a space reopened there is called that.
+        const name = active.scratch ? scratchLabel(f) : null;
+        items.push(row(`ws-folder-${f}`, icon("folder"), name ?? base(f), hint(there ? "Go" : "Open"),
+          () => run(there ? "space.select" : "space.new", there ? { id: there.id } : { folder: f, ...(name ? { name } : {}) }), { tip: tilde(f) }));
       }
     }
 

@@ -7,7 +7,8 @@
 // `ws-switcher` (shared "workspaces.active", membership in "workspaces.assigned").
 // The changes are the workspace helpers, the filter in grouped(), the empty
 // workspace's folders, and new spaces starting in the workspace's root (in the
-// Scratch workspace, the + and the empty list use ws-switcher's scratch spaces),
+// Scratch workspace, the + asks for the new scratch space's name and the empty list
+// shows ws-switcher's scratch folders),
 // holding or right-clicking the + opens ws-switcher's New space dialog, and a click
 // on a space goes back to the tabs from one of the workspace's screens (showTabs()).
 
@@ -43,6 +44,9 @@ const HOLD = 450; // ms the Spaces + is held before it asks for a name and folde
 const railCell = (el) => h_flex().flex_none().justify_center().child(el);
 const where = (s, ps) => JSON.stringify([s.machine ?? null, place(s, ps)]);
 const base = (path) => path.replace(/\/+$/, "").split("/").pop();
+// The name in a scratch folder's name ("2026-11-20-1020-bot-idea" -> "bot-idea"), null
+// for one made unnamed. The same rule as ws-switcher's scratchLabel() (scratch.js): change both.
+const scratchName = (folder) => base(folder).match(/^\d{4}-\d\d-\d\d-\d{4}-(?!\d$)(.+)$/)?.[1] ?? null;
 // Changes made outside Herdr (an editor's save, a commit in another app): looked
 // for this often, in repos the list shows, while the window is in front.
 const FALLBACK = 60000;
@@ -478,25 +482,35 @@ export default class Spaces extends View {
       .child(div().absolute().right(5).text_color(tone(t, w.status)).child(glyph(w.status))));
   }
 
-  // The New space dialog (ws-switcher's), for the shown workspace.
+  // The New space dialog (ws-switcher's), for the shown workspace. In Scratch it has
+  // only the name, and is what a plain click on the + opens too (ws-switcher's askScratch()).
   askNewSpace() {
     const ws = workspace();
-    openOverlay({ mod: "ws-switcher", kind: "dialog", width: 460, height: ws?.scratch ? 220 : 330, props: { dialog: "new-space", id: ws?.id ?? null } });
+    openOverlay({ mod: "ws-switcher", kind: "dialog", width: 460, height: ws?.scratch ? 234 : 330,
+      props: { dialog: "new-space", id: ws?.id ?? null, ...(ws?.scratch ? { scratch: true } : {}) } });
   }
 
   // A workspace with no spaces yet: its folders, each a click from a space.
   emptyWorkspace(ws, t, collapsed) {
     const folders = ws.scratch ? (shared("workspaces.scratch.folders") ?? []) : ws.folders.length ? ws.folders : ws.children.map((c) => `${ws.root}/${c}`);
-    const open = (id, label, folder, tip) => h_flex().id(id).h(28).flex_none().px(collapsed ? 0 : 8).gap(7).items_center().rounded(7)
+    // name: a named scratch folder's, shown in place of the folder's and given to its space.
+    const open = (id, label, folder, tip, name = null) => h_flex().id(id).h(28).flex_none().px(collapsed ? 0 : 8).gap(7).items_center().rounded(7)
       .text_size(12).text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground)).cursor_pointer()
-      .on_click(() => run("space.new", { folder }))
+      .on_click(() => run("space.new", { folder, ...(name ? { name } : {}) }))
       .when(collapsed, (el) => el.w(RAIL_CELL).justify_center().tooltip(tip).child(svg("mods/workspace-chrome/plus.svg").size(12)))
       .when(!collapsed, (el) => el.tooltip(tip).child(svg("mods/workspace-chrome/folder.svg").size(12).flex_none())
         .child(div().flex_1().min_w(0).truncate().child(label)));
+    // The rail's one cell. In Scratch it names a new scratch space, as the + does.
+    if (collapsed && ws.scratch) {
+      return [railCell(h_flex().id("ws-open-root").h(28).w(RAIL_CELL).flex_none().justify_center().items_center().rounded(7)
+        .text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground)).cursor_pointer()
+        .tooltip("New scratch space").on_click(() => this.askNewSpace())
+        .child(svg("mods/workspace-chrome/plus.svg").size(12)))];
+    }
     if (collapsed) return [railCell(open("ws-open-root", "", ws.root || "~", `New space in ${ws.name}`))];
     return [
       div().px(8).pt(4).pb(6).text_size(12).text_color(t.dim).child(`No spaces in ${ws.name} yet.`),
-      ...folders.slice(0, 12).map((f) => open(`ws-open-${f}`, base(f), f, f)),
+      ...folders.slice(0, 12).map((f) => { const name = ws.scratch ? scratchName(f) : null; return open(`ws-open-${f}`, name ?? base(f), f, f, name); }),
     ];
   }
 
@@ -521,9 +535,10 @@ export default class Spaces extends View {
         .when(!collapsed, el => el.child("Spaces"))
         .child(div().id("space-new").size(26).flex_none().flex().items_center().justify_center().rounded(6).hover(s => s.bg(t.hover).text_color(t.foreground))
           .when(this.holding !== null, el => el.bg(t.selected))
-          .tooltip(workspace()?.scratch ? "New scratch space. Hold or right-click to name it" : "New space. Hold or right-click to name it and choose its folder")
-          // A click: a space in the workspace's root (in Scratch, a new scratch space; ws-switcher
-          // makes it). Held for HOLD ms, or right-clicked: ws-switcher's New space dialog.
+          .tooltip(workspace()?.scratch ? "New scratch space" : "New space. Hold or right-click to name it and choose its folder")
+          // A click: a space in the workspace's root. Held for HOLD ms, or right-clicked:
+          // ws-switcher's New space dialog. In Scratch a click opens it too: a scratch space
+          // is named when it's made.
           .on_mouse_down("left", (_e, cx) => {
             const at = this.holding = Date.now();
             cx.notify();
@@ -534,7 +549,7 @@ export default class Spaces extends View {
             if (this.holding === null) return;
             this.holding = null;
             cx.notify();
-            if (workspace()?.scratch) setShared("workspaces.scratch", { at: Date.now() });
+            if (workspace()?.scratch) this.askNewSpace();
             else run("space.new", workspace()?.root ? { folder: workspace().root } : {});
           })
           .on_mouse_down("right", () => { this.holding = null; this.askNewSpace(); })
