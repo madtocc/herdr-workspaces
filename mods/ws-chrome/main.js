@@ -1,7 +1,8 @@
 // ws-chrome: Herdr's `workspace-chrome` (0.1.14) for the sidebar footer, with
-// "Automations" and "Agent presets" rows above Settings that open the
-// ws-automations and ws-presets screens for the shown workspace. The brand row
-// still uses Herdr's own workspace-chrome.
+// "History", "Automations" and "Agent presets" rows above Settings. The last two
+// open the ws-automations and ws-presets screens for the shown workspace; History
+// asks the switcher (shared "workspaces.history") for the workspace's History
+// screen (ws-history). The brand row still uses Herdr's own workspace-chrome.
 
 import { View, div, image, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
@@ -46,6 +47,8 @@ export default class WorkspaceChrome extends View {
       const ready = div().size(6).rounded_full().bg(t.accent);
       return v_flex().size_full().bg(t.chrome).border_t(1).border_color(t.border).px(8).pt(4).pb(8).text_size(13)
         .when(collapsed, el => el.px(0).items_center())
+        .child(row("history", "mods/ws-history/history.svg", "History", false,
+          () => setShared("workspaces.history", { id: shared("workspaces.active") ?? null, at: Date.now() })))
         .child(row("automations", "mods/ws-automations/automations.svg", "Automations", false, () => openOverlay({
           mod: "ws-automations", kind: "dialog", width: 940, height: 680, props: { workspace: shared("workspaces.active") ?? null } })))
         .child(row("presets", "presets", "Agent presets", false, () => openOverlay({

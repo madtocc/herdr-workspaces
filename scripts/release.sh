@@ -28,6 +28,7 @@ git rev-parse -q --verify "refs/tags/v$v" >/dev/null && { echo "release: v$v is 
 last=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
 for pair in mods/ws-switcher/preview.svg:preview.png mods/ws-board/preview.svg:previews/board.png \
             mods/ws-board/preview-github.svg:previews/github.png mods/ws-worktrees/preview.svg:previews/worktrees.png \
+            mods/ws-history/preview.svg:previews/history.png \
             mods/ws-automations/preview.svg:previews/automations.png; do
   svg=${pair%%:*} png=${pair#*:}
   [ -e "$png" ] || { echo "release: $png is missing: run scripts/render-preview.sh" >&2; exit 1; }
