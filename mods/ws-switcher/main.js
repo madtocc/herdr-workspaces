@@ -245,7 +245,7 @@ function configText(name, color, root, folders) {
   "folders": [
 ${folders.map((f) => `    ${JSON.stringify(f)},`).join("\n")}
   ],
-  // What every agent started here is told (claude, codex), on top of each
+  // What every agent started here is told (Claude, Codex, Antigravity, Pi), on top of each
   // repo's own CLAUDE.md / AGENTS.md. Default: AGENTS.md next to this file.
   // "instructions": "AGENTS.md",
   // The task board (ws-board). All optional; these are the defaults.
@@ -255,7 +255,7 @@ ${folders.map((f) => `    ${JSON.stringify(f)},`).join("\n")}
 `;
 }
 
-const instructionsText = (name) => `<!-- What every agent (claude, codex) started in the ${name} workspace is told,
+const instructionsText = (name) => `<!-- What every agent (Claude, Codex, Antigravity, Pi) started in the ${name} workspace is told,
      on top of each repo's own CLAUDE.md / AGENTS.md. Write below this comment;
      the comment itself is not sent. Applies to agents started after you save. -->
 `;

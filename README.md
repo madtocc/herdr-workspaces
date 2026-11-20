@@ -25,7 +25,7 @@ another workspace needs you or finished.
   belong to no project. You name each one as you make it, and it gets a fresh
   folder carrying that name, tidied away when you're done unless you keep it.
 - **Instructions**: a workspace's `AGENTS.md` goes to the agents you start
-  there (Claude Code, Codex and Antigravity). A `BRIEF.md` beside it, where the work stands today, goes with it, and
+  there (Claude Code, Codex, Antigravity and Pi). A `BRIEF.md` beside it, where the work stands today, goes with it, and
   `~/.herdr/AGENTS.md` is a guide for the agents of every workspace.
 
 ### A task board
@@ -86,7 +86,7 @@ workspace: a pill in the tab bar of each of its spaces.
 
 **History** in the sidebar footer (or "Resume a conversation…" in the + menu)
 lists the conversations your agents saved, newest first, whichever agent it
-was: Claude Code, Codex, Pi, Grok and OpenCode. Like the board it belongs to
+was: Claude Code, Codex, Pi, Grok, OpenCode and Antigravity. Like the board it belongs to
 the workspace: a pill in the tab bar of each of its spaces.
 
 - **Resume** continues a conversation in a new tab, in the folder it ran in.
@@ -157,7 +157,7 @@ Codex start one of these where they'd use their own subagent.
 
 ### And when you're away
 
-- **After a reboot or a logout**, the Claude agents you hadn't closed come back
+- **After a reboot or a logout**, the Claude and Antigravity agents you hadn't closed come back
   in their tabs, resumed with their conversations, helpers included.
 - **Desktop notifications**: while you're in another app, Herdr's notifications
   (an agent needs you or finished, an automation's news) also show on your
@@ -187,9 +187,9 @@ says how), or by hand:
                    "codex":  { "run": ["herdr-ws-agent", "codex", "--no-daemon"] } } }
    ```
    If you use Antigravity, add `"antigravity": { "run": ["herdr-ws-agent", "agy"] }`
-   too. Add only the agents you have: Herdr looks for the first word of the line,
+   too, and for Pi, `"pi": { "run": ["herdr-ws-agent", "pi"] }`. Add only the agents you have: Herdr looks for the first word of the line,
    here the launcher, so a missing agent would still show as installed.
-3. To bring Claude agents back after a restart, add this line to
+3. To bring Claude and Antigravity agents back after a restart, add this line to
    `~/.config/herdr-core/config.toml`. herdr-core then starts terminals through
    `herdr-ws-resume`, which resumes a terminal's agent, else runs your usual shell.
    The switch at the foot of the Agent presets screen turns it off and on again
@@ -251,7 +251,8 @@ their worktrees (`worktree list`, `for-each-ref`, `status`) and each repo's pull
 requests with `gh pr list`. Removing a worktree there (after a confirmation)
 deletes its folder with `git worktree remove`; the branch stays. History reads the
 conversations your agents keep on this computer (`~/.claude/projects`, `~/.codex/state_*.sqlite`,
-`~/.pi/agent/sessions`, `~/.grok/sessions`, `~/.local/share/opencode/opencode.db`): titles, the
+`~/.pi/agent/sessions`, `~/.grok/sessions`, `~/.local/share/opencode/opencode.db`,
+`~/.gemini/antigravity-cli`): titles, the
 first and last thing asked, folder, branch and model, never the rest, and it changes nothing there.
 It runs `node` (and `sqlite3` when Node is older than 22.13) to read them, keeps what it read in
 `~/.herdr/cache/history/index.json`, and starts your agent with its resume command when you click
@@ -266,7 +267,7 @@ worktree scripts (`~/.herdr/workspaces/<id>/worktrees.json`) are shell lines Her
 runs as you: setup in a new worktree the board makes, archive before a removal.
 Like a check, only a line you saved or allowed in the screen runs
 (`~/.herdr/workspaces/.worktree-scripts.json`). The launcher reads `~/.herdr/AGENTS.md`, your global guide, and `~/.herdr/guide/switch`, which the Presets screen's guide switch writes; the screen's Write one creates the guide from the starter and opens it in your editor. The launcher lets Claude, Codex and Antigravity read and edit
-the workspace's root, its folders elsewhere and its `tasks` folder; Claude gets Herdr's own folders in that one session's `--settings`, and no settings file is written. For Antigravity it writes the instructions as a rules file under `~/.herdr/agy/`, gives Antigravity that folder, and removes the folders there that no launch has used for 90 days. Automations watch the folders a files automation
+the workspace's root, its folders elsewhere and its `tasks` folder; Claude gets Herdr's own folders in that one session's `--settings`, and no settings file is written. For Antigravity it writes the instructions as a rules file under `~/.herdr/agy/`, gives Antigravity that folder, and removes the folders there that no launch has used for 90 days. Pi takes no folders, so the launcher names them in Pi's instructions, and passes your `~/.pi/agent/APPEND_SYSTEM.md`, when you have one, along with them. Automations watch the folders a files automation
 names, read calls `herdr-ws-run` leaves in `~/.herdr/workspaces/.inbox` (and
 delete them), and close an automation's older run tabs once their agent is done.
 An automation's `check:` is a shell command Herdr runs by itself, as you, in the
@@ -274,7 +275,10 @@ automation's folder before each run, to see whether there's anything to do. It r
 For restarts, the launcher keeps notes of the Claude agents it starts in
 `~/.herdr/resume/` (their command and session), runs `hc ls` to drop the notes
 of closed tabs, and gives Claude two hooks (`--settings`) that note its session
-and drop the note when you leave it. With the `shell` line in herdr-core's
+and drop the note when you leave it. Antigravity's hook is a `.agents/hooks.json` in its
+rules folder that notes its conversation. The Presets and Automations screens run
+`agy models` (it asks Antigravity's server) at most once a day and keep its answer in
+`~/.herdr/cache/agy-models.json`. With the `shell` line in herdr-core's
 config, every new terminal starts through `herdr-ws-resume`.
 Every notification Herdr shows is also handed to `herdr-ws-notify`, and so is the
 background runner's news while no window is open. It asks macOS which app is in

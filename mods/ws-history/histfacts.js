@@ -12,6 +12,7 @@ export const PROVIDERS = {
   pi: { name: "Pi", program: "pi", resume: (s) => ["--session", s.file || s.id] },
   grok: { name: "Grok", program: "grok", resume: (s) => ["--resume", s.id] },
   opencode: { name: "OpenCode", program: "opencode", resume: (s) => ["--session", s.id] },
+  antigravity: { name: "Antigravity", program: "antigravity", resume: (s) => ["--conversation", s.id] },
 };
 
 // One line of text for a row: whitespace folded, cut to `max` with an ellipsis.
@@ -169,6 +170,62 @@ export function grokFacts(summary, first = "") {
     title: clean(s.title || s.session_summary || "", 120), first: clean(first, 240), last: "",
     model: s.current_model_id ?? "", branch: "",
     started: time(s.created_at) ?? 0, updated: time(s.last_active_at) ?? time(s.updated_at) ?? 0, via: "",
+  };
+}
+
+// An Antigravity transcript (brain/<id>/.system_generated/logs/transcript.jsonl): the
+// first and last thing asked, the model that answered last, and when it started. A
+// prompt is the text inside <USER_REQUEST>; what hc types in is left out, as for the others.
+export function agyFacts(head, tail = "") {
+  const out = { first: null, last: null, model: null, started: null };
+  const read = (o, isHead) => {
+    if (isHead && !out.started) out.started = time(o.created_at);
+    if (typeof o.model === "string" && o.model) out.model = o.model;
+    if (o.type !== "USER_INPUT" || o.source !== "USER_EXPLICIT") return;
+    const m = /<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/.exec(String(o.content ?? ""));
+    const p = m ? promptText(m[1]) : null;
+    if (p && isHead && !out.first) out.first = p;
+    if (p) out.last = p;
+  };
+  for (const o of lines(head)) read(o, true);
+  for (const o of lines(tail)) read(o, false);
+  return out;
+}
+
+// Where an Antigravity conversation ran, from its workspace folders (`file://` URIs in
+// its summary). One the launcher started has its rules folder (under `agyDir`,
+// ~/.herdr/agy) among them, and `rules(folder)` (that folder's AGENTS.md) names the
+// working folder. Otherwise the folder Antigravity says it last ran in there
+// (`lastIn`), else the first of the rest, which is where it runs commands.
+export function agyCwd(uris, agyDir, rules, lastIn) {
+  const paths = [];
+  for (const u of Array.isArray(uris) ? uris : []) {
+    if (typeof u !== "string" || !u.startsWith("file://")) continue;
+    try { paths.push(decodeURIComponent(u.slice(7)).replace(/\/+$/, "") || "/"); } catch { /* not a path */ }
+  }
+  // Its rules folders: under agyDir, or anything shaped like one (another home's).
+  const ours = (x) => inside(x, agyDir) || /\/\.herdr\/agy\/[^/]+\/[^/]+$/.test(x);
+  for (const p of paths.filter(ours)) {
+    const m = /Your working folder is (.+?)\. Run every command there/.exec(String(rules(p) ?? ""));
+    if (m) return m[1];
+  }
+  const rest = paths.filter((x) => !ours(x));
+  return (lastIn && rest.includes(lastIn) ? lastIn : rest[0]) ?? null;
+}
+
+// An Antigravity conversation, as a row of its conversation_summaries table, with
+// agyFacts() from its transcript. Null for a sub-agent's. Antigravity titles the ones
+// you talk to; a print run (`agy -p`) keeps none, so one without a title is headless.
+export function agyRow(r, facts, cwd) {
+  if (!r?.conversation_id || !cwd || r.parent_conversation_id || Number(r.nesting_depth) > 0) return null;
+  const first = clean(facts?.first || r.preview || "", 240);
+  const title = clean(r.title || "", 120);
+  if (!first && !title) return null;
+  const updated = time(String(r.last_modified_time ?? "").replace(" ", "T")) ?? 0;
+  return {
+    provider: "antigravity", id: String(r.conversation_id), cwd, title: title && title !== clean(first, 120) ? title : "", first,
+    last: samePrompt(facts?.first, facts?.last) ? "" : clean(facts?.last, 240), model: facts?.model ?? "", branch: "",
+    started: facts?.started ?? updated, updated, via: "", headless: !r.title,
   };
 }
 

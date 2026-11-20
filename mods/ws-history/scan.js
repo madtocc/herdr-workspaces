@@ -15,10 +15,13 @@
 //   Pi           ~/.pi/agent/sessions/<folder>/<time>_<session>.jsonl
 //   Grok         ~/.grok/sessions/<folder>/<session>/summary.json
 //   OpenCode     ~/.local/share/opencode/opencode.db (its session table)
+//   Antigravity  ~/.gemini/antigravity-cli/conversation_summaries.db, each one's
+//                brain/<id>/.system_generated/logs/transcript.jsonl, and for where it
+//                ran, the launcher's ~/.herdr/agy/*/*/AGENTS.md and its cache/last_conversations.json
 // and two of the launcher's own notes, so a conversation is resumed as it was started
 // and one that's open is gone to instead: ~/.herdr/resume/<core>/<terminal>.session
-// (which terminal holds which Claude session) and ~/.herdr/resume/started (the
-// command each Claude session was started with).
+// (which terminal holds which Claude or Antigravity conversation) and
+// ~/.herdr/resume/started (the command each one was started with).
 //
 // A transcript can be many megabytes, so only its first and last pieces are read,
 // and what they said is kept in ~/.herdr/cache/history/index.json until the file changes.
@@ -26,7 +29,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { claudeHead, claudeTail, piFacts, codexRow, opencodeRow, grokFacts, clean, samePrompt, inside, PROVIDERS, titleOf, ago } from "./histfacts.js";
+import { claudeHead, claudeTail, piFacts, codexRow, opencodeRow, grokFacts, agyFacts, agyCwd, agyRow, clean, samePrompt, inside, PROVIDERS, titleOf, ago } from "./histfacts.js";
 
 // node:sqlite says it's experimental on every import; nobody reads that here.
 process.removeAllListeners("warning");
@@ -198,6 +201,39 @@ async function scanOpencode(out) {
   for (const r of rows) { const row = opencodeRow(r); if (row && (row.title || row.first)) out.push(row); }
 }
 
+// --- Antigravity ---
+async function scanAntigravity(out) {
+  const home = path.join(HOME, ".gemini", "antigravity-cli");
+  const file = path.join(home, "conversation_summaries.db");
+  if (!stat(file)) return;
+  const stamp = (t) => new Date(t).toISOString().replace("T", " ").replace("Z", "");
+  const rows = await sqlite(file, `select conversation_id, title, preview, last_modified_time, workspace_uris, parent_conversation_id, nesting_depth from conversation_summaries where last_modified_time >= '${stamp(since)}' order by last_modified_time desc limit ${limit * 2}`);
+  if (!rows) return notes.push("Antigravity's conversations couldn't be read: that needs Node 22.13 or newer, or the sqlite3 program.");
+  const agyDir = path.join(HOME, ".herdr", "agy");
+  const rules = new Map();
+  const readRules = (dir) => {
+    if (!rules.has(dir)) { try { rules.set(dir, fs.readFileSync(path.join(dir, "AGENTS.md"), "utf8").slice(-4096)); } catch { rules.set(dir, null); } }
+    return rules.get(dir);
+  };
+  // The folder each conversation was last open in, as Antigravity keeps it (folder -> id).
+  const lastIn = new Map();
+  try { for (const [dir, id] of Object.entries(JSON.parse(fs.readFileSync(path.join(home, "cache", "last_conversations.json"), "utf8")))) lastIn.set(id, dir); } catch { /* none kept */ }
+  for (const r of rows) {
+    if (r.parent_conversation_id || Number(r.nesting_depth) > 0 || !/^[0-9A-Za-z-]+$/.test(String(r.conversation_id))) continue;
+    let uris = [];
+    try { uris = JSON.parse(r.workspace_uris || "[]"); } catch { uris = []; }
+    const cwd = agyCwd(uris, agyDir, readRules, lastIn.get(r.conversation_id));
+    const log = path.join(home, "brain", r.conversation_id, ".system_generated", "logs", "transcript.jsonl");
+    const st = stat(log);
+    const facts = st ? cached(log, st, () => {
+      const fd = fs.openSync(log, "r");
+      try { return agyFacts(piece(fd, 0, Math.min(HEAD, st.size)), st.size > HEAD ? piece(fd, Math.max(0, st.size - TAIL), TAIL) : ""); } finally { fs.closeSync(fd); }
+    }) : null;
+    const row = agyRow(r, facts ?? {}, cwd);
+    if (row && (!row.headless || flag("--headless"))) out.push(row);
+  }
+}
+
 // --- the launcher's notes ---
 // Which terminal holds which Claude session now, on the core this Herdr uses (the
 // default one unless HC_SESSION names another), where addresses are bare.
@@ -229,6 +265,7 @@ await safely("Pi", scanPi);
 await safely("Grok", scanGrok);
 await safely("Codex", scanCodex);
 await safely("OpenCode", scanOpencode);
+await safely("Antigravity", scanAntigravity);
 
 const open = openNotes(), started = startNotes();
 // A folder that's gone (a removed worktree, a deleted scratch folder) can't be resumed
@@ -242,7 +279,7 @@ const oldest = live.length === limit ? live[live.length - 1].updated : 0;
 const lost = all.filter((s) => gone(s.cwd) && s.updated >= oldest).slice(0, Math.ceil(limit / 3));
 const rows = [...live, ...lost].sort((a, b) => b.updated - a.updated).map((s) => {
   const { headless: _h, ...row } = s;
-  if (s.provider === "claude") {
+  if (s.provider === "claude" || s.provider === "antigravity") {
     if (open.has(s.id)) row.terminal = open.get(s.id);
     if (started.has(s.id)) row.words = started.get(s.id);
   }

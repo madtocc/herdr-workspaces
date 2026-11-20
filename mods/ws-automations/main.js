@@ -33,7 +33,7 @@ import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
 import { theme, shared, setShared, props, closeOverlay, home, appHome, readTextFile, writeTextFile, exec, notify, agents, terminals, run } from "herdr";
 import { parseWhen, describe, nextAt, shortTime } from "./when.js";
-import { KNOBS, words, programOf, knobsIn } from "./knobs.js";
+import { KNOBS, words, programOf, knobsIn, agyModels } from "./knobs.js";
 import { runCheck } from "./check.js";
 import * as fs from "fs/promises";
 
@@ -273,6 +273,12 @@ export default class Automations extends View {
     cx.spawn(async (cx) => {
       const text = await readTextFile(`${home()}/.codex/config.toml`).catch(() => null);
       this.codexModels = [...new Set([...(text ?? "").matchAll(/^\s*model\s*=\s*"([^"]+)"/gm)].map((m) => m[1]))];
+      cx.notify();
+    });
+    // Antigravity's model families (asked of `agy models` at most once a day).
+    this.agyModels = [];
+    cx.spawn(async (cx) => {
+      this.agyModels = await agyModels({ exec, readTextFile, writeTextFile, home }).catch(() => []);
       cx.notify();
     });
     // The ready-made ones that come with this mod (starters/*.md): listed under the
@@ -919,7 +925,7 @@ export default class Automations extends View {
     // The agent it starts, and the model and effort that will run: its own, else what its command sets.
     const cmd = commandOf(def, c.agent);
     const program = programOf(cmd.argv);
-    const knobs = KNOBS[program] ? { ...KNOBS[program], models: program === "codex" ? this.codexModels : KNOBS[program].models } : null;
+    const knobs = KNOBS[program] ? { ...KNOBS[program], models: program === "codex" ? this.codexModels : program === "agy" ? this.agyModels : KNOBS[program].models } : null;
     const own = knobsIn(cmd.argv);
     const models = knobs ? [...new Set([...knobs.models, ...(own.model ? [own.model] : []), ...(c.model ? [c.model] : [])])] : [];
     const model = c.model || own.model, effort = c.effort || own.effort;
