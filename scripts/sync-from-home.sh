@@ -32,7 +32,7 @@ cmp -s "$src/mods/ws-switcher/ghfacts.js" "$src/mods/ws-board/ghfacts.js" || {
 mkdir -p "$dst/layouts"
 cp "$src/layouts/workspaces.json" "$dst/layouts/workspaces.json"
 
-for mod in ws-switcher ws-spaces ws-agents ws-board ws-worktrees ws-presets ws-chrome ws-automations ws-tabs ws-new-menu ws-toast; do
+for mod in ws-switcher ws-spaces ws-agents ws-board ws-worktrees ws-history ws-presets ws-chrome ws-automations ws-tabs ws-new-menu ws-toast; do
   rm -rf "$dst/mods/$mod"
   mkdir -p "$dst/mods/$mod"
   (cd "$src/mods/$mod" && find . -type f ! -name jsconfig.json ! -name gpui-kit.d.ts ! -name '.*' ! -name '*.error') |

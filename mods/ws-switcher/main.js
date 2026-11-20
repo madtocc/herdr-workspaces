@@ -21,7 +21,9 @@
 //   workspaces.scratch.folders  the Scratch workspace's folders, newest first, for the menu and ws-spaces
 //   workspaces.worktrees { id, at }: the menu asks this block to show a workspace's
 //                        Worktrees screen (ws-worktrees), as workspaces.board does the board
-//   workspaces.screens   workspace id -> its open screens ("board", "worktrees"): the pills
+//   workspaces.history   { id, at }: the sidebar's History row and the + menu ask this block to show a
+//                        workspace's History screen (ws-history); with no id (All spaces), as a dialog
+//   workspaces.screens   workspace id -> its open screens ("board", "worktrees", "history"): the pills
 //                        ws-tabs draws before the tabs of every space of that workspace
 //   workspaces.screen    { ws, screen, at } or null: the screen shown in place of the tabs.
 //                        Anyone sets it (ws-tabs' pills; null from ws-spaces and ws-agents
@@ -66,7 +68,7 @@ const EDITORS = ["zed", "cursor", "code", "subl"];
 const SETTLE = 1500; // ms a new space's first terminal takes to report its folder
 // A workspace's screens: they belong to the workspace, not to a space. The layout
 // holds each once, as the block `screen-<key>` in the `screens` column of `center`.
-const SCREENS = { board: { mod: "ws-board", name: "Board" }, worktrees: { mod: "ws-worktrees", name: "Worktrees" } };
+const SCREENS = { board: { mod: "ws-board", name: "Board" }, worktrees: { mod: "ws-worktrees", name: "Worktrees" }, history: { mod: "ws-history", name: "History" } };
 const PALETTE = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
 // The spaces list's avatar colors, so a workspace mark matches.
 const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b7cf6", ansi2: "#3fae6a", ansi1: "#d9649a" };
@@ -285,6 +287,7 @@ export default class Workspaces extends View {
     this.launchAsked = shared("workspaces.launch")?.at;
     this.boardAsked = shared("workspaces.board")?.at;
     this.treesAsked = shared("workspaces.worktrees")?.at;
+    this.historyAsked = shared("workspaces.history")?.at;
     this.runAsked = shared("workspaces.automation.run")?.at;
     this.scratchAsked = shared("workspaces.scratch")?.at;
     this.allowAsked = shared("workspaces.automation.allow")?.at;
@@ -308,8 +311,8 @@ export default class Workspaces extends View {
     // space's name, and "ws-switcher.scratch-new/<name>" makes one at once (a script; a blank
     // name is "Scratch <time>"); the scratch toast's Keep is "ws-switcher.scratch-keep/<folder>";
     // a toast about one automation is "ws-switcher.automation/<workspace>/<name>" (automations.js: openAt);
-    // "ws-switcher.board" and "ws-switcher.worktrees" (bind them to keys) show the shown workspace's
-    // screen, and go back to the tabs when it's the one shown.
+    // "ws-switcher.board", "ws-switcher.worktrees" and "ws-switcher.history" (bind them to keys) show
+    // the shown workspace's screen, and go back to the tabs when it's the one shown.
     cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
@@ -966,6 +969,11 @@ export default class Workspaces extends View {
       this.treesAsked = treesAsk?.at;
       if (treesAsk && Date.now() - treesAsk.at < 15000) this.openScreen(treesAsk.id, "worktrees", cx);
     }
+    const historyAsk = shared("workspaces.history") ?? null;
+    if (historyAsk?.at !== this.historyAsked) {
+      this.historyAsked = historyAsk?.at;
+      if (historyAsk && Date.now() - historyAsk.at < 15000) this.openHistory(historyAsk.id ?? null, cx);
+    }
     this.takeTabs();
   }
 
@@ -994,9 +1002,16 @@ export default class Workspaces extends View {
   // The key's way in: the shown workspace's screen, and back to the tabs from it.
   toggleScreen(key, cx) {
     const ws = shared("workspaces.active") ?? null, scr = shared("workspaces.screen") ?? null;
-    if (!ws) return;
+    if (!ws) { if (key === "history") this.openHistory(null, cx); return; }
     if (scr?.ws === ws && scr.screen === key) setShared("workspaces.screen", null);
     else this.openScreen(ws, key, cx);
+  }
+
+  // History is the one screen that also works with no workspace chosen (All spaces):
+  // the pills belong to a workspace, so there it's a dialog over everything.
+  openHistory(id, cx) {
+    if (id && (shared("workspaces.defs") ?? []).some((d) => d.id === id)) return this.openScreen(id, "history", cx);
+    openOverlay({ mod: "ws-history", kind: "dialog", width: 980, height: 700, props: { dialog: true } });
   }
 
   pin(ws, key) {

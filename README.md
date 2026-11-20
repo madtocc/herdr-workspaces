@@ -80,6 +80,24 @@ workspace: a pill in the tab bar of each of its spaces.
   and one to run before a worktree is removed. Only a line you saved or allowed
   runs.
 
+### History
+
+![The History screen](previews/history.png)
+
+**History** in the sidebar footer (or "Resume a conversation…" in the + menu)
+lists the conversations your agents saved, newest first, whichever agent it
+was: Claude Code, Codex, Pi, Grok and OpenCode. Like the board it belongs to
+the workspace: a pill in the tab bar of each of its spaces.
+
+- **Resume** continues a conversation in a new tab, in the folder it ran in.
+  One started from a preset comes back as that preset.
+- **Open ones say so** and offer Go to instead, so a conversation isn't opened
+  twice.
+- **This workspace or everywhere**, a chip per agent, and search across titles,
+  prompts, folders and models.
+- It only reads what the agents already keep; nothing is copied or changed.
+  It needs Node 20.6 or newer.
+
 ### Automations
 
 ![The Automations screen](previews/automations.png)
@@ -139,7 +157,7 @@ as a tab.
 Ask your agent to add this layout (Herdr's own guide, `~/.config/herdr-app/AGENTS.md`,
 says how), or by hand:
 
-1. Copy `layouts/workspaces.json` to `~/.config/herdr-app/layouts/` and the eleven
+1. Copy `layouts/workspaces.json` to `~/.config/herdr-app/layouts/` and the twelve
    folders in `mods/` to `~/.config/herdr-app/mods/` (rename them if a name is taken).
 2. For agent instructions from the + menu, put the launcher on your `PATH` and
    point `programs.json` at it. `herdr-ws-run` starts automations from other
@@ -210,7 +228,14 @@ board's and automations' new tabs) and, through the launcher, Start and
 automations, your agents. The Worktrees tab reads git in the workspace's repos and
 their worktrees (`worktree list`, `for-each-ref`, `status`) and each repo's pull
 requests with `gh pr list`. Removing a worktree there (after a confirmation)
-deletes its folder with `git worktree remove`; the branch stays. On its first run it makes
+deletes its folder with `git worktree remove`; the branch stays. History reads the
+conversations your agents keep on this computer (`~/.claude/projects`, `~/.codex/state_*.sqlite`,
+`~/.pi/agent/sessions`, `~/.grok/sessions`, `~/.local/share/opencode/opencode.db`): titles, the
+first and last thing asked, folder, branch and model, never the rest, and it changes nothing there.
+It runs `node` (and `sqlite3` when Node is older than 22.13) to read them, keeps what it read in
+`~/.herdr/cache/history/index.json`, and starts your agent with its resume command when you click
+Resume. With restart resume on, the launcher's hook also notes each Claude session's start command
+in `~/.herdr/resume/started`. Nothing it reads leaves the computer. On its first run it makes
 the Scratch workspace (`~/.herdr/workspaces/scratch/`); New scratch space makes folders in
 `~/.herdr/scratch/`, and there it deletes empty ones nobody is in (`rmdir`) and moves ones
 with files to the Trash after 7 days unused, unless they have a `.keep` file. It looks at
@@ -261,7 +286,7 @@ than 0.1.0's notes, so read them all). To hear about new versions, watch the
 repo on GitHub for releases (Watch → Custom → Releases).
 
 - **You copied the files as they are:** copy `layouts/workspaces.json` and the
-  eleven folders in `mods/` again, and do what the new versions' notes say
+  twelve folders in `mods/` again, and do what the new versions' notes say
   (a new script to link, say). Your workspaces, tasks, presets and automations
   live elsewhere and aren't touched.
 - **You or your agent changed them:** tell your agent "apply what's in this

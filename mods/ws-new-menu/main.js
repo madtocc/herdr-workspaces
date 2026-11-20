@@ -4,7 +4,9 @@
 //   shared "workspaces.presets". Each opens ws-presets' Start dialog.
 // - The number keys go on through the presets after the agents.
 // - Presets are left out for a space on another machine: the launcher is local.
-// - Up to 659 px tall instead of 491; ws-tabs lets it take 85% of the window.
+// - Under the agents and presets, "Resume a conversation…" shows the workspace's History
+//   screen (ws-history), through ws-switcher's shared "workspaces.history".
+// - Up to 690 px tall instead of 491; ws-tabs lets it take 85% of the window.
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
@@ -85,7 +87,7 @@ export default class NewMenu extends View {
       return a.tint ? svg(a.icon).size(14).text_color(t.foreground) : image(a.icon).size(14);
     };
     const keyed = (i) => (i < 9 ? String(i + 1) : "");
-    return v_flex().min_h(0).w_full().h(Math.min(659, 167 + Math.max(1, choices.length) * 31 + (presets.length ? 34 + presets.length * 31 : 0)))
+    return v_flex().min_h(0).w_full().h(Math.min(690, 198 + Math.max(1, choices.length) * 31 + (presets.length ? 34 + presets.length * 31 : 0)))
       .bg(t.popover).p(5).text_size(12.8)
       .id("new-menu").track_focus(this.handle)
       .on_key_down((e) => {
@@ -107,6 +109,9 @@ export default class NewMenu extends View {
           .child(div().px(9).pt(10).pb(4).flex_none().text_size(11).text_color(t.dim).child("Agent presets"))
           .children(presets.map((p, i) => this.row(`preset-${p.name}`, iconOf(p), p.name, () => startPreset(p), keyed(installed.length + i), true,
             [p.description, p.scope === "workspace" ? `Only in ${ws?.name ?? "this workspace"}` : "Every workspace"].filter(Boolean).join("\n"))))))
+      .child(this.row("history", svg("mods/ws-history/history.svg").size(14).text_color(t.foreground), "Resume a conversation…",
+        () => setShared("workspaces.history", { id: ws?.id ?? null, at: Date.now() }), "", !space?.machine,
+        "Past conversations of every agent, here or everywhere: pick one to continue it"))
       .child(div().h(1).mx(4).my(5).bg(t.border))
       .child(this.row("space", div().w(14).child("+"), "New space", () => run("space.new"), shortcut("space.new")))
       .child(this.row("worktree", svg("mods/workspace-chrome/branch.svg").size(14), "New worktree…", () => openOverlay({ mod: "worktree", kind: "dialog", width: 460, height: 280, props: { space: space?.id, folder: panes().find(p => p.focused)?.cwd, action: "new" } }), "", Boolean(space)))

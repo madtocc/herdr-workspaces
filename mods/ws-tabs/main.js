@@ -1,7 +1,7 @@
 // ws-tabs: Herdr's `tabs` (0.1.14) for the workspaces layout. Three changes:
 // - the tab bar's + opens ws-new-menu, which adds the workspace's agent presets
 //   (up to 85% of the window instead of 512 px, to fit them);
-// - the shown workspace's open screens (its Board, its Worktrees) are pills before
+// - the shown workspace's open screens (its Board, its Worktrees, its History) are pills before
 //   the space's tabs, the same in every space of the workspace. They belong to the
 //   workspace, not to a space: shared `workspaces.screens` says which are open,
 //   `workspaces.screen` which one is shown in place of the tabs (the switcher
@@ -22,6 +22,7 @@ import { fit } from "./fit.js";
 const SCREENS = {
   board: { name: "Board", icon: "mods/ws-board/board.svg" },
   worktrees: { name: "Worktrees", icon: "mods/workspace-chrome/git-branch.svg" },
+  history: { name: "History", icon: "mods/ws-history/history.svg" },
 };
 
 function find(node, id) {

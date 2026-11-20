@@ -15,6 +15,9 @@
 #
 #   ~/.herdr/resume/<core>/<terminal>.cmd       the launcher's words, as the shell reads them
 #   ~/.herdr/resume/<core>/<terminal>.session   the session id, then its transcript
+#   ~/.herdr/resume/started                     every session's id and the launcher's words, a line
+#                                               each, kept after it ends: the History screen resumes
+#                                               a conversation with the command that started it
 #
 # <core> is the core's socket name ("default"), <terminal> is $HC_TERMINAL_ID ("t18").
 # Leaving Claude yourself (/exit, Ctrl-D, Ctrl-C twice) or logging out of it drops
@@ -74,6 +77,15 @@ case "${1:-}" in
         case "$session" in '' | *[!0-9A-Za-z-]*) exit 0 ;; esac
         printf '%s\n%s\n' "$session" "$(field transcript_path)" > "$note.session.tmp" &&
           mv -f "$note.session.tmp" "$note.session"
+        # Kept after the session ends, for the History screen: the command that started
+        # it, so it's resumed the same way (a preset's model, permissions, instructions).
+        # One line each; a command that spans lines isn't noted and resumes plainly.
+        if [ "$(wc -l < "$note.cmd" | tr -d ' ')" = 1 ]; then
+          printf '%s\t%s\n' "$session" "$(cat "$note.cmd")" >> "$dir/started" 2>/dev/null
+          if [ "$(wc -l < "$dir/started" 2>/dev/null | tr -d ' ')" -gt 4000 ] 2>/dev/null; then
+            tail -n 2000 "$dir/started" > "$dir/started.tmp" 2>/dev/null && mv -f "$dir/started.tmp" "$dir/started"
+          fi
+        fi
         ;;
       SessionEnd)
         case "$(field reason)" in
