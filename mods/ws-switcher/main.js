@@ -29,8 +29,8 @@
 //                        Anyone sets it (ws-tabs' pills; null from ws-spaces and ws-agents
 //                        when a space or agent is clicked); this block shows it (coverWork())
 //   workspaces.covered   true while the shown space isn't the shown workspace's (it has none)
-//   workspaces.order     { order, folded }: the menu's order and folded groups (arrange.js, ~/.herdr/workspaces/.order.json)
-//   workspaces.arrange   { order?, folded?, groups?: { id: group or null }, at }: the menu asks this block to
+//   workspaces.order     { order, folded, scratchFolded }: the menu's order and folded groups (arrange.js, ~/.herdr/workspaces/.order.json)
+//   workspaces.arrange   { order?, folded?, scratchFolded?, groups?: { id: group or null }, at }: the menu asks this block to
 //                        save a drag, a fold or a workspace's group (applyArrange())
 //
 //   workspaces.prs       task file -> its pull request's one status (prs.js), drawn by ws-board
@@ -1005,6 +1005,8 @@ export default class Workspaces extends View {
     const saved = { order: [], folded: [], ...(shared("workspaces.order") ?? {}) };
     if (ask.order) saved.order = ask.order;
     if (ask.folded) saved.folded = ask.folded;
+    if ("scratchFolded" in ask) saved.scratchFolded = Boolean(ask.scratchFolded);
+    saved.scratchFolded = Boolean(saved.scratchFolded);
     const groups = ask.groups ?? {};
     const was = shared("workspaces.defs") ?? [];
     const defs = was.map((d) => (d.id in groups ? { ...d, group: groups[d.id] } : d));
@@ -1199,25 +1201,22 @@ export default class Workspaces extends View {
           { tip: "Its workspaces stay where they are in the list, without a group" })]);
     }
 
-    // Making a workspace comes first, above the list it adds to.
-    // A space in a new empty folder in the Scratch workspace (scratch.js): its dialog asks for
-    // the name, and the sidebar copy makes it.
-    const scratchRow = row("ws-scratch", svg("mods/ws-switcher/scratch.svg").size(14).flex_none().text_color(t.muted), "New scratch space…", div(),
-      () => askScratch(),
-      { tip: "Name an idea that belongs to no project, and it gets a space in a new empty folder in the Scratch workspace. Deleted when you close it empty; with files, kept 7 days unless you keep it." });
+    // Making a workspace comes first, above the list it adds to. A scratch space is made
+    // from the + on the Scratch group's header, below.
     const items = [row("ws-new", icon("folder-plus"), "New workspace from a folder…", div(), () => setShared("workspaces.create", Date.now())),
-      scratchRow,
       line(), head("Workspaces"),
       row("ws-all", mark(null, defs, t, 18), "All spaces", hint(String(sp.length), check(!active)), () => choose(null))];
     // The workspaces as arrange.js has them: each group under a header that folds (a
-    // folded one still shows the workspace you're in), Scratch last. A row can be dragged:
+    // folded one still shows the workspace you're in), then Scratch as a group of its
+    // scratch spaces and kept folders, with a + for a new one. A row can be dragged:
     // a workspace dropped on a workspace goes above or below it, in its group; on a
     // header's lower part it goes into that group; a header moves its whole group.
     // Right-click a workspace for its group, a header to rename or ungroup it.
     const rows = this.rowsOf(tree, active);
     const drop = this.dropAt(rows);
     // Pressed, then let go on the same row: a click. On another: a drop there.
-    const moving = (r) => this.dragOver && this.dragOver !== this.dragFrom && (this.dragFrom === r.key || (r.group && this.dragFrom === `g:${r.group}`));
+    const moving = (r) => this.dragOver && this.dragOver !== this.dragFrom && !r.kind.startsWith("scratch")
+      && (this.dragFrom === r.key || (r.group && this.dragFrom === `g:${r.group}`));
     const drag = (el, r, click, menu) => el.relative()
       .when(moving(r), (el) => el.opacity(0.5))
       .when(drop?.key === r.key, (el) => el.child(drop.edge === "into"
@@ -1238,6 +1237,57 @@ export default class Workspaces extends View {
       })
       .on_mouse_down("right", (_e, cx) => { this.dragFrom = this.dragOver = null; menu(cx); });
     for (const r of rows) {
+      if (r.kind === "scratch") {
+        // Its + makes a scratch space (the dialog asks the name); it doesn't fold or drag.
+        height += 28;
+        const status = r.shut ? urgent(r.open) : null;
+        const plus = div().id("ws-scratch-new").size(22).flex_none().flex().items_center().justify_center().rounded(6)
+          .text_color(t.muted).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
+          .tooltip("New scratch space: name an idea that belongs to no project, and it gets a space in a new empty folder. Deleted when you close it empty; with files, kept 7 days unless you keep it.")
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+          .on_click(() => { closeOverlay(props().overlay); askScratch(); })
+          .child(svg("mods/workspace-chrome/plus.svg").size(13));
+        items.push(drag(h_flex().id("ws-scratch-head").h(28).pl(8).pr(2).gap(6).rounded(7).items_center().flex_none().cursor_pointer()
+          .hover((s) => s.bg(t.selected)).tooltip(r.shut ? "Click to open" : "Click to fold")
+          .child(svg(`mods/workspace-chrome/chevron-${r.shut ? "right" : "down"}.svg`).size(10).flex_none().text_color(t.dim))
+          .child(div().flex_1().min_w(0).truncate().text_size(11.5).font_medium().text_color(t.muted).child(r.def?.name ?? "Scratch"))
+          .child(hint(status ? div().size(6).rounded_full().bg(t[status]) : div(), r.shut && r.open.length ? String(r.open.length) : ""))
+          .child(plus),
+          r, () => this.foldScratch(), () => {}));
+        continue;
+      }
+      if (r.kind === "scratch-space") {
+        // An open scratch space: shown like the Spaces list's row; a click goes there.
+        height += 30;
+        const s = r.space;
+        const c = (shared("space.colors") ?? {})[s.id] ?? "ansi6";
+        const fill = c.startsWith("#") ? c : (MARK[c] ?? t[c] ?? t.accent);
+        const status = urgent([s]);
+        items.push(drag(h_flex().id(`ws-scratch-${s.id}`).h(30).pl(24).pr(8).gap(9).rounded(7).items_center().flex_none().cursor_pointer()
+          .text_color(t.foreground).hover((x) => x.bg(t.selected)).tooltip(tilde(placeOf(s, ps)))
+          .child(h_flex().size(18).flex_none().rounded(5).bg(fill).items_center().justify_center().text_size(10).font_bold().text_color("#ffffff").child([...s.name][0]?.toUpperCase() ?? "?"))
+          .child(div().flex_1().min_w(0).truncate().child(s.name))
+          .child(hint(status ? div().size(6).rounded_full().bg(t[status]) : div(), check(Boolean(active?.scratch && s.active)))),
+          r, () => { closeOverlay(props().overlay); if (shared("workspaces.screen")) setShared("workspaces.screen", null); run("space.select", { id: s.id }); }, () => {}));
+        continue;
+      }
+      if (r.kind === "scratch-folder") {
+        // A kept folder: its space was closed with files in it. A click opens it again.
+        height += 30;
+        const name = scratchLabel(r.folder);
+        items.push(drag(h_flex().id(`ws-scratch-f-${r.folder}`).h(30).pl(24).pr(8).gap(9).rounded(7).items_center().flex_none().cursor_pointer()
+          .text_color(t.muted).hover((x) => x.bg(t.selected)).tooltip(`${tilde(r.folder)}: kept, its space is closed`)
+          .child(div().w(18).flex_none().flex().justify_center().child(icon("folder")))
+          .child(div().flex_1().min_w(0).truncate().child(name ?? base(r.folder)))
+          .child(hint("Open")),
+          r, () => { closeOverlay(props().overlay); run("space.new", { folder: r.folder, ...(name ? { name } : {}) }); }, () => {}));
+        continue;
+      }
+      if (r.kind === "scratch-none") {
+        height += 30;
+        items.push(div().h(30).pl(51).flex().items_center().flex_none().text_size(12).text_color(t.dim).child("No scratch spaces yet"));
+        continue;
+      }
       if (r.kind === "group") {
         height += 28;
         const members = new Set(r.item.members.map((d) => d.id));
@@ -1297,35 +1347,53 @@ export default class Workspaces extends View {
         () => ask("delete", active.scratch ? 230 : 200), { danger: true }));
     }
 
-    if (active && !active.error) {
-      // Scratch's folders are its scratch folders as the last look found them (scratch.js).
-      const folders = active.scratch ? (shared("workspaces.scratch.folders") ?? active.children.map((c) => `${active.root}/${c}`))
-        : active.folders.length ? active.folders : active.children.map((c) => `${active.root}/${c}`);
+    // Scratch's folders are in its group above.
+    if (active && !active.error && !active.scratch) {
+      const folders = active.folders.length ? active.folders : active.children.map((c) => `${active.root}/${c}`);
       if (folders.length) items.push(line(), head(`${active.name} folders`));
       for (const f of folders) {
         const there = sp.find((s) => !s.machine && inFolder(active, placeOf(s, ps), f));
-        // A named scratch folder shows its name, and a space reopened there is called that.
-        const name = active.scratch ? scratchLabel(f) : null;
-        items.push(row(`ws-folder-${f}`, icon("folder"), name ?? base(f), hint(there ? "Go" : "Open"),
-          () => run(there ? "space.select" : "space.new", there ? { id: there.id } : { folder: f, ...(name ? { name } : {}) }), { tip: tilde(f) }));
+        items.push(row(`ws-folder-${f}`, icon("folder"), base(f), hint(there ? "Go" : "Open"),
+          () => run(there ? "space.select" : "space.new", there ? { id: there.id } : { folder: f }), { tip: tilde(f) }));
       }
     }
 
     return frame(items);
   }
 
-  // The menu's workspace rows, top to bottom: { key, kind: "ws" | "group", def or name,
-  // top: its item's index in the tree, group: the one it's in, pinned: Scratch, shut }.
+  // The menu's workspace rows, top to bottom: { key, kind, top: its item's index in the
+  // tree, … }. "ws" (def, group: the one it's in) and "group" (name, item, shut), then
+  // Scratch's: "scratch" (its header: def, null when it's gone; shut; open), its open
+  // spaces ("scratch-space", in Herdr's order), the folders kept with files but no space
+  // ("scratch-folder", newest first) or "scratch-none". The header is there even with
+  // Scratch gone: its + brings it back.
   rowsOf(tree, active) {
-    const folded = new Set(shared("workspaces.order")?.folded ?? []);
+    const saved = shared("workspaces.order") ?? {};
+    const folded = new Set(saved.folded ?? []);
     const rows = [];
+    let scratch = null;
     tree.forEach((it, top) => {
-      if (!it.group) { rows.push({ key: `w:${it.ws.id}`, kind: "ws", def: it.ws, top, pinned: Boolean(it.pinned) }); return; }
+      if (it.pinned) { scratch = it.ws; return; }
+      if (!it.group) { rows.push({ key: `w:${it.ws.id}`, kind: "ws", def: it.ws, top }); return; }
       const shut = folded.has(it.group);
       rows.push({ key: `g:${it.group}`, kind: "group", name: it.group, item: it, top, shut });
       for (const d of it.members) if (!shut || d.id === active?.id) rows.push({ key: `w:${d.id}`, kind: "ws", def: d, group: it.group, top });
     });
+    const top = tree.length, shut = Boolean(saved.scratchFolded);
+    const assigned = shared("workspaces.assigned") ?? {}, ps = panes();
+    const open = scratch && !scratch.error ? spaces().filter((s) => assigned[s.id] === scratch.id) : [];
+    const folders = scratch && !scratch.error ? (shared("workspaces.scratch.folders") ?? scratch.children.map((c) => `${scratch.root}/${c}`)) : [];
+    const kept = folders.filter((f) => !open.some((s) => !s.machine && inFolder(scratch, placeOf(s, ps), f)));
+    rows.push({ key: "s:", kind: "scratch", def: scratch, top, shut, open });
+    for (const s of open) if (!shut || (active?.scratch && s.active)) rows.push({ key: `s:${s.id}`, kind: "scratch-space", space: s, top });
+    if (!shut) for (const f of kept) rows.push({ key: `f:${f}`, kind: "scratch-folder", folder: f, top });
+    if (!shut && !open.length && !kept.length) rows.push({ key: "s:none", kind: "scratch-none", top });
     return rows;
+  }
+
+  // The Scratch header clicked: its group folded, or open again.
+  foldScratch() {
+    setShared("workspaces.arrange", { scratchFolded: !shared("workspaces.order")?.scratchFolded, at: Date.now() });
   }
 
   // Where the row being dragged would land: the row and edge to mark, and the move for
@@ -1334,10 +1402,10 @@ export default class Workspaces extends View {
   // goes above or below a whole item. The Scratch row means the end.
   dropAt(rows) {
     const from = rows.find((r) => r.key === this.dragFrom), over = rows.find((r) => r.key === this.dragOver);
-    if (!from || !over || from === over || from.pinned) return null;
+    if (!from || !over || from === over || from.kind.startsWith("scratch")) return null;
     const upper = (this.dragY ?? 0.5) < 0.5;
     const src = from.kind === "group" ? { kind: "group", name: from.name } : { kind: "ws", id: from.def.id };
-    if (over.pinned) return { key: over.key, edge: "top", src, to: { kind: "end" } };
+    if (over.kind.startsWith("scratch")) return { key: "s:", edge: "top", src, to: { kind: "end" } };
     if (from.kind === "ws") {
       if (over.kind === "group") {
         if ((this.dragY ?? 0.5) >= 0.34) return { key: over.key, edge: "into", src, to: { kind: "group", name: over.name } };

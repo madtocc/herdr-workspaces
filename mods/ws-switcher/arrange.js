@@ -3,11 +3,12 @@
 // under a header that folds. The order, and which groups are folded, is
 // ~/.herdr/workspaces/.order.json, written when you drag a row or fold a group:
 //
-//   { "order": ["blog", { "group": "Work" }, "acme", "globex"], "folded": ["Work"] }
+//   { "order": ["blog", { "group": "Work" }, "acme", "globex"], "folded": ["Work"], "scratchFolded": true }
 //
 // "order" is the menu from top to bottom with every group open. A workspace or group
 // it doesn't name goes after the ones it does (a new group: where its first workspace
-// was). The Scratch workspace has no group and is always last.
+// was). The Scratch workspace has no group and is always last, drawn as a group of
+// its own scratch spaces ("scratchFolded": that group is folded).
 // No imports, so node can test it.
 
 // The note written above a "group" line.
@@ -21,9 +22,11 @@ export function readOrder(text) {
   try { o = text ? JSON.parse(text) : {}; } catch {}
   const order = Array.isArray(o?.order) ? o.order.filter((e) => typeof e === "string" || typeof e?.group === "string") : [];
   const folded = Array.isArray(o?.folded) ? o.folded.filter((s) => typeof s === "string") : [];
-  return { order, folded };
+  return { order, folded, scratchFolded: o?.scratchFolded === true };
 }
-export const orderText = (saved) => JSON.stringify({ order: saved.order ?? [], folded: saved.folded ?? [] }, null, 2) + "\n";
+export const orderText = (saved) => JSON.stringify({
+  order: saved.order ?? [], folded: saved.folded ?? [], ...(saved.scratchFolded ? { scratchFolded: true } : {}),
+}, null, 2) + "\n";
 
 // A group's key in the order can't be a workspace's id: no folder name holds a NUL.
 const key = (e) => (typeof e === "string" ? e : typeof e?.group === "string" ? `\0${e.group}` : null);

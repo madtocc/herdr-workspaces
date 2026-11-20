@@ -1,6 +1,6 @@
 // The Scratch workspace: a workspace for trying ideas that belong to no project.
 // Its root is ~/.herdr/scratch, and each of its spaces gets a fresh folder there.
-// "New scratch space" (the switcher menu, the Spaces + while Scratch is shown, or the
+// "New scratch space" (the + on the switcher menu's Scratch header, the Spaces + while Scratch is shown, or the
 // command ws-switcher.scratch-new) asks for a name first (ws-switcher's New space
 // dialog), then makes one from any workspace and shows it, so the switcher follows it
 // into Scratch. A space named "bot idea" gets ~/.herdr/scratch/<YYYY-MM-DD-HHMM>-bot-idea,

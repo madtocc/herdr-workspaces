@@ -8,6 +8,7 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 ## [Unreleased]
 
 ### New
+- **Scratch is a group of its scratch spaces, with its own +.** In the switcher menu, Scratch is now a header at the bottom with your open scratch spaces under it, then the scratch folders kept with files (a click opens one again), so they're one click away from any workspace; it folds like a group. "New scratch space…" is gone from the top of the menu: the + on the Scratch header asks for a name and makes one (the Spaces + while Scratch is shown, and the command `ws-switcher.scratch-new`, still do too). To update, copy `mods/ws-switcher`.
 - **Groups and your own order in the switcher menu.** With many workspaces the menu was one long alphabetical list. Now a workspace can have a group (`"group": "Work"` in its `workspace.jsonc`, or right-click it in the menu, or "Put … in a group…"), and a group's workspaces sit under a header that folds with a click; a folded group still shows the workspace you're in, and the dot when one of its agents needs you. Drag any row to put it where you want it: a workspace onto another goes above or below it and into its group, onto a header goes into that group, and a header moves its whole group. Right-click a header to rename the group or ungroup it. The order and folded groups are kept in `~/.herdr/workspaces/.order.json`; Scratch stays last. To update, copy `mods/ws-switcher` (it has a new file, `arrange.js`).
 
 ## [0.8.1] - 2026-11-20
