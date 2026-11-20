@@ -13,6 +13,7 @@
 #   codex:  -c developer_instructions=<instructions> --add-dir <root, outside folders, its tasks folder>
 #   agy:    --add-dir <a folder of Herdr's own that holds the instructions as AGENTS.md>
 #           --add-dir <root, outside folders, its tasks folder>
+#   pi:     --append-system-prompt <instructions, naming root, outside folders, its tasks folder>
 #
 # Antigravity's CLI (agy) takes no instructions on its command line. It reads
 # AGENTS.md, and .agents/rules/*.md, from every folder it's given with --add-dir, as
@@ -21,7 +22,18 @@
 # and a folder no launch has used for 90 days is removed. agy cuts a rule file at
 # 24,000 bytes, so a longer text goes on in .agents/rules/herdr-N.md. agy also runs
 # commands in the first of its folders by path, whichever it was started in, so the
-# text names its working folder. Its first message goes in with -i.
+# text names its working folder. Its first message goes in with -i. The folder also
+# holds .agents/hooks.json, which agy runs too: the hook that notes its conversation
+# for a restart (herdr-ws-resume), as Claude's --settings hooks do.
+#
+# Pi (pi) has no --add-dir and no sandbox of its own: it can reach every folder, so
+# its text names the workspace's. It reads AGENTS.md (or CLAUDE.md) from its working
+# folder and every folder above it itself, so a guide or instructions file it would
+# read that way is left out of the text (unless it's started with --no-context-files).
+# A --append-system-prompt replaces the APPEND_SYSTEM.md it would find, so its own
+# one (~/.pi/agent, or $PI_CODING_AGENT_DIR) is passed first, and a folder's
+# .pi/APPEND_SYSTEM.md is pointed at. Its first message goes in after --, so one
+# starting with - or @ (a file to Pi) is still a message.
 #
 # Claude asks at every start whether to trust a folder given with --add-dir that
 # it hasn't been told to trust (since 2.1.326), and waits for the answer. Herdr's
@@ -39,7 +51,7 @@
 #
 # ~/.herdr/AGENTS.md, when it's there, is the global guide: what every agent
 # started this way should know about Herdr (automations, hc helpers, the board).
-# Claude and Codex get it first, before the workspace's instructions, in or out of
+# Claude, Codex, Antigravity and Pi get it first, before the workspace's instructions, in or out of
 # a workspace (up to 16 KB, else a line naming the file). It replaces the built-in
 # line about herdr-ws-run; inside a workspace they're then told its name instead.
 # --guide off (or the switch in the Agent presets screen) leaves it out for every
@@ -65,7 +77,7 @@
 # put a tab's task there itself; given apart, it stays out of the note below.
 #
 # --preset NAME finds the preset (the workspace's agents/NAME.md, else herdr-core's
-# templates/NAME.md) and runs its command: Claude and Codex with --instructions,
+# templates/NAME.md) and runs its command: Claude, Codex, Antigravity and Pi with --instructions,
 # any other agent with its instructions and the task as its first message. It's
 # how an agent starts a workspace's own preset as its helper, which `hc run NAME`
 # can't (hc only knows the templates):
@@ -75,7 +87,8 @@
 #
 # Point Herdr's programs.json at it so the + menu starts agents this way:
 #   { "programs": { "claude": { "run": ["herdr-ws-agent", "claude"] },
-#                   "codex":  { "run": ["herdr-ws-agent", "codex", "--no-daemon"] } } }
+#                   "codex":  { "run": ["herdr-ws-agent", "codex", "--no-daemon"] },
+#                   "pi":     { "run": ["herdr-ws-agent", "pi"] } } }
 #
 # In a herdr-core terminal, Claude also gets a hook (in --settings) and its command
 # a note in ~/.herdr/resume/<core>/<terminal>.cmd, so herdr-ws-resume brings it
@@ -100,7 +113,7 @@ if [ "${1:-}" = --guide ]; then
   esac
   if ! guide_on; then echo "Off: agents don't get the guide ($guide)."
   elif [ ! -s "$guide" ]; then echo "On, but there's no guide yet: write one in $guide."
-  else echo "On: Claude and Codex get $guide ($(wc -c < "$guide" | tr -d ' ') bytes), except presets with guide: off."; fi
+  else echo "On: Claude, Codex, Antigravity and Pi get $guide ($(wc -c < "$guide" | tr -d ' ') bytes), except presets with guide: off."; fi
   exit 0
 fi
 case "${1:-}" in
@@ -133,8 +146,23 @@ done <<EOF
 $presets
 EOF
 note="$note $(q "$agent")"
+# Antigravity's flags (Go's flag package): those in $bare take no value, any other
+# the next word. Its first message (-i) and the conversation it continues
+# (--conversation) stay out, and a print run (-p, --print, --prompt) isn't noted.
+oneshot=
+if [ "${agent##*/}" = agy ]; then
+  bare=" --dangerously-skip-permissions --disable-slash-commands --new-project --remote-agent --remote-control --sandbox -h --help "
+  many=" "
+fi
 for w in "$@"; do
   if [ -n "$skip" ]; then skip=; case "$w" in -*) ;; *) continue ;; esac; fi
+  if [ "${agent##*/}" = agy ] && [ -z "$take" ]; then
+    case "$w" in
+      -i | --prompt-interactive | --conversation) skip=1; continue ;;
+      -i=* | --prompt-interactive=* | --conversation=*) continue ;;
+      -p | --print | --prompt | -p=* | --print=* | --prompt=*) oneshot=1 ;;
+    esac
+  fi
   if [ "$take" = one ]; then take=; case "$w" in -*) ;; *) note="$note $(q "$w")"; continue ;; esac; fi
   if [ "$take" = all ]; then case "$w" in -*) take= ;; *) note="$note $(q "$w")"; continue ;; esac; fi
   [ "$take" = rest ] && continue
@@ -247,7 +275,7 @@ if [ "$mode" = preset ]; then
   [ "${1##*/}" = herdr-ws-agent ] && shift
   [ $# -ge 1 ] || { echo "herdr-ws-agent: $file's command names no program" >&2; exit 1; }
   case "${1##*/}" in
-    claude|codex|agy)
+    claude|codex|agy|pi)
       [ -n "$task" ] && exec "$0" --task "$task" --instructions "$file" "$@"
       exec "$0" --instructions "$file" "$@"
       ;;
@@ -297,6 +325,12 @@ give() {
 "
 }
 added=
+# herdr-ws-resume, which brings agents back after a restart: beside this script
+# (following its symlink), else on PATH.
+self=$0
+[ -L "$self" ] && link=$(readlink "$self") && case "$link" in /*) self=$link ;; *) self=$(dirname "$self")/$link ;; esac
+resume=$(dirname "$self")/herdr-ws-resume
+[ -x "$resume" ] || resume=$(command -v herdr-ws-resume 2>/dev/null) || resume=
 # Antigravity's rules folder: the text $2 as $1/AGENTS.md, and what doesn't fit in
 # 22,000 bytes, a paragraph at a time, as always-on rules in $1/.agents/rules/herdr-N.md.
 # Built beside the folder and swapped in only when something changed, because a running
@@ -320,6 +354,8 @@ agyrules() {
       out = (out == "" ? $0 : out "\n\n" $0)
     }
     END { flush() }' || { rm -rf "$new"; return 1; }
+  # $3: its .agents/hooks.json (the hook that notes the conversation for a restart).
+  [ -n "${3:-}" ] && printf '%s\n' "$3" > "$new/.agents/hooks.json"
   rmdir "$new/.agents/rules" "$new/.agents" 2>/dev/null
   if [ -d "$1" ] && diff -r "$new" "$1" >/dev/null 2>&1; then rm -rf "$new"; touch "$1"
   else rm -rf "$1" && mv "$new" "$1" || return 1
@@ -328,7 +364,31 @@ agyrules() {
   find "$HOME/.herdr/agy" -mindepth 2 -maxdepth 2 -type d -mtime +90 -exec rm -rf {} + 2>/dev/null
   return 0
 }
-if [ "$name" = claude ] || [ "$name" = codex ] || [ "$name" = agy ]; then
+# Pi reads one context file in its working folder and in each folder above it: the
+# first of AGENTS.override.md, AGENTS.md, AGENTS.MD, CLAUDE.md, CLAUDE.MD there. True
+# when that's the file $1, so Pi gets it already (not with --no-context-files, -nc).
+pireads() {
+  [ "$name" = pi ] && [ -z "$pinc" ] || return 1
+  at=$(real "${1%/*}")
+  holds "$cwd" "$at" || return 1
+  for c in AGENTS.override.md AGENTS.md AGENTS.MD CLAUDE.md CLAUDE.MD; do
+    [ -e "$at/$c" ] || continue
+    [ "$(printf '%s' "$c" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "${1##*/}" | tr '[:upper:]' '[:lower:]')" ]
+    return
+  done
+  return 1
+}
+pinc= piappend=
+if [ "$name" = pi ]; then
+  for w in "$@"; do
+    case "$w" in
+      --) break ;;
+      --no-context-files | -nc) pinc=1 ;;
+      --append-system-prompt) piappend=1 ;;
+    esac
+  done
+fi
+if [ "$name" = claude ] || [ "$name" = codex ] || [ "$name" = agy ] || [ "$name" = pi ]; then
   # The global guide (what every agent here should know about Herdr: automations,
   # hc helpers, the board), then the workspace's instructions, then each preset's,
   # a blank line apart. A guide over 16 KB is only pointed at.
@@ -343,10 +403,12 @@ $presets
 EOF
   if [ -z "$noguide" ] && [ -s "$guide" ] && [ -r "$guide" ] && [ -n "$(told "$guide")" ]; then
     guided=1
-    if [ "$(wc -c < "$guide")" -le 16384 ]; then text=$(told "$guide")
+    # Pi started under ~/.herdr (a worktree, the Scratch root) reads the guide itself.
+    if pireads "$guide"; then :
+    elif [ "$(wc -c < "$guide")" -le 16384 ]; then text=$(told "$guide")
     else text="How to work in Herdr (automations, hc helpers, the board) is in $guide. Read it before using any of them."; fi
   fi
-  [ -n "$ws" ] && [ -r "$instructions" ] && more=$(told "$instructions") && [ -n "$more" ] && text=${text:+$text
+  [ -n "$ws" ] && [ -r "$instructions" ] && ! pireads "$instructions" && more=$(told "$instructions") && [ -n "$more" ] && text=${text:+$text
 
 }$more
   while IFS= read -r file; do
@@ -391,6 +453,34 @@ EOF
 
 }$later
   fi
+  # The whole workspace is the agent's to read and edit, and its folders that live elsewhere.
+  if [ -n "$ws" ]; then
+    realroot=$(real "$root")
+    [ -d "$root" ] && [ "$realroot" != "$cwd" ] && give "$root"
+    while IFS=$tab read -r kind id path _; do
+      [ "$kind" = dir ] && [ "$id" = "$ws" ] && [ -d "$path" ] || continue
+      p=$(real "$path")
+      holds "$p" "$realroot" || [ "$p" = "$cwd" ] || give "$path"
+    done < "$index"
+    # Its board cards too: a card's agent notes its status and pull request there.
+    [ -d "$wsdir/tasks" ] && give "$wsdir/tasks"
+  fi
+  if [ "$name" = pi ]; then
+    # Pi takes no folders, so it's told them. And a folder's own .pi/APPEND_SYSTEM.md,
+    # which Pi drops for a --append-system-prompt, is pointed at.
+    if [ -n "$(printf '%s' "$added" | tr -d '\n')" ]; then
+      more="Besides your working folder ($cwd), these are yours to read and edit too:
+$(printf '%s' "$added" | sed '/^$/d; s/^/- /')"
+      text=${text:+$text
+
+}$more
+    fi
+    if [ -z "$piappend" ] && [ -f "$cwd/.pi/APPEND_SYSTEM.md" ]; then
+      text=${text:+$text
+
+}"This folder's .pi/APPEND_SYSTEM.md isn't in your system prompt (Herdr adds its own instructions in its place). Read $cwd/.pi/APPEND_SYSTEM.md and follow it as if it were."
+    fi
+  fi
   if [ -n "$text" ]; then
     if [ "$name" = claude ]; then
       set -- "$@" --append-system-prompt "$text"
@@ -407,24 +497,31 @@ Your working folder is $cwd. Run every command there: give it as the working dir
       text="$text
 
 The folder $rules only holds these instructions: never run a command in it or keep files there."
-      if [ -n "${HERDR_WS_AGENT_DRY:-}" ] || agyrules "$rules" "$text"; then set -- "$@" --add-dir "$rules"; fi
+      # Its hook for a restart: Antigravity runs the hooks in .agents/hooks.json of its
+      # folders, and herdr-ws-resume notes the conversation for this terminal (where the
+      # launcher noted no command, it does nothing). PreInvocation, before each model
+      # call: a conversation it continues (--conversation) never has a SessionStart.
+      # Antigravity wants JSON back.
+      agyhooks=
+      if [ -n "$resume" ]; then
+        hook=$(json "'$resume' --hook >/dev/null 2>&1; printf '{}\\n'")
+        agyhooks="{\"herdr-resume\":{\"PreInvocation\":[{\"type\":\"command\",\"command\":\"$hook\",\"timeout\":10}]}}"
+      fi
+      if [ -n "${HERDR_WS_AGENT_DRY:-}" ] || agyrules "$rules" "$text" "$agyhooks"; then set -- "$@" --add-dir "$rules"; fi
+    elif [ "$name" = pi ]; then
+      # Pi reads a file named there, and takes anything else as the text itself. Its
+      # own APPEND_SYSTEM.md, which a --append-system-prompt replaces, goes first.
+      piown=${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/APPEND_SYSTEM.md
+      [ -z "$piappend" ] && [ ! -f "$cwd/.pi/APPEND_SYSTEM.md" ] && [ -f "$piown" ] && set -- "$@" --append-system-prompt "$piown"
+      set -- "$@" --append-system-prompt "$text"
     else
       # A TOML string: backslashes and quotes escaped, lines joined with \n.
       toml=$(printf '%s\n' "$text" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\r$//' | awk 'NR > 1 { printf "\\n" } { printf "%s", $0 }')
       set -- "$@" -c "developer_instructions=\"$toml\""
     fi
   fi
-  # The whole workspace is the agent's to read and edit, and its folders that live elsewhere.
-  if [ -n "$ws" ]; then
-    realroot=$(real "$root")
-    [ -d "$root" ] && [ "$realroot" != "$cwd" ] && give "$root"
-    while IFS=$tab read -r kind id path _; do
-      [ "$kind" = dir ] && [ "$id" = "$ws" ] && [ -d "$path" ] || continue
-      p=$(real "$path")
-      holds "$p" "$realroot" || [ "$p" = "$cwd" ] || give "$path"
-    done < "$index"
-    # Its board cards too: a card's agent notes its status and pull request there.
-    [ -d "$wsdir/tasks" ] && give "$wsdir/tasks"
+  # The folders found above, as --add-dir (Pi has none: its text names them).
+  if [ -n "$ws" ] && [ "$name" != pi ]; then
     while IFS= read -r path; do
       [ -n "$path" ] && set -- "$@" --add-dir "$path"
     done <<EOF
@@ -436,14 +533,14 @@ fi
 # Brought back after a restart (herdr-ws-resume): in a herdr-core terminal, Claude
 # gets hooks that note its session, and its command is noted. The hooks go into the
 # command's own inline --settings too; a --settings file, or settings with hooks of
-# their own, leave it out of restarts.
-self=$0
-[ -L "$self" ] && link=$(readlink "$self") && case "$link" in /*) self=$link ;; *) self=$(dirname "$self")/$link ;; esac
-resume=$(dirname "$self")/herdr-ws-resume
-[ -x "$resume" ] || resume=$(command -v herdr-ws-resume 2>/dev/null) || resume=
+# their own, leave it out of restarts. Antigravity's hook is in its rules folder,
+# so it only gets the note (not a print run, -p).
 # Off (herdr-ws-resume --off, or the Agent presets screen): no hooks, no note.
 switch=${HERDR_WS_RESUME_DIR:-$HOME/.herdr/resume}/switch
-hooks=
+hooks= agynote=
+if [ "$name" = agy ] && [ -z "$oneshot" ] && [ -n "$resume" ] && [ "$(sed -n 1p "$switch" 2>/dev/null)" != off ] && [ -n "${HC_TERMINAL_ID:-}" ] && [ -n "${HC_TERMINAL_SOCKET:-}" ]; then
+  agynote=1
+fi
 if [ "$name" = claude ] && [ -n "$resume" ] && [ "$(sed -n 1p "$switch" 2>/dev/null)" != off ] && [ -n "${HC_TERMINAL_ID:-}" ] && [ -n "${HC_TERMINAL_SOCKET:-}" ]; then
   hook=$(printf '%s' "'$resume' --hook" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
   hooks="{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$hook\",\"timeout\":10}]}],\"SessionEnd\":[{\"matcher\":\"prompt_input_exit|logout\",\"hooks\":[{\"type\":\"command\",\"command\":\"$hook\",\"timeout\":10}]}]}"
@@ -514,7 +611,7 @@ while [ $i -lt "$given" ]; do
 done
 
 [ -n "$new" ] && [ -z "$merged" ] && set -- "$@" --settings "$new"
-if [ -n "$hooks" ]; then
+if [ -n "$hooks$agynote" ]; then
   if [ -z "${HERDR_WS_AGENT_DRY:-}" ]; then
     core=${HC_TERMINAL_SOCKET##*/}
     notes=${HERDR_WS_RESUME_DIR:-$HOME/.herdr/resume}/${core%.sock}
@@ -537,7 +634,16 @@ if [ -n "$hooks" ]; then
 fi
 # The first message: last on the command line, and for agy with -i (a bare word isn't one there).
 if [ -n "$task" ]; then
-  if [ "$name" = agy ]; then set -- "$@" -i "$task"; else set -- "$@" "$task"; fi
+  if [ "$name" = agy ]; then set -- "$@" -i "$task"
+  elif [ "$name" = pi ]; then
+    # After -- (unless the command has one): else Pi reads a task starting with - as
+    # a flag, and a flag of an extension it doesn't know takes the task as its value.
+    # Even after --, a word starting with @ is a file to attach, so a space goes first.
+    dd=
+    for w in "$@"; do [ "$w" = -- ] && dd=1 && break; done
+    case "$task" in @*) task=" $task" ;; esac
+    if [ -n "$dd" ]; then set -- "$@" "$task"; else set -- "$@" -- "$task"; fi
+  else set -- "$@" "$task"; fi
 fi
 
 if [ -n "${HERDR_WS_AGENT_DRY:-}" ]; then

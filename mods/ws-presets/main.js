@@ -78,7 +78,47 @@ const KNOBS = {
   claude: { model: ["--model"], models: ["fable", "opus", "sonnet", "haiku"], effort: { flag: "--effort", levels: ["low", "medium", "high", "xhigh", "max"] } },
   codex: { model: ["--model", "-m"], models: [], effort: { config: "model_reasoning_effort", levels: ["minimal", "low", "medium", "high", "xhigh", "max"] } },
   pi: { model: ["--model"], models: [], effort: { flag: "--thinking", levels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] } },
+  // Antigravity: --model takes a family (gemini-4-neon) and --effort its level; a model
+  // named with its level (gemini-4-neon-high) refuses --effort. Its families are asked
+  // of `agy models` (agyModels()), so none are listed here.
+  agy: { model: ["--model"], models: [], effort: { flag: "--effort", levels: ["low", "medium", "high", "xhigh", "max"] } },
 };
+
+// Antigravity's model families, out of `agy models` ("<id>\t<name>" a line): each id
+// without the level --effort sets (gemini-4-neon-high -> gemini-4-neon). An id with no
+// level (an orchestrator) is left out: it can't take --effort.
+function agyFamilies(text) {
+  const out = [];
+  for (const line of String(text ?? "").split("\n")) {
+    const id = /^([A-Za-z0-9][A-Za-z0-9._-]*)\t/.exec(line)?.[1];
+    const family = id ? /^(.+)-(?:minimal|low|medium|high|xhigh|max)$/.exec(id)?.[1] : null;
+    if (family && !out.includes(family)) out.push(family);
+  }
+  return out;
+}
+
+// The families to offer. `agy models` asks Antigravity's server, so its answer is kept
+// for a day in ~/.herdr/cache/agy-models.json (also that agy isn't installed). It runs
+// through your shell, where agy is on PATH. `io`: { exec, readTextFile, writeTextFile, home }.
+async function agyModels(io) {
+  const file = `${io.home()}/.herdr/cache/agy-models.json`;
+  let kept = null;
+  try { kept = JSON.parse(await io.readTextFile(file)); } catch { kept = null; }
+  const list = Array.isArray(kept?.models) ? kept.models.filter((m) => typeof m === "string") : [];
+  if (kept && Date.now() - Number(kept.at) < 86400e3) return list;
+  let missing = false;
+  for (const flags of ["-lc", "-lic"]) {
+    const r = await io.exec("sh", ["-c", 'exec "${SHELL:-/bin/sh}" "$1" "command -v agy >/dev/null 2>&1 || exit 127; agy models"', "sh", flags], { timeout: 30000 }).catch(() => null);
+    const models = agyFamilies(r?.stdout);
+    if (models.length) {
+      await io.writeTextFile(file, JSON.stringify({ at: Date.now(), models })).catch(() => {});
+      return models;
+    }
+    missing = r?.code === 127;
+  }
+  if (missing) await io.writeTextFile(file, JSON.stringify({ at: Date.now(), models: [] })).catch(() => {});
+  return list;
+}
 
 // A flag's value in the words (`--model x` or `--model=x`), null when absent.
 function flagValue(ws, names) {
@@ -228,6 +268,12 @@ export default class Presets extends View {
     cx.spawn(async (cx) => {
       const text = await readTextFile(`${home()}/.codex/config.toml`).catch(() => null);
       this.codexModels = [...new Set([...(text ?? "").matchAll(/^\s*model\s*=\s*"([^"]+)"/gm)].map((m) => m[1]))];
+      cx.notify();
+    });
+    // Antigravity's model families (asked of `agy models` at most once a day).
+    this.agyModels = [];
+    cx.spawn(async (cx) => {
+      this.agyModels = await agyModels({ exec, readTextFile, writeTextFile, home }).catch(() => []);
       cx.notify();
     });
     this.sel = null; // { scope, name, isNew }
@@ -428,7 +474,7 @@ export default class Presets extends View {
     const shown = spaces().find((s) => s.active);
     const where = shown ? `A new tab in “${shown.name}”, in ${tilde(focused()?.cwd || shown.folder || "~")}` : "A new space in the workspace's root";
     const launcher = shared("workspaces.launcher") === true;
-    const system = launcher && ["claude", "codex", "agy"].includes(programOf(preset?.command ?? ""));
+    const system = launcher && ["claude", "codex", "agy", "pi"].includes(programOf(preset?.command ?? ""));
     const button = (id, text, primary, action) => h_flex().id(id).h(32).px(14).items_center().rounded(8).border_1()
       .border_color(primary ? t.solid : t.input).bg(primary ? t.solid : t.raised).text_color(primary ? t.solid_foreground : t.foreground)
       .text_size(12.5).font_medium().cursor_pointer().hover((s) => s.opacity(0.88)).on_click(action).child(text);
@@ -528,8 +574,8 @@ export default class Presets extends View {
           .on_click((_e, cx) => this.editGuide(cx)).child(g.bytes ? "Edit" : "Write one")))
       .child(h_flex().id("p-guide").mx(6).px(8).py(6).gap(9).rounded(7).items_center().cursor_pointer()
         .hover((s) => s.bg(t.hover))
-        .tooltip(g.on ? `Claude, Codex and Antigravity started through Herdr get ${tilde(guideFile())} first: how to use automations, hc helpers and the board. A preset can leave it out. Click to turn it off for every agent.`
-          : "Agents start without the guide. Click to give it to Claude, Codex and Antigravity again.")
+        .tooltip(g.on ? `Claude, Codex, Antigravity and Pi started through Herdr get ${tilde(guideFile())} first: how to use automations, hc helpers and the board. A preset can leave it out. Click to turn it off for every agent.`
+          : "Agents start without the guide. Click to give it to Claude, Codex, Antigravity and Pi again.")
         .on_click((_e, cx) => this.flipGuide(cx))
         .child(v_flex().flex_1().min_w(0).gap(2)
           .child(div().truncate().child("Give agents the guide"))
@@ -574,7 +620,7 @@ export default class Presets extends View {
     }
     const sel = this.sel;
     const launcher = shared("workspaces.launcher") === true;
-    const system = launcher && ["claude", "codex", "agy"].includes(programOf(this.cmdIn.value()));
+    const system = launcher && ["claude", "codex", "agy", "pi"].includes(programOf(this.cmdIn.value()));
     const dirty = this.dirty();
     const label = (text) => div().pt(14).pb(6).text_size(11.5).text_color(t.dim).child(text);
     const box = (state, mono) => Input.new(state).h(34).px(10).rounded(8).border_1().border_color(this.focusedIn === state ? t.accent : t.input).bg(t.background)
@@ -590,7 +636,7 @@ export default class Presets extends View {
     const agents = (shared("new-menu.agents")?.[""] ?? []).filter((a) => a.installed && Array.isArray(a.run));
     const where = sel.scope === "global" ? "Every workspace" : `Only in ${def?.name ?? "this workspace"}`;
     const program = programOf(this.cmdIn.value());
-    const knobs = KNOBS[program] ? { ...KNOBS[program], models: program === "codex" ? this.codexModels : KNOBS[program].models } : null;
+    const knobs = KNOBS[program] ? { ...KNOBS[program], models: program === "codex" ? this.codexModels : program === "agy" ? this.agyModels : KNOBS[program].models } : null;
     const cmdWords = words(this.cmdIn.value());
     const model = knobs ? flagValue(cmdWords, knobs.model) : null;
     const effort = knobs ? (knobs.effort.flag ? flagValue(cmdWords, [knobs.effort.flag]) : configValue(cmdWords, knobs.effort.config)) : null;

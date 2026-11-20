@@ -4,11 +4,16 @@
 // folders: change both (scripts/sync-from-home.sh checks they match). The Presets
 // screen (ws-presets) has its own copy of the table.
 
-// The models to offer (Codex's come from ~/.codex/config.toml) and the effort levels.
+// The models to offer (Codex's come from ~/.codex/config.toml, Antigravity's from
+// `agy models`) and the effort levels.
 export const KNOBS = {
   claude: { model: ["--model"], models: ["fable", "opus", "sonnet", "haiku"], effort: { flag: "--effort", levels: ["low", "medium", "high", "xhigh", "max"] } },
   codex: { model: ["--model", "-m"], models: [], effort: { config: "model_reasoning_effort", levels: ["minimal", "low", "medium", "high", "xhigh", "max"] } },
   pi: { model: ["--model"], models: [], effort: { flag: "--thinking", levels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] } },
+  // Antigravity: --model takes a family (gemini-4-neon) and --effort its level; a model
+  // named with its level (gemini-4-neon-high) refuses --effort. Its families are asked
+  // of `agy models` (agyModels()), so none are listed here.
+  agy: { model: ["--model"], models: [], effort: { flag: "--effort", levels: ["low", "medium", "high", "xhigh", "max"] } },
 };
 
 const base = (p) => p.replace(/\/+$/, "").split("/").pop();
@@ -99,4 +104,40 @@ export function withKnobs(argv, model, effort) {
   if (model) out = withFlag(out, k.model, model);
   if (effort) out = k.effort.flag ? withFlag(out, [k.effort.flag], effort) : withConfig(out, k.effort.config, effort);
   return out;
+}
+
+// Antigravity's model families, out of `agy models` ("<id>\t<name>" a line): each id
+// without the level --effort sets (gemini-4-neon-high -> gemini-4-neon). An id with no
+// level (an orchestrator) is left out: it can't take --effort.
+export function agyFamilies(text) {
+  const out = [];
+  for (const line of String(text ?? "").split("\n")) {
+    const id = /^([A-Za-z0-9][A-Za-z0-9._-]*)\t/.exec(line)?.[1];
+    const family = id ? /^(.+)-(?:minimal|low|medium|high|xhigh|max)$/.exec(id)?.[1] : null;
+    if (family && !out.includes(family)) out.push(family);
+  }
+  return out;
+}
+
+// The families to offer. `agy models` asks Antigravity's server, so its answer is kept
+// for a day in ~/.herdr/cache/agy-models.json (also that agy isn't installed). It runs
+// through your shell, where agy is on PATH. `io`: { exec, readTextFile, writeTextFile, home }.
+export async function agyModels(io) {
+  const file = `${io.home()}/.herdr/cache/agy-models.json`;
+  let kept = null;
+  try { kept = JSON.parse(await io.readTextFile(file)); } catch { kept = null; }
+  const list = Array.isArray(kept?.models) ? kept.models.filter((m) => typeof m === "string") : [];
+  if (kept && Date.now() - Number(kept.at) < 86400e3) return list;
+  let missing = false;
+  for (const flags of ["-lc", "-lic"]) {
+    const r = await io.exec("sh", ["-c", 'exec "${SHELL:-/bin/sh}" "$1" "command -v agy >/dev/null 2>&1 || exit 127; agy models"', "sh", flags], { timeout: 30000 }).catch(() => null);
+    const models = agyFamilies(r?.stdout);
+    if (models.length) {
+      await io.writeTextFile(file, JSON.stringify({ at: Date.now(), models })).catch(() => {});
+      return models;
+    }
+    missing = r?.code === 127;
+  }
+  if (missing) await io.writeTextFile(file, JSON.stringify({ at: Date.now(), models: [] })).catch(() => {});
+  return list;
 }

@@ -55,7 +55,7 @@ export const scratchConfig = `// The Scratch workspace: for trying ideas that be
   "scratch": true,
 }
 `;
-export const scratchAgents = `<!-- What every agent (claude, codex) started in the Scratch workspace is told.
+export const scratchAgents = `<!-- What every agent (Claude, Codex, Antigravity, Pi) started in the Scratch workspace is told.
      Nothing here is a project: write below this comment if agents should know
      something about trying ideas. The comment itself is not sent. -->
 `;

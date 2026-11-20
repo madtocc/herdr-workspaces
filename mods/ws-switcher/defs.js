@@ -166,8 +166,8 @@ export function words(line) {
   return out;
 }
 
-// How Herdr starts a preset: { argv, task }. With the launcher, Claude, Codex and
-// Antigravity (agy) get the instructions as system instructions (--instructions)
+// How Herdr starts a preset: { argv, task }. With the launcher, Claude, Codex,
+// Antigravity (agy) and Pi get the instructions as system instructions (--instructions)
 // and the task as the first message; other agents get both in the first message,
 // as hc does.
 export function presetLaunch(preset, task) {
@@ -179,7 +179,7 @@ export function presetLaunch(preset, task) {
   if (base(argv[0] ?? "") === "herdr-ws-agent") argv = argv.slice(1);
   const agent = base(argv[0] ?? "");
   const launcher = shared("workspaces.launcher") === true;
-  const system = launcher && (agent === "claude" || agent === "codex" || agent === "agy") && Boolean(preset.body);
+  const system = launcher && (agent === "claude" || agent === "codex" || agent === "agy" || agent === "pi") && Boolean(preset.body);
   if (launcher) argv = ["herdr-ws-agent", ...(system ? ["--instructions", preset.file] : []), ...argv];
   if (assigns.length) argv = ["env", ...assigns, ...argv];
   const told = preset.body && `You are the "${preset.name}" agent, started from the Herdr agent preset of that name (${preset.file}). Its instructions:\n\n${preset.body}`;

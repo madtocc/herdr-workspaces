@@ -1,6 +1,6 @@
 <!--
-Herdr's global guide. herdr-ws-agent hands this file to every Claude, Codex and
-Antigravity it starts (the + menu, presets, board cards, automations, hc helpers), before the
+Herdr's global guide. herdr-ws-agent hands this file to every Claude, Codex,
+Antigravity and Pi it starts (the + menu, presets, board cards, automations, hc helpers), before the
 workspace's own AGENTS.md. Keep it short: every agent pays for it. Details belong
 in the skills and in each tool's --help.
 -->
