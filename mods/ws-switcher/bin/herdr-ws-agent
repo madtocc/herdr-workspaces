@@ -8,8 +8,17 @@
 # Finds the workspace whose root or folders hold the current folder (a herdr
 # worktree goes by its repo's name) and starts the agent with:
 #
-#   claude: --append-system-prompt <instructions> --add-dir <root, outside folders, its tasks folder>
-#   codex:  -c developer_instructions=<instructions> --add-dir <...>
+#   claude: --append-system-prompt <instructions> --add-dir <root, outside folders>
+#           --settings <its tasks folder as permissions.additionalDirectories>
+#   codex:  -c developer_instructions=<instructions> --add-dir <root, outside folders, its tasks folder>
+#
+# Claude asks at every start whether to trust a folder given with --add-dir that
+# it hasn't been told to trust (since 2.1.326), and waits for the answer. Herdr's
+# own folders (under ~/.herdr: a workspace's tasks, the Scratch root) are never
+# ones Claude was started in, so Claude gets those through its settings instead,
+# which lets it read and edit there and asks nothing. They share the command's own
+# inline --settings; with a --settings file, or settings that already name
+# additionalDirectories, they stay --add-dir.
 #
 # The instructions are the workspace's AGENTS.md (or its "instructions" file)
 # without HTML comments; an empty one adds nothing. Inside a workspace a last
@@ -249,9 +258,33 @@ $body"
   exec "$@"
 fi
 
+# The command's own --settings (the first one). What the launcher adds to Claude's
+# settings (the folders below, the restart hooks) goes into it, since a second
+# --settings would replace it; only inline JSON can take them.
+own= ownset= inline= prev=
+for w in "$@"; do
+  if [ "$prev" = --settings ]; then own=$w ownset=1; break; fi
+  case "$w" in --settings=*) own=${w#--settings=} ownset=1; break ;; esac
+  prev=$w
+done
+case "$(printf '%s' "$own" | sed '1s/^[[:space:]]*//')" in '{'*) inline=1 ;; esac
+# A JSON string's inside.
+json() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
+
 # Extra words go before the caller's: append them, then rotate the caller's to the end.
 given=$#
 name=${agent##*/}
+# Give the agent a folder: Claude gets one of Herdr's own through its settings
+# ($dirs, the quoted paths), anything else is --add-dir.
+dirs=
+give() {
+  if [ "$name" = claude ] && holds "$1" "$HOME/.herdr" && { [ -z "$ownset" ] || [ -n "$inline" ]; }; then
+    case "$own" in *'"additionalDirectories"'*) ;; *) dirs=${dirs:+$dirs,}\"$(json "$1")\"; return ;; esac
+  fi
+  added="$added$1
+"
+}
+added=
 if [ "$name" = claude ] || [ "$name" = codex ]; then
   # The global guide (what every agent here should know about Herdr: automations,
   # hc helpers, the board), then the workspace's instructions, then each preset's,
@@ -327,21 +360,26 @@ EOF
   # The whole workspace is the agent's to read and edit, and its folders that live elsewhere.
   if [ -n "$ws" ]; then
     realroot=$(real "$root")
-    [ -d "$root" ] && [ "$realroot" != "$cwd" ] && set -- "$@" --add-dir "$root"
+    [ -d "$root" ] && [ "$realroot" != "$cwd" ] && give "$root"
     while IFS=$tab read -r kind id path _; do
       [ "$kind" = dir ] && [ "$id" = "$ws" ] && [ -d "$path" ] || continue
       p=$(real "$path")
-      holds "$p" "$realroot" || [ "$p" = "$cwd" ] || set -- "$@" --add-dir "$path"
+      holds "$p" "$realroot" || [ "$p" = "$cwd" ] || give "$path"
     done < "$index"
     # Its board cards too: a card's agent notes its status and pull request there.
-    [ -d "$wsdir/tasks" ] && set -- "$@" --add-dir "$wsdir/tasks"
+    [ -d "$wsdir/tasks" ] && give "$wsdir/tasks"
+    while IFS= read -r path; do
+      [ -n "$path" ] && set -- "$@" --add-dir "$path"
+    done <<EOF
+$added
+EOF
   fi
 fi
 
 # Brought back after a restart (herdr-ws-resume): in a herdr-core terminal, Claude
 # gets hooks that note its session, and its command is noted. The hooks go into the
-# command's own inline --settings, since a second --settings would replace it; a
-# --settings file, or settings with hooks of their own, leave it out of restarts.
+# command's own inline --settings too; a --settings file, or settings with hooks of
+# their own, leave it out of restarts.
 self=$0
 [ -L "$self" ] && link=$(readlink "$self") && case "$link" in /*) self=$link ;; *) self=$(dirname "$self")/$link ;; esac
 resume=$(dirname "$self")/herdr-ws-resume
@@ -353,26 +391,63 @@ if [ "$name" = claude ] && [ -n "$resume" ] && [ "$(sed -n 1p "$switch" 2>/dev/n
   hook=$(printf '%s' "'$resume' --hook" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
   hooks="{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$hook\",\"timeout\":10}]}],\"SessionEnd\":[{\"matcher\":\"prompt_input_exit|logout\",\"hooks\":[{\"type\":\"command\",\"command\":\"$hook\",\"timeout\":10}]}]}"
 fi
-# Inline settings JSON with the hooks added, or false.
-withhooks() {
-  case "$1" in *'"hooks"'*) return 1 ;; esac
-  rest=$(printf '%s' "$1" | sed '1s/^[[:space:]]*{//')
-  [ "$rest" != "$1" ] || return 1
+if [ -n "$hooks" ] && [ -n "$ownset" ]; then
+  [ -n "$inline" ] || hooks=
+  case "$own" in *'"hooks"'*) hooks= ;; esac
+fi
+# Inline settings JSON with the hooks and the folders added. The folders go first
+# in its own top-level "permissions", or in a new one.
+withextras() {
+  s=$1 add=
+  [ -n "$hooks" ] && add="\"hooks\":$hooks"
+  if [ -n "$dirs" ]; then
+    list="\"additionalDirectories\":[$dirs]"
+    if p=$(printf '%s' "$s" | HERDR_WS_ADD=$list awk '
+      { s = s (NR > 1 ? "\n" : "") $0 }
+      END {
+        n = length(s); depth = 0; instr = 0; want = 0; at = 0; last = ""
+        for (i = 1; i <= n; i++) {
+          c = substr(s, i, 1)
+          if (instr) {
+            if (c == "\\") i++
+            else if (c == "\"") { instr = 0; last = substr(s, from + 1, i - from - 1) }
+            continue
+          }
+          if (c == "\"") { instr = 1; from = i; want = 0; continue }
+          if (c == "{" && depth == 1 && want) { at = i; break }
+          if (c == "{" || c == "[") { depth++; want = 0; continue }
+          if (c == "}" || c == "]") { depth--; want = 0; continue }
+          if (c == ":" && depth == 1) { want = (last == "permissions"); continue }
+          if (c !~ /[ \t\r\n]/) want = 0
+        }
+        if (!at) exit 1
+        rest = substr(s, at + 1); t = rest; sub(/^[ \t\r\n]+/, "", t)
+        printf "%s%s%s%s", substr(s, 1, at), ENVIRON["HERDR_WS_ADD"], (substr(t, 1, 1) == "}" ? "" : ","), rest
+      }'); then s=$p
+    else add=${add:+$add,}"\"permissions\":{$list}"
+    fi
+  fi
+  [ -n "$add" ] || { printf '%s' "$s"; return; }
+  rest=$(printf '%s' "$s" | sed '1s/^[[:space:]]*{//')
   case "$(printf '%s' "$rest" | sed '1s/^[[:space:]]*//')" in
-    '}'*) printf '{"hooks":%s%s' "$hooks" "$rest" ;;
-    *) printf '{"hooks":%s,%s' "$hooks" "$rest" ;;
+    '}'*) printf '{%s%s' "$add" "$rest" ;;
+    *) printf '{%s,%s' "$add" "$rest" ;;
   esac
 }
+new=
+if [ -n "$hooks$dirs" ]; then
+  base=$own
+  [ -n "$ownset" ] || base='{}'
+  new=$(withextras "$base")
+fi
 
 # Rotate: the caller's words (the first $given) move after the extras.
 i=0 prev= merged=
 while [ $i -lt "$given" ]; do
   w=$1
-  if [ -n "$hooks" ] && [ -z "$merged" ]; then
-    if [ "$prev" = --settings ]; then
-      if m=$(withhooks "$w"); then w=$m merged=1; else hooks=; fi
-    else
-      case "$w" in --settings=*) if m=$(withhooks "${w#--settings=}"); then w=--settings=$m merged=1; else hooks=; fi ;; esac
+  if [ -n "$new" ] && [ -z "$merged" ]; then
+    if [ "$prev" = --settings ]; then w=$new merged=1
+    else case "$w" in --settings=*) w=--settings=$new merged=1 ;; esac
     fi
   fi
   set -- "$@" "$w"
@@ -381,8 +456,8 @@ while [ $i -lt "$given" ]; do
   i=$((i + 1))
 done
 
+[ -n "$new" ] && [ -z "$merged" ] && set -- "$@" --settings "$new"
 if [ -n "$hooks" ]; then
-  [ -n "$merged" ] || set -- "$@" --settings "{\"hooks\":$hooks}"
   if [ -z "${HERDR_WS_AGENT_DRY:-}" ]; then
     core=${HC_TERMINAL_SOCKET##*/}
     notes=${HERDR_WS_RESUME_DIR:-$HOME/.herdr/resume}/${core%.sock}
