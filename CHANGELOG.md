@@ -7,6 +7,9 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 
 ## [Unreleased]
 
+### Fixed
+- **Claude no longer asks about the cards folder at every start.** Since Claude Code 2.1.326, Claude started in a workspace that has cards stopped at "Adding a new directory: …/tasks" with "No, exit" picked, every time, because the launcher gave it that folder with `--add-dir`; an agent started by a card or an automation waited there. Claude now gets the workspace's `tasks` folder, and the Scratch root, through its settings (`permissions.additionalDirectories`, merged into the command's own inline `--settings`), which lets it read and edit there without the question. A workspace root or outside folder Claude hasn't been told to trust still asks: start Claude there once and say yes. Agents already running keep the answer you gave them. To update, copy `mods/ws-switcher`.
+
 ## [0.8.0] - 2026-11-20
 
 ### New

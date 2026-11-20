@@ -245,7 +245,7 @@ worktree scripts (`~/.herdr/workspaces/<id>/worktrees.json`) are shell lines Her
 runs as you: setup in a new worktree the board makes, archive before a removal.
 Like a check, only a line you saved or allowed in the screen runs
 (`~/.herdr/workspaces/.worktree-scripts.json`). The launcher reads `~/.herdr/AGENTS.md`, your global guide, and `~/.herdr/guide/switch`, which the Presets screen's guide switch writes; the screen's Write one creates the guide from the starter and opens it in your editor. The launcher lets Claude and Codex read and edit
-the workspace's root, its folders elsewhere and its `tasks` folder. Automations watch the folders a files automation
+the workspace's root, its folders elsewhere and its `tasks` folder; Claude gets Herdr's own folders in that one session's `--settings`, and no settings file is written. Automations watch the folders a files automation
 names, read calls `herdr-ws-run` leaves in `~/.herdr/workspaces/.inbox` (and
 delete them), and close an automation's older run tabs once their agent is done.
 An automation's `check:` is a shell command Herdr runs by itself, as you, in the
