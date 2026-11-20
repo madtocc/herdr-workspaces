@@ -208,7 +208,9 @@ each workspace's root. Two of the ready-made automations (`issue-to-pr`,
 `~/.herdr/worktrees/` and to push branches and open pull requests with your
 `gh` login; two have a check that runs `git log` and `gh` in the workspace's
 folders, and `morning-review`'s also runs `git fetch` in each repo. It writes `~/.herdr/workspaces/.index`, a new
-workspace's files when you make one, its `workspace.jsonc` when you rename it,
+workspace's files when you make one, its `workspace.jsonc` when you rename it
+or change its group, `~/.herdr/workspaces/.order.json` when you drag or fold in
+the switcher menu,
 task files in `~/.herdr/workspaces/<id>/tasks/` and automation files in
 `~/.herdr/workspaces/<id>/automations/` and `~/.herdr/automations/` (the
 ones for every workspace; from the Automations screen, a ready-made one
