@@ -4,6 +4,7 @@
 
 import { home, readTextFile, exec, window, shared } from "herdr";
 import * as fs from "fs/promises";
+import { readOrder, sortDefs } from "./arrange.js";
 
 export const dir = () => `${home()}/.herdr/workspaces`;
 
@@ -55,7 +56,14 @@ export async function subdirs(path) {
   } catch { return []; }
 }
 
-export async function loadDefs() {
+// The menu's order and folded groups (arrange.js).
+export const orderFile = () => `${dir()}/.order.json`;
+export async function loadOrder() {
+  return readOrder(await readTextFile(orderFile()).catch(() => null));
+}
+
+// In the menu's order (arrange.js), Scratch last. saved: the order, read here if not given.
+export async function loadDefs(saved) {
   const defs = [];
   for (const id of await subdirs(dir())) {
     const at = `${dir()}/${id}`;
@@ -74,6 +82,7 @@ export async function loadDefs() {
         children: root ? await subdirs(root) : [], instructions: told.startsWith("/") ? told : `${at}/${told}`,
         board: c.board && typeof c.board === "object" ? c.board : null,
         scratch: c.scratch === true, // the Scratch workspace (scratch.js)
+        group: typeof c.group === "string" && c.group.trim() ? c.group.trim().replace(/\s+/g, " ").slice(0, 40) : null, // its group in the menu
       });
     } catch (e) {
       defs.push({ id, dir: at, name: id, color: null, root: "", folders: [], children: [], instructions: "", error: String(e?.message ?? e) });
@@ -90,10 +99,10 @@ export async function loadDefs() {
       paths.forEach((p, i) => { if (out[i] && out[i] !== p) real[p] = out[i]; });
     } catch {}
   }
-  // The Scratch workspace comes last in the lists.
+  // The Scratch workspace comes last in the lists, the rest as the menu has them.
   defs.sort((a, b) => Number(Boolean(a.scratch)) - Number(Boolean(b.scratch)));
   for (const d of defs) d.real = Object.fromEntries([d.root, ...d.folders].filter((p) => real[p]).map((p) => [p, real[p]]));
-  return defs;
+  return sortDefs(defs, saved ?? (await loadOrder()));
 }
 
 // --- agent presets ---

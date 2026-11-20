@@ -29,6 +29,9 @@
 //                        Anyone sets it (ws-tabs' pills; null from ws-spaces and ws-agents
 //                        when a space or agent is clicked); this block shows it (coverWork())
 //   workspaces.covered   true while the shown space isn't the shown workspace's (it has none)
+//   workspaces.order     { order, folded }: the menu's order and folded groups (arrange.js, ~/.herdr/workspaces/.order.json)
+//   workspaces.arrange   { order?, folded?, groups?: { id: group or null }, at }: the menu asks this block to
+//                        save a drag, a fold or a workspace's group (applyArrange())
 //
 //   workspaces.prs       task file -> its pull request's one status (prs.js), drawn by ws-board
 //   workspaces.github    task file -> its GitHub board item's status (ghboard.js), drawn by ws-board
@@ -60,7 +63,8 @@ import { Runner, runnerDir, globalDir } from "./automations.js";
 import { PrWatcher } from "./prs.js";
 import { GhWatcher } from "./ghboard.js";
 import { Scratch, isScratch, scratchDef, scratchLabel } from "./scratch.js";
-import { dir, expand, tilde, under, base, subdirs, loadDefs, templatesDir, loadPresetDir, presetsFor, presetLaunch, withTask } from "./defs.js";
+import { dir, expand, tilde, under, base, subdirs, loadDefs, loadOrder, orderFile, templatesDir, loadPresetDir, presetsFor, presetLaunch, withTask } from "./defs.js";
+import { arrange, move as moveRow, groupOf, groupName, renamed, withGroup, orderText } from "./arrange.js";
 
 // "Edit" opens the workspace's folder in the first of these that's installed,
 // else with the system's opener (Finder, the file manager, Explorer).
@@ -263,6 +267,11 @@ export default class Workspaces extends View {
     if (props()?.empty) return;
     if (props()?.popup) {
       this.handle.focus();
+      // The group submenus' boxes: a new group's name, and a group's new name.
+      this.newGroupIn = InputState.new({ value: "", placeholder: "New group…" });
+      this.renameIn = InputState.new({ value: "" });
+      this.newGroupIn.on("submit", (_e, cx) => this.groupTyped(this.newGroupIn.value(), cx));
+      this.renameIn.on("submit", (_e, cx) => this.groupTyped(this.renameIn.value(), cx));
       return;
     }
     if (props()?.dialog) {
@@ -292,6 +301,7 @@ export default class Workspaces extends View {
     this.scratchAsked = shared("workspaces.scratch")?.at;
     this.allowAsked = shared("workspaces.automation.allow")?.at;
     this.setAsked = shared("workspaces.runner.set")?.at;
+    this.arrangeAsked = shared("workspaces.arrange")?.at;
     // A space the runner makes for its runs joins that workspace at once.
     this.hooks = {
       presetsFor, presetLaunch, withTask,
@@ -365,9 +375,16 @@ export default class Workspaces extends View {
 
   reload(cx) {
     cx.spawn(async (cx) => {
-      const defs = await loadDefs();
+      const gen = this.arrangeGen;
+      const saved = await loadOrder();
+      const defs = await loadDefs(saved);
       this.loaded = true;
-      if (JSON.stringify(defs) !== JSON.stringify(shared("workspaces.defs") ?? [])) setShared("workspaces.defs", defs);
+      // What's shown already has a drag or group change being written: only a read
+      // that began after it was written may replace it.
+      if (!this.arranging && gen === this.arrangeGen) {
+        if (JSON.stringify(defs) !== JSON.stringify(shared("workspaces.defs") ?? [])) setShared("workspaces.defs", defs);
+        if (JSON.stringify(saved) !== JSON.stringify(shared("workspaces.order") ?? null)) setShared("workspaces.order", saved);
+      }
       // The Scratch workspace is there from the first run (scratch.js); the folder watch reloads.
       if (this.scratch && !this.scratchChecked) {
         this.scratchChecked = true;
@@ -959,6 +976,11 @@ export default class Workspaces extends View {
         this.background(cx);
       });
     }
+    const arrangeAsk = shared("workspaces.arrange") ?? null;
+    if (arrangeAsk?.at !== this.arrangeAsked) {
+      this.arrangeAsked = arrangeAsk?.at;
+      if (arrangeAsk && Date.now() - arrangeAsk.at < 15000) this.applyArrange(arrangeAsk, cx);
+    }
     const boardAsk = shared("workspaces.board") ?? null;
     if (boardAsk?.at !== this.boardAsked) {
       this.boardAsked = boardAsk?.at;
@@ -975,6 +997,42 @@ export default class Workspaces extends View {
       if (historyAsk && Date.now() - historyAsk.at < 15000) this.openHistory(historyAsk.id ?? null, cx);
     }
     this.takeTabs();
+  }
+
+  // The menu's drag, fold or group change: shown at once, then written to .order.json
+  // and each changed workspace.jsonc. The folder watch reads them back afterwards.
+  applyArrange(ask, cx) {
+    const saved = { order: [], folded: [], ...(shared("workspaces.order") ?? {}) };
+    if (ask.order) saved.order = ask.order;
+    if (ask.folded) saved.folded = ask.folded;
+    const groups = ask.groups ?? {};
+    const was = shared("workspaces.defs") ?? [];
+    const defs = was.map((d) => (d.id in groups ? { ...d, group: groups[d.id] } : d));
+    setShared("workspaces.order", saved);
+    setShared("workspaces.defs", arrange(defs, saved).flatMap((it) => (it.group ? it.members : [it.ws])));
+    this.arranging = (this.arranging ?? 0) + 1;
+    this.arrangeGen = (this.arrangeGen ?? 0) + 1;
+    cx.spawn(async (cx) => {
+      try {
+        for (const [id, group] of Object.entries(groups)) {
+          const d = was.find((x) => x.id === id);
+          if (!d || d.error) continue;
+          const file = `${d.dir}/workspace.jsonc`;
+          const old = await readTextFile(file);
+          if (old === null) continue;
+          const text = withGroup(old, group);
+          if (text !== old) await writeTextFile(file, text, old);
+        }
+        const old = await readTextFile(orderFile());
+        const text = orderText(saved);
+        if (old !== text) await writeTextFile(orderFile(), text, old);
+      } catch (e) {
+        notify({ title: "Couldn't save the workspaces' order", body: String(e?.message ?? e), level: "error" });
+      }
+      this.arranging--;
+      this.arrangeGen++;
+      this.reload(cx);
+    });
   }
 
   // A Board or Worktrees tab from before they were the workspace's own (or made by
@@ -1094,6 +1152,7 @@ export default class Workspaces extends View {
     };
     const frame = (items) => v_flex().id("ws-menu").track_focus(this.handle).on_key_down((e) => this.key(e, defs))
       .w_full().h(Math.min(600, height)).p(5).bg(t.popover).text_size(12.8).overflow_y_scrollbar()
+      .on_mouse_up("left", (_e, cx) => { if (this.dragFrom) { this.dragFrom = this.dragOver = null; cx.notify(); } })
       .children(items);
 
     // "Move to…": where the shown space goes. Its new workspace is then shown.
@@ -1110,6 +1169,36 @@ export default class Workspaces extends View {
           { tip: "Shows only under All spaces, and doesn't join a workspace by its folder" })]);
     }
 
+    // A workspace's group (its right-click, or "Put … in a group…"): the groups there
+    // are, none, or a new one typed in the box. A group's header, right-clicked: its
+    // new name in the box, or Ungroup.
+    const tree = arrange(defs, shared("workspaces.order") ?? {});
+    const groupNames = tree.filter((it) => it.group).map((it) => it.group);
+    const box = (input, note) => {
+      height += note ? 62 : 44;
+      return v_flex().px(4).pt(6).pb(4).gap(5).flex_none()
+        .child(Input.new(input).h(32).px(9).rounded(7).border_1().border_color(t.input).bg(t.background).text_size(12.5).text_color(t.foreground))
+        .when(Boolean(note), (el) => el.child(div().px(4).text_size(11).text_color(t.dim).child(note)));
+    };
+    const picking = this.grouping ? defs.find((d) => d.id === this.grouping && !d.scratch && !d.error) : null;
+    if (picking) {
+      const now = groupOf(picking);
+      return frame([head(`Group for “${picking.name}”`),
+        ...groupNames.map((n) => row(`ws-grp-${n}`, icon("layers"), n, hint(check(now === n)), () => this.setGroup(picking.id, n))),
+        row("ws-grp-none", div().w(14).flex_none(), "No group", hint(check(!now)), () => this.setGroup(picking.id, null)),
+        line(),
+        box(this.newGroupIn, null)]);
+    }
+    const editing = this.renaming ? tree.find((it) => it.group === this.renaming) : null;
+    if (editing) {
+      const n = editing.members.length;
+      return frame([head(`The “${editing.group}” group`),
+        box(this.renameIn, "Enter renames it."),
+        line(),
+        row("ws-grp-ungroup", icon("layers"), "Ungroup", hint(`${n} ${n === 1 ? "workspace" : "workspaces"}`), () => this.ungroup(editing),
+          { tip: "Its workspaces stay where they are in the list, without a group" })]);
+    }
+
     // Making a workspace comes first, above the list it adds to.
     // A space in a new empty folder in the Scratch workspace (scratch.js): its dialog asks for
     // the name, and the sidebar copy makes it.
@@ -1120,12 +1209,60 @@ export default class Workspaces extends View {
       scratchRow,
       line(), head("Workspaces"),
       row("ws-all", mark(null, defs, t, 18), "All spaces", hint(String(sp.length), check(!active)), () => choose(null))];
-    for (const d of defs) {
+    // The workspaces as arrange.js has them: each group under a header that folds (a
+    // folded one still shows the workspace you're in), Scratch last. A row can be dragged:
+    // a workspace dropped on a workspace goes above or below it, in its group; on a
+    // header's lower part it goes into that group; a header moves its whole group.
+    // Right-click a workspace for its group, a header to rename or ungroup it.
+    const rows = this.rowsOf(tree, active);
+    const drop = this.dropAt(rows);
+    // Pressed, then let go on the same row: a click. On another: a drop there.
+    const moving = (r) => this.dragOver && this.dragOver !== this.dragFrom && (this.dragFrom === r.key || (r.group && this.dragFrom === `g:${r.group}`));
+    const drag = (el, r, click, menu) => el.relative()
+      .when(moving(r), (el) => el.opacity(0.5))
+      .when(drop?.key === r.key, (el) => el.child(drop.edge === "into"
+        ? div().absolute().top(0).bottom(0).left(0).right(0).rounded(7).border_1().border_color(t.accent)
+        : div().absolute().left(6).right(6).h(2).rounded_full().bg(t.accent).when(drop.edge === "top", (l) => l.top(-1)).when(drop.edge === "bottom", (l) => l.bottom(-1))))
+      .on_mouse_down("left", () => { this.dragFrom = r.key; this.dragOver = r.key; this.dragY = 0.5; })
+      .on_mouse_move((e, cx) => {
+        if (!this.dragFrom) return;
+        const y = e.bounds?.height ? e.local_position.y / e.bounds.height : 0.5;
+        if (this.dragOver !== r.key || Math.abs(y - this.dragY) > 0.05) { this.dragOver = r.key; this.dragY = y; cx.notify(); }
+      })
+      .on_mouse_up("left", (_e, cx) => {
+        const from = this.dragFrom;
+        if (from === r.key) { this.dragFrom = this.dragOver = null; click(cx); return; }
+        if (from && drop) this.dropped(rows, drop);
+        this.dragFrom = this.dragOver = null;
+        cx.notify();
+      })
+      .on_mouse_down("right", (_e, cx) => { this.dragFrom = this.dragOver = null; menu(cx); });
+    for (const r of rows) {
+      if (r.kind === "group") {
+        height += 28;
+        const members = new Set(r.item.members.map((d) => d.id));
+        const mine = sp.filter((s) => members.has(assigned[s.id]));
+        const status = r.shut ? urgent(mine) : null;
+        items.push(drag(h_flex().id(`ws-group-${r.name}`).h(28).px(8).gap(6).rounded(7).items_center().flex_none().cursor_pointer()
+          .hover((s) => s.bg(t.selected)).tooltip(`${r.shut ? "Click to open" : "Click to fold"}. Drag to move the group; right-click to rename or ungroup it.`)
+          .child(svg(`mods/workspace-chrome/chevron-${r.shut ? "right" : "down"}.svg`).size(10).flex_none().text_color(t.dim))
+          .child(div().flex_1().min_w(0).truncate().text_size(11.5).font_medium().text_color(t.muted).child(r.name))
+          .child(hint(status ? div().size(6).rounded_full().bg(t[status]) : div(), r.shut ? String(mine.length) : "", div().w(13))),
+          r, () => this.fold(r.name),
+          (cx) => { this.renaming = r.name; this.renameIn.set_value(r.name); this.renameIn.set_selected_range({ start: 0, end: r.name.length }); this.renameIn.focus(); cx.notify(); }));
+        continue;
+      }
+      const d = r.def;
       const mine = sp.filter((s) => assigned[s.id] === d.id);
       const status = urgent(mine);
-      items.push(row(`ws-def-${d.id}`, mark(d, defs, t, 18), d.name,
-        hint(status ? div().size(6).rounded_full().bg(t[status]) : div(), String(mine.length), check(active?.id === d.id)),
-        () => choose(d.id), { dim: Boolean(d.error), tip: d.error ? `workspace.jsonc: ${d.error}` : tilde(d.root) }));
+      height += 30;
+      items.push(drag(h_flex().id(`ws-def-${d.id}`).h(30).px(8).when(Boolean(r.group), (el) => el.pl(24)).gap(9).rounded(7).items_center().flex_none().cursor_pointer()
+        .text_color(d.error ? t.dim : t.foreground).hover((s) => s.bg(t.selected))
+        .tooltip(d.error ? `workspace.jsonc: ${d.error}` : tilde(d.root))
+        .child(mark(d, defs, t, 18)).child(div().flex_1().min_w(0).truncate().child(d.name))
+        .child(hint(status ? div().size(6).rounded_full().bg(t[status]) : div(), String(mine.length), check(active?.id === d.id))),
+        r, () => { closeOverlay(props().overlay); choose(d.id); },
+        (cx) => { if (d.scratch || d.error) return; this.grouping = d.id; this.newGroupIn.set_value(""); this.newGroupIn.focus(); cx.notify(); }));
     }
 
     // The actions before the folders: a workspace can have many folders.
@@ -1150,6 +1287,12 @@ export default class Workspaces extends View {
     if (active) {
       const ask = (dialog, height) => openOverlay({ mod: "ws-switcher", kind: "dialog", width: 420, height, props: { dialog, id: active.id } });
       items.push(row("ws-rename", icon("square-pen"), `Rename ${active.name}…`, div(), () => ask("rename", 210)));
+      if (!active.scratch && !active.error) {
+        const now = groupOf(active);
+        items.push(row("ws-group", icon("layers"), now ? `Change ${active.name}'s group…` : `Put ${active.name} in a group…`, hint(now ?? "", "›"),
+          (cx) => { this.grouping = active.id; this.newGroupIn.set_value(""); this.newGroupIn.focus(); cx.notify(); },
+          { keep: true, tip: "Workspaces in the same group sit together in this list, under a header that folds" }));
+      }
       items.push(row("ws-delete", svg("mods/workspace-chrome/archive.svg").size(14).flex_none().text_color(t.blocked), `Delete ${active.name}…`, div(),
         () => ask("delete", active.scratch ? 230 : 200), { danger: true }));
     }
@@ -1171,9 +1314,103 @@ export default class Workspaces extends View {
     return frame(items);
   }
 
+  // The menu's workspace rows, top to bottom: { key, kind: "ws" | "group", def or name,
+  // top: its item's index in the tree, group: the one it's in, pinned: Scratch, shut }.
+  rowsOf(tree, active) {
+    const folded = new Set(shared("workspaces.order")?.folded ?? []);
+    const rows = [];
+    tree.forEach((it, top) => {
+      if (!it.group) { rows.push({ key: `w:${it.ws.id}`, kind: "ws", def: it.ws, top, pinned: Boolean(it.pinned) }); return; }
+      const shut = folded.has(it.group);
+      rows.push({ key: `g:${it.group}`, kind: "group", name: it.group, item: it, top, shut });
+      for (const d of it.members) if (!shut || d.id === active?.id) rows.push({ key: `w:${d.id}`, kind: "ws", def: d, group: it.group, top });
+    });
+    return rows;
+  }
+
+  // Where the row being dragged would land: the row and edge to mark, and the move for
+  // arrange.js. On a workspace: above it in its upper half, below in its lower; on a
+  // header, a workspace goes above the group in its top third, else into it; a group
+  // goes above or below a whole item. The Scratch row means the end.
+  dropAt(rows) {
+    const from = rows.find((r) => r.key === this.dragFrom), over = rows.find((r) => r.key === this.dragOver);
+    if (!from || !over || from === over || from.pinned) return null;
+    const upper = (this.dragY ?? 0.5) < 0.5;
+    const src = from.kind === "group" ? { kind: "group", name: from.name } : { kind: "ws", id: from.def.id };
+    if (over.pinned) return { key: over.key, edge: "top", src, to: { kind: "end" } };
+    if (from.kind === "ws") {
+      if (over.kind === "group") {
+        if ((this.dragY ?? 0.5) >= 0.34) return { key: over.key, edge: "into", src, to: { kind: "group", name: over.name } };
+        return { key: over.key, edge: "top", src, to: { kind: "before", name: over.name } };
+      }
+      return { key: over.key, edge: upper ? "top" : "bottom", src, to: { kind: "ws", id: over.def.id }, after: !upper };
+    }
+    if (over.top === from.top) return null;
+    const span = rows.filter((r) => r.top === over.top);
+    const first = span[0] === over, last = span[span.length - 1] === over;
+    const down = rows.indexOf(from) < rows.indexOf(over);
+    const after = first && last ? !upper : first ? (upper ? false : down) : last ? (upper ? down : true) : down;
+    const to = over.kind === "group" ? { kind: "group", name: over.name } : over.group ? { kind: "group", name: over.group } : { kind: "ws", id: over.def.id };
+    return { key: (after ? span[span.length - 1] : span[0]).key, edge: after ? "bottom" : "top", src, to, after };
+  }
+
+  // A drop: the new order (and the workspace's new group) to the sidebar copy.
+  dropped(rows, drop) {
+    const tree = arrange(shared("workspaces.defs") ?? [], shared("workspaces.order") ?? {});
+    const r = moveRow(tree, drop.src, drop.to, drop.after);
+    if (!r) return;
+    setShared("workspaces.arrange", { order: r.order, ...(r.group !== undefined ? { groups: { [drop.src.id]: r.group } } : {}), at: Date.now() });
+  }
+
+  // A group's header clicked: folded, or open again.
+  fold(name) {
+    const folded = new Set(shared("workspaces.order")?.folded ?? []);
+    if (folded.has(name)) folded.delete(name); else folded.add(name);
+    setShared("workspaces.arrange", { folded: [...folded], at: Date.now() });
+  }
+
+  // A workspace's group set from its submenu (null: none). Its place in the list stays.
+  setGroup(id, group) {
+    const defs = (shared("workspaces.defs") ?? []).map((d) => (d.id === id ? { ...d, group } : d));
+    const saved = shared("workspaces.order") ?? {};
+    const order = arrange(defs, saved).filter((it) => !it.pinned)
+      .flatMap((it) => (it.group ? [{ group: it.group }, ...it.members.map((d) => d.id)] : [it.ws.id]));
+    setShared("workspaces.arrange", { order, groups: { [id]: group }, at: Date.now() });
+  }
+
+  // Enter in a submenu's box: the new group for the workspace, or the group's new name.
+  groupTyped(text, cx) {
+    const defs = shared("workspaces.defs") ?? [];
+    const names = [...new Set(defs.map(groupOf).filter(Boolean))];
+    if (this.grouping) {
+      const name = groupName(text, names);
+      if (!name) return;
+      closeOverlay(props().overlay);
+      this.setGroup(this.grouping, name);
+    } else if (this.renaming) {
+      const from = this.renaming, to = groupName(text, names.filter((n) => n !== from));
+      closeOverlay(props().overlay);
+      if (!to || to === from) return;
+      const saved = renamed(shared("workspaces.order") ?? {}, from, to);
+      const groups = Object.fromEntries(defs.filter((d) => groupOf(d) === from).map((d) => [d.id, to]));
+      setShared("workspaces.arrange", { ...saved, groups, at: Date.now() });
+    }
+  }
+
+  // Ungroup: its workspaces lose the group and stay where they are.
+  ungroup(g) {
+    const saved = shared("workspaces.order") ?? {};
+    setShared("workspaces.arrange", {
+      order: (saved.order ?? []).filter((e) => typeof e === "string" || e.group !== g.group),
+      folded: (saved.folded ?? []).filter((n) => n !== g.group),
+      groups: Object.fromEntries(g.members.map((d) => [d.id, null])),
+      at: Date.now(),
+    });
+  }
+
   // 0 shows every space, 1-9 the workspaces in the menu's order.
   key(e, defs) {
-    if (this.moving || e.modifiers?.control || e.modifiers?.platform || e.modifiers?.alt) return;
+    if (this.moving || this.grouping || this.renaming || e.modifiers?.control || e.modifiers?.platform || e.modifiers?.alt) return;
     if (!/^[0-9]$/.test(e.key)) return;
     const n = Number(e.key);
     if (n > defs.length) return;
