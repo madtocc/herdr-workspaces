@@ -7,6 +7,9 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 
 ## [Unreleased]
 
+### New
+- **Choose which agents the + menu shows.** The + menu no longer lists agents that aren't installed (Herdr showed two with "not installed"), and you can hide the installed ones you don't use: right-click an agent there and pick Hide from this menu, or pick "Choose agents…" at the foot of its agents, which opens Agent presets on a new "Agents in the + menu" pane with a switch per installed agent (the ones that aren't installed are named under them). The number keys follow what's shown. Hidden agents are only left out of the + menu: presets, cards and automations still start them. The list is kept in `~/.herdr/agent-menu.json`, one for every machine. To update, copy `mods/ws-new-menu` and `mods/ws-presets` (both have a new file, `hidefacts.js`).
+
 ## [0.12.0] - 2026-11-21
 
 ### New
