@@ -37,6 +37,8 @@ another workspace needs you or finished.
   into a new tab, rename or pin it, copy its terminal or session id, close it, or
   wipe it (close it and move its conversation to the Trash).
 
+![The Agents list's right-click menu](previews/agent-menu.png)
+
 ### A task board
 
 ![The task board](previews/board.png)
