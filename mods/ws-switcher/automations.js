@@ -15,6 +15,8 @@
 //   check: git log --oneline --since=yesterday    a shell command run first, in the
 //                               folder: no agent starts unless it prints something (check.js)
 //   card: true                  each run also adds a card to the board
+//   keep: true                  its runs' tabs stay open when the agent finishes (the
+//                               newest three); without it a finished run's tab closes
 //   enabled: false              off: only Run now and herdr-ws-run start it
 //   off: client-a, client-b     (a global one) the workspaces it's off in
 //   ---
@@ -34,6 +36,10 @@
 // (herdr-ws-run --add --check, an edited file) is asked about as soon as it's
 // seen, with a toast, and its automation doesn't start until then.
 // Making a tab shows it, so the runner puts your view back straight after.
+// A run whose agent finished its turn closes its tab a few seconds later (runfacts.js
+// says when), and stays in the runs as closed, with what's needed to resume its
+// conversation (History lists them). Unless `keep: true`: an agent that ends its turn
+// with a question looks just like one that's finished.
 //
 // Published (shared), for the ws-automations screen:
 //   workspaces.automations       { <workspace>: [automation, …] }, each with `next`:
@@ -41,7 +47,11 @@
 //                                doesn't replace (scope "global"; `enabled` is for
 //                                that workspace, `everywhere` is the file's)
 //   workspaces.automations.global  the global ones as their files have them
-//   workspaces.automation.runs   the last 100 runs, newest first
+//   workspaces.automation.runs   the last 100 runs, newest first. A started one has `terminal`,
+//                                `tab`, `space`, `folder`, `expects` (its agent reports), and
+//                                once it does `up`, `app` and, when it's known, `conv`
+//                                { provider, id }: its conversation; `closed` (when) and
+//                                `closedWhy` once the runner closed its tab
 // Asked for (shared), by the screen's Run now (the switcher passes it on):
 //   workspaces.automation.run    { workspace, name, at }
 // … and by its Create, Save and Allow this check (read here):
@@ -57,6 +67,7 @@ import * as fs from "fs/promises";
 import { parseWhen, describe, due, nextAt, shortTime } from "./when.js";
 import { withKnobs } from "./knobs.js";
 import { runCheck } from "./check.js";
+import { closeStep, helpersOf, lookingAt, providerOf } from "./runfacts.js";
 
 const SPACE = "Automations";
 const MISSED = 12 * 3600e3; // a schedule missed (Herdr closed, the Mac asleep) runs once if it was due this recently
@@ -72,6 +83,16 @@ const MAX_BODY = 4000;      // characters of a PR's or issue's description passe
 const STORE = "automations";
 const STALL = 60e3;         // an agent that has reported nothing this long after its run started is taken to be asking something first
 const ASK_AFTER = 5000;     // an unallowed check is asked about once it has stayed that way this long
+// The first line of the launcher's note of which conversation terminal $1 holds, under
+// the resume folder $2: in the folder of this core (its socket's name, as herdr-ws-resume
+// finds it, else HC_SESSION), else the one core folder with a note for that terminal
+// (the app's programs don't always get HC_SESSION).
+const SESSION_NOTE = `t=$1 d=\${HERDR_WS_RESUME_DIR:-$2}
+case "$t" in *[!0-9A-Za-z]*|"") exit 0 ;; esac
+c=\${HC_TERMINAL_SOCKET##*/}; c=\${c%.sock}; [ -n "$c" ] || c=\${HC_SESSION:-default}
+f=$d/$c/$t.session
+if [ ! -f "$f" ]; then set -- "$d"/*/"$t.session"; [ $# -eq 1 ] && [ -f "$1" ] || exit 0; f=$1; fi
+sed -n 1p "$f"`;
 // Changes a files automation doesn't count: git's and dependency folders, dotfiles.
 const IGNORED = /\/(\.git|node_modules)(\/|$)|\/\.[^/]*$/;
 
@@ -244,7 +265,7 @@ export function parseAutomation(name, file, text, scope = "workspace") {
     name, file, scope, description: field(head, "description") ?? "", when, trigger, summary: describe(trigger),
     agent: field(head, "agent") || null, model: field(head, "model") || null, effort: field(head, "effort") || null,
     folder: field(head, "folder") || null, check: field(head, "check") || null,
-    card: yes(field(head, "card")), enabled: !no(field(head, "enabled")),
+    card: yes(field(head, "card")), keep: yes(field(head, "keep")), enabled: !no(field(head, "enabled")),
     ...(scope === "global" ? { off: (field(head, "off") ?? "").split(",").map((w) => w.trim()).filter(Boolean) } : {}),
     body: body.replace(/<!--[\s\S]*?-->/g, "").trim(),
     error: trigger.kind === "error" ? trigger.error : null,
@@ -332,8 +353,9 @@ const fill = (text, vars) => text.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (all, k) =>
 
 export class Runner {
   // h: { presetsFor(workspace), presetLaunch(preset, task), withTask(argv, task), claim(space, workspace) }
-  // The background runner also gives open(...) and tidy(...), its own ways to start and
-  // close a run's tab without the window, and away, what it calls the time it wasn't running.
+  // The background runner also gives open(...), tidy(...) and close(run), its own ways to
+  // start and close a run's tab without the window, away, what it calls the time it wasn't
+  // running, and windowOpen(), whether Herdr's window is open (Herdr toasts for itself then).
   constructor(h) {
     this.h = h;
     this.list = {};             // workspace -> its automations: its own, then the global ones it doesn't replace
@@ -356,6 +378,9 @@ export class Runner {
     this.hold = 0;
     this.loaded = false;
     this.unasked = {};          // "<workspace>/<name>" -> a check nobody has allowed, and since when
+    this.seen = new Map();      // run id -> what finished() saw of its agent (runfacts.js: closeStep)
+    this.closing = new Set();   // run ids whose tab is being closed
+    this.convAsked = new Set(); // run ids whose conversation has been looked up
     this.state = { last: {}, base: {}, seen: 0, runs: [], github: {}, printed: {}, allowed: {}, asked: {}, spaces: {} };
     this.store = new Store(STORE);
     this.restored = false;
@@ -389,8 +414,10 @@ export class Runner {
   lastRun(ws, name) { return this.state.runs.find((r) => r.ws === ws && r.name === name && r.status === "started") ?? null; }
   // A run's agent is working or waiting on you. By terminal and tab: a terminal's
   // address can come back for another one later (after a restart, say); a tab's id can't.
+  // Helpers it started that are still alive count as working: an orchestrator waits for them.
   busy(r) {
     const ag = r?.terminal ? agents().find((x) => x.address === r.terminal && (!r.tab || x.tab === r.tab)) : null;
+    if (ag && this.there(r) && helpersOf(r.terminal, terminals()).length) return true;
     return Boolean(ag ? ag.status === "working" || ag.status === "blocked" : r?.stuck && this.there(r));
   }
   // A run's terminal is still there.
@@ -421,6 +448,76 @@ export class Runner {
       return set(r, { stuck: true });
     });
     if (changed) { this.save(); this.publish(); }
+  }
+
+  // A run's record, changed: a new object, since what's published may be the old one.
+  patch(id, fields) {
+    this.state.runs = this.state.runs.map((x) => (x.id === id ? { ...x, ...fields } : x));
+    this.save();
+    this.publish();
+  }
+
+  // Runs whose agent finished its turn: their tab closes GRACE later, unless runfacts.js
+  // (closeStep) says to wait. One whose agent starts waiting on you while Herdr's window
+  // is closed says so (with the window open, Herdr's own toast does, the tab named after
+  // the automation). Each run's agent and conversation are noted once it reports.
+  finished(cx, now) {
+    const list = agents(), terms = terminals(), view = focused();
+    const judged = new Set();
+    for (const r of this.state.runs) {
+      if (r.status !== "started" || !r.expects || r.closed || !r.tab || !r.terminal) continue;
+      judged.add(r.id);
+      if (this.closing.has(r.id)) continue;
+      const ag = this.there(r) ? list.find((x) => x.address === r.terminal && x.tab === r.tab) ?? null : null;
+      if (ag?.app && r.app !== ag.app) this.patch(r.id, { app: ag.app });
+      if (ag && !r.conv && !this.convAsked.has(r.id)) {
+        this.convAsked.add(r.id);
+        cx.spawn(async () => { const conv = await this.conversation(r.terminal, ag.app); if (conv) this.patch(r.id, { conv }); });
+      }
+      const step = closeStep({
+        // A run with a board card stays like `keep`: the card's pull request is followed by
+        // messages to its agent (prs.js), which a closed tab can't get.
+        run: r, keep: Boolean(this.find(r.ws, r.name)?.keep || r.card), status: ag?.status ?? null,
+        helpers: ag ? helpersOf(r.terminal, terms).length : 0, looking: lookingAt(view, r), seen: this.seen.get(r.id) ?? null, now,
+      });
+      if (step.seen) this.seen.set(r.id, step.seen); else this.seen.delete(r.id);
+      if (step.needsYou && this.h.windowOpen && !this.h.windowOpen()) notify({
+        title: `${r.name} needs you`, level: "warning",
+        body: `Its agent is waiting for you, in ${this.def(r.ws)?.name ?? r.ws} › ${SPACE}.`,
+        action: { name: "tab.select", args: { id: r.tab } },
+      });
+      if (step.close) this.closeRun(cx, r, ag?.app);
+    }
+    for (const id of this.seen.keys()) if (!judged.has(id)) this.seen.delete(id);
+  }
+
+  // Closes a finished run's tab (the background runner ends its terminal), after noting
+  // its conversation: the launcher's note of it goes once the terminal is gone.
+  closeRun(cx, r, app) {
+    this.closing.add(r.id);
+    cx.spawn(async () => {
+      try {
+        const conv = r.conv ?? (await this.conversation(r.terminal, app ?? r.app));
+        if (this.h.close) await this.h.close(r);
+        else run("tab.close", { id: r.tab, confirmed: true });
+        this.patch(r.id, { closed: Date.now(), closedWhy: "finished", ...(conv ? { conv } : {}) });
+      } finally {
+        this.closing.delete(r.id);
+        this.seen.delete(r.id);
+      }
+    });
+  }
+
+  // The conversation a terminal's agent holds, from the launcher's note
+  // (~/.herdr/resume/<core>/<terminal>.session, written by herdr-ws-resume --hook):
+  // Claude's and Antigravity's. Null when it isn't noted (another agent, started without
+  // the launcher, or resume notes off).
+  async conversation(terminal, app) {
+    const provider = providerOf(app);
+    if (provider !== "claude" && provider !== "antigravity") return null;
+    const r = await exec("sh", ["-c", SESSION_NOTE, "sh", terminal, `${home()}/.herdr/resume`]).catch(() => null);
+    const id = String(r?.stdout ?? "").split("\n")[0].trim();
+    return /^[0-9A-Za-z-]{6,}$/.test(id) ? { provider, id } : null;
   }
 
   // Every workspace's automations, read again (after the switcher's folder watch).
@@ -628,6 +725,7 @@ export class Runner {
     this.each((ws, a) => { if (a.trigger.kind === "every" && now >= this.next(ws, a, now)) this.fire(cx, ws, a, a.summary); });
     this.watchAgents(cx);
     this.stalled(now);
+    this.finished(cx, now);
     for (const [k, f] of Object.entries(this.files)) {
       if (now - f.at >= QUIET) { delete this.files[k]; this.filesFire(cx, f); }
     }
@@ -756,7 +854,7 @@ export class Runner {
     argv = withKnobs(argv, a.model, a.effort);
     const made = this.h.open ? await this.h.open(ws, a.name, folder, argv, first) : await this.open(ws, a.name, folder, argv, first);
     if (card) await this.updateCard(card.file, { terminal: made.terminal ?? null, tab: made.tab ?? null, started: today() });
-    this.log({ ws, name: a.name, at, why, status: "started", terminal: made.terminal ?? null, tab: made.tab ?? null, space: made.space ?? null, card: card?.id ?? null, ...(made.adopt ? { adopt: true } : {}), ...(expects ? { expects: true } : {}) });
+    this.log({ ws, name: a.name, at, why, status: "started", terminal: made.terminal ?? null, tab: made.tab ?? null, space: made.space ?? null, folder, card: card?.id ?? null, ...(made.adopt ? { adopt: true } : {}), ...(expects ? { expects: true } : {}) });
     this.tidy(ws, a.name);
     notify({
       title: `${a.name} started`, body: `${why}. In ${def.name} › ${SPACE}.`, level: "info",

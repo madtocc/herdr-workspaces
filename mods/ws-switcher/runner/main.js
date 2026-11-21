@@ -24,7 +24,7 @@ import * as nfs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  home, exec, readTextFile, writeTextFile, watchFolder, shared, setShared, onShared, refresh, terminals, spaces, runnerDir, hex,
+  home, exec, readTextFile, writeTextFile, watchFolder, shared, setShared, onShared, refresh, terminals, spaces, runnerDir, hex, windowOpen,
 } from "./herdr.js";
 import { Runner, globalDir } from "../automations.js";
 import { PrWatcher } from "../prs.js";
@@ -80,6 +80,12 @@ async function open(ws, name, folder, argv, task) {
 function tidy(runs, keep, busy) {
   const live = runs.filter((r) => terminals().some((t) => t.address === r.terminal && t.state === "live" && t.labels?.["herdr.tab"] === r.tab));
   for (const r of live.slice(keep)) if (!busy(r)) exec("hc", ["kill", r.terminal]).catch(() => {});
+}
+
+// A finished run's tab: its terminal ends, and the tab with it.
+async function close(r) {
+  await exec("hc", ["kill", r.terminal]).catch(() => {});
+  log(`closed ${r.ws}/${r.name} at ${r.terminal}: its agent finished`);
 }
 
 // --- what the window shows: state.json, and alive ---
@@ -146,7 +152,7 @@ async function main() {
   if (!(await alone())) { log("another runner is running: leaving it to it"); process.exit(0); }
   if (((await readTextFile(`${runnerDir()}/switch`)) ?? "").trim() !== "on") { log("it's off (herdr-ws-runner --on turns it on)"); process.exit(0); }
   await refresh(true).catch((e) => log("herdr-core:", said(e)));
-  runner = new Runner({ presetsFor, presetLaunch, withTask, claim() {}, open, tidy, away: "while Herdr's runner wasn't running" });
+  runner = new Runner({ presetsFor, presetLaunch, withTask, claim() {}, open, tidy, close, windowOpen, away: "while Herdr's runner wasn't running" });
   prs = new PrWatcher();
   gh = new GhWatcher();
   dirty = true;

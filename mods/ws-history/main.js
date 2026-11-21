@@ -21,6 +21,12 @@
 // A conversation that's open in a terminal now says so and offers Go to instead:
 // resuming it would put two agents on one conversation.
 //
+// Conversations | Automations in the header: the second lists the workspace's automation
+// runs (shared "workspaces.automation.runs", published by the switcher's runner), newest
+// first, with their state in words, Go to while a run's tab is open, Resume once it's
+// closed (its conversation as the runner noted it, histfacts.js: runSessions) and a way
+// into the automation. Runs a check kept from starting are hidden unless asked for.
+//
 // A Claude, Pi or Antigravity conversation that was compacted shows the compacted icon
 // and how often on its row; opened, it lists when (newest first), how, and how big the
 // context was before and after, and what's in the context at the end.
@@ -31,7 +37,7 @@ import {
   spaces, panes, terminals, run, theme, shared, setShared, props, closeOverlay,
   home, appHome, exec, notify, checking, knownAgents,
 } from "herdr";
-import { PROVIDERS, inWorkspace, whereOf, liveOf, keyOf, titleOf, matches, dayLabel, ago, span, modelLabel, resumeArgv, presetOf, tokens, compactionText, compactionsTip } from "./histfacts.js";
+import { PROVIDERS, inWorkspace, whereOf, liveOf, keyOf, titleOf, matches, dayLabel, ago, span, modelLabel, resumeArgv, presetOf, tokens, compactionText, compactionsTip, runState, runMatches, runSessions } from "./histfacts.js";
 
 const PALETTE = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
 const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b7cf6", ansi2: "#3fae6a", ansi1: "#d9649a" };
@@ -51,6 +57,8 @@ const tilde = (p) => (p === home() ? "~" : p.startsWith(home() + "/") ? "~" + p.
 const base = (p) => String(p ?? "").replace(/\/+$/, "").split("/").pop();
 const message = (e) => String(e?.message ?? e);
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+// What the switcher takes as a workspace or automation name in a command (automations.js: openAt).
+const PLAIN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 // The folders a workspace's conversations ran in: its root and folders (and where
 // symlinks lead), and the Herdr worktrees of its repos.
@@ -156,6 +164,11 @@ export default class History extends View {
     this.query.on("change", (_e, cx) => { this.max = PAGE; cx.notify(); });
     // Enter on a search goes to its first result.
     this.query.on("submit", (_e, cx) => { if (this.query.value().trim()) { const first = this.view().shown[0]; if (first) this.act(first.s, first.at, cx); } });
+    this.mode = "conversations"; // or "automations": the runs
+    this.hideQuiet = true; // runs a check kept from starting, misses and skips
+    this.runQuery = InputState.new({ value: "", placeholder: "Search runs" });
+    this.runQuery.on("change", (_e, cx) => { this.max = PAGE; cx.notify(); });
+    this.runQuery.on("submit", (_e, cx) => { if (this.runQuery.value().trim()) { const first = this.runsView().shown[0]; if (first) this.runAct(first.r, first.st, cx); } });
     if (checking()) return;
     if (!this.follow) { this.load(cx); this.query.focus(); }
     // Looked at on a timer, not in render: a task started while rendering never gets to run.
@@ -176,7 +189,7 @@ export default class History extends View {
       } else if (!this.reading && Date.now() - this.readAt > (back ? STALE : FRESH)) this.load(cx);
       // In place of the terminals, it takes the keyboard from them: typing searches, and
       // mustn't land in a terminal nobody sees.
-      if (back) this.query.focus();
+      if (back) this.input().focus();
     });
   }
 
@@ -222,6 +235,51 @@ export default class History extends View {
     const searched = here.filter((s) => matches(s, q, presetOf(s)));
     const shown = searched.filter((s) => !this.provider || s.provider === this.provider).map((s) => ({ s, at: live.get(keyOf(s)) ?? null }));
     return { live, here, searched, shown, hidden: inScope.length - here.length, status: new Map(terms.map((x) => [x.address, x.status])) };
+  }
+
+  // The search box of the list shown.
+  input() { return this.mode === "automations" ? this.runQuery : this.query; }
+
+  // The Automations view: the runs of the workspace shown (or of every one), each with
+  // its state now (`st`, histfacts.js: runState).
+  runsView() {
+    const all = (shared("workspaces.automation.runs") ?? []).filter((r) => this.scope === "all" || r.ws === this.workspace);
+    const tabs = new Set(spaces().flatMap((x) => (x.tabs ?? []).map((c) => c.id)));
+    const terms = new Map(terminals().filter((x) => x.state === "live").map((x) => [String(x.address), x]));
+    const rows = all.map((r) => {
+      const term = r.terminal ? terms.get(r.terminal) : null;
+      // An address can come back for another terminal later: Herdr's tab label tells them apart.
+      const mine = Boolean(term) && (!term.labels?.["herdr.tab"] || term.labels["herdr.tab"] === r.tab);
+      return { r, st: runState(r, { status: mine ? term.status ?? null : null, live: mine, open: Boolean(r.tab && tabs.has(r.tab)) }) };
+    });
+    const q = this.runQuery.value();
+    const searched = rows.filter(({ r, st }) => runMatches(r, q, `${defOf(r.ws)?.name ?? ""} ${st.word}`));
+    const shown = searched.filter(({ st }) => !this.hideQuiet || !st.quiet);
+    return { all, searched, shown, quiet: searched.length - shown.length, sessions: runSessions(shared("workspaces.automation.runs"), this.rows) };
+  }
+
+  // A run's own action: to its tab while it's open, else its conversation (Go to where
+  // it's open now, or Resume).
+  runAct(r, st, cx) {
+    if (st.open) return this.goToRun(r);
+    const s = runSessions(shared("workspaces.automation.runs"), this.rows).get(r.id);
+    if (!s) return;
+    const at = liveOf(this.rows, liveTerms(), shared(RESUMED) ?? {}).get(keyOf(s));
+    if (at) this.goTo(at);
+    else if (!s.gone) this.resume(s, cx);
+  }
+
+  goToRun(r) {
+    this.leave();
+    if (panes().some((p) => p.terminal === r.terminal)) return run("pane.focus", { terminal: r.terminal });
+    if (r.space) run("space.select", { id: r.space });
+    run("tab.select", { id: r.tab });
+  }
+
+  // The Automations screen, on that automation (the switcher's sidebar copy takes the command).
+  openAutomation(r) {
+    if (PLAIN.test(String(r.ws)) && PLAIN.test(String(r.name))) run(`ws-switcher.automation/${r.ws}/${r.name}`, {});
+    else run("mod.open", { name: "ws-automations" });
   }
 
   // The agent as Herdr knows it: its icon, its name and how it's started.
@@ -307,7 +365,9 @@ export default class History extends View {
     // Between two workspaces (the timer is a moment behind): nothing of the last one.
     if (this.follow && (shared("workspaces.active") ?? null) !== this.workspace) return shell;
     const everywhere = this.scope === "all";
+    const autos = this.mode === "automations";
     const { here, searched, shown, hidden, status } = this.view();
+    const rv = autos ? this.runsView() : null;
     const now = Date.now();
 
     const button = (id, text, action, { tip = null, solid = false } = {}) => div().id(id).h(26).px(10).flex().flex_none().items_center().rounded(7)
@@ -324,16 +384,55 @@ export default class History extends View {
 
     const back = SPANS[this.span];
     const since = back >= 3650 ? "" : back === 365 ? " in the last year" : ` in the last ${back} days`;
+    // Conversations | Automations: which list shows.
+    const side = (id, text, on, mode, tip) => div().id(id).h(22).px(9).flex().flex_none().items_center().rounded(6).text_size(12).cursor_pointer().tooltip(tip)
+      .when(on, (el) => el.bg(t.background).text_color(t.foreground).font_medium())
+      .when(!on, (el) => el.text_color(t.muted).hover((x) => x.text_color(t.foreground)))
+      .on_click((_e, cx) => { if (this.mode === mode) return; this.mode = mode; this.max = PAGE; this.open = null; this.input().focus(); cx.notify(); }).child(text);
+    const modes = h_flex().h(26).p(2).gap(2).flex_none().items_center().rounded(8).bg(t.raised)
+      .child(side("mode-conv", "Conversations", !autos, "conversations", "Your agents' conversations, with Resume"))
+      .child(side("mode-runs", "Automations", autos, "automations", "What the automations ran: each run's state, Go to while its tab is open, Resume once it's closed"));
+    const counted = autos ? plural(rv.all.length, "run") : this.loaded ? `${plural(here.length, "conversation")}${since}` : "Reading…";
     const header = h_flex().h(48).flex_none().px(16).gap(10).items_center().border_b(1).border_color(t.border)
       .child(def && !everywhere ? mark(def, t, 20) : svg("mods/ws-history/history.svg").size(16).flex_none().text_color(t.muted))
       .child(div().font_semibold().child(def && !everywhere ? `${def.name} history` : "History"))
-      .when(!tight || !this.loaded, (el) => el.child(div().text_size(12).text_color(t.dim).child(this.loaded ? `${plural(here.length, "conversation")}${since}` : "Reading…")))
+      .child(modes)
+      .when(!tight || (!autos && !this.loaded), (el) => el.child(div().text_size(12).text_color(t.dim).child(counted)))
       .when(this.reading && this.loaded, (el) => el.child(svg("mods/workspace-chrome/spinner.svg").size(13).text_color(t.dim).spin(900)))
       .child(div().flex_1())
       .when(Boolean(def), (el) => el
         .child(chip("scope-ws", !everywhere, (cx) => this.rescope("ws", cx), [def.name], `What ran in ${def.name}'s folders and worktrees`))
         .child(chip("scope-all", everywhere, (cx) => this.rescope("all", cx), ["Everywhere"], "Every conversation on this computer, whatever folder it ran in")))
       .child(button("hist-refresh", "Refresh", (cx) => this.load(cx), { tip: "Read the conversations again" }));
+    const searchBox = (input) => h_flex().w(tight ? 150 : 240).h(28).px(9).gap(7).flex_none().items_center().rounded(7).border_1().border_color(t.input).bg(t.background)
+      .child(svg("mods/workspace-chrome/search.svg").size(12).flex_none().text_color(t.dim))
+      .child(Input.new(input).flex_1().min_w(0).text_size(12).text_color(t.foreground));
+
+    if (autos) {
+      const filters = h_flex().h(44).flex_none().px(16).gap(10).items_center()
+        .child(h_flex().flex_1().min_w(0).h_full().gap(6).items_center()
+          .child(chip("runs-quiet", this.hideQuiet, () => { this.hideQuiet = !this.hideQuiet; }, ["Hide quiet runs", ...(this.hideQuiet && rv.quiet ? [count(rv.quiet)] : [])],
+            "Runs that never started: a check that printed nothing (or the same as before) or failed, a missed schedule, a run skipped while the last one was still working")))
+        .child(searchBox(this.runQuery));
+      const live = liveOf(this.rows, liveTerms(), shared(RESUMED) ?? {});
+      const kids = [];
+      let day = null;
+      for (const { r, st } of rv.shown.slice(0, this.max)) {
+        const label = dayLabel(r.at, now);
+        if (label !== day) { day = label; kids.push(div().h(30).mt(4).px(8).flex().flex_none().items_end().pb(5).text_size(11.5).text_color(t.dim).child(label)); }
+        kids.push(this.runRow(r, st, live, rv.sessions, t, now, everywhere, tight));
+      }
+      if (rv.shown.length > this.max) {
+        kids.push(h_flex().h(40).flex_none().items_center().justify_center()
+          .child(button("runs-more", `Show ${Math.min(PAGE, rv.shown.length - this.max)} more`, (cx) => { this.max += PAGE; cx.notify(); })));
+      }
+      if (!rv.shown.length) {
+        kids.push(div().p(16).text_color(t.dim).child(this.runQuery.value().trim() ? "None like that."
+          : rv.quiet ? `Only quiet runs: ${plural(rv.quiet, "check")} that kept an automation from starting.`
+          : everywhere || !def ? "No automation runs yet." : `No automation runs in ${def.name} yet.`));
+      }
+      return shell.child(header).child(filters).child(v_flex().id("runs-list").flex_1().min_h(0).overflow_y_scrollbar().px(10).pb(16).children(kids));
+    }
 
     const providers = Object.keys(PROVIDERS).filter((k) => searched.some((s) => s.provider === k));
     // The chips scroll sideways when there isn't room; the search box stays in view.
@@ -345,9 +444,7 @@ export default class History extends View {
         .when(hidden > 0 || this.gone, (el) => el.child(chip("gone", this.gone, () => { this.gone = !this.gone; },
           [this.gone ? "Hide folder gone" : "Folder gone", ...(this.gone ? [] : [count(hidden)])],
           "Conversations whose folder isn't there any more (a removed worktree, a deleted scratch folder). They can be read about here but not resumed."))))
-      .child(h_flex().w(tight ? 150 : 240).h(28).px(9).gap(7).flex_none().items_center().rounded(7).border_1().border_color(t.input).bg(t.background)
-        .child(svg("mods/workspace-chrome/search.svg").size(12).flex_none().text_color(t.dim))
-        .child(Input.new(this.query).flex_1().min_w(0).text_size(12).text_color(t.foreground)));
+      .child(searchBox(this.query));
 
     const kids = [];
     let day = null;
@@ -419,6 +516,36 @@ export default class History extends View {
         .when(Boolean(at), (el) => el.child(act(`go-${key}`, "Go to", () => this.goTo(at), "Show the terminal it's open in")))
         .when(!at && !s.gone && this.starting === key, (el) => el.child(div().text_size(11.5).text_color(t.dim).child("Starting…")))
         .when(!at && !s.gone && this.starting !== key, (el) => el.child(act(`re-${key}`, "Resume", (cx) => this.resume(s, cx), "Continue it in a new tab, in the folder it ran in", true))));
+  }
+
+  // One automation run: its name, why it ran (and what came of it), its state, when,
+  // and what can be done: Go to its tab, Resume its conversation, open the automation.
+  // A run that never started is drawn quieter.
+  runRow(r, st, live, sessions, t, now, everywhere, tight) {
+    const s = st.open || st.quiet ? null : sessions.get(r.id) ?? null;
+    const at = s ? live.get(keyOf(s)) ?? null : null;
+    const wsName = everywhere ? defOf(r.ws)?.name ?? r.ws : null;
+    const sub = [wsName, r.note ? `${r.why}. ${r.note}` : r.why].filter(Boolean).join("  ·  ");
+    const act = (id, text, action, tip, solid) => div().id(id).h(24).px(9).flex().flex_none().items_center().rounded(6)
+      .text_size(11.5).cursor_pointer().tooltip(tip)
+      .when(solid, (el) => el.bg(t.solid).text_color(t.solid_foreground).font_medium().hover((x) => x.opacity(0.88)))
+      .when(!solid, (el) => el.border_1().border_color(t.input).text_color(t.muted).hover((x) => x.bg(t.hover).text_color(t.foreground)))
+      .on_click((_e, cx) => { cx.stop_propagation(); action(cx); }).child(text);
+    const key = s ? keyOf(s) : null;
+    return h_flex().id(`run-${r.id}`).h(st.quiet ? 38 : 46).px(8).gap(10).items_center().flex_none().rounded(7).hover((x) => x.bg(t.hover))
+      .child(svg("mods/ws-automations/automations.svg").size(st.quiet ? 13 : 15).flex_none().text_color(st.quiet ? t.dim : t.muted))
+      .child(v_flex().flex_1().min_w(0).gap(2)
+        .child(div().truncate().text_color(st.quiet ? t.muted : t.foreground).text_size(st.quiet ? 12 : 13).child(r.name))
+        .child(div().truncate().text_size(11.5).text_color(t.dim).child(sub)))
+      .child(div().flex_none().text_size(11.5).text_color(t[st.tone] ?? t.dim).child(st.word))
+      .child(div().w(30).flex_none().text_size(11.5).text_color(t.dim).child(ago(r.at, now)))
+      .child(h_flex().w(tight ? 70 : 150).flex_none().gap(6).justify_end()
+        .when(st.open, (el) => el.child(act(`rgo-${r.id}`, "Go to", () => this.goToRun(r), "Show its tab")))
+        .when(!st.open && Boolean(at), (el) => el.child(act(`rgo-${r.id}`, "Go to", () => this.goTo(at), `Its conversation is open in ${at} now`)))
+        .when(!st.open && !at && Boolean(s) && !s.gone && this.starting === key, (el) => el.child(div().text_size(11.5).text_color(t.dim).child("Starting…")))
+        .when(!st.open && !at && Boolean(s) && !s.gone && this.starting !== key, (el) => el.child(act(`rre-${r.id}`, "Resume", (cx) => this.resume(s, cx),
+          r.conv ? "Continue its conversation in a new tab, in the folder it ran in" : "Continue the conversation that ran in its folder then, in a new tab", true)))
+        .when(!tight, (el) => el.child(act(`rau-${r.id}`, "Automation", () => this.openAutomation(r), `Open ${r.name} in Automations`))));
   }
 
   // Under an opened row: what was asked first and last, where and when, and the

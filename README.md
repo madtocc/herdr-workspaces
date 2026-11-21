@@ -114,6 +114,9 @@ the workspace: a pill in the tab bar of each of its spaces.
 
 ### Automations
 
+- **Automations**, the header's other side: each automation run with its state
+  in words (running, needs you, finished, closed, quiet, missed), Go to while
+  its tab is open and Resume once it's closed.
 ![The Automations screen](previews/automations.png)
 
 An automation starts an agent by itself. You make one by saying what it should
@@ -139,7 +142,10 @@ and the prompt, and you read the draft before it's saved.
   they run while Herdr is open. A schedule missed while nothing was running
   runs when Herdr opens if it was due in the last 12 hours; older ones are
   reported as missed, with a toast, for Run now.
-- **Each run is a tab** in the workspace's Automations space.
+- **Each run is a tab** in the workspace's Automations space, which closes a few
+  seconds after its agent finishes (not while it waits on you, while its helpers
+  work, or while you're looking at it); History lists the run with Resume.
+  `keep: true` keeps an automation's runs open, for one that asks you questions.
 - **Agents can add one** themselves with `herdr-ws-run --add`, so you can tell
   one "tomorrow at 6, check X and if so do Y".
 
@@ -269,8 +275,12 @@ it opens on a card still before the start column or merges, its `status:`, and t
 `hc send` when a check fails, a review arrives or it conflicts. With Keep running
 on, that work is done by a Node process herdr-core holds as the terminal
 `herdr-ws-runner`: it writes `~/.herdr/runner/`, starts runs with `hc run`, ends
-old run terminals with `hc kill`, and reads herdr-core's terminal list, the app's
-layout document, `shared.json` and `programs.json`. Deleting a workspace, a task or an
+old and finished run terminals with `hc kill`, and reads herdr-core's terminal list, the app's
+layout document, `shared.json`, `programs.json` and `view.json` (which tab is shown),
+and connects to the app's socket to see whether Herdr is open. Either runner closes an
+automation run's tab once its agent has finished (unless the automation says `keep: true`),
+and reads the launcher's note of which conversation that terminal held
+(`~/.herdr/resume/<core>/<terminal>.session`), for History's Resume. Deleting a workspace, a task or an
 automation (after a confirmation) moves it to the Trash, and so does wiping an
 agent from the Agents list's right-click menu: that Claude Code or Pi
 conversation's transcript and the folders Claude keeps for it under
