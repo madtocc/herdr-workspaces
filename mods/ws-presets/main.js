@@ -29,6 +29,7 @@ import { h_flex, v_flex, InputState, Input, TextareaState, Textarea } from "gpui
 import { theme, shared, setShared, props, openOverlay, closeOverlay, home, readTextFile, writeTextFile, exec, notify, spaces, focused, window, knownAgents } from "herdr";
 import * as fs from "fs/promises";
 import { HIDDEN, hiddenFile, parseHidden, saveHidden, shownAgents, countLine, notInstalledLine } from "./hidefacts.js";
+import { KNOBS, words, joinWords, programOf, flagValue, configValue, withFlag, withEffort, swapProgram, configModels, listable, keptModels, listModels, shownModels } from "./knobs.js";
 
 const templatesDir = () => `${home()}/.config/herdr-core/templates`;
 const modKey = () => (window()?.platform === "macos" ? "⌘" : "Ctrl+");
@@ -45,121 +46,10 @@ const oneLine = (s) => s.replace(/\s*\n\s*/g, " ").trim();
 const message = (e) => String(e?.message ?? e);
 const defOf = (id) => (shared("workspaces.defs") ?? []).find((d) => d.id === id) ?? null;
 
-// A word for a shell line: as is when plain, else single-quoted.
-const shellWord = (w) => (/^[A-Za-z0-9_./:=@%+,-]+$/.test(w) ? w : `'${w.replace(/'/g, `'\\''`)}'`);
-
-// The program a command runs: its first word after env assignments and the launcher.
-function programOf(command) {
-  const w = command.trim().split(/\s+/).filter((x) => x !== "env" && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(x) && base(x) !== "herdr-ws-agent");
-  return base(w[0] ?? "");
-}
-
-// A shell line as words (quotes and backslashes as sh reads them), and back.
-function words(line) {
-  const out = [];
-  let cur = null, q = null;
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i];
-    if (q === "'") { if (c === "'") q = null; else cur += c; continue; }
-    if (q === '"') {
-      if (c === '"') q = null;
-      else if (c === "\\" && i + 1 < line.length && '"\\$`'.includes(line[i + 1])) cur += line[++i];
-      else cur += c;
-      continue;
-    }
-    if (/\s/.test(c)) { if (cur !== null) { out.push(cur); cur = null; } continue; }
-    cur ??= "";
-    if (c === "'" || c === '"') q = c;
-    else if (c === "\\" && i + 1 < line.length) cur += line[++i];
-    else cur += c;
-  }
-  if (cur !== null) out.push(cur);
-  return out;
-}
-const joinWords = (ws) => ws.map(shellWord).join(" ");
-
-// How each agent takes a model and an effort, and the models to offer
-// (Codex's also come from ~/.codex/config.toml).
-const KNOBS = {
-  claude: { model: ["--model"], models: ["fable", "opus", "sonnet", "haiku"], effort: { flag: "--effort", levels: ["low", "medium", "high", "xhigh", "max"] } },
-  codex: { model: ["--model", "-m"], models: [], effort: { config: "model_reasoning_effort", levels: ["minimal", "low", "medium", "high", "xhigh", "max"] } },
-  pi: { model: ["--model"], models: [], effort: { flag: "--thinking", levels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] } },
-  // Antigravity: --model takes a family (gemini-4-neon) and --effort its level; a model
-  // named with its level (gemini-4-neon-high) refuses --effort. Its families are asked
-  // of `agy models` (agyModels()), so none are listed here.
-  agy: { model: ["--model"], models: [], effort: { flag: "--effort", levels: ["low", "medium", "high", "xhigh", "max"] } },
-};
-
-// Antigravity's model families, out of `agy models` ("<id>\t<name>" a line): each id
-// without the level --effort sets (gemini-4-neon-high -> gemini-4-neon). An id with no
-// level (an orchestrator) is left out: it can't take --effort.
-function agyFamilies(text) {
-  const out = [];
-  for (const line of String(text ?? "").split("\n")) {
-    const id = /^([A-Za-z0-9][A-Za-z0-9._-]*)\t/.exec(line)?.[1];
-    const family = id ? /^(.+)-(?:minimal|low|medium|high|xhigh|max)$/.exec(id)?.[1] : null;
-    if (family && !out.includes(family)) out.push(family);
-  }
-  return out;
-}
-
-// The families to offer. `agy models` asks Antigravity's server, so its answer is kept
-// for a day in ~/.herdr/cache/agy-models.json (also that agy isn't installed). It runs
-// through your shell, where agy is on PATH. `io`: { exec, readTextFile, writeTextFile, home }.
-async function agyModels(io) {
-  const file = `${io.home()}/.herdr/cache/agy-models.json`;
-  let kept = null;
-  try { kept = JSON.parse(await io.readTextFile(file)); } catch { kept = null; }
-  const list = Array.isArray(kept?.models) ? kept.models.filter((m) => typeof m === "string") : [];
-  if (kept && Date.now() - Number(kept.at) < 86400e3) return list;
-  let missing = false;
-  for (const flags of ["-lc", "-lic"]) {
-    const r = await io.exec("sh", ["-c", 'exec "${SHELL:-/bin/sh}" "$1" "command -v agy >/dev/null 2>&1 || exit 127; agy models"', "sh", flags], { timeout: 30000 }).catch(() => null);
-    const models = agyFamilies(r?.stdout);
-    if (models.length) {
-      await io.writeTextFile(file, JSON.stringify({ at: Date.now(), models })).catch(() => {});
-      return models;
-    }
-    missing = r?.code === 127;
-  }
-  if (missing) await io.writeTextFile(file, JSON.stringify({ at: Date.now(), models: [] })).catch(() => {});
-  return list;
-}
-
-// A flag's value in the words (`--model x` or `--model=x`), null when absent.
-function flagValue(ws, names) {
-  for (let i = 0; i < ws.length; i++) {
-    if (names.includes(ws[i])) return ws[i + 1] ?? "";
-    const long = names.find((n) => n.startsWith("--") && ws[i].startsWith(`${n}=`));
-    if (long) return ws[i].slice(long.length + 1);
-  }
-  return null;
-}
-// The words without that flag, then with it set (at the end) unless value is empty.
-function withFlag(ws, names, value) {
-  const out = [];
-  for (let i = 0; i < ws.length; i++) {
-    if (names.includes(ws[i])) { i++; continue; }
-    if (names.some((n) => n.startsWith("--") && ws[i].startsWith(`${n}=`))) continue;
-    out.push(ws[i]);
-  }
-  return value ? [...out, names[0], value] : out;
-}
-// The same for a `-c key=value` config override (Codex).
-function configValue(ws, key) {
-  for (let i = 0; i < ws.length - 1; i++) {
-    if ((ws[i] === "-c" || ws[i] === "--config") && ws[i + 1].startsWith(`${key}=`)) return ws[i + 1].slice(key.length + 1).replace(/^"|"$/g, "");
-  }
-  return null;
-}
-function withConfig(ws, key, value) {
-  const out = [];
-  for (let i = 0; i < ws.length; i++) {
-    if ((ws[i] === "-c" || ws[i] === "--config") && ws[i + 1]?.startsWith(`${key}=`)) { i++; continue; }
-    out.push(ws[i]);
-  }
-  return value ? [...out, "-c", `${key}="${value}"`] : out;
-}
+// The program a command line runs (knobs.js reads the words), and the installed
+// agent that runs it: the one whose run has that program, else the one of that key.
+const programIn = (command) => programOf(words(command ?? ""));
+const agentFor = (known, program) => known.find((k) => Array.isArray(k.run) && programOf(k.run) === program) ?? known.find((k) => k.key === program) ?? null;
 
 // A preset file: front matter between --- lines, then the instructions.
 function split(text) {
@@ -272,16 +162,22 @@ export default class Presets extends View {
     // Codex's models from its config: the default and any profile's.
     this.codexModels = [];
     cx.spawn(async (cx) => {
-      const text = await readTextFile(`${home()}/.codex/config.toml`).catch(() => null);
-      this.codexModels = [...new Set([...(text ?? "").matchAll(/^\s*model\s*=\s*"([^"]+)"/gm)].map((m) => m[1]))];
+      this.codexModels = configModels(await readTextFile(`${home()}/.codex/config.toml`).catch(() => null));
       cx.notify();
     });
-    // Antigravity's model families (asked of `agy models` at most once a day).
-    this.agyModels = [];
-    cx.spawn(async (cx) => {
-      this.agyModels = await agyModels({ exec, readTextFile, writeTextFile, home }).catch(() => []);
-      cx.notify();
-    });
+    // The models each agent lists (knobs.js): what was kept at once, then asked again
+    // when that's a day old. Each lookup is its own task, so a slow CLI holds up nothing.
+    this.listed = {}; // program -> models
+    const io = { exec, readTextFile, writeTextFile, home };
+    for (const program of listable()) {
+      cx.spawn(async (cx) => {
+        this.listed[program] = (await keptModels(io, program).catch(() => null))?.models ?? [];
+        cx.notify();
+        this.listed[program] = await listModels(io, program).catch(() => this.listed[program]);
+        cx.notify();
+      });
+    }
+    this.swapNote = null; // what the last agent switch left out of the command
     this.sel = null; // { scope, name, isNew }
     this.snap = null; // what was loaded: { text, file, description, command, body }
     // The restart switch, read again every 3s (the CLI can change it too).
@@ -388,14 +284,22 @@ export default class Presets extends View {
 
   // The command with its model (or effort) set; "" takes the flag out (the agent's default).
   setModel(model) {
-    const knobs = KNOBS[programOf(this.cmdIn.value())];
+    const knobs = KNOBS[programIn(this.cmdIn.value())];
     if (knobs) this.cmdIn.set_value(joinWords(withFlag(words(this.cmdIn.value()), knobs.model, model)));
   }
   setEffort(level) {
-    const ws = words(this.cmdIn.value());
-    const effort = KNOBS[programOf(this.cmdIn.value())]?.effort;
-    if (!effort) return;
-    this.cmdIn.set_value(joinWords(effort.flag ? withFlag(ws, [effort.flag], level) : withConfig(ws, effort.config, level)));
+    const effort = KNOBS[programIn(this.cmdIn.value())]?.effort;
+    if (effort) this.cmdIn.set_value(joinWords(withEffort(words(this.cmdIn.value()), effort, level)));
+  }
+  // The Agent row: the command runs that agent instead, keeping what still fits
+  // (knobs.js swapProgram); what it left out is said under the row.
+  setAgent(agent) {
+    const before = programIn(this.cmdIn.value());
+    const was = agentFor(this.known, before)?.name ?? before;
+    const { argv, dropped } = swapProgram(words(this.cmdIn.value()), agent.run);
+    this.cmdIn.set_value(joinWords(argv));
+    this.modelIn.set_value("");
+    this.swapNote = dropped.length ? `Left out ${joinWords(dropped)}: ${was}'s, not ${agent.name}'s.` : null;
   }
   dirOf(scope) { return scope === "global" ? templatesDir() : `${this.def()?.dir}/agents`; }
 
@@ -429,6 +333,7 @@ export default class Presets extends View {
       this.cmdIn.set_value(snap.command);
       this.bodyIn.set_value(snap.body);
       this.guideIn = snap.guide ?? true;
+      this.swapNote = null;
       cx.notify();
     };
     if (fill) return load({ text: null, file: null, ...fill }, cx);
@@ -529,7 +434,7 @@ export default class Presets extends View {
     const shown = spaces().find((s) => s.active);
     const where = shown ? `A new tab in “${shown.name}”, in ${tilde(focused()?.cwd || shown.folder || "~")}` : "A new space in the workspace's root";
     const launcher = shared("workspaces.launcher") === true;
-    const system = launcher && ["claude", "codex", "agy", "pi"].includes(programOf(preset?.command ?? ""));
+    const system = launcher && ["claude", "codex", "agy", "pi"].includes(programIn(preset?.command));
     const button = (id, text, primary, action) => h_flex().id(id).h(32).px(14).items_center().rounded(8).border_1()
       .border_color(primary ? t.solid : t.input).bg(primary ? t.solid : t.raised).text_color(primary ? t.solid_foreground : t.foreground)
       .text_size(12.5).font_medium().cursor_pointer().hover((s) => s.opacity(0.88)).on_click(action).child(text);
@@ -542,7 +447,7 @@ export default class Presets extends View {
       });
     if (!preset) return shell.child(div().text_color(t.muted).child(`There's no preset called “${name}” here any more.`));
     const known = shared("new-menu.agents")?.[""] ?? [];
-    const program = known.find((k) => k.key === programOf(preset.command));
+    const program = agentFor(known, programIn(preset.command));
     const glyph = program?.icon ? (program.tint ? svg(program.icon) : image(program.icon)).size(20).flex_none().rounded(4)
       : svg("mods/workspace-chrome/terminal.svg").size(20).flex_none().text_color(t.muted);
     return shell
@@ -572,9 +477,9 @@ export default class Presets extends View {
     const all = shared("workspaces.presets") ?? {};
     const own = (def && all.workspaces?.[def.id]) || [];
     const global = all.global ?? [];
-    const known = shared("new-menu.agents")?.[""] ?? [];
+    const known = this.known;
     const iconOf = (command, size = 14) => {
-      const program = known.find((k) => k.key === programOf(command));
+      const program = agentFor(known, programIn(command));
       if (!program?.icon) return svg("mods/workspace-chrome/terminal.svg").size(size).flex_none().text_color(t.muted);
       return (program.tint ? svg(program.icon) : image(program.icon)).size(size).flex_none().rounded(3);
     };
@@ -725,7 +630,7 @@ export default class Presets extends View {
     }
     const sel = this.sel;
     const launcher = shared("workspaces.launcher") === true;
-    const system = launcher && ["claude", "codex", "agy", "pi"].includes(programOf(this.cmdIn.value()));
+    const system = launcher && ["claude", "codex", "agy", "pi"].includes(programIn(this.cmdIn.value()));
     const dirty = this.dirty();
     const label = (text) => div().pt(14).pb(6).text_size(11.5).text_color(t.dim).child(text);
     const box = (state, mono) => Input.new(state).h(34).px(10).rounded(8).border_1().border_color(this.focusedIn === state ? t.accent : t.input).bg(t.background)
@@ -738,14 +643,21 @@ export default class Presets extends View {
     const chip = (id, text, action) => div().id(id).h(24).px(9).flex().items_center().rounded(12).border_1().border_color(t.input)
       .text_size(11.5).text_color(t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground).bg(t.hover))
       .on_click((_e, cx) => { action(); cx.notify(); }).child(text);
-    const agents = (shared("new-menu.agents")?.[""] ?? []).filter((a) => a.installed && Array.isArray(a.run));
+    // The agents this computer has: the + menu's list, then what knownAgents() said (init).
+    const agents = this.known.filter((a) => a.installed && Array.isArray(a.run));
     const where = sel.scope === "global" ? "Every workspace" : `Only in ${def?.name ?? "this workspace"}`;
-    const program = programOf(this.cmdIn.value());
-    const knobs = KNOBS[program] ? { ...KNOBS[program], models: program === "codex" ? this.codexModels : program === "agy" ? this.agyModels : KNOBS[program].models } : null;
+    const program = programIn(this.cmdIn.value());
+    // The Agent row: the installed agents, and the command's own program when it's none of them.
+    const current = agentFor(agents, program);
+    const providers = current || !program ? agents : [...agents, { key: program, name: program, run: null }];
+    const knobs = KNOBS[program] ?? null;
     const cmdWords = words(this.cmdIn.value());
     const model = knobs ? flagValue(cmdWords, knobs.model) : null;
-    const effort = knobs ? (knobs.effort.flag ? flagValue(cmdWords, [knobs.effort.flag]) : configValue(cmdWords, knobs.effort.config)) : null;
-    const models = knobs ? [...new Set([...knobs.models, ...(model ? [model] : [])])] : [];
+    const effort = knobs?.effort ? (knobs.effort.flag ? flagValue(cmdWords, [knobs.effort.flag]) : configValue(cmdWords, knobs.effort.config)) : null;
+    const models = knobs ? [...new Set([...knobs.models, ...(program === "codex" ? this.codexModels : []), ...(this.listed[program] ?? []), ...(model ? [model] : [])])] : [];
+    const { shown, more } = shownModels(models, this.modelIn.value(), model);
+    const agentIcon = (a) => !a.icon ? svg("mods/workspace-chrome/terminal.svg").size(13).flex_none().text_color(t.muted)
+      : (a.tint ? svg(a.icon).text_color(t.foreground) : image(a.icon)).size(13).flex_none().rounded(3);
     // A choice chip: highlighted when it's what the command says.
     const pick = (id, text, on, action) => div().id(id).h(26).px(10).flex().items_center().rounded(13).border_1()
       .border_color(on ? t.accent : t.input).bg(on ? t.selected : t.background).text_size(12)
@@ -770,21 +682,31 @@ export default class Presets extends View {
       .when(sel.isNew, (el) => el.child(label("Name: how you and agents call it (hc run <name>)")).child(box(this.nameIn)))
       .child(label("Description"))
       .child(box(this.descIn))
+      .when(providers.length > 0, (el) => el
+        .child(label("Agent: the program it runs"))
+        .child(h_flex().gap(6).flex_wrap().items_center()
+          .children(providers.map((a) => h_flex().id(`p-agent-${a.key}`).h(26).px(10).gap(6).items_center().rounded(13).border_1()
+            .border_color(a === current || !a.run ? t.accent : t.input).bg(a === current || !a.run ? t.selected : t.background).text_size(12)
+            .text_color(a === current || !a.run ? t.foreground : t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground))
+            .when(Boolean(a.run) && a !== current, (el) => el.on_click((_e, cx) => { this.setAgent(a); cx.notify(); }))
+            .when(!a.run, (el) => el.tooltip(`${program} isn't one of the agents installed here.`))
+            .child(agentIcon(a)).child(a.name))))
+        .when(Boolean(this.swapNote), (el) => el.child(div().pt(6).text_size(11.5).text_color(t.working).child(this.swapNote))))
       .child(label("Command: the program, model and flags"))
       .child(box(this.cmdIn, true))
-      .when(agents.length > 0, (el) => el.child(h_flex().pt(6).gap(6).flex_wrap().items_center()
-        .child(div().text_size(11.5).text_color(t.dim).child("Start from"))
-        .children(agents.map((a) => chip(`p-agent-${a.key}`, a.name, () => this.cmdIn.set_value(a.run.map(shellWord).join(" ")))))))
       .when(Boolean(knobs), (el) => el
         .child(label("Model"))
         .child(h_flex().gap(6).flex_wrap().items_center()
           .child(pick("p-model-default", program === "codex" && this.codexModels[0] ? `Default (${this.codexModels[0]})` : "Default", model === null, () => this.setModel("")))
-          .children(models.map((m) => pick(`p-model-${m}`, m, model === m, () => this.setModel(m))))
+          .children(shown.map((m) => pick(`p-model-${m}`, m, model === m, () => { this.setModel(m); this.modelIn.set_value(""); })))
           .child(div().w(190).child(Input.new(this.modelIn).h(26).px(8).rounded(13).border_1().border_color(this.focusedIn === this.modelIn ? t.accent : t.input).bg(t.background).text_size(11.5).text_color(t.foreground))))
-        .child(label("Effort"))
-        .child(h_flex().gap(6).flex_wrap()
-          .child(pick("p-effort-default", "Default", effort === null, () => this.setEffort("")))
-          .children(knobs.effort.levels.map((l) => pick(`p-effort-${l}`, l, effort === l, () => this.setEffort(l))))))
+        .when(more > 0, (el) => el.child(div().pt(6).text_size(11.5).text_color(t.dim)
+          .child(this.modelIn.value().trim() ? `${more} more like that: type more of the name.` : `${current?.name ?? program} lists ${models.length} models: type part of a name to find one.`)))
+        .when(Boolean(knobs.effort), (el) => el
+          .child(label("Effort"))
+          .child(h_flex().gap(6).flex_wrap()
+            .child(pick("p-effort-default", "Default", effort === null, () => this.setEffort("")))
+            .children((knobs.effort?.levels ?? []).map((l) => pick(`p-effort-${l}`, l, effort === l, () => this.setEffort(l)))))))
       .when(system, (el) => el
         .child(label(this.guide && !this.guide.on ? "Herdr guide (off for every agent right now)" : "Herdr guide: how to use automations, hc helpers and the board"))
         .child(h_flex().gap(6).flex_wrap()

@@ -326,9 +326,12 @@ For restarts, the launcher keeps notes of the Claude agents it starts in
 `~/.herdr/resume/` (their command and session), runs `hc ls` to drop the notes
 of closed tabs, and gives Claude two hooks (`--settings`) that note its session
 and drop the note when you leave it. Antigravity's hook is a `.agents/hooks.json` in its
-rules folder that notes its conversation. The Presets and Automations screens run
-`agy models` (it asks Antigravity's server) at most once a day and keep its answer in
-`~/.herdr/cache/agy-models.json`. With the `shell` line in herdr-core's
+rules folder that notes its conversation. To offer each agent's models, the Presets and
+Automations screens run, through your login shell and at most once a day each,
+`codex debug models`, `pi --list-models`, `agy models` (it asks Antigravity's server),
+`opencode models` and `grok models`, for those that are installed, and keep each answer
+(or that the program isn't there) in `~/.herdr/cache/models-<program>.json`; they still
+read an older `~/.herdr/cache/agy-models.json`. With the `shell` line in herdr-core's
 config, every new terminal starts through `herdr-ws-resume`.
 Every notification Herdr shows is also handed to `herdr-ws-notify`, and so is the
 background runner's news while no window is open. It asks macOS which app is in

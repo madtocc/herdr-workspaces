@@ -35,6 +35,12 @@ cmp -s "$src/mods/ws-new-menu/hidefacts.js" "$src/mods/ws-presets/hidefacts.js" 
   exit 1
 }
 
+# The Presets screen offers each agent's models and efforts from the same table.
+cmp -s "$src/mods/ws-switcher/knobs.js" "$src/mods/ws-presets/knobs.js" || {
+  echo "mods/ws-switcher/knobs.js and mods/ws-presets/knobs.js differ: make them the same first" >&2
+  exit 1
+}
+
 mkdir -p "$dst/layouts"
 cp "$src/layouts/workspaces.json" "$dst/layouts/workspaces.json"
 
