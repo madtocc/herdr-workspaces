@@ -1,0 +1,145 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800" font-family="Geist, -apple-system, 'Helvetica Neue', sans-serif">
+  <!-- Settings (ws-settings: Herdr's Settings window with the package's Extras section), open on Extras. Demo names only (the main drawing's Acme). -->
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+  <rect width="1280" height="800" fill="#111215"/>
+
+  <!-- sidebar -->
+  <rect width="288" height="800" fill="#17181b"/>
+  <rect x="288" width="1" height="800" fill="#25272b"/>
+  <circle cx="20" cy="24" r="6" fill="#ff5f57"/><circle cx="40" cy="24" r="6" fill="#febc2e"/><circle cx="60" cy="24" r="6" fill="#28c840"/>
+  <text x="124" y="30" fill="#e8e9eb" font-size="15" font-weight="600">Herdr</text>
+
+  <!-- the switcher, the board button and the notes button -->
+  <rect x="10" y="60" width="204" height="40" rx="8" fill="#232428"/>
+  <rect x="20" y="70" width="20" height="20" rx="5" fill="#5b8def"/>
+  <text x="30" y="85" fill="#fff" font-size="11" font-weight="700" text-anchor="middle">A</text>
+  <text x="52" y="85" fill="#e8e9eb" font-size="14" font-weight="500">Acme</text>
+  <circle cx="164" cy="80" r="3" fill="#e5534b"/>
+  <text x="178" y="85" fill="#7d8089" font-size="11.5">3</text>
+  <path d="M192 78 l4 4 l4 -4" stroke="#7d8089" stroke-width="1.5" fill="none"/>
+  <g transform="translate(223 72.5) scale(0.6250)" fill="none" stroke="#a5a8ae" stroke-width="1.87" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M15 3v18"/><path d="M5.5 7h1.5"/><path d="M11.5 7h1.5"/><path d="M11.5 11h1.5"/><path d="M17.5 7h1"/></g>
+  <g transform="translate(253 72.5) scale(0.6250)" fill="none" stroke="#a5a8ae" stroke-width="1.87" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8Z"/><path d="M15 3v4a2 2 0 0 0 2 2h4"/></g>
+
+  <!-- spaces -->
+  <text x="19" y="128" fill="#7d8089" font-size="12">Spaces</text>
+  <text x="256" y="129" fill="#7d8089" font-size="16">+</text>
+  <rect x="10" y="144" width="268" height="34" rx="8" fill="#26272c"/>
+  <rect x="20" y="152" width="18" height="18" rx="5" fill="#22a99a"/><text x="29" y="165" fill="#fff" font-size="10.5" font-weight="700" text-anchor="middle">A</text>
+  <text x="50" y="166" fill="#e8e9eb" font-size="14">api</text>
+  <rect x="20" y="188" width="18" height="18" rx="5" fill="#e3814f"/><text x="29" y="201" fill="#fff" font-size="10.5" font-weight="700" text-anchor="middle">W</text>
+  <text x="50" y="202" fill="#e8e9eb" font-size="14">web</text><text x="268" y="202" fill="#7d8089" font-size="11.5" text-anchor="end">billing ↑2</text>
+  <rect x="20" y="224" width="18" height="18" rx="5" fill="#8b7cf6"/><text x="29" y="237" fill="#fff" font-size="10.5" font-weight="700" text-anchor="middle">D</text>
+  <text x="50" y="238" fill="#e8e9eb" font-size="14">docs</text>
+
+  <!-- agents: each row's second line is its model, a context meter and its compactions -->
+  <rect y="420" width="288" height="1" fill="#25272b"/>
+  <text x="19" y="454" fill="#7d8089" font-size="12">Agents</text>
+  <text x="19" y="490" fill="#e5534b" font-size="12">Needs you 1</text>
+  <rect x="10" y="500" width="268" height="42" rx="8" fill="#1f2024"/>
+  <rect x="20" y="513" width="16" height="16" rx="4" fill="#d97757"/>
+  <text x="46" y="518" fill="#e8e9eb" font-size="13.5">web</text><text x="80" y="518" fill="#7d8089" font-size="13">· Add billing page</text>
+  <text x="46" y="535" fill="#7d8089" font-size="11">Opus 5.5</text>
+  <rect x="96" y="531" width="26" height="4" rx="2" fill="#2c2e33"/><rect x="96" y="531" width="10" height="4" rx="2" fill="#a5a8ae"/>
+  <text x="127" y="535" fill="#7d8089" font-size="11">38%</text>
+  <text x="19" y="562" fill="#7d8089" font-size="12">Working 1</text>
+  <rect x="20" y="579" width="16" height="16" rx="4" fill="#d97757"/>
+  <text x="46" y="584" fill="#e8e9eb" font-size="13.5">api</text><text x="74" y="584" fill="#7d8089" font-size="13">· Fix login redirect</text>
+  <text x="46" y="601" fill="#7d8089" font-size="11">Fable 5.2</text>
+  <rect x="99" y="597" width="26" height="4" rx="2" fill="#2c2e33"/><rect x="99" y="597" width="21" height="4" rx="2" fill="#d6a541"/>
+  <text x="130" y="601" fill="#d6a541" font-size="11">81%</text>
+  <g transform="translate(154 592.5) scale(0.4167)" fill="none" stroke="#7d8089" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22v-6"/><path d="M12 8V2"/><path d="M4 12H2"/><path d="M10 12H8"/><path d="M16 12h-2"/><path d="M22 12h-2"/><path d="m15 19-3-3-3 3"/><path d="m15 5-3 3-3-3"/></g><text x="166" y="601" fill="#7d8089" font-size="11">1</text>
+  <!-- footer -->
+  <rect y="647" width="288" height="1" fill="#25272b"/>
+  <g transform="translate(19 660) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></g><text x="44" y="672" fill="#a5a8ae" font-size="13">History</text>
+  <g transform="translate(19 688) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4.5 13.5H12L11 22l8.5-11.5H12z"/></g><text x="44" y="700" fill="#a5a8ae" font-size="13">Automations</text>
+  <g transform="translate(19 716) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></g><text x="44" y="728" fill="#a5a8ae" font-size="13">Agent presets</text>
+  <g transform="translate(19 744) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915" /> <circle cx="12" cy="12" r="3" /></g><text x="44" y="756" fill="#a5a8ae" font-size="13">Settings</text>
+  <g transform="translate(19 772) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g><text x="44" y="784" fill="#a5a8ae" font-size="13">Add machine</text>
+
+  <!-- tab bar and pane -->
+  <g transform="translate(312 17) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M15 3v18"/><path d="M5.5 7h1.5"/><path d="M11.5 7h1.5"/><path d="M11.5 11h1.5"/><path d="M17.5 7h1"/></g>
+  <text x="333" y="29" fill="#a5a8ae" font-size="13">Board</text>
+  <rect x="390.1" y="16" width="1" height="16" fill="#2f3137"/>
+  <rect x="399.1" y="8" width="78" height="32" rx="8" fill="#26272c"/>
+  <text x="429.1" y="29" fill="#e8e9eb" font-size="13">1</text>
+  <g transform="translate(1064 17) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g>
+  <text x="1110" y="29" fill="#a5a8ae" font-size="13">Files</text><text x="1182" y="29" fill="#a5a8ae" font-size="13">Changes</text>
+  <rect x="300.5" y="56.5" width="969" height="707" rx="10" fill="#1b1c20" stroke="#8ab4f8"/>
+  <rect x="301" y="57" width="968" height="34" rx="10" fill="#1d1e22"/>
+  <text x="322" y="79" fill="#e8e9eb" font-size="13" font-weight="500">Claude Code</text>
+  <text x="408" y="79" fill="#7d8089" font-size="12.5">~/work/acme/api</text>
+  <g font-family="'JetBrains Mono', Menlo, monospace" font-size="15" fill="#c9ccd1">
+    <text x="322" y="130">Read the workspace instructions: use pnpm, run make verify.</text>
+    <text x="322" y="160" fill="#7d8089">● Reading src/auth/redirect.ts</text>
+    <text x="322" y="190" fill="#7d8089">● Reading ../web/src/routes/login.tsx</text>
+    <text x="322" y="230">The redirect drops the return path when the session</text>
+    <text x="322" y="256">expires. I'll keep it in the login URL and restore it</text>
+    <text x="322" y="282">after sign-in, in both api and web.</text>
+    <text x="322" y="700" fill="#7d8089">❯</text>
+  </g>
+
+  <!-- status bar: each plan's most used limit before the commands hint (ws-status: Claude, Antigravity); a click opens the usage popup -->
+  <rect x="288" y="772" width="992" height="28" fill="#111215"/><rect x="288" y="772" width="992" height="1" fill="#25272b"/>
+  <g transform="translate(302 779.5) scale(0.5417)" fill="none" stroke="#a5a8ae" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2.5"/><path d="M8.5 20h7M12 16v4"/></g>
+  <text x="321" y="790" fill="#a5a8ae" font-size="11.5">This computer</text>
+  <circle cx="420" cy="786" r="3" fill="#7d8089"/><text x="429" y="790" fill="#a5a8ae" font-size="11.5">2 agents</text><text x="480" y="790" fill="#e5534b" font-size="11.5">· 1 needs you</text>
+  <g transform="translate(1073 780) scale(0.5)" fill="#D97757"><path clip-rule="evenodd" d="M20.998 10.949H24v3.102h-3v3.028h-1.487V20H18v-2.921h-1.487V20H15v-2.921H9V20H7.488v-2.921H6V20H4.487v-2.921H3V14.05H0V10.95h3V5h17.998v5.949zM6 10.949h1.488V8.102H6v2.847zm10.51 0H18V8.102h-1.49v2.847z" fill-rule="evenodd"></path></g><text x="1090" y="790" fill="#d6a541" font-size="11.5">72%</text>
+  <g transform="translate(1121 780) scale(0.5)"><defs><linearGradient id="agy-grad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFE432"/><stop offset=".35" stop-color="#FC413D"/><stop offset=".65" stop-color="#00B95C"/><stop offset="1" stop-color="#3186FF"/></linearGradient></defs><path d="M21.751 22.607c1.34 1.005 3.35.335 1.508-1.508C17.73 15.74 18.904 1 12.037 1 5.17 1 6.342 15.74.815 21.1c-2.01 2.009.167 2.511 1.507 1.506 5.192-3.517 4.857-9.714 9.715-9.714 4.857 0 4.522 6.197 9.714 9.715z" fill="url(#agy-grad)"/></g><text x="1138" y="790" fill="#a5a8ae" font-size="11.5">18%</text>
+  <text x="1266" y="790" fill="#7d8089" font-size="11.5" text-anchor="end">⌘⇧P  commands</text>
+
+  <!-- dimmed behind the dialog -->
+  <rect width="1280" height="800" fill="#000" opacity="0.45"/>
+
+  <!-- the Settings dialog, 880 wide like Herdr's: its sections, then Extras -->
+  <g filter="url(#shadow)"><rect x="200" y="90" width="880" height="620" rx="12" fill="#202125" stroke="#303237"/></g>
+  <rect x="390" y="91" width="1" height="618" fill="#303237"/>
+  <text x="220" y="128" fill="#e8e9eb" font-size="16" font-weight="600">Settings</text>
+  <g transform="translate(220 154.5) scale(0.625)" fill="none" stroke="#7d8089" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22a1 1 0 0 1 0-20 10 9 0 0 1 10 9 5 5 0 0 1-5 5h-2.25a1.75 1.75 0 0 0-1.4 2.8l.3.4a1.75 1.75 0 0 1-1.4 2.8z"/><circle cx="13.5" cy="6.5" r=".5"/><circle cx="17.5" cy="10.5" r=".5"/><circle cx="6.5" cy="12.5" r=".5"/><circle cx="8.5" cy="7.5" r=".5"/></g>
+  <text x="245" y="167" fill="#a5a8ae" font-size="13.5">Look</text>
+  <g transform="translate(220 188.5) scale(0.625)" fill="none" stroke="#7d8089" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 12h.01M10 12h.01M14 12h.01M18 12h.01M7 16h10"/></g>
+  <text x="245" y="201" fill="#a5a8ae" font-size="13.5">Keyboard</text>
+  <g transform="translate(220 222.5) scale(0.625)" fill="none" stroke="#7d8089" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></g>
+  <text x="245" y="235" fill="#a5a8ae" font-size="13.5">Machines</text>
+  <g transform="translate(220 256.5) scale(0.625)" fill="none" stroke="#7d8089" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/></g>
+  <text x="245" y="269" fill="#a5a8ae" font-size="13.5">Alerts</text>
+  <g transform="translate(220 290.5) scale(0.625)" fill="none" stroke="#7d8089" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></g>
+  <text x="245" y="303" fill="#a5a8ae" font-size="13.5">Updates</text>
+  <g transform="translate(220 324.5) scale(0.625)" fill="none" stroke="#7d8089" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></g>
+  <text x="245" y="337" fill="#a5a8ae" font-size="13.5">Privacy</text>
+  <rect x="210" y="350" width="170" height="32" rx="7" fill="#2a2b30"/>
+  <g transform="translate(220 358.5) scale(0.625)" fill="none" stroke="#5b8def" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/></g>
+  <text x="245" y="371" fill="#e8e9eb" font-size="13.5">Extras</text>
+  <rect x="210" y="662" width="170" height="32" rx="7" fill="#2a2b30" stroke="#303237"/><text x="222" y="683" fill="#e8e9eb" font-size="13">Send feedback</text>
+  <text x="419" y="126" fill="#7d8089" font-size="12" font-weight="600" letter-spacing="0.4">EXPERIMENTAL</text>
+  <text x="419" y="150" fill="#7d8089" font-size="12.5">Features that lean on things other programs don't promise to keep the same. Each is off until you turn it on,</text>
+  <text x="419" y="168" fill="#7d8089" font-size="12.5">and says why it's experimental.</text>
+  <text x="419" y="206" fill="#e8e9eb" font-size="14">Wipe Antigravity conversations</text>
+  <text x="419" y="228" fill="#7d8089" font-size="12.5">Adds Wipe session… to an Antigravity agent's right-click menu in the Agents list: it</text>
+  <text x="419" y="246" fill="#7d8089" font-size="12.5">closes the agent, takes the conversation out of Antigravity's own lists and moves its</text>
+  <text x="419" y="264" fill="#7d8089" font-size="12.5">files into ~/.herdr/trash, so History and Antigravity's /resume no longer show it.</text>
+  <text x="419" y="284" fill="#a5a8ae" font-size="12">Why it's experimental: it edits Antigravity's own index files, whose format isn't</text>
+  <text x="419" y="301" fill="#a5a8ae" font-size="12">documented: an Antigravity update could change them. It refuses what it can't read,</text>
+  <text x="419" y="318" fill="#a5a8ae" font-size="12">keeps a copy in ~/.herdr/trash first, and waits while another Antigravity runs.</text>
+  <rect x="1016" y="248.0" width="36" height="20" rx="10" fill="#5b8def"/><circle cx="1042" cy="258.0" r="8" fill="#fff"/>
+  <rect x="419" y="334" width="633" height="1" fill="#303237"/>
+  <text x="419" y="374" fill="#7d8089" font-size="12" font-weight="600" letter-spacing="0.4">SWITCHES</text>
+  <text x="419" y="410" fill="#e8e9eb" font-size="14">Keep running while Herdr is closed</text>
+  <text x="419" y="432" fill="#7d8089" font-size="12.5">Automations and board cards' pull requests are followed by a background process</text>
+  <text x="419" y="450" fill="#7d8089" font-size="12.5">herdr-core keeps going. Off, Herdr runs them itself while it's open.</text>
+  <text x="419" y="470" fill="#a5a8ae" font-size="12">Also at the foot of Automations.</text>
+  <rect x="1016" y="426.0" width="36" height="20" rx="10" fill="#5b8def"/><circle cx="1042" cy="436.0" r="8" fill="#fff"/>
+  <rect x="419" y="486" width="633" height="1" fill="#303237"/>
+  <text x="419" y="516" fill="#e8e9eb" font-size="14">Bring agents back after a restart</text>
+  <text x="419" y="538" fill="#7d8089" font-size="12.5">Claude and Antigravity agents started through the launcher continue their conversation</text>
+  <text x="419" y="556" fill="#7d8089" font-size="12.5">after a reboot or a logout.</text>
+  <text x="419" y="576" fill="#a5a8ae" font-size="12">Also at the foot of Agent presets.</text>
+  <rect x="1016" y="532.0" width="36" height="20" rx="10" fill="#5b8def"/><circle cx="1042" cy="542.0" r="8" fill="#fff"/>
+  <rect x="419" y="592" width="633" height="1" fill="#303237"/>
+  <text x="419" y="622" fill="#e8e9eb" font-size="14">Herdr guide for every agent</text>
+  <rect x="1016" y="607" width="36" height="20" rx="10" fill="#5b8def"/><circle cx="1042" cy="617" r="8" fill="#fff"/>
+  <rect x="1071" y="98" width="4" height="446" rx="2" fill="#3a3c42"/>
+</svg>

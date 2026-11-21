@@ -11,4 +11,9 @@ mods/ws-toast and mods/ws-status are modified copies of the `toast` and
 `workspace-status` mods shipped with Herdr (herdr-app 0.1.16), under the same
 license. Their changes are described at the top of each file.
 
+mods/ws-settings/main.js is generated from Herdr's bundled `frame-settings`
+mod (its Settings window; shipped built from herdr-app 0.1.16) with small
+patches made by mods/ws-switcher/settingsbuild.js, under the same license. Its
+header says so and the patches are described in that script.
+
 The rest of this package is licensed under the Apache License 2.0 (LICENSE).

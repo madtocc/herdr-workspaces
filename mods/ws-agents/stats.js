@@ -10,9 +10,11 @@
 // Pi: the file the launcher's extension (ws-switcher/pi/herdr-stats.ts) keeps there.
 //
 // Antigravity: its transcript, through the conversation the launcher's restart hook
-// noted for the terminal (~/.herdr/resume/<core>/<terminal>.session).
+// noted for the terminal (~/.herdr/resume/<core>/<terminal>.session); `fresh` when the
+// note is provably the running process's (statfacts.js agyOwns(), from a ps line kept
+// per process: procLine()).
 //
-// Each one's conversation too (session, and for Claude and Pi its transcript `file`),
+// Each one's conversation too (session and its transcript `file`),
 // and for Claude its folder (`cwd`) and the launcher's note of how it was started
 // (`cmd`): the right-click menu forks, wipes and copies with them (menufacts.js).
 //
@@ -24,7 +26,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { claudeScan, claudeStatus, claudeFacts, piFacts, agyScan, agyFacts } from "./statfacts.js";
+import { execFileSync } from "node:child_process";
+import { claudeScan, claudeStatus, claudeFacts, piFacts, agyScan, agyFacts, agyOwns } from "./statfacts.js";
 
 const HOME = process.env.HOME || "";
 const CORE = process.env.HC_SESSION || "default";
@@ -111,6 +114,22 @@ function scanned(file, scan = claudeScan) {
   return c;
 }
 
+// A process's start and arguments (`ps -o lstart=,args=`), for agyOwns(): asked once per
+// process and kept in the cache while that terminal's program is that pid, since neither
+// changes. Null when ps can't say.
+cache.procs ??= {};
+const seenPids = new Set();
+function procLine(pid) {
+  if (!pid) return null;
+  seenPids.add(pid);
+  if (cache.procs[pid]) return cache.procs[pid];
+  try {
+    const line = execFileSync("ps", ["-o", "lstart=,args=", "-p", pid], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" }, stdio: ["ignore", "pipe", "ignore"], timeout: 5000 }).trim();
+    if (line) cache.procs[pid] = line;
+    return line || null;
+  } catch { return null; }
+}
+
 const agents = {};
 for (const w of wanted) {
   if (w.app === "pi") {
@@ -126,11 +145,13 @@ for (const w of wanted) {
   if (w.app === "agy") {
     // The conversation the launcher's hook noted for this terminal: its id, then its transcript.
     try {
-      const [id, noted] = fs.readFileSync(path.join(NOTES, `${w.address}.session`), "utf8").split("\n");
+      const note = path.join(NOTES, `${w.address}.session`);
+      const [id, noted] = fs.readFileSync(note, "utf8").split("\n");
       if (!/^[A-Za-z0-9-]+$/.test(id ?? "")) continue;
-      const file = noted && noted.startsWith(AGY) ? noted : path.join(AGY, "brain", id, ".system_generated", "logs", "transcript.jsonl");
+      const file = noted && noted.startsWith(AGY + path.sep) && !noted.includes("/../") ? noted : path.join(AGY, "brain", id, ".system_generated", "logs", "transcript.jsonl");
       const scan = scanned(file, agyScan);
-      if (scan?.reply || scan?.n) agents[w.address] = { ...agyFacts(scan), session: id };
+      // The menu's Wipe goes only by a note that's provably the running Antigravity's (fresh).
+      if (scan?.reply || scan?.n) agents[w.address] = { ...agyFacts(scan), session: id, file, fresh: agyOwns(procLine(w.pid), fs.statSync(note).mtimeMs, id) };
     } catch { /* not noted yet: its first prompt notes it */ }
     continue;
   }
@@ -158,6 +179,8 @@ for (const w of wanted) {
   }
 }
 
+// Processes no terminal runs now are forgotten (a pid can come back as another process).
+for (const pid of Object.keys(cache.procs)) if (!seenPids.has(pid)) delete cache.procs[pid];
 // The cache keeps a day of transcripts not looked at.
 for (const [f, c] of Object.entries(cache.files)) if (now - (c.seen ?? 0) > DAY) delete cache.files[f];
 for (const [s, f] of Object.entries(cache.where)) if (!fs.existsSync(f)) delete cache.where[s];

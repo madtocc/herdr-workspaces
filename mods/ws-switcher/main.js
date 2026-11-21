@@ -53,6 +53,14 @@
 // screen's Run now and allowed checks as files in the inbox.
 //   workspaces.runner      { on, running }: the background runner, for the screens
 //   workspaces.runner.set  { on, at }: a screen asks to turn it on or off
+// Not this block's: the package's own settings, ~/.herdr/settings.jsonc, as ws-agents
+// reads it (and Settings' Extras section, ws-settings, sets it when you change one; settingsfacts.js).
+//   workspaces.settings    { experimental: { <key>: true|false } }
+//   workspaces.settings.section  { id, at } or null: the section our Settings window (ws-settings) opens on,
+//                        for a moment after "ws-switcher.settings/<section>" asks (mod.open passes no props); the
+//                        window clears it as it opens
+// This block writes ws-settings' main.js: Herdr's Settings window with an Extras section
+// (settingsbuild.js), rebuilt when Herdr's own file changes (settingsCopy()).
 //
 // A space joins a workspace once and stays: when its first terminal is under the
 // workspace's root or one of its folders (a herdr worktree goes by its repo's
@@ -63,6 +71,7 @@ import { h_flex, v_flex, InputState, Input } from "gpui-base";
 import {
   spaces, panes, machines, run, theme, shared, setShared, props, openOverlay, closeOverlay,
   home, appHome, layout, watchFolder, readTextFile, writeTextFile, pickFolder, exec, notify, window, nextCommand, focused,
+  updates, checking,
 } from "herdr";
 import * as fs from "fs/promises";
 import { Runner, runnerDir, globalDir } from "./automations.js";
@@ -71,6 +80,7 @@ import { GhWatcher } from "./ghboard.js";
 import { Scratch, isScratch, scratchDef, scratchLabel } from "./scratch.js";
 import { dir, expand, tilde, under, base, subdirs, loadDefs, loadOrder, orderFile, templatesDir, loadPresetDir, presetsFor, presetLaunch, withTask, notesOnly } from "./defs.js";
 import { arrange, move as moveRow, groupOf, groupName, renamed, withGroup, orderText } from "./arrange.js";
+import { buildSettings, hash, SOURCE as SETTINGS_SOURCE, TARGET as SETTINGS_TARGET } from "./settingsbuild.js";
 
 // "Edit" opens the workspace's folder in the first of these that's installed,
 // else with the system's opener (Finder, the file manager, Explorer).
@@ -261,6 +271,19 @@ ${folders.map((f) => `    ${JSON.stringify(f)},`).join("\n")}
 `;
 }
 
+// Our Settings window (ws-settings: Herdr's, with an Extras section), as a dialog 880 wide
+// (its mod.json), which mod.open toggles. Asking for a section opens it there: mod.open passes
+// no props, so the section goes through shared state and the window clears it as it opens.
+// Still there a moment later: the window was open and mod.open closed it, so open it again.
+function openSettings(section, cx) {
+  if (section) {
+    const at = Date.now();
+    setShared("workspaces.settings.section", { id: section, at });
+    cx.timer.after(400, () => { if (shared("workspaces.settings.section")?.at === at) run("mod.open", { name: "ws-settings" }); });
+  }
+  run("mod.open", { name: "ws-settings" });
+}
+
 const instructionsText = (name) => `<!-- What every agent (Claude, Codex, Antigravity, Pi) started in the ${name} workspace is told,
      on top of each repo's own CLAUDE.md / AGENTS.md. Write below this comment;
      the comment itself is not sent. Applies to agents started after you save. -->
@@ -330,7 +353,9 @@ export default class Workspaces extends View {
     // a toast about one automation is "ws-switcher.automation/<workspace>/<name>" (automations.js: openAt);
     // "ws-switcher.board", "ws-switcher.worktrees", "ws-switcher.history" and "ws-switcher.notes" (bind
     // them to keys) show the shown workspace's screen, and go back to the tabs when it's the one shown;
-    // "ws-switcher.show/<screen>/<workspace>" only shows it (a toast's action: Notes' Move to the board).
+    // "ws-switcher.show/<screen>/<workspace>" only shows it (a toast's action: Notes' Move to the board);
+    // "ws-switcher.settings" opens or closes our Settings window (ws-settings) and
+    // "ws-switcher.settings/<section>" opens it on that section (extras, look, machines, …).
     cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
@@ -341,6 +366,7 @@ export default class Workspaces extends View {
           else if (c.startsWith("scratch-keep/")) await this.scratch.keep(c);
           else if (c.startsWith("automation/")) this.openAutomation(c);
           else if (c.startsWith("show/")) this.showScreen(c, cx);
+          else if (c === "settings" || c.startsWith("settings/")) openSettings(c.slice("settings/".length), cx);
         } catch (e) { notify({ title: c.startsWith("automation/") ? "Couldn't open Automations" : "Couldn't make a scratch space", body: String(e?.message ?? e), level: "error" }); }
       }
     });
@@ -351,6 +377,9 @@ export default class Workspaces extends View {
     this.reload(cx);
     this.background(cx);
     cx.timer.every(2000, (cx) => this.background(cx));
+    // Herdr rewrites its Settings window at every start: our copy follows (and every few minutes).
+    this.settingsCopy(cx);
+    cx.timer.every(180000, (cx) => this.settingsCopy(cx));
     cx.spawn(async (cx) => {
       for (;;) {
         let paths;
@@ -414,6 +443,34 @@ export default class Workspaces extends View {
         await this.gh?.load();
       }
       cx.notify();
+    });
+  }
+
+  // ws-settings' main.js: Herdr's Settings window (frame/settings/main.js) with the Extras
+  // section, built by settingsbuild.js. Rebuilt only when Herdr's file changed since the last
+  // look and written only when the text differs, so writing it (which reloads ws-settings)
+  // never loops. Not before ws-settings is installed (its extras.js is there), and never
+  // during a check (appHome() is then the person's own Herdr home).
+  settingsCopy(cx) {
+    if (checking() || this.settingsBusy) return;
+    this.settingsBusy = true;
+    cx.spawn(async () => {
+      try {
+        const source = await readTextFile(`${appHome()}/${SETTINGS_SOURCE}`).catch(() => null);
+        const seen = source == null ? "none" : hash(source);
+        if (seen !== this.settingsSeen && (await readTextFile(`${appHome()}/mods/ws-settings/extras.js`).catch(() => null)) != null) {
+          const r = buildSettings(source, { version: updates()?.app?.version });
+          const target = `${appHome()}/${SETTINGS_TARGET}`;
+          const old = await readTextFile(target).catch(() => null);
+          if (old !== r.text) {
+            await writeTextFile(target, r.text, old ?? undefined);
+            if (!r.ok) notify({ title: "Settings shows only Extras for now", level: "warning",
+              body: "Herdr's Settings changed in a way the package's copy can't follow yet: until the package is updated, the footer's Settings has only Extras and a button to Herdr's own." });
+          }
+          this.settingsSeen = seen;
+        }
+      } catch (e) { console.log(`ws-switcher: couldn't write ws-settings: ${e?.message ?? e}`); }
+      this.settingsBusy = false;
     });
   }
 

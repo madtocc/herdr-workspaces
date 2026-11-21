@@ -15,13 +15,19 @@
 // menu: Peek, Send a message, Interrupt, Compact, Fork session, Rename, Pin, Copy
 // terminal id, Copy session id, Close session, Wipe session (menufacts.js says which a
 // row gets), with the Send a message and Wipe dialogs (agentMenu(), act(), sendDialog(),
-// wipeDialog()).
+// wipeDialog()). Antigravity's Wipe is experimental, offered while "antigravity-wipe" is
+// on in ~/.herdr/settings.jsonc (settingsfacts.js, read by readSettings() into shared
+// "workspaces.settings"), and only for a row whose conversation note is provably its running
+// process's (stats.js: fresh); agywipe.js checks it before the agent is closed, then
+// wipes the conversation's tree (out of Antigravity's lists, checked, then its files to
+// the Trash), and agyPending() finishes a wipe left for when no Antigravity runs.
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, exec, hc, appHome, home, notify, checking } from "herdr";
+import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, exec, hc, appHome, home, notify, checking, readTextFile } from "herdr";
 import { tokens } from "./statfacts.js";
-import { kindOf as menuKind, menuItems, menuHeight, closeAsks, forkArgv, wipeTargets } from "./menufacts.js";
+import { kindOf as menuKind, menuItems, menuHeight, closeAsks, forkArgv, wipeTargets, agyDir } from "./menufacts.js";
+import { SETTINGS_FILE, parseSettings, experimentOn } from "./settingsfacts.js";
 
 // The workspace ws-switcher shows, null for every space.
 const workspace = () => (shared("workspaces.defs") ?? []).find((d) => d.id === shared("workspaces.active")) ?? null;
@@ -114,28 +120,50 @@ const kindOf = (a) => KINDS[a.app] ?? KINDS[a.program?.key] ?? null;
 const STATS_WORKING = 5000;
 const STATS_IDLE = 60000;
 
-// Node, as History finds it: the app's PATH, else where the person's shell finds it.
+// Node, as History finds it: the app's PATH, else where the person's shell finds it
+// (found with `node --version`, so a script itself never runs twice to find it).
 let nodeBin = null;
-async function node(args) {
-  const opts = { timeout: 30000 };
-  const missing = (r) => !r || r.code === 127;
-  if (nodeBin) {
-    const r = await exec(nodeBin, args, opts).catch(() => null);
-    if (!missing(r)) return r;
-    nodeBin = null;
-  }
-  const direct = await exec("node", args, opts).catch(() => null);
-  if (!missing(direct)) return direct;
+async function findNode() {
+  if (nodeBin) return nodeBin;
+  const works = async (bin) => (await exec(bin, ["--version"], { timeout: 15000 }).catch(() => null))?.code === 0;
+  if (await works("node")) return (nodeBin = "node");
   // Only the path is taken from the shell's output, so whatever else an interactive
   // shell prints can't get into what's read.
   for (const flags of ["-lc", "-lic"]) {
     const found = await exec("sh", ["-c", 'exec "${SHELL:-/bin/sh}" "$1" "command -v node"', "sh", flags], { timeout: 15000 }).catch(() => null);
     const bin = String(found?.stdout ?? "").split("\n").map((l) => l.trim()).filter((l) => l.startsWith("/")).pop();
-    if (!bin) continue;
-    const r = await exec(bin, args, opts).catch(() => null);
-    if (!missing(r)) { nodeBin = bin; return r; }
+    if (bin && await works(bin)) return (nodeBin = bin);
   }
-  return { code: 127, stdout: "", stderr: "node not found" };
+  return null;
+}
+// Runs a Node script. One that couldn't start (or got 127) is tried once more with Node
+// looked for again, unless `once`: a run that changes things is never started a second
+// time, and one that timed out or was stopped says so (code -1).
+async function node(args, { timeout = 30000, once = false } = {}) {
+  for (let i = 0; ; i++) {
+    const bin = await findNode();
+    if (!bin) return { code: 127, stdout: "", stderr: "node not found" };
+    const r = await exec(bin, args, { timeout }).catch((e) => ({ code: -1, stdout: "", stderr: `didn't finish: ${e?.message ?? e}` }));
+    if ((r.code !== -1 && r.code !== 127) || once || i > 0) return r;
+    nodeBin = null;
+  }
+}
+
+// agywipe.js with its JSON reply as `out` (null when it printed none).
+async function agywipe(args, timeout) {
+  const r = await node([`${appHome()}/mods/ws-agents/agywipe.js`, ...args], { timeout, once: args[0] !== "check" });
+  let out = null;
+  try { out = JSON.parse(r.stdout); } catch { out = null; }
+  return { ...r, out };
+}
+
+// A time as "21 Nov, 09:15" (this year) or "21 Nov 2025".
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function dayTime(ms) {
+  const d = new Date(ms);
+  const day = `${d.getDate()} ${MONTHS[d.getMonth()]}`;
+  if (d.getFullYear() !== new Date().getFullYear()) return `${day} ${d.getFullYear()}`;
+  return `${day}, ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
 // The context meter's color: plain, then a warning past 70%, then the blocked color past 85%.
@@ -201,6 +229,22 @@ function failure(r) {
   }
 }
 
+// Where a wipe's files went, in words (agywipe.js moves them into its backup folder).
+const filesWhere = (n, backup) => (n ? `its files are in ${tilde(backup)}/files (move that folder to the Trash once you're sure)` : "it had no files left to move");
+// What changed in Antigravity's lists, in words, from agywipe.js' `changed`.
+const changedWords = (changed) => (changed?.length ? `Antigravity's lists were partly changed (${changed.join(", ")})` : "Antigravity's lists weren't changed");
+
+// Toasts for what an `agywipe.js pending` run did.
+function pendingToasts(out) {
+  for (const c of out.cleaned ?? []) {
+    notify({ title: "Antigravity wipe finished", level: "success", body: `“${c.title}” is out of Antigravity's lists, and ${filesWhere(c.moved, c.backup)}.` });
+  }
+  for (const g of out.gaveUp ?? []) {
+    notify({ title: "An Antigravity wipe gave up", level: "error", timeout: 0,
+      body: `“${g.title}”: ${g.error}. ${changedWords(g.changed)}; its files weren't moved.${g.backup ? ` A copy and what it removed are in ${tilde(g.backup)} (agywipe.js restore puts them back).` : ""}` });
+  }
+}
+
 export default class Agents extends View {
   init(_props, cx) {
     const p = props();
@@ -221,6 +265,13 @@ export default class Agents extends View {
     this.pids = new Map();
     if (checking()) return;
     cx.spawn(async (cx) => this.readStats(cx));
+    // The package's settings (an edit in the file shows within a minute; Settings > Extras sets them
+    // at once), and an Antigravity wipe left to finish.
+    cx.spawn(async () => this.readSettings());
+    cx.timer.every(60000, (cx) => {
+      cx.spawn(async () => this.readSettings());
+      cx.spawn(async () => this.agyPending());
+    });
     cx.timer.every(STATS_WORKING, (cx) => {
       if (this.statsBusy) return;
       const list = this.statAgents();
@@ -228,6 +279,35 @@ export default class Agents extends View {
       const wait = list.some((a) => a.status === "working") ? STATS_WORKING : STATS_IDLE;
       if (key !== this.statsFor || Date.now() - this.statsAt >= wait - 500) cx.spawn(async (cx) => this.readStats(cx));
     });
+  }
+
+  // ~/.herdr/settings.jsonc into shared "workspaces.settings", when it differs from what's there.
+  async readSettings() {
+    const text = await readTextFile(`${home()}/${SETTINGS_FILE}`).catch(() => null);
+    const next = parseSettings(text);
+    if (JSON.stringify(next) !== JSON.stringify(shared("workspaces.settings") ?? null)) setShared("workspaces.settings", next);
+  }
+
+  // An Antigravity wipe left for when none runs (or one that failed, retried): agywipe.js
+  // does it once none runs and looks once more a minute later. A toast says when one
+  // finished, and when it gave up (after a few failed tries, or a week); a failure of the
+  // run itself shows once, not every minute.
+  async agyPending() {
+    if (this.agyBusy) return;
+    const pending = await readTextFile(`${home()}/.herdr/cache/agy-wiped.json`).catch(() => null);
+    if (!pending || !pending.includes('"ids"')) return;
+    this.agyBusy = true;
+    try {
+      const r = await agywipe(["pending", home()], 120000);
+      if (r.code !== 0 || !r.out) {
+        const why = String(r.stderr ?? "").trim().split("\n").pop() || `agywipe.js ended with ${r.code}`;
+        if (why !== this.agyError) notify({ title: "An Antigravity wipe couldn't go on", body: `${why}. It tries again each minute.`, level: "error" });
+        this.agyError = why;
+        return;
+      }
+      this.agyError = null;
+      pendingToasts(r.out);
+    } finally { this.agyBusy = false; }
   }
 
   // This computer's agents stats.js can read (another machine's records are there).
@@ -246,10 +326,10 @@ export default class Agents extends View {
       const args = [`${appHome()}/mods/ws-agents/stats.js`];
       for (const a of list) {
         const kind = kindOf(a);
-        // Which program runs there (to tell this Claude or Pi from one before it): asked
-        // again every minute. Antigravity goes by the launcher's note instead.
+        // Which program runs there (to tell this Claude or Pi from one before it, and
+        // whether an Antigravity's note is its own): asked again every minute.
         let p = this.pids.get(a.address);
-        if (kind !== "agy" && (!p || Date.now() - p.at > 60000)) {
+        if (!p || Date.now() - p.at > 60000) {
           const r = await hc(["get", a.address, "--json"]).catch(() => null);
           let pid = null;
           try { pid = JSON.parse(r?.stdout ?? "")?.foreground?.pid ?? null; } catch { pid = null; }
@@ -356,6 +436,8 @@ export default class Agents extends View {
     this.error = null;
     this.handle = cx.focus_handle();
     this.handle.focus();
+    // Antigravity's Wipe: which conversation it is and what stands in the way, before anything.
+    if (p.wipe?.kind === "agy") this.agyLookUp(p.wipe, cx);
     if (!p.send) return;
     this.sendIn = InputState.new({ value: "", placeholder: `What to tell ${p.send.name}` });
     this.sendIn.on("change", (_e, cx) => { this.error = null; cx.notify(); });
@@ -378,6 +460,7 @@ export default class Agents extends View {
       status, kind: menuKind(a.app ?? a.agent, a.program?.key), pinned: Boolean(a.pinned), top, focused: Boolean(a.focused),
       remote: a.address.includes("/"),
       session: s.session ?? null, file: s.file ?? null, cwd: s.cwd ?? pane?.cwd ?? a.cwd ?? null, cmd: s.cmd ?? null,
+      agyWipe: experimentOn(shared("workspaces.settings"), "antigravity-wipe"), agyFresh: s.fresh === true, pid: this.pids?.get(a.address)?.pid ?? null,
     };
   }
 
@@ -435,7 +518,7 @@ export default class Agents extends View {
       }
       case "wipe":
         done();
-        return openOverlay({ mod: "ws-agents", kind: "dialog", width: 480, height: 218, props: { wipe: f } });
+        return openOverlay({ mod: "ws-agents", kind: "dialog", width: 480, height: f.kind === "agy" ? 410 : 226, props: { wipe: f } });
     }
   }
 
@@ -546,18 +629,65 @@ export default class Agents extends View {
   }
 
   // Wipe: closes the agent and moves its conversation to the Trash (menufacts.js:
-  // wipeTargets()), so History and its agent's own resume no longer find it.
+  // wipeTargets()), so History and its agent's own resume no longer find it. Antigravity's
+  // shows which conversation it is (agywipe.js check), asks twice when the wipe takes more
+  // than the note's own conversation, and goes through agywipe.js.
   wipeDialog(t) {
     const f = props().wipe;
     const targets = wipeTargets(f);
+    const working = f.status === "working" ? "; it's working, so this also stops what it's doing" : "";
+    if (f.kind !== "agy") {
+      return this.dialogFrame(t, "agent-wipe", `Wipe ${f.name}?`, (cx) => this.doWipe(cx))
+        .child(div().pt(12).text_color(t.muted).child(`Closes it and moves its conversation to the Trash. History won't list it and it can't be resumed${working}.`))
+        .child(div().pt(10).text_size(11.5).text_color(t.dim).truncate().child(tilde(targets[0])))
+        .when(Boolean(this.error), (el) => el.child(div().pt(8).text_size(11.5).text_color(t.blocked).child(this.error)))
+        .child(div().flex_1())
+        .child(h_flex().pt(14).gap(8).justify_end()
+          .child(this.button(t, "agent-wipe-cancel", "Cancel", null, () => closeOverlay(props().overlay)))
+          .child(this.button(t, "agent-wipe-go", this.busy ? "Wiping…" : "Wipe", "danger", (_e, cx) => this.doWipe(cx))));
+    }
+    const c = this.agyCheck;
+    const kids = c ? c.tree.length - 1 : 0;
+    const facts = c
+      ? v_flex().mt(12).p(10).gap(3).rounded(8).bg(t.background).border_1().border_color(t.border).text_size(11.5)
+        .child(div().text_size(12.5).text_color(t.foreground).truncate().child(c.title || c.preview ? `“${c.title || c.preview}”` : "Untitled conversation"))
+        .child(div().text_color(t.muted).truncate().child([c.last ? `Last active ${dayTime(c.last)}` : "", kids ? `${kids} sub-agent conversation${kids === 1 ? "" : "s"} with it` : ""].filter(Boolean).join(" · ") || "Never used"))
+        .child(div().text_color(t.dim).truncate().child(c.root))
+      : div().mt(12).text_size(11.5).text_color(t.dim).child(this.agyLooking ? "Looking up the conversation…" : "");
+    const others = c?.running ? "Another Antigravity is running: nothing changes until every Antigravity has closed, then it finishes on its own (History hides it meanwhile)."
+      : c && c.running == null ? "It can't tell whether another Antigravity runs (ps didn't answer): nothing changes until it can, then it finishes on its own." : "";
+    const ask = this.agyConfirm && c ? [
+      c.confirm.includes("note") ? `This tab's note names one of its sub-agents (${c.id.slice(0, 8)}…), so the wipe takes the whole conversation it belongs to.` : "",
+      `It takes ${c.tree.length} conversations: this one and ${kids === 1 ? "its sub-agent" : `its ${kids} sub-agents`}${c.subs?.length ? ` (${c.subs.map((x) => x.title ? `“${x.title}”` : x.id.slice(0, 8)).join(", ")}${kids > c.subs.length ? ", …" : ""})` : ""}. Press Wipe all ${c.tree.length} to go on.`,
+    ].filter(Boolean).join(" ") : "";
+    const go = this.busy ? "Wiping…" : this.agyClosed ? "Try again" : this.agyConfirm && c ? `Wipe all ${c.tree.length}` : "Wipe";
     return this.dialogFrame(t, "agent-wipe", `Wipe ${f.name}?`, (cx) => this.doWipe(cx))
-      .child(div().pt(12).text_color(t.muted).child(`Closes it and moves its conversation to the Trash. History won't list it and it can't be resumed${f.status === "working" ? "; it's working, so this also stops what it's doing" : ""}.`))
-      .child(div().pt(10).text_size(11.5).text_color(t.dim).truncate().child(tilde(targets[0])))
+      .child(div().pt(12).text_color(t.muted).child(`Closes it, takes this conversation out of Antigravity's own lists and moves its files into ~/.herdr/trash, so History and /resume won't show it${working}. Experimental: what it removes is kept there too, and agywipe.js restore puts it back.`))
+      .child(facts)
+      .when(Boolean(ask) && !this.error, (el) => el.child(div().pt(8).text_size(11.5).text_color(t.ansi3).child(ask)))
+      .when(Boolean(others) && !this.error && !ask, (el) => el.child(div().pt(8).text_size(11.5).text_color(t.muted).child(others)))
+      .when(Boolean(this.hint) && !this.error, (el) => el.child(div().pt(8).text_size(11.5).text_color(t.muted).child(this.hint)))
       .when(Boolean(this.error), (el) => el.child(div().pt(8).text_size(11.5).text_color(t.blocked).child(this.error)))
       .child(div().flex_1())
       .child(h_flex().pt(14).gap(8).justify_end()
-        .child(this.button(t, "agent-wipe-cancel", "Cancel", null, () => closeOverlay(props().overlay)))
-        .child(this.button(t, "agent-wipe-go", this.busy ? "Wiping…" : "Wipe", "danger", (_e, cx) => this.doWipe(cx))));
+        .child(this.button(t, "agent-wipe-cancel", this.agyClosed ? "Close" : "Cancel", null, () => closeOverlay(props().overlay)))
+        .child(this.button(t, "agent-wipe-go", go, "danger", (_e, cx) => this.doWipe(cx))));
+  }
+
+  // agywipe.js check for the dialog: the conversation's root, title, last use and sub-agents,
+  // or why it can't be wiped (then Wipe does nothing).
+  agyLookUp(f, cx) {
+    this.agyCheck = null;
+    this.agyLooking = true;
+    cx.spawn(async (cx) => {
+      const r = await agywipe(["check", home(), agyDir(f) ?? "", f.session ?? "", ...(f.pid ? [String(f.pid)] : [])], 30000);
+      this.agyLooking = false;
+      this.hint = null;
+      if (r.code !== 0 || !r.out) this.error = `Can't wipe it: ${String(r.stderr ?? "").trim().split("\n").pop() || "agywipe.js failed"}.`;
+      else if (r.out.problems?.length) this.error = `Can't wipe it: ${r.out.problems.join("; ")}.`;
+      else this.agyCheck = r.out;
+      cx.notify();
+    });
   }
 
   doWipe(cx) {
@@ -565,12 +695,21 @@ export default class Agents extends View {
     const f = p.wipe;
     const targets = wipeTargets(f);
     if (this.busy || !targets.length) return;
+    if (f.kind === "agy") {
+      if (!this.agyCheck) {
+        if (this.agyLooking) { this.hint = "Still looking up the conversation: Wipe works once it's shown."; cx.notify(); }
+        return;
+      }
+      // More than the note's own conversation: the first press asks.
+      if (!this.agyClosed && this.agyCheck.confirm?.length && !this.agyConfirm) { this.agyConfirm = true; cx.notify(); return; }
+    }
     this.busy = true;
     this.error = null;
     cx.notify();
     const running = () => terminals().some((x) => x.address === f.address && x.state === "live");
     cx.spawn(async (cx) => {
       try {
+        if (f.kind === "agy") return await this.doWipeAgy(p, f, running, cx);
         // Ended first, so it can't write to its transcript again.
         if (running()) run("terminal.kill", { terminal: f.address });
         for (let i = 0; i < 40 && running(); i++) await exec("sleep", ["0.15"]);
@@ -587,6 +726,74 @@ export default class Agents extends View {
         cx.notify();
       }
     });
+  }
+
+  // Antigravity: checked again before it's closed (nothing is closed when that fails),
+  // then closed, then agywipe.js wipes once its processes (the family the check found)
+  // have ended. What each outcome says is what happened: a failure after the close keeps
+  // the dialog open with it, and Try again runs what the minute retry runs (`pending`),
+  // or the wipe again when nothing was recorded.
+  async doWipeAgy(p, f, running, cx) {
+    const stop = (msg, last) => { this.busy = false; this.error = msg; this.agyLast = last; cx.notify(); };
+    // Turned off in Extras since the menu opened: nothing happens.
+    if (!this.agyClosed && !experimentOn(shared("workspaces.settings"), "antigravity-wipe")) return stop("Nothing was changed: \"Wipe Antigravity conversations\" was turned off in Settings > Extras.");
+    const dir = agyDir(f);
+    const title = this.agyCheck.title || this.agyCheck.preview || "the conversation";
+    if (this.agyClosed && this.agyLast !== "refused") {
+      const r = await agywipe(["pending", home()], 120000);
+      const o = r.out;
+      if (r.code !== 0 || !o) return stop(`It didn't run: ${String(r.stderr ?? "").trim().split("\n").pop() || `agywipe.js ended with ${r.code}`}. It tries again each minute.`, "failed");
+      if (o.busy) return stop("Another wipe is running right now; try again in a moment.", "failed");
+      pendingToasts(o);
+      const root = this.agyCheck.root;
+      const e = o.entries?.[root];
+      if (o.cleaned?.some((x) => x.id === root) || e?.done) return closeOverlay(p.overlay);
+      if (o.gaveUp?.some((x) => x.id === root)) return closeOverlay(p.overlay);
+      if (o.left?.includes(root) && !e?.error) {
+        notify({ title: `Wiped ${f.name}, to finish later`, level: "success", body: `Nothing has changed yet: it finishes once every Antigravity has closed, and History hides “${title}” meanwhile.` });
+        return closeOverlay(p.overlay);
+      }
+      if (!e) { notify({ title: `${f.name}: nothing left to do`, level: "success", body: `“${title}” isn't waiting to be wiped any more.` }); return closeOverlay(p.overlay); }
+      return stop(`It still didn't finish: ${e.error ?? "it's waiting"}. It tries again each minute while no Antigravity runs, and says if it gives up.`, "failed");
+    }
+    // Its program now (it may have changed since the menu opened).
+    const got = await hc(["get", f.address, "--json"]).catch(() => null);
+    let pid = f.pid;
+    try { pid = JSON.parse(got?.stdout ?? "")?.foreground?.pid ?? pid; } catch { /* the menu's */ }
+    let family = this.agyFamily ?? [];
+    if (!this.agyClosed) {
+      const c = await agywipe(["check", home(), dir, f.session, ...(pid ? [String(pid)] : [])], 30000);
+      if (c.code !== 0 || !c.out) return stop(`Nothing was changed: ${String(c.stderr ?? "").trim().split("\n").pop() || "agywipe.js failed"}.`);
+      if (c.out.problems?.length) return stop(`Nothing was changed: ${c.out.problems.join("; ")}.`);
+      if (c.out.root !== this.agyCheck.root || c.out.tree.length !== this.agyCheck.tree.length) return stop("Nothing was changed: its conversation changed since this opened. Open Wipe again.");
+      family = this.agyFamily = c.out.family ?? [];
+      if (running()) run("terminal.kill", { terminal: f.address });
+      for (let i = 0; i < 40 && running(); i++) await exec("sleep", ["0.15"]);
+      if (running()) return stop("Nothing was changed: it's still running.");
+      if (f.pane && panes().some((x) => x.pane === f.pane)) run("pane.close", { pane: f.pane });
+      this.agyClosed = true;
+    }
+    const r = await agywipe(["wipe", home(), dir, f.session, String(pid ?? "-"), family.join(",")], 90000);
+    const o = r.out;
+    if (o?.state === "done") {
+      notify({ title: `Wiped ${f.name}`, level: "success",
+        body: `“${title}” is out of Antigravity's lists${o.tree.length > 1 ? `, with ${o.tree.length - 1} sub-agent conversation${o.tree.length === 2 ? "" : "s"}` : ""}, and ${filesWhere(o.moved?.length, o.backup)}. What it removed from the lists is kept there too.` });
+      return closeOverlay(p.overlay);
+    }
+    if (o?.state === "pending") {
+      const why = o.why === "closing" ? "Its Antigravity is still closing" : o.why === "unknown" ? "It can't tell whether another Antigravity runs (ps didn't answer)" : "Another Antigravity is running";
+      notify({ title: `Wiped ${f.name}, to finish later`, level: "success",
+        body: `${why}, so nothing has changed yet: History hides “${title}” now, and it leaves Antigravity's lists once that's over.` });
+      return closeOverlay(p.overlay);
+    }
+    if (o?.state === "refused") return stop(`It was closed, but nothing was wiped: ${o.error}.`, "refused");
+    if (o?.stage === "record") return stop(`It was closed, but nothing was wiped: the wipe couldn't be recorded (${o.error}). Antigravity's lists weren't changed.`, "refused");
+    if (o?.stage === "move") return stop(`It's out of Antigravity's lists, but some of its files weren't moved: ${o.error}. What it removed from the lists is in ${tilde(o.backup)}.`, "failed");
+    const parts = o ? changedWords(o.changed) : "Antigravity's lists may be partly changed";
+    const why = o?.error ?? (String(r.stderr ?? "").trim().split("\n").pop() || `agywipe.js ended with ${r.code}`);
+    const backup = o?.backup ? ` A copy of them and what it removed are in ${tilde(o.backup)}.` : " Any copy is in ~/.herdr/trash.";
+    const retry = o?.backup ? " It tries again each minute while no Antigravity runs, and says if it gives up." : "";
+    return stop(`It was closed, but the wipe didn't finish: ${why}. ${parts}, and its files weren't moved.${backup}${retry}`, o ? "failed" : "unknown");
   }
 
   sortMenu(t) {

@@ -41,10 +41,16 @@ cmp -s "$src/mods/ws-switcher/knobs.js" "$src/mods/ws-presets/knobs.js" || {
   exit 1
 }
 
+# Settings' Extras section and the Agents list read the package's settings (~/.herdr/settings.jsonc) by the same rules.
+cmp -s "$src/mods/ws-settings/settingsfacts.js" "$src/mods/ws-agents/settingsfacts.js" || {
+  echo "mods/ws-settings/settingsfacts.js and mods/ws-agents/settingsfacts.js differ: make them the same first" >&2
+  exit 1
+}
+
 mkdir -p "$dst/layouts"
 cp "$src/layouts/workspaces.json" "$dst/layouts/workspaces.json"
 
-for mod in ws-switcher ws-spaces ws-agents ws-board ws-worktrees ws-history ws-notes ws-presets ws-chrome ws-automations ws-tabs ws-new-menu ws-toast ws-status; do
+for mod in ws-switcher ws-spaces ws-agents ws-board ws-worktrees ws-history ws-notes ws-presets ws-chrome ws-automations ws-tabs ws-new-menu ws-toast ws-status ws-settings; do
   rm -rf "$dst/mods/$mod"
   mkdir -p "$dst/mods/$mod"
   (cd "$src/mods/$mod" && find . -type f ! -name jsconfig.json ! -name gpui-kit.d.ts ! -name '.*' ! -name '*.error') |

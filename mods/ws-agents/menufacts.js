@@ -5,7 +5,9 @@
 //   { address, name, pane, tab, space, status, kind, pinned, top, focused, remote,
 //     session, file, cwd, cmd }
 // kind: kindOf(); session, file, cwd, cmd: what stats.js read for it (its conversation's
-// id, transcript, folder, and the launcher's note of how it was started), when it knows.
+// id, transcript, folder, and the launcher's note of how it was started), when it knows;
+// agyWipe: the experiment "antigravity-wipe" is on (settingsfacts.js); agyFresh: stats.js
+// found the Antigravity's note to be the running process's (not one left by an earlier one).
 
 // What an agent is, by what it reports (OSC 7501 app), else by its program's key.
 const KINDS = { "claude-code": "claude", claude: "claude", codex: "codex", pi: "pi", agy: "agy", antigravity: "agy" };
@@ -42,7 +44,7 @@ export function menuItems(a) {
     ],
     [
       { id: "close", label: "Close session", icon: "mods/workspace-chrome/x.svg" },
-      forks && wipeTargets(a).length > 0 && { id: "wipe", label: "Wipe session…", icon: "mods/ws-agents/trash.svg", danger: true },
+      known && wipeTargets(a).length > 0 && { id: "wipe", label: "Wipe session…", icon: "mods/ws-agents/trash.svg", danger: true, ...(a.kind === "agy" ? { hint: "experimental" } : {}) },
     ],
   ];
   const out = [];
@@ -115,10 +117,21 @@ export function forkArgv(a) {
   return a.kind === "claude" ? [...base, "--resume", a.session, "--fork-session"] : [...base, "--fork", a.file || a.session];
 }
 
+// Antigravity's own folder, from its transcript's path (<dir>/brain/<id>/…).
+export function agyDir(a) {
+  const id = String(a.session ?? "");
+  const f = String(a.file ?? "");
+  const at = id ? f.indexOf(`/brain/${id}/`) : -1;
+  return at > 0 ? f.slice(0, at) : null;
+}
+
 // What a wipe moves to the Trash: the conversation's transcript and the folders the
 // agent keeps for it. Claude: <claude>/projects/<folder>/<id>.jsonl, the <id>/ folder
 // beside it (sub-agents, tool output), file-history/<id> and session-env/<id>. Pi: its
-// session file. Nothing when the transcript isn't plainly that conversation's.
+// session file. Antigravity, only with the experiment on and a fresh note: brain/<id>/,
+// conversations/<id>.db (and its -wal, -shm), presence/<id>.lock and annotations/<id>.pbtxt
+// (agywipe.js does the wipe itself: its root conversation and sub-agents too, out of
+// Antigravity's lists first). Nothing when the transcript isn't plainly that conversation's.
 export function wipeTargets(a) {
   const id = String(a.session ?? "");
   const f = String(a.file ?? "");
@@ -129,5 +142,11 @@ export function wipeTargets(a) {
     return [f, f.slice(0, -".jsonl".length), `${m[1]}/file-history/${id}`, `${m[1]}/session-env/${id}`];
   }
   if (a.kind === "pi") return f.endsWith(".jsonl") ? [f] : [];
+  if (a.kind === "agy") {
+    const dir = agyDir(a);
+    if (!a.agyWipe || !a.agyFresh || !dir) return [];
+    return [`${dir}/brain/${id}`, `${dir}/conversations/${id}.db`, `${dir}/conversations/${id}.db-wal`, `${dir}/conversations/${id}.db-shm`,
+      `${dir}/presence/${id}.lock`, `${dir}/annotations/${id}.pbtxt`];
+  }
   return [];
 }

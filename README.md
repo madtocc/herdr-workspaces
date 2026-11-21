@@ -112,6 +112,9 @@ the workspace: a pill in the tab bar of each of its spaces.
 - **Compactions**: a Claude Code, Pi or Antigravity conversation shows how many
   times it was compacted; opened, when each one was, how, how big the context
   was before and after, and what was in it at the end.
+- **Automations**, the header's other side: each automation run with its state
+  in words (running, needs you, finished, closed, quiet, missed), Go to while
+  its tab is open and Resume once it's closed.
 - It only reads what the agents already keep; nothing is copied or changed.
   It needs Node 20.6 or newer.
 
@@ -134,9 +137,6 @@ tab bar of each of the workspace's spaces.
 
 ### Automations
 
-- **Automations**, the header's other side: each automation run with its state
-  in words (running, needs you, finished, closed, quiet, missed), Go to while
-  its tab is open and Resume once it's closed.
 ![The Automations screen](previews/automations.png)
 
 An automation starts an agent by itself. You make one by saying what it should
@@ -204,6 +204,25 @@ own, where you can't watch it or type to it:
 None of them changes code. With the starter guide (see Install), Claude and
 Codex start one of these where they'd use their own subagent.
 
+### Settings, with Extras
+
+![Settings on its Extras section](previews/settings.png)
+
+The sidebar's Settings opens Herdr's own Settings window with one more section
+at the end, Extras: the package's own settings. Experimental features wait
+there, off until you turn them on, each saying why it's experimental (the
+first: wiping Antigravity conversations from the Agents list's menu), beside
+the package's switches (keep automations running while Herdr is closed, bring
+agents back after a restart, the Herdr guide for every agent). They're kept in
+`~/.herdr/settings.jsonc`, each with what it does in a comment above it.
+
+Herdr's sections are Herdr's: the package rebuilds its copy from Herdr's own
+file whenever Herdr updates it. The macOS menu's Settings… still opens Herdr's
+plain window; to have Cmd+, open this one, set `"cmd-,"` in the `global`
+section of your `~/.config/herdr-app/keys.json` to `"mod.open:ws-settings"`
+(or to `ws-switcher.settings/extras` to open it on Extras). Herdr then leaves
+that file to you: new default shortcuts in its updates are added by hand.
+
 ### And when you're away
 
 - **After a reboot or a logout**, the Claude and Antigravity agents you hadn't closed come back
@@ -218,7 +237,7 @@ Codex start one of these where they'd use their own subagent.
 Ask your agent to add this layout (Herdr's own guide, `~/.config/herdr-app/AGENTS.md`,
 says how), or by hand:
 
-1. Copy `layouts/workspaces.json` to `~/.config/herdr-app/layouts/` and the fourteen
+1. Copy `layouts/workspaces.json` to `~/.config/herdr-app/layouts/` and the fifteen
    folders in `mods/` to `~/.config/herdr-app/mods/` (rename them if a name is taken).
 2. For agent instructions from the + menu, put the launcher on your `PATH` and
    point `programs.json` at it. `herdr-ws-run` starts automations from other
@@ -306,7 +325,16 @@ agent from the Agents list's right-click menu: that Claude Code or Pi
 conversation's transcript and the folders Claude keeps for it under
 `~/.claude/`. That menu also types into an agent with `hc send` (Send a message,
 Compact), presses Esc there with `hc keys` (Interrupt) and puts a terminal or
-session id on the clipboard (`pbcopy`, `wl-copy` or `xclip`). The board's Worktree runs
+session id on the clipboard (`pbcopy`, `wl-copy` or `xclip`). Settings' Extras
+writes `~/.herdr/settings.jsonc`, and the switcher reads Herdr's own Settings
+window (`frame/settings/main.js` in Herdr's folder) to write its copy,
+`mods/ws-settings/main.js`. With its experiment turned on, wiping an Antigravity
+agent also edits Antigravity's own index files and prompt history in
+`~/.gemini/antigravity-cli` (a copy of each, and what it removed, goes to
+`~/.herdr/trash/` first, and the conversation's files go there too, until you
+move that folder to the Trash), and runs `ps` and `lsof` to see whether
+Antigravity runs or has it open; the Agents list runs `ps` once per Antigravity
+agent's process to tell which conversation it holds. The board's Worktree runs
 `git worktree add` on a new `task/…` branch; otherwise your repos aren't
 touched. It runs `sh` (editor, Trash, symlinked folders), `herdr-app do` (the
 board's and automations' new tabs) and, through the launcher, Start and
@@ -397,7 +425,7 @@ than 0.1.0's notes, so read them all). To hear about new versions, watch the
 repo on GitHub for releases (Watch → Custom → Releases).
 
 - **You copied the files as they are:** copy `layouts/workspaces.json` and the
-  fourteen folders in `mods/` again, and do what the new versions' notes say
+  fifteen folders in `mods/` again, and do what the new versions' notes say
   (a new script to link, say). Your workspaces, tasks, presets and automations
   live elsewhere and aren't touched.
 - **You or your agent changed them:** tell your agent "apply what's in this

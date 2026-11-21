@@ -15,7 +15,8 @@
 //   Pi           ~/.pi/agent/sessions/<folder>/<time>_<session>.jsonl
 //   Grok         ~/.grok/sessions/<folder>/<session>/summary.json
 //   OpenCode     ~/.local/share/opencode/opencode.db (its session table)
-//   Antigravity  ~/.gemini/antigravity-cli/conversation_summaries.db, each one's
+//   Antigravity  ~/.gemini/antigravity-cli/conversation_summaries.db (less any the Agents
+//                list's Wipe is still finishing: ~/.herdr/cache/agy-wiped.json), each one's
 //                brain/<id>/.system_generated/logs/transcript.jsonl, and for where it
 //                ran, the launcher's ~/.herdr/agy/*/*/AGENTS.md and its cache/last_conversations.json
 // and two of the launcher's own notes, so a conversation is resumed as it was started
@@ -260,8 +261,22 @@ async function scanAntigravity(out) {
   // The folder each conversation was last open in, as Antigravity keeps it (folder -> id).
   const lastIn = new Map();
   try { for (const [dir, id] of Object.entries(JSON.parse(fs.readFileSync(path.join(home, "cache", "last_conversations.json"), "utf8")))) lastIn.set(id, dir); } catch { /* none kept */ }
+  // Wiped from the Agents list and not finished yet (ws-agents/agywipe.js: it waits for
+  // every Antigravity to close, and looks once more after): left out meanwhile, with
+  // its sub-agents' conversations.
+  const wiped = new Set();
+  try {
+    const ids = JSON.parse(fs.readFileSync(path.join(HOME, ".herdr", "cache", "agy-wiped.json"), "utf8")).ids;
+    if (ids && typeof ids === "object") {
+      for (const [id, e] of Object.entries(ids)) {
+        wiped.add(id);
+        if (Array.isArray(e?.tree)) for (const t of e.tree) wiped.add(String(t));
+      }
+    }
+  } catch { /* none */ }
   for (const r of rows) {
     if (r.parent_conversation_id || Number(r.nesting_depth) > 0 || !/^[0-9A-Za-z-]+$/.test(String(r.conversation_id))) continue;
+    if (wiped.has(String(r.conversation_id))) continue;
     let uris = [];
     try { uris = JSON.parse(r.workspace_uris || "[]"); } catch { uris = []; }
     const cwd = agyCwd(uris, agyDir, readRules, lastIn.get(r.conversation_id));

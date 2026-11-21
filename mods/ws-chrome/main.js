@@ -2,7 +2,9 @@
 // "History", "Automations" and "Agent presets" rows above Settings. The last two
 // open the ws-automations and ws-presets screens for the shown workspace; History
 // asks the switcher (shared "workspaces.history") for the workspace's History
-// screen (ws-history). The brand row still uses Herdr's own workspace-chrome.
+// screen (ws-history). Settings opens our copy of Herdr's Settings window (ws-settings,
+// with the package's Extras as a section) instead of app.settings. The brand row still
+// uses Herdr's own workspace-chrome.
 
 import { View, div, image, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
@@ -53,7 +55,7 @@ export default class WorkspaceChrome extends View {
           mod: "ws-automations", kind: "dialog", width: 940, height: 680, props: { workspace: shared("workspaces.active") ?? null } })))
         .child(row("presets", "presets", "Agent presets", false, () => openOverlay({
           mod: "ws-presets", kind: "dialog", width: 900, height: 640, props: { workspace: shared("workspaces.active") ?? null } })))
-        .child(row("settings", "settings", "Settings", false, () => run("app.settings"))
+        .child(row("settings", "settings", "Settings", false, () => run("mod.open", { name: "ws-settings" }))
           .when(Boolean(updates().app.ready), el => el.child(collapsed ? ready.absolute().top(5).right(6) : ready)))
         .child(row("machine", "plus", "Add machine", true, () => run("mod.open", { name: "machine-add" })));
     }

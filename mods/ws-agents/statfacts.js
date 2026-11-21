@@ -198,3 +198,17 @@ export function agyFacts(scan) {
   };
 }
 
+
+// Whether a terminal's Antigravity note is its running process's, from that process's
+// `ps -o lstart=,args=` line (LC_ALL=C): the note was written since the process started
+// (one that ended in that terminal leaves its note behind, and there's no hook at its
+// end), or the process was started with that conversation (a restart's --conversation
+// <id>, whose note stays as it was). ps gives whole seconds, never later than the start.
+export function agyOwns(psLine, notedAt, id) {
+  const m = /^\s*(\w{3}\s+\w{3}\s+\d+\s+[\d:]+\s+\d{4})\s+(.*)$/.exec(String(psLine ?? ""));
+  if (!m || !id) return false;
+  const started = Date.parse(m[1]);
+  if (started > 0 && notedAt >= started) return true;
+  const args = ` ${m[2].trim()} `;
+  return args.includes(` --conversation ${id} `) || args.includes(` --conversation=${id} `);
+}
