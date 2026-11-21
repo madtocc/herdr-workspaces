@@ -32,6 +32,10 @@ another workspace needs you or finished.
   compacted (hover for the effort, tokens, last compaction and cost), and the
   status bar shows how much of your Claude and Antigravity plans you've used, as
   each one's own `/usage` gives it, with every limit and when it resets a click away.
+- **Agent menu**: right-click an agent in the Agents list to peek at it, send it
+  a message without going there, interrupt or compact it, fork its conversation
+  into a new tab, rename or pin it, copy its terminal or session id, close it, or
+  wipe it (close it and move its conversation to the Trash).
 
 ### A task board
 
@@ -264,7 +268,12 @@ on, that work is done by a Node process herdr-core holds as the terminal
 `herdr-ws-runner`: it writes `~/.herdr/runner/`, starts runs with `hc run`, ends
 old run terminals with `hc kill`, and reads herdr-core's terminal list, the app's
 layout document, `shared.json` and `programs.json`. Deleting a workspace, a task or an
-automation (after a confirmation) moves it to the Trash. The board's Worktree runs
+automation (after a confirmation) moves it to the Trash, and so does wiping an
+agent from the Agents list's right-click menu: that Claude Code or Pi
+conversation's transcript and the folders Claude keeps for it under
+`~/.claude/`. That menu also types into an agent with `hc send` (Send a message,
+Compact), presses Esc there with `hc keys` (Interrupt) and puts a terminal or
+session id on the clipboard (`pbcopy`, `wl-copy` or `xclip`). The board's Worktree runs
 `git worktree add` on a new `task/…` branch; otherwise your repos aren't
 touched. It runs `sh` (editor, Trash, symlinked folders), `herdr-app do` (the
 board's and automations' new tabs) and, through the launcher, Start and
