@@ -362,7 +362,8 @@ compactions and the cost, keeps where it stopped in each transcript in
 `~/.herdr/cache/agentstats.json`, asks `hc get` which program each agent's terminal runs, and
 removes its files of terminals gone two days. For the plan usage in the status bar it runs
 `claude -p /usage` (no session kept, hooks and MCP servers off) and `agy -p /usage` (no
-conversation kept, its log to `/dev/null`) every 10 minutes: each agent's own usage report,
+conversation kept, its log to `/dev/null`, and a do-nothing `open` first on its PATH so a signed-out
+Antigravity can't open a sign-in page) every 10 minutes: each agent's own usage report,
 which it asks Anthropic or Google for with your sign-in; the package never reads a sign-in
 itself. Until that answers, the status bar reads the limits from the status line
 files in `~/.herdr/agents/`. Notes writes each note to `~/.herdr/workspaces/<id>/notes/` as you

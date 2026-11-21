@@ -35,6 +35,18 @@ const PLANS = [
   },
 ];
 const USAGE_EVERY = 600000;
+// Signed out, `agy -p` opens a Google sign-in page in the browser (through `open`), so every
+// ask would open another tab. Each ask runs with a do-nothing `open` (and xdg-open, BROWSER)
+// first on its PATH, and a plan whose agent says it isn't signed in is left alone this long
+// (the panel's Refresh asks at once).
+const SIGNED_OUT_WAIT = 6 * 3600e3;
+const signedOut = (r) => /Authentication required|authentication failed|Please sign in/i.test(`${r?.stdout ?? ""}\n${r?.stderr ?? ""}`);
+const NO_BROWSER = `d=$(mktemp -d) || exit 126
+printf '#!/bin/sh\\nexit 1\\n' > "$d/open" && chmod +x "$d/open" && cp "$d/open" "$d/xdg-open"
+b=$1; shift
+PATH="$d:$PATH" BROWSER="$d/open" "$b" "$@" </dev/null
+rc=$?; rm -rf "$d"; exit $rc`;
+const run1 = (bin, args, opts) => exec("sh", ["-c", NO_BROWSER, "sh", bin, ...args], opts).catch(() => null);
 
 // Runs an agent's program: on the app's PATH, else where your shell finds it (taking
 // only the path from the shell's output, so whatever else it prints can't get in).
@@ -44,17 +56,17 @@ async function ask(name, args) {
   const missing = (r) => !r || r.code === 127;
   const known = bins.get(name);
   if (known) {
-    const r = await exec(known, args, opts).catch(() => null);
+    const r = await run1(known, args, opts);
     if (!missing(r)) return r;
     bins.delete(name);
   }
-  const direct = await exec(name, args, opts).catch(() => null);
+  const direct = await run1(name, args, opts);
   if (!missing(direct)) return direct;
   for (const flags of ["-lc", "-lic"]) {
     const found = await exec("sh", ["-c", 'exec "${SHELL:-/bin/sh}" "$1" "command -v $2"', "sh", flags, name], { timeout: 15000 }).catch(() => null);
     const bin = String(found?.stdout ?? "").split("\n").map((l) => l.trim()).filter((l) => l.startsWith("/")).pop();
     if (!bin) continue;
-    const r = await exec(bin, args, opts).catch(() => null);
+    const r = await run1(bin, args, opts);
     if (!missing(r)) { bins.set(name, bin); return r; }
   }
   return { code: 127, stdout: "", stderr: `${name} not found` };
@@ -78,13 +90,14 @@ export default class WorkspaceStatus extends View {
     if (isPanel() || checking()) return;
     this.data = { ...(shared("workspaces.usage") ?? {}) };
     this.asked = shared("workspaces.usage.ask")?.at ?? 0;
+    this.away = {}; // plan -> when its agent last said it isn't signed in
     cx.spawn(async () => { await this.readStatusLines(); await this.readUsage(); });
     cx.timer.every(USAGE_EVERY, (cx) => cx.spawn(async () => this.readUsage()));
     cx.timer.every(STATUS_EVERY, (cx) => cx.spawn(async () => this.readStatusLines()));
     // The panel's Refresh.
     cx.timer.every(1000, (cx) => {
       const at = shared("workspaces.usage.ask")?.at ?? 0;
-      if (at > this.asked) { this.asked = at; cx.spawn(async () => this.readUsage()); }
+      if (at > this.asked) { this.asked = at; cx.spawn(async () => this.readUsage(true)); }
     });
   }
 
@@ -96,12 +109,15 @@ export default class WorkspaceStatus extends View {
 
   // Every plan's rows from its agent's /usage, all at once. A failed ask keeps the last
   // rows; no such agent, or no plan (an API key), shows nothing for it.
-  async readUsage() {
+  async readUsage(refresh = false) {
     if (this.usageBusy) return;
     this.usageBusy = true;
     try {
       await Promise.all(PLANS.map(async (p) => {
+        if (!refresh && Date.now() - (this.away[p.key] ?? 0) < SIGNED_OUT_WAIT) return;
         const r = await ask(p.bin, p.args);
+        if (signedOut(r)) this.away[p.key] = Date.now();
+        else delete this.away[p.key];
         const rows = r.code === 0 ? p.parse(r.stdout) : null;
         const now = Date.now();
         if (rows?.length) this.publish(p.key, { rows, at: now, from: "usage", tried: now });
