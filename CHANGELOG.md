@@ -7,6 +7,8 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-21
+
 ### New
 - **Pick the agent, then its model.** In Agent presets, the editor has an Agent row above the command: a chip per installed agent. Clicking one switches the command to that agent and keeps what still fits: the launcher, flags the new agent also has (Claude's and Antigravity's `--dangerously-skip-permissions`), and words it doesn't know; the old agent's model and effort, and flags only it has, are left out, and a line under the chips names them. The Model and Effort chips then show the new agent's. Both screens now offer what each agent lists itself, asked once a day: Codex's catalog (with your config's models first), Pi's and OpenCode's models (long lists are found by typing part of a name), Grok's, and Antigravity's families as before; Gemini takes a typed model. OpenCode, Grok and Gemini get a Model row and no Effort row, since their help names no effort levels. In Automations the Agent chips also list the installed agents, a model chosen for one agent isn't carried to another, and the drafter is told each agent's models and levels. The three screens now share one table (`knobs.js`), so a new agent is added in one place. To update, copy `mods/ws-switcher`, `mods/ws-automations` and `mods/ws-presets` (`mods/ws-presets` has a new file, `knobs.js`).
 
