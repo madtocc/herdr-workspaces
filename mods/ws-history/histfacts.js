@@ -92,14 +92,19 @@ function field(text, name) {
 // The end of a Claude Code transcript: its title (one you gave it, else Claude's
 // own), the last thing asked, the model that answered last, and when.
 export function claudeTail(text) {
-  const out = { title: null, last: null, model: null, ended: null };
+  const out = { title: null, last: null, model: null, ended: null, context: null, replied: null };
   let custom = null, ai = null, summary = null;
   for (const o of lines(text)) {
     if (o.type === "custom-title" && o.customTitle) custom = o.customTitle;
     else if (o.type === "ai-title" && o.aiTitle) ai = o.aiTitle;
     else if (o.type === "summary" && o.summary) summary = o.summary;
     else if (o.type === "last-prompt" && o.lastPrompt) out.last = promptText(o.lastPrompt) ?? out.last;
-    else if (o.type === "assistant" && o.message?.model && o.message.model !== "<synthetic>") out.model = o.message.model;
+    else if (o.type === "assistant" && o.message?.model && o.message.model !== "<synthetic>") {
+      out.model = o.message.model;
+      const u = o.message.usage;
+      const used = u ? (Number(u.input_tokens) || 0) + (Number(u.cache_creation_input_tokens) || 0) + (Number(u.cache_read_input_tokens) || 0) : 0;
+      if (used > 0) { out.context = used; out.replied = time(o.timestamp); }
+    }
     else if (o.type === "user" && !o.isMeta && !o.toolUseResult) out.last = promptText(o.message?.content) ?? out.last;
     const t = time(o.timestamp);
     if (t) out.ended = t;
@@ -111,7 +116,7 @@ export function claudeTail(text) {
 // A pi session file: its first line names the session and its folder; messages
 // follow, each `{ type: "message", message: { role, content } }`.
 export function piFacts(head, tail = "") {
-  const out = { id: null, cwd: null, first: null, last: null, model: null, started: null, ended: null, name: null };
+  const out = { id: null, cwd: null, first: null, last: null, model: null, started: null, ended: null, name: null, context: null, replied: null };
   const read = (o, isHead) => {
     if (o.type === "session") { out.id ??= o.id ?? null; out.cwd ??= o.cwd ?? null; out.started ??= time(o.timestamp); }
     else if (o.type === "model_change" && o.modelId) out.model = o.modelId;
@@ -120,6 +125,10 @@ export function piFacts(head, tail = "") {
       const p = promptText(o.message.content);
       if (p && isHead && !out.first) out.first = p;
       if (p) out.last = p;
+    } else if (o.type === "message" && o.message?.role === "assistant" && o.message.usage) {
+      const u = o.message.usage;
+      const used = (Number(u.input) || 0) + (Number(u.cacheRead) || 0) + (Number(u.cacheWrite) || 0);
+      if (used > 0) { out.context = used; out.replied = time(o.timestamp); }
     }
     const t = time(o.timestamp);
     if (t) out.ended = t;
@@ -177,10 +186,14 @@ export function grokFacts(summary, first = "") {
 // first and last thing asked, the model that answered last, and when it started. A
 // prompt is the text inside <USER_REQUEST>; what hc types in is left out, as for the others.
 export function agyFacts(head, tail = "") {
-  const out = { first: null, last: null, model: null, started: null };
+  const out = { first: null, last: null, model: null, started: null, context: null, replied: null };
   const read = (o, isHead) => {
     if (isHead && !out.started) out.started = time(o.created_at);
     if (typeof o.model === "string" && o.model) out.model = o.model;
+    if (o.type === "PLANNER_RESPONSE") {
+      const used = (Number(o.input_tokens) || 0) + (Number(o.cache_read_tokens) || 0);
+      if (used > 0) { out.context = used; out.replied = time(o.created_at); }
+    }
     if (o.type !== "USER_INPUT" || o.source !== "USER_EXPLICIT") return;
     const m = /<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/.exec(String(o.content ?? ""));
     const p = m ? promptText(m[1]) : null;
@@ -348,6 +361,55 @@ export function matches(session, query, extra = "") {
   if (!words.length) return true;
   const hay = [session.title, session.first, session.last, session.cwd, session.branch, session.model, PROVIDERS[session.provider]?.name, extra].join("\n").toLowerCase();
   return words.every((w) => hay.includes(w));
+}
+
+// --- Compactions ---
+// What an agent writes into its transcript when it compacts the conversation (cuts the
+// earlier part and sums it up): the text scan.js looks for, and the record as
+// { at, trigger: "auto" | "manual" | null, pre, post } (tokens before and after, when
+// it says). Codex, Grok and OpenCode keep none this reads.
+export const COMPACTION = { claude: '"compact_boundary"', pi: '"type":"compaction"', antigravity: '"CHECKPOINT"' };
+const count = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : null);
+export function compactionOf(provider, line) {
+  let o; try { o = JSON.parse(line); } catch { return null; }
+  if (provider === "claude" && o.type === "system" && o.subtype === "compact_boundary") {
+    const m = o.compactMetadata ?? {};
+    return { at: time(o.timestamp), trigger: m.trigger === "manual" || m.trigger === "auto" ? m.trigger : null, pre: count(m.preTokens), post: count(m.postTokens) };
+  }
+  if (provider === "pi" && o.type === "compaction") return { at: time(o.timestamp), trigger: null, pre: count(o.tokensBefore), post: null };
+  if (provider === "antigravity" && o.type === "CHECKPOINT") return { at: time(o.created_at), trigger: "auto", pre: null, post: null };
+  return null;
+}
+
+// What's in the context at the end: the newest reply's, unless a compaction came after
+// it (then what that one kept, when it says).
+export function contextAtEnd(tail, last) {
+  if (last?.at && (!tail?.replied || last.at > tail.replied)) return last.post ?? null;
+  return tail?.context ?? null;
+}
+
+// "950", "48k", "1.2M" tokens.
+export function tokens(n) {
+  if (n == null) return "";
+  if (n < 1000) return String(Math.round(n));
+  if (n < 1e6) return `${Math.round(n / 1000)}k`;
+  return `${(n / 1e6).toFixed(1).replace(/\.0$/, "")}M`;
+}
+
+// One compaction, for the details: "20 Nov 14:02  ·  automatically  ·  375k → 45k".
+export function compactionText(c) {
+  const how = c.trigger === "manual" ? "by /compact" : c.trigger === "auto" ? "automatically" : "";
+  const size = c.pre ? (c.post ? `${tokens(c.pre)} → ${tokens(c.post)}` : `from ${tokens(c.pre)}`) : "";
+  return [c.at ? span(c.at, null) : "", how, size].filter(Boolean).join("  ·  ");
+}
+
+// The row's hover: "Compacted 3 times, last automatically, 375k → 45k".
+export function compactionsTip(n, last) {
+  if (!n) return "";
+  const how = last?.trigger === "manual" ? "by /compact" : last?.trigger === "auto" ? "automatically" : "";
+  const size = last?.pre ? (last.post ? `${tokens(last.pre)} → ${tokens(last.post)}` : `from ${tokens(last.pre)}`) : "";
+  const what = [how, size].filter(Boolean).join(", ");
+  return `Compacted ${n === 1 ? "once" : n === 2 ? "twice" : `${n} times`}${what ? `, last ${what}` : ""}`;
 }
 
 const DAY = 86400e3;

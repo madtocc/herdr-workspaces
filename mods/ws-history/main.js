@@ -20,6 +20,10 @@
 //
 // A conversation that's open in a terminal now says so and offers Go to instead:
 // resuming it would put two agents on one conversation.
+//
+// A Claude, Pi or Antigravity conversation that was compacted shows the compacted icon
+// and how often on its row; opened, it lists when (newest first), how, and how big the
+// context was before and after, and what's in the context at the end.
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input } from "gpui-base";
@@ -27,7 +31,7 @@ import {
   spaces, panes, terminals, run, theme, shared, setShared, props, closeOverlay,
   home, appHome, exec, notify, checking, knownAgents,
 } from "herdr";
-import { PROVIDERS, inWorkspace, whereOf, liveOf, keyOf, titleOf, matches, dayLabel, ago, span, modelLabel, resumeArgv, presetOf } from "./histfacts.js";
+import { PROVIDERS, inWorkspace, whereOf, liveOf, keyOf, titleOf, matches, dayLabel, ago, span, modelLabel, resumeArgv, presetOf, tokens, compactionText, compactionsTip } from "./histfacts.js";
 
 const PALETTE = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
 const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b7cf6", ansi2: "#3fae6a", ansi1: "#d9649a" };
@@ -407,6 +411,9 @@ export default class History extends View {
         .child(div().size(6).rounded_full().bg(status ? (t[status] ?? t.idle) : t.idle)).child("open")))
       .when(Boolean(s.gone && !at), (el) => el.child(tag("folder gone", t.dim, `${tilde(s.cwd)} isn't there any more, so it can't be resumed there`)))
       .when(Boolean(s.model) && !tight, (el) => el.child(div().flex_none().max_w(150).truncate().text_size(11.5).text_color(t.dim).child(modelLabel(s.model))))
+      .when(s.compactions > 0 && !tight, (el) => el.child(h_flex().id(`hc-${key}`).flex_none().gap(3).items_center().text_size(11.5).text_color(t.dim)
+        .tooltip(compactionsTip(s.compactions, s.compacted?.[s.compacted.length - 1]))
+        .child(svg("mods/ws-history/compacted.svg").size(11).text_color(t.dim)).child(String(s.compactions))))
       .child(div().w(30).flex_none().text_size(11.5).text_color(t.dim).child(ago(s.updated, now)))
       .child(h_flex().w(62).flex_none().justify_end()
         .when(Boolean(at), (el) => el.child(act(`go-${key}`, "Go to", () => this.goTo(at), "Show the terminal it's open in")))
@@ -428,6 +435,13 @@ export default class History extends View {
       .when(Boolean(s.last), (el) => el.child(line("Last asked", s.last)))
       .child(line("Folder", `${tilde(s.cwd)}${s.branch ? `  (${s.branch})` : ""}${s.gone ? "  ·  gone" : ""}`))
       .child(line("When", span(s.started, s.updated)))
+      .when(s.context != null, (el) => el.child(line("Context", `${tokens(s.context)} tokens at the end`)))
+      .when(s.compactions > 0, (el) => el.child(h_flex().gap(10).items_start()
+        .child(div().w(84).flex_none().text_color(t.dim).child("Compacted"))
+        .child(v_flex().flex_1().min_w(0).gap(3).text_color(t.muted)
+          .children([...(s.compacted ?? [])].reverse().slice(0, 5).map((c) => div().child(compactionText(c))))
+          .when(s.compactions > Math.min(5, s.compacted?.length ?? 0), (el) => el.child(div().text_color(t.dim)
+            .child(`${s.compactions === 1 ? "Once" : `${s.compactions} times`} in all`))))))
       .when(Boolean(at), (el) => el.child(line("Open in", at)))
       .when(!s.gone && !at, (el) => el.child(line("Resume runs", argv.map((w) => (quote(w) === w ? tilde(w) : quote(w))).join(" "))));
   }

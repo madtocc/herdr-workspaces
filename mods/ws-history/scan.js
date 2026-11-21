@@ -25,11 +25,13 @@
 //
 // A transcript can be many megabytes, so only its first and last pieces are read,
 // and what they said is kept in ~/.herdr/cache/history/index.json until the file changes.
+// Its compactions (Claude, Pi, Antigravity) are looked for in the whole file, once:
+// after that only what a transcript gained is read, since they only grow.
 
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { claudeHead, claudeTail, piFacts, codexRow, opencodeRow, grokFacts, agyFacts, agyCwd, agyRow, clean, samePrompt, inside, PROVIDERS, titleOf, ago } from "./histfacts.js";
+import { claudeHead, claudeTail, piFacts, codexRow, opencodeRow, grokFacts, agyFacts, agyCwd, agyRow, clean, samePrompt, inside, PROVIDERS, titleOf, ago, COMPACTION, compactionOf, contextAtEnd } from "./histfacts.js";
 
 // node:sqlite says it's experimental on every import; nobody reads that here.
 process.removeAllListeners("warning");
@@ -61,21 +63,59 @@ const stat = (file) => { try { return fs.statSync(file); } catch { return null; 
 // What a file said the last time it was read, while it hasn't changed since.
 const cacheFile = path.join(HOME, ".herdr", "cache", "history", "index.json");
 let cache = {};
-try { const c = JSON.parse(fs.readFileSync(cacheFile, "utf8")); if (c.v === 3) cache = c.files ?? {}; } catch { cache = {}; }
+try { const c = JSON.parse(fs.readFileSync(cacheFile, "utf8")); if (c.v === 4) cache = c.files ?? {}; } catch { cache = {}; }
 const kept = {};
 let dirty = false;
+// read(old) gets what was kept before; a `_k` it returns (compactions()) is kept beside the row.
 function cached(file, st, read) {
   const old = cache[file];
   if (old && old.m === st.mtimeMs && old.s === st.size) { kept[file] = old; return old.row; }
   let row = null;
-  try { row = read(); } catch { row = null; }
-  kept[file] = { m: st.mtimeMs, s: st.size, row };
+  try { row = read(old); } catch { row = null; }
+  const k = row?._k ?? null;
+  if (row) delete row._k;
+  kept[file] = k ? { m: st.mtimeMs, s: st.size, row, k } : { m: st.mtimeMs, s: st.size, row };
   dirty = true;
   return row;
 }
 
+// Every compaction in a transcript: { n, list (the newest KEEP), off (read up to) }.
+// When the file only grew since `old` read it, it reads on from there.
+const CHUNK = 8 << 20, KEEP = 20;
+function compactions(file, st, provider, old) {
+  const needle = Buffer.from(COMPACTION[provider]);
+  const prev = old?.k && old.k.off <= st.size ? old.k : { n: 0, list: [], off: 0 };
+  const out = { n: prev.n, list: [...prev.list], off: prev.off };
+  const fd = fs.openSync(file, "r");
+  try {
+    let pos = prev.off, carry = Buffer.alloc(0);
+    while (pos < st.size) {
+      const len = Math.min(CHUNK, st.size - pos);
+      const buf = Buffer.alloc(len);
+      const got = fs.readSync(fd, buf, 0, len, pos);
+      if (got <= 0) break;
+      pos += got;
+      const data = carry.length ? Buffer.concat([carry, buf.subarray(0, got)]) : buf.subarray(0, got);
+      const nl = data.lastIndexOf(10);
+      if (nl < 0) { carry = data; continue; }
+      // Only whole lines: the rest waits for the next piece (or the next read).
+      for (let i = data.indexOf(needle); i >= 0 && i < nl; i = data.indexOf(needle, i)) {
+        const from = data.lastIndexOf(10, i) + 1, to = data.indexOf(10, i);
+        const c = compactionOf(provider, data.toString("utf8", from, to));
+        if (c) { out.n += 1; out.list.push(c); if (out.list.length > KEEP) out.list.shift(); }
+        i = to + 1;
+      }
+      carry = data.subarray(nl + 1);
+      out.off = pos - carry.length;
+    }
+  } finally { fs.closeSync(fd); }
+  return out;
+}
+// What a row says about them: how many, the newest KEEP, and what's in the context at the end.
+const compactFields = (k, tail) => ({ compactions: k.n, compacted: k.list, context: contextAtEnd(tail, k.list[k.list.length - 1]), _k: k });
+
 // --- Claude Code ---
-function claudeRow(file, st, id) {
+function claudeRow(file, st, id, old) {
   const fd = fs.openSync(file, "r");
   try {
     let text = piece(fd, 0, Math.min(HEAD, st.size));
@@ -90,6 +130,7 @@ function claudeRow(file, st, id) {
       last: samePrompt(head.first, tail.last) ? "" : clean(tail.last, 240),
       model: tail.model ?? "", branch: head.branch ?? "", started: head.started ?? st.birthtimeMs, updated: tail.ended ?? st.mtimeMs,
       via: head.entry === "claude-desktop" ? "app" : "", headless: head.entry === "sdk-cli",
+      ...compactFields(compactions(file, st, "claude", old), tail),
     };
   } finally { fs.closeSync(fd); }
 }
@@ -102,14 +143,14 @@ function scanClaude(out) {
       const file = path.join(root, d.name, f.name);
       const st = stat(file);
       if (!st || st.mtimeMs < since) continue;
-      const row = cached(file, st, () => claudeRow(file, st, f.name.slice(0, -6)));
+      const row = cached(file, st, (old) => claudeRow(file, st, f.name.slice(0, -6), old));
       if (row && (!row.headless || flag("--headless"))) out.push(row);
     }
   }
 }
 
 // --- Pi ---
-function piRow(file, st) {
+function piRow(file, st, old) {
   const fd = fs.openSync(file, "r");
   try {
     let text = piece(fd, 0, Math.min(HEAD, st.size));
@@ -123,6 +164,7 @@ function piRow(file, st) {
       provider: "pi", id, file, cwd: facts.cwd, title: clean(facts.name, 120), first: clean(facts.first, 240),
       last: samePrompt(facts.first, facts.last) ? "" : clean(facts.last, 240), model: facts.model ?? "", branch: "",
       started: facts.started ?? st.birthtimeMs, updated: facts.ended ?? st.mtimeMs, via: "",
+      ...compactFields(compactions(file, st, "pi", old), facts),
     };
   } finally { fs.closeSync(fd); }
 }
@@ -135,7 +177,7 @@ function scanPi(out) {
       const file = path.join(root, d.name, f.name);
       const st = stat(file);
       if (!st || st.mtimeMs < since) continue;
-      const row = cached(file, st, () => piRow(file, st));
+      const row = cached(file, st, (old) => piRow(file, st, old));
       if (row) out.push(row);
     }
   }
@@ -225,11 +267,14 @@ async function scanAntigravity(out) {
     const cwd = agyCwd(uris, agyDir, readRules, lastIn.get(r.conversation_id));
     const log = path.join(home, "brain", r.conversation_id, ".system_generated", "logs", "transcript.jsonl");
     const st = stat(log);
-    const facts = st ? cached(log, st, () => {
+    const facts = st ? cached(log, st, (old) => {
       const fd = fs.openSync(log, "r");
-      try { return agyFacts(piece(fd, 0, Math.min(HEAD, st.size)), st.size > HEAD ? piece(fd, Math.max(0, st.size - TAIL), TAIL) : ""); } finally { fs.closeSync(fd); }
+      let f;
+      try { f = agyFacts(piece(fd, 0, Math.min(HEAD, st.size)), st.size > HEAD ? piece(fd, Math.max(0, st.size - TAIL), TAIL) : ""); } finally { fs.closeSync(fd); }
+      return { ...f, ...compactFields(compactions(log, st, "antigravity", old), f) };
     }) : null;
     const row = agyRow(r, facts ?? {}, cwd);
+    if (row && facts) Object.assign(row, { compactions: facts.compactions, compacted: facts.compacted, context: facts.context });
     if (row && (!row.headless || flag("--headless"))) out.push(row);
   }
 }
@@ -290,7 +335,7 @@ const rows = [...live, ...lost].sort((a, b) => b.updated - a.updated).map((s) =>
 if (dirty || Object.keys(kept).length !== Object.keys(cache).length) {
   try {
     fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
-    fs.writeFileSync(`${cacheFile}.${process.pid}.tmp`, JSON.stringify({ v: 3, files: kept }));
+    fs.writeFileSync(`${cacheFile}.${process.pid}.tmp`, JSON.stringify({ v: 4, files: kept }));
     fs.renameSync(`${cacheFile}.${process.pid}.tmp`, cacheFile);
   } catch { /* the next read parses them again */ }
 }

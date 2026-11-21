@@ -27,6 +27,11 @@ another workspace needs you or finished.
 - **Instructions**: a workspace's `AGENTS.md` goes to the agents you start
   there (Claude Code, Codex, Antigravity and Pi). A `BRIEF.md` beside it, where the work stands today, goes with it, and
   `~/.herdr/AGENTS.md` is a guide for the agents of every workspace.
+- **Agent numbers**: a Claude Code, Pi or Antigravity agent's row in the Agents
+  list also shows its model, how full its context is and how many times it was
+  compacted (hover for the effort, tokens, last compaction and cost), and the
+  status bar shows how much of your Claude and Antigravity plans you've used, as
+  each one's own `/usage` gives it, with every limit and when it resets a click away.
 
 ### A task board
 
@@ -95,6 +100,9 @@ the workspace: a pill in the tab bar of each of its spaces.
   twice.
 - **This workspace or everywhere**, a chip per agent, and search across titles,
   prompts, folders and models.
+- **Compactions**: a Claude Code, Pi or Antigravity conversation shows how many
+  times it was compacted; opened, when each one was, how, how big the context
+  was before and after, and what was in it at the end.
 - It only reads what the agents already keep; nothing is copied or changed.
   It needs Node 20.6 or newer.
 
@@ -137,11 +145,20 @@ workspace, managed in the Agent presets screen (open it from the sidebar
 footer), and they start from the tab bar's + menu, a card's Start or an
 automation.
 
-`examples/presets/` has seven to start from. Four are the usual roles: an
+`examples/presets/` has nine to start from. Five are the usual roles: an
 implementer, a reviewer, a watcher that can't push or write to GitHub (for
-automations that only look), and an orchestrator that splits a task across
-helper agents with herdr-core's `hc`. Its helpers show under it in the Agents
-list, and a click on one opens it as a tab.
+automations that only look), an orchestrator that splits a task across helper
+agents with herdr-core's `hc`, and a foreman for when Claude's safety check
+keeps cutting its helpers' replies. A helper shows under its orchestrator or
+foreman in the Agents list, and a click on one opens it as a tab.
+
+A **foreman** runs on Pi with a non-Claude model (an uncensored one by default),
+cuts the work into steps of one or two tool calls, and gives each to a fresh
+**hand** worker. It reads every stop, resumes the smallest missing step, halves
+it if it is stopped again, and does it itself after a third. It also takes
+Claude's "switch to Opus" offer for you. A **hand** works in Sonnet at low
+effort and keeps its answer to a line or two; **hand-strong** is the same on Opus
+at high effort, for a step Sonnet got wrong.
 
 The other three are for what an agent would otherwise hand to a subagent of its
 own, where you can't watch it or type to it:
@@ -169,7 +186,7 @@ Codex start one of these where they'd use their own subagent.
 Ask your agent to add this layout (Herdr's own guide, `~/.config/herdr-app/AGENTS.md`,
 says how), or by hand:
 
-1. Copy `layouts/workspaces.json` to `~/.config/herdr-app/layouts/` and the twelve
+1. Copy `layouts/workspaces.json` to `~/.config/herdr-app/layouts/` and the thirteen
    folders in `mods/` to `~/.config/herdr-app/mods/` (rename them if a name is taken).
 2. For agent instructions from the + menu, put the launcher on your `PATH` and
    point `programs.json` at it. `herdr-ws-run` starts automations from other
@@ -213,6 +230,9 @@ says how), or by hand:
      (`--permission-mode auto` in their commands), so a helper never waits for
      someone to answer a prompt. If you can't use auto mode, change that word
      in Agent presets;
+   - the foreman's command runs `pi` on the uncensored model
+     `deepseek-v4.1-flash-uncensored`. Have `pi` set up with it, or change its
+     `--model` in Agent presets to another non-Claude model you have;
    - automations need no copying: the Automations screen lists the ready-made
      ones (`mods/ws-automations/starters/`), and Create adds the one you open.
      They're written for the `implementer` and `reviewer` presets;
@@ -222,8 +242,10 @@ says how), or by hand:
      `~/.herdr/AGENTS.md` and opens it. The switch beside it turns it off.
 
 **What it touches:** it reads `~/.herdr/workspaces` and the folders of
-each workspace's root. Two of the ready-made automations (`issue-to-pr`,
-`main-is-red`) tell their agent to make git worktrees under
+each workspace's root. The `foreman` preset writes its plan under
+`~/.herdr/scratch/` and starts `hand` terminals with `hc run`; those helpers
+edit the folders they are given, by their own tasks. Two of the ready-made
+automations (`issue-to-pr`, `main-is-red`) tell their agent to make git worktrees under
 `~/.herdr/worktrees/` and to push branches and open pull requests with your
 `gh` login; two have a check that runs `git log` and `gh` in the workspace's
 folders, and `morning-review`'s also runs `git fetch` in each repo. It writes `~/.herdr/workspaces/.index`, a new
@@ -253,11 +275,27 @@ deletes its folder with `git worktree remove`; the branch stays. History reads t
 conversations your agents keep on this computer (`~/.claude/projects`, `~/.codex/state_*.sqlite`,
 `~/.pi/agent/sessions`, `~/.grok/sessions`, `~/.local/share/opencode/opencode.db`,
 `~/.gemini/antigravity-cli`): titles, the
-first and last thing asked, folder, branch and model, never the rest, and it changes nothing there.
+first and last thing asked, folder, branch, model and the newest reply's token counts, and in Claude's,
+Pi's and Antigravity's transcripts the lines that record a compaction (the whole file once, then
+only what it gained), never the rest, and it changes nothing there.
 It runs `node` (and `sqlite3` when Node is older than 22.13) to read them, keeps what it read in
 `~/.herdr/cache/history/index.json`, and starts your agent with its resume command when you click
 Resume. With restart resume on, the launcher's hook also notes each Claude session's start command
-in `~/.herdr/resume/started`. Nothing it reads leaves the computer. On its first run it makes
+in `~/.herdr/resume/started`. Nothing it reads leaves the computer. The Agents list's numbers
+come from the same places, read by `node` every few seconds while an agent works: what Claude
+Code hands its status line, which `herdr-ws-statusline` keeps in `~/.herdr/agents/<core>/`
+(the launcher sets it as the status line, in that session's `--settings`, where you have none),
+Claude's `~/.claude/sessions/<pid>.json` (which session a running Claude is) and its transcript,
+the file the launcher's Pi extension writes there, and Antigravity's transcript; the launcher's
+restart note says which. It reads only the newest reply's model and token counts, the
+compactions and the cost, keeps where it stopped in each transcript in
+`~/.herdr/cache/agentstats.json`, asks `hc get` which program each agent's terminal runs, and
+removes its files of terminals gone two days. For the plan usage in the status bar it runs
+`claude -p /usage` (no session kept, hooks and MCP servers off) and `agy -p /usage` (no
+conversation kept, its log to `/dev/null`) every 10 minutes: each agent's own usage report,
+which it asks Anthropic or Google for with your sign-in; the package never reads a sign-in
+itself. Until that answers, the status bar reads the limits from the status line
+files in `~/.herdr/agents/`. On its first run it makes
 the Scratch workspace (`~/.herdr/workspaces/scratch/`); New scratch space makes folders in
 `~/.herdr/scratch/`, and there it deletes empty ones nobody is in (`rmdir`) and moves ones
 with files to the Trash after 7 days unused, unless they have a `.keep` file. It looks at
@@ -301,7 +339,8 @@ and, for a change, the automation as it stands.
 
 Built for Herdr 0.1.14; `ws-spaces`, `ws-agents`, `ws-tabs`, `ws-new-menu` and
 `ws-chrome` are copies of that version's `spaces`, `agents`, `tabs`, `new-menu`
-and `workspace-chrome`. `ws-toast` is a copy of 0.1.16's `toast`.
+and `workspace-chrome`. `ws-toast` and `ws-status` are copies of 0.1.16's `toast`
+and `workspace-status`.
 
 ## Updating
 
@@ -311,7 +350,7 @@ than 0.1.0's notes, so read them all). To hear about new versions, watch the
 repo on GitHub for releases (Watch → Custom → Releases).
 
 - **You copied the files as they are:** copy `layouts/workspaces.json` and the
-  twelve folders in `mods/` again, and do what the new versions' notes say
+  thirteen folders in `mods/` again, and do what the new versions' notes say
   (a new script to link, say). Your workspaces, tasks, presets and automations
   live elsewhere and aren't touched.
 - **You or your agent changed them:** tell your agent "apply what's in this
@@ -321,7 +360,7 @@ repo on GitHub for releases (Watch → Custom → Releases).
 ## License
 
 Apache License 2.0. `ws-spaces`, `ws-agents`, `ws-tabs`, `ws-new-menu`,
-`ws-chrome` and `ws-toast` are modified copies of Herdr's own mods, also Apache 2.0; see `NOTICE`.
+`ws-chrome`, `ws-toast` and `ws-status` are modified copies of Herdr's own mods, also Apache 2.0; see `NOTICE`.
 
 ## Working on it
 
