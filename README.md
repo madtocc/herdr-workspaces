@@ -51,6 +51,9 @@ workspace, and it opens even when the workspace has no spaces.
 - **Start** on a card starts an agent on its task, in the repo or in a fresh git
   worktree, with the preset you pick. The card then shows that agent's live
   status, and Go to takes you to it.
+- **Start with…** beside it picks, for that one start, another preset or agent,
+  another folder and the first message (Start's own, to edit), and starts the
+  card the same way.
 - **A card follows its pull request.** It shows whether checks fail, changes are
   requested, it conflicts or it's ready to merge, tells the card's agent when a
   check fails or a review arrives, and moves to the last column when it merges.
@@ -111,6 +114,23 @@ the workspace: a pill in the tab bar of each of its spaces.
   was before and after, and what was in it at the end.
 - It only reads what the agents already keep; nothing is copied or changed.
   It needs Node 20.6 or newer.
+
+### Notes
+
+![The Notes screen](previews/notes.png)
+
+The **notes** button beside the board button (or "Notes" in the + menu) keeps a
+workspace's rough ideas, the ones you don't want to start yet. A note is just
+writing: its first line is its title, and it's saved as you type, one markdown
+file each in the workspace's `notes/` folder. Like the board it's a pill in the
+tab bar of each of the workspace's spaces.
+
+- **Move to the board** when it's ready to be work: it becomes a card in the
+  first column and leaves Notes (the note goes to the Trash), so work waits in
+  one place and starts from the card.
+- **Search**, newest edited first, and Delete moves a note to the Trash.
+- An agent can add one too ("note this for later"), and a note an agent or an
+  editor changes shows as it is now, unless you're typing in it.
 
 ### Automations
 
@@ -198,7 +218,7 @@ Codex start one of these where they'd use their own subagent.
 Ask your agent to add this layout (Herdr's own guide, `~/.config/herdr-app/AGENTS.md`,
 says how), or by hand:
 
-1. Copy `layouts/workspaces.json` to `~/.config/herdr-app/layouts/` and the thirteen
+1. Copy `layouts/workspaces.json` to `~/.config/herdr-app/layouts/` and the fourteen
    folders in `mods/` to `~/.config/herdr-app/mods/` (rename them if a name is taken).
 2. For agent instructions from the + menu, put the launcher on your `PATH` and
    point `programs.json` at it. `herdr-ws-run` starts automations from other
@@ -317,7 +337,9 @@ removes its files of terminals gone two days. For the plan usage in the status b
 conversation kept, its log to `/dev/null`) every 10 minutes: each agent's own usage report,
 which it asks Anthropic or Google for with your sign-in; the package never reads a sign-in
 itself. Until that answers, the status bar reads the limits from the status line
-files in `~/.herdr/agents/`. On its first run it makes
+files in `~/.herdr/agents/`. Notes writes each note to `~/.herdr/workspaces/<id>/notes/` as you
+type (a new note's file is renamed while its first line is being written) and a task file from
+Move to the board; that and Delete move the note to the Trash. On its first run it makes
 the Scratch workspace (`~/.herdr/workspaces/scratch/`); New scratch space makes folders in
 `~/.herdr/scratch/`, and there it deletes empty ones nobody is in (`rmdir`) and moves ones
 with files to the Trash after 7 days unused, unless they have a `.keep` file. It looks at
@@ -327,7 +349,7 @@ worktree scripts (`~/.herdr/workspaces/<id>/worktrees.json`) are shell lines Her
 runs as you: setup in a new worktree the board makes, archive before a removal.
 Like a check, only a line you saved or allowed in the screen runs
 (`~/.herdr/workspaces/.worktree-scripts.json`). The launcher reads `~/.herdr/AGENTS.md`, your global guide, and `~/.herdr/guide/switch`, which the Presets screen's guide switch writes; the screen's Write one creates the guide from the starter and opens it in your editor. The launcher lets Claude, Codex and Antigravity read and edit
-the workspace's root, its folders elsewhere and its `tasks` folder; Claude gets Herdr's own folders in that one session's `--settings`, and no settings file is written. For Antigravity it writes the instructions as a rules file under `~/.herdr/agy/`, gives Antigravity that folder, and removes the folders there that no launch has used for 90 days. Pi takes no folders, so the launcher names them in Pi's instructions, and passes your `~/.pi/agent/APPEND_SYSTEM.md`, when you have one, along with them. Automations watch the folders a files automation
+the workspace's root, its folders elsewhere and its `tasks` and `notes` folders; Claude gets Herdr's own folders in that one session's `--settings`, and no settings file is written. For Antigravity it writes the instructions as a rules file under `~/.herdr/agy/`, gives Antigravity that folder, and removes the folders there that no launch has used for 90 days. Pi takes no folders, so the launcher names them in Pi's instructions, and passes your `~/.pi/agent/APPEND_SYSTEM.md`, when you have one, along with them. Automations watch the folders a files automation
 names, read calls `herdr-ws-run` leaves in `~/.herdr/workspaces/.inbox` (and
 delete them), and close an automation's older run tabs once their agent is done.
 An automation's `check:` is a shell command Herdr runs by itself, as you, in the
@@ -375,7 +397,7 @@ than 0.1.0's notes, so read them all). To hear about new versions, watch the
 repo on GitHub for releases (Watch → Custom → Releases).
 
 - **You copied the files as they are:** copy `layouts/workspaces.json` and the
-  thirteen folders in `mods/` again, and do what the new versions' notes say
+  fourteen folders in `mods/` again, and do what the new versions' notes say
   (a new script to link, say). Your workspaces, tasks, presets and automations
   live elsewhere and aren't touched.
 - **You or your agent changed them:** tell your agent "apply what's in this

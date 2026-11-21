@@ -22,6 +22,13 @@
 //
 // The same mod opens its task dialog: props { dialog: "task", workspace, task? , status? }.
 //
+// Start with… beside a card's Start opens its other dialog, props { dialog: "start",
+// workspace, task, owner }: who runs it (the workspace's presets and the installed
+// agents), in which folder, in a new worktree or not, and the first message (Start's
+// own, editable). The dialog's Start hands that to the board copy that opened it
+// (shared "workspaces.board.start", `owner` being that copy), which runs its own
+// start() with those as overrides (startfacts.js), so the card gets what Start gives it.
+//
 // Tasks | GitHub in the header switches to the workspace's GitHub project board
 // ("board": { "github": "<its link>" }, which the view's own link box writes): its
 // columns and items, read with your gh login (`gh api graphql`), nothing written.
@@ -30,14 +37,15 @@
 // (the board item's id); the switcher then keeps that card current (ghboard.js) and
 // publishes its status as shared "workspaces.github". ghfacts.js has the rules.
 
-import { View, div, svg } from "gpui-kit";
+import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
 import {
-  spaces, panes, agents, terminals, run, theme, shared, props, openOverlay, closeOverlay,
+  spaces, panes, agents, terminals, run, theme, shared, setShared, props, openOverlay, closeOverlay, window,
   home, watchFolder, readTextFile, writeTextFile, exec, notify, knownAgents, checking,
 } from "herdr";
 import * as fs from "fs/promises";
 import { setUp } from "./treescripts.js";
+import { programOf, startChoices, firstPick, overOf, whoStarts, firstMessage } from "./startfacts.js";
 import {
   BOARD_QUERY, itemsQuery, parseBoard, repoOfRemote, shape, boardFrom, columnsOf, filterItems, reposOf, doneLike, shortRepo, refOf, whoOf,
   taskOf, takeColumn, taskBody, taskFields, withBoardLink, ago, ghError, ORDERS, sortItems, age, FRESH, keptText, keptBoard,
@@ -48,6 +56,7 @@ const PRIORITY = { high: 3, medium: 2, low: 1 };
 const PALETTE = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
 const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b7cf6", ansi2: "#3fae6a", ansi1: "#d9649a" };
 const STATUS_WORD = { working: "working", blocked: "needs you", done: "finished", idle: "idle" };
+const START_WITH = "workspaces.board.start"; // Start with…'s dialog asks the board copy that opened it
 // Moves a file to the Trash ($1), or into $2 where there's no Trash command. Prints where.
 const TRASH = `
 if command -v trash >/dev/null 2>&1; then trash "$1" && echo Trash && exit 0; fi
@@ -55,6 +64,11 @@ if command -v gio >/dev/null 2>&1; then gio trash "$1" && echo Trash && exit 0; 
 mkdir -p "$2" && mv "$1" "$2/" && echo "$2"`;
 
 const workspacesDir = () => `${home()}/.herdr/workspaces`;
+// A folder watch's paths that are all inside workspaces' notes/ folders (as ws-switcher's defs.js tells).
+const notesOnly = (paths) => Array.isArray(paths) && paths.length > 0 && paths.every((p) => {
+  const rest = String(p).startsWith(workspacesDir() + "/") ? String(p).slice(workspacesDir().length + 1).split("/") : [];
+  return rest.length >= 2 && rest[0] !== "" && rest[1] === "notes";
+});
 const tasksDir = (id) => `${workspacesDir()}/${id}/tasks`;
 const defOf = (id) => (shared("workspaces.defs") ?? []).find((d) => d.id === id) ?? null;
 
@@ -346,13 +360,37 @@ export default class Board extends View {
       for (;;) {
         // The workspace's folder: tasks/ may not exist until the first task. The
         // screen watches every workspace's, so it needn't start over when it changes.
-        try { await watchFolder(this.follow ? workspacesDir() : `${workspacesDir()}/${this.workspace}`); }
+        let paths;
+        try { paths = await watchFolder(this.follow ? workspacesDir() : `${workspacesDir()}/${this.workspace}`); }
         catch { cx.timer.every(5000, (cx) => this.load(cx)); return; }
+        if (notesOnly(paths)) continue; // a note being typed (ws-notes): no task changed
         this.load(cx);
       }
     });
     // On a timer, not in render: a task started while rendering never gets to run.
     if (this.follow && !checking()) cx.timer.every(400, (cx) => this.retarget(cx));
+    // Start with…: its dialog's tasks end when it closes, so this copy starts what it asks for.
+    this.copyId = Math.random().toString(36).slice(2, 10);
+    this.startAsked = shared(START_WITH)?.at;
+    if (!checking()) cx.timer.every(400, (cx) => this.startWithAsked(cx));
+  }
+
+  // A Start with… this copy opened: the card as it is now, started through start().
+  startWithAsked(cx) {
+    const ask = shared(START_WITH) ?? null;
+    if (!ask || ask.at === this.startAsked) return;
+    this.startAsked = ask.at;
+    if (ask.owner !== this.copyId || Date.now() - ask.at > 15000) return;
+    const task = this.tasks.find((x) => x.file === ask.file);
+    if (!task) return notify({ title: "Couldn't start that card", body: "Its file is gone.", level: "error" });
+    this.start(task, Boolean(ask.worktree), cx, ask.over ?? null);
+  }
+
+  openStartWith(task) {
+    openOverlay({
+      mod: "ws-board", kind: "dialog", width: 600, height: 600,
+      props: { dialog: "start", workspace: this.workspace, task: { ...task }, owner: this.copyId },
+    });
   }
 
   // A board's own state, as it opens.
@@ -422,7 +460,9 @@ export default class Board extends View {
     });
   }
 
-  start(task, worktree, cx) {
+  // `over` (Start with…, startfacts.js): another agent, folder and first message for
+  // this start only; the rest (status, terminal, tab, started, worktree) is the same.
+  start(task, worktree, cx, over = null) {
     const def = defOf(this.workspace);
     if (!def || this.busy[task.id]) return;
     const b = boardOf(def);
@@ -430,15 +470,16 @@ export default class Board extends View {
     cx.notify();
     cx.spawn(async (cx) => {
       try {
-        const folder = folderPath(def, task.folder);
-        const name = task.agent || b.agent;
-        const preset = presetsFor(def.id).find((x) => x.name === name);
+        const who = whoStarts(over, task.agent || b.agent, folderPath(def, task.folder));
+        const folder = who.folder, name = who.name;
+        const text = over ? firstMessage(over.text, task) : brief(task, b);
+        const preset = who.preset ? presetsFor(def.id).find((x) => x.name === name) : null;
         let argv, first;
-        if (preset) ({ argv, task: first } = presetLaunch(preset, brief(task, b)));
+        if (preset) ({ argv, task: first } = presetLaunch(preset, text));
         else {
           const known = await knownAgents().catch(() => []);
           argv = known.find((a) => a.key === name)?.run ?? [name];
-          first = brief(task, b);
+          first = text;
         }
         ({ argv, task: first } = withTask(argv, first));
         let made, extra = {};
@@ -636,7 +677,8 @@ export default class Board extends View {
     return h_flex().gap(6).items_center().when(!inline, (el) => el.flex_wrap()).when(inline, (el) => el.justify_end())
       .when(a && !a.live, (el) => el.child(div().when(!inline, (el) => el.w_full()).text_size(11.5).text_color(t.dim).child("Agent ended")))
       .child(small(`start-${task.id}`, "Start", (cx) => this.start(task, false, cx), `Run ${task.agent || b.agent} on it in ${task.folder || "the workspace root"}`))
-      .child(small(`wt-${task.id}`, "Worktree", (cx) => this.start(task, true, cx), "Run it on a new branch in its own worktree"));
+      .child(small(`wt-${task.id}`, "Worktree", (cx) => this.start(task, true, cx), "Run it on a new branch in its own worktree"))
+      .child(small(`sw-${task.id}`, "Start with…", () => this.openStartWith(task), "Pick the agent, the folder and the first message, then start it"));
   }
 
   // The task's pull request, as the switcher reads it from GitHub (shared
@@ -1190,6 +1232,7 @@ export default class Board extends View {
 
   initDialog(cx) {
     const p = props();
+    if (p.dialog === "start") return this.initStartWith(cx);
     const task = p.task;
     const def = defOf(p.workspace);
     const b = boardOf(def);
@@ -1277,6 +1320,7 @@ export default class Board extends View {
 
   dialog(t) {
     const p = props();
+    if (p.dialog === "start") return this.startDialog(t);
     const def = defOf(p.workspace);
     const close = () => closeOverlay(p.overlay);
     if (!def) return v_flex().size_full().p(18).bg(t.popover).text_color(t.muted).child("This task's workspace is gone.");
@@ -1322,5 +1366,101 @@ export default class Board extends View {
         .when(!task, (el) => el.child(div().flex_1()))
         .child(button("task-cancel", "Cancel", "plain", close))
         .child(button("task-save", task ? "Save" : "Add task", "primary", (_e, cx) => this.save(cx))));
+  }
+
+  // --- Start with… (props { dialog: "start", workspace, task, owner }) ---
+
+  initStartWith(cx) {
+    const p = props();
+    const def = defOf(p.workspace);
+    const b = boardOf(def);
+    // The installed agents: the + menu's last list at once, then asked again.
+    // Until one is clicked, the pick is whoever the card's Start would run, found again
+    // when the installed agents arrive (the card's agent may be one of them).
+    this.swAgents = shared("new-menu.agents")?.[""] ?? [];
+    this.swChosen = false;
+    const who = p.task?.agent || b.agent;
+    cx.spawn(async (cx) => {
+      const known = await knownAgents().catch(() => null);
+      if (known) {
+        this.swAgents = known;
+        if (!this.swChosen && def) this.swPick = firstPick(this.swChoices(), who);
+        cx.notify();
+      }
+    });
+    this.swPick = def ? firstPick(this.swChoices(), who) : null;
+    this.swFolder = def ? folderPath(def, p.task?.folder) : null;
+    this.swTree = false;
+    this.swText = TextareaState.new({ value: def && p.task ? brief(p.task, b) : "", rows: 10, placeholder: "Its first message. Leave empty to start it idle." });
+    this.swText.focus();
+    cx.timer.after(400, () => this.swText.focus());
+    this.handle.focus();
+  }
+
+  swChoices() {
+    return startChoices(presetsFor(props().workspace), this.swAgents ?? []);
+  }
+
+  // Start: the board copy that opened the dialog starts it (startWithAsked), then this closes.
+  swStart() {
+    const p = props();
+    const over = overOf(this.swChoices(), this.swPick, this.swFolder, this.swText.value());
+    if (!over) { this.swError = this.swChoices().length ? "Pick an agent and a folder first." : "No agents yet: still checking which are installed."; return; }
+    setShared(START_WITH, { owner: p.owner, file: p.task.file, worktree: this.swTree, over, at: Date.now() });
+    closeOverlay(p.overlay);
+  }
+
+  startDialog(t) {
+    const p = props();
+    const def = defOf(p.workspace);
+    const task = p.task;
+    const close = () => closeOverlay(p.overlay);
+    if (!def || !task) return v_flex().size_full().p(18).bg(t.popover).text_color(t.muted).child("This task's workspace is gone.");
+    const b = boardOf(def);
+    const choices = this.swChoices();
+    const pick = choices.find((c) => c.id === this.swPick) ?? null;
+    const agents = this.swAgents ?? [];
+    const section = (text) => div().pt(12).pb(6).text_size(11.5).text_color(t.dim).child(text);
+    const glyph = (a) => (a?.icon ? (a.tint ? svg(a.icon).text_color(t.foreground) : image(a.icon)).size(13).flex_none()
+      : svg("mods/workspace-chrome/terminal.svg").size(13).flex_none().text_color(t.muted));
+    const iconFor = (c) => glyph(c.kind === "agent" ? agents.find((a) => a.key === c.name)
+      : agents.find((a) => a.key === programOf(words(presetsFor(def.id).find((x) => x.name === c.name)?.command ?? ""))));
+    const chip = (id, kids, on, action, tip) => h_flex().id(id).h(26).px(10).gap(6).flex_none().items_center().rounded(13).border_1()
+      .border_color(on ? t.accent : t.input).bg(on ? t.selected : t.background).text_size(12)
+      .text_color(on ? t.foreground : t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground))
+      .when(Boolean(tip), (el) => el.tooltip(tip))
+      .on_click((_e, cx) => { action(); cx.notify(); }).children(kids);
+    const button = (id, text, primary, action) => h_flex().id(id).h(32).px(14).items_center().rounded(8).border_1()
+      .border_color(primary ? t.solid : t.input).bg(primary ? t.solid : t.raised).text_color(primary ? t.solid_foreground : t.foreground)
+      .text_size(12.5).font_medium().cursor_pointer().hover((s) => s.opacity(0.88)).on_click(action).child(text);
+    const places = [def.root, ...folderChoices(def)].filter((f, i, all) => f && all.indexOf(f) === i);
+    return v_flex().id("start-with").track_focus(this.handle).size_full().min_h(0).p(18).bg(t.popover).text_size(13).text_color(t.foreground)
+      .on_key_down((e, cx) => {
+        if (e.key === "escape") close();
+        else if (e.key === "enter" && (e.modifiers?.platform || e.modifiers?.control)) { this.swStart(); cx.notify(); }
+        else return;
+        cx.stop_propagation();
+      })
+      .child(h_flex().gap(10).items_center()
+        .child(div().flex_none().text_size(15).font_semibold().child(`Start ${task.id} with…`))
+        .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(task.title))
+        .child(div().text_size(11).text_color(t.dim).child("Esc")))
+      .child(section("Agent"))
+      .child(h_flex().gap(6).flex_wrap().children(choices.map((c) => chip(`sw-${c.id}`, [iconFor(c), c.label ?? c.name], this.swPick === c.id, () => { this.swPick = c.id; this.swChosen = true; this.swError = null; }, c.tip))))
+      .when(!choices.length, (el) => el.child(div().text_size(12).text_color(t.dim).child("Checking installed agents…")))
+      .child(section("Folder"))
+      .child(h_flex().gap(6).flex_wrap()
+        .children(places.map((f, i) => chip(`sw-dir-${i}`, [f === def.root ? `${def.name} root` : base(f)], this.swFolder === f, () => { this.swFolder = f; }, tilde(f))))
+        .child(chip("sw-tree", [svg("mods/workspace-chrome/git-branch.svg").size(12).flex_none(), "In a new worktree"], this.swTree, () => { this.swTree = !this.swTree; },
+          "On a new branch in its own worktree of that folder's repo, as the card's Worktree does")))
+      .child(section(pick?.kind === "preset" ? "First message: after the preset's instructions" : "First message"))
+      .child(div().flex_1().min_h(80).child(Textarea.new(this.swText).size_full().p(10).rounded(8).border_1().border_color(t.accent)
+        .bg(t.background).text_size(12.5).text_color(t.foreground)))
+      .when(Boolean(this.swError), (el) => el.child(div().pt(8).text_size(11.5).text_color(t.blocked).child(this.swError)))
+      .child(h_flex().pt(12).gap(8).items_center()
+        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim)
+          .child(`The card moves to ${label(b.start)}. Its own agent and folder stay as they are. ${window()?.platform === "macos" ? "⌘" : "Ctrl+"}Enter starts it`))
+        .child(button("sw-cancel", "Cancel", false, close))
+        .child(button("sw-go", "Start", true, (_e, cx) => { this.swStart(); cx.notify(); })));
   }
 }

@@ -23,7 +23,10 @@
 //                        Worktrees screen (ws-worktrees), as workspaces.board does the board
 //   workspaces.history   { id, at }: the sidebar's History row and the + menu ask this block to show a
 //                        workspace's History screen (ws-history); with no id (All spaces), as a dialog
-//   workspaces.screens   workspace id -> its open screens ("board", "worktrees", "history"): the pills
+//   workspaces.notes     { id, at }: the + menu asks this block to show a workspace's Notes screen (ws-notes)
+//   workspaces.board.start  { owner, file, worktree, over, at }: ws-board's Start with… dialog asks the board
+//                        copy that opened it (owner) to start a card with another agent, folder or first message
+//   workspaces.screens   workspace id -> its open screens ("board", "worktrees", "history", "notes"): the pills
 //                        ws-tabs draws before the tabs of every space of that workspace
 //   workspaces.screen    { ws, screen, at } or null: the screen shown in place of the tabs.
 //                        Anyone sets it (ws-tabs' pills; null from ws-spaces and ws-agents
@@ -66,7 +69,7 @@ import { Runner, runnerDir, globalDir } from "./automations.js";
 import { PrWatcher } from "./prs.js";
 import { GhWatcher } from "./ghboard.js";
 import { Scratch, isScratch, scratchDef, scratchLabel } from "./scratch.js";
-import { dir, expand, tilde, under, base, subdirs, loadDefs, loadOrder, orderFile, templatesDir, loadPresetDir, presetsFor, presetLaunch, withTask } from "./defs.js";
+import { dir, expand, tilde, under, base, subdirs, loadDefs, loadOrder, orderFile, templatesDir, loadPresetDir, presetsFor, presetLaunch, withTask, notesOnly } from "./defs.js";
 import { arrange, move as moveRow, groupOf, groupName, renamed, withGroup, orderText } from "./arrange.js";
 
 // "Edit" opens the workspace's folder in the first of these that's installed,
@@ -75,7 +78,7 @@ const EDITORS = ["zed", "cursor", "code", "subl"];
 const SETTLE = 1500; // ms a new space's first terminal takes to report its folder
 // A workspace's screens: they belong to the workspace, not to a space. The layout
 // holds each once, as the block `screen-<key>` in the `screens` column of `center`.
-const SCREENS = { board: { mod: "ws-board", name: "Board" }, worktrees: { mod: "ws-worktrees", name: "Worktrees" }, history: { mod: "ws-history", name: "History" } };
+const SCREENS = { board: { mod: "ws-board", name: "Board" }, worktrees: { mod: "ws-worktrees", name: "Worktrees" }, history: { mod: "ws-history", name: "History" }, notes: { mod: "ws-notes", name: "Notes" } };
 const PALETTE = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
 // The spaces list's avatar colors, so a workspace mark matches.
 const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b7cf6", ansi2: "#3fae6a", ansi1: "#d9649a" };
@@ -300,6 +303,7 @@ export default class Workspaces extends View {
     this.boardAsked = shared("workspaces.board")?.at;
     this.treesAsked = shared("workspaces.worktrees")?.at;
     this.historyAsked = shared("workspaces.history")?.at;
+    this.notesAsked = shared("workspaces.notes")?.at;
     this.runAsked = shared("workspaces.automation.run")?.at;
     this.scratchAsked = shared("workspaces.scratch")?.at;
     this.allowAsked = shared("workspaces.automation.allow")?.at;
@@ -324,8 +328,9 @@ export default class Workspaces extends View {
     // space's name, and "ws-switcher.scratch-new/<name>" makes one at once (a script; a blank
     // name is "Scratch <time>"); the scratch toast's Keep is "ws-switcher.scratch-keep/<folder>";
     // a toast about one automation is "ws-switcher.automation/<workspace>/<name>" (automations.js: openAt);
-    // "ws-switcher.board", "ws-switcher.worktrees" and "ws-switcher.history" (bind them to keys) show
-    // the shown workspace's screen, and go back to the tabs when it's the one shown.
+    // "ws-switcher.board", "ws-switcher.worktrees", "ws-switcher.history" and "ws-switcher.notes" (bind
+    // them to keys) show the shown workspace's screen, and go back to the tabs when it's the one shown;
+    // "ws-switcher.show/<screen>/<workspace>" only shows it (a toast's action: Notes' Move to the board).
     cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
@@ -335,6 +340,7 @@ export default class Workspaces extends View {
           else if (SCREENS[c]) this.toggleScreen(c, cx);
           else if (c.startsWith("scratch-keep/")) await this.scratch.keep(c);
           else if (c.startsWith("automation/")) this.openAutomation(c);
+          else if (c.startsWith("show/")) this.showScreen(c, cx);
         } catch (e) { notify({ title: c.startsWith("automation/") ? "Couldn't open Automations" : "Couldn't make a scratch space", body: String(e?.message ?? e), level: "error" }); }
       }
     });
@@ -350,6 +356,7 @@ export default class Workspaces extends View {
         let paths;
         try { paths = await watchFolder(dir()); }
         catch { cx.timer.every(5000, (cx) => { this.reload(cx); if (this.mine()) this.runner.changed([dir()], cx); }); return; }
+        if (notesOnly(paths, dir())) continue; // a note being typed: nothing here reads notes
         this.reload(cx);
         if (this.mine()) this.runner.changed(paths ?? [], cx);
       }
@@ -923,7 +930,11 @@ export default class Workspaces extends View {
       .when(Boolean(active), (el) => el.child(div().id("ws-board").size(28).ml(2).flex_none().flex().items_center().justify_center()
         .rounded(7).text_color(t.muted).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
         .tooltip(`${active.name} board`).on_click((_e, cx) => this.openScreen(active.id, "board", cx))
-        .child(svg("mods/ws-board/board.svg").size(15))));
+        .child(svg("mods/ws-board/board.svg").size(15))))
+      .when(Boolean(active), (el) => el.child(div().id("ws-notes").size(28).flex_none().flex().items_center().justify_center()
+        .rounded(7).text_color(t.muted).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
+        .tooltip(`${active.name} notes`).on_click((_e, cx) => this.openScreen(active.id, "notes", cx))
+        .child(svg("mods/ws-notes/notes.svg").size(15))));
   }
 
   // What the menu and dialogs ask this sidebar copy to do (their own tasks end when
@@ -999,6 +1010,11 @@ export default class Workspaces extends View {
       this.historyAsked = historyAsk?.at;
       if (historyAsk && Date.now() - historyAsk.at < 15000) this.openHistory(historyAsk.id ?? null, cx);
     }
+    const notesAsk = shared("workspaces.notes") ?? null;
+    if (notesAsk?.at !== this.notesAsked) {
+      this.notesAsked = notesAsk?.at;
+      if (notesAsk?.id && Date.now() - notesAsk.at < 15000) this.openScreen(notesAsk.id, "notes", cx);
+    }
     this.takeTabs();
   }
 
@@ -1065,7 +1081,11 @@ export default class Workspaces extends View {
   // The key's way in: the shown workspace's screen, and back to the tabs from it.
   toggleScreen(key, cx) {
     const ws = shared("workspaces.active") ?? null, scr = shared("workspaces.screen") ?? null;
-    if (!ws) { if (key === "history") this.openHistory(null, cx); return; }
+    if (!ws) {
+      if (key === "history") this.openHistory(null, cx);
+      if (key === "notes") notify({ title: "Notes belong to a workspace", body: "Choose a workspace in the switcher first.", level: "info" });
+      return;
+    }
     if (scr?.ws === ws && scr.screen === key) setShared("workspaces.screen", null);
     else this.openScreen(ws, key, cx);
   }
@@ -1075,6 +1095,13 @@ export default class Workspaces extends View {
   openHistory(id, cx) {
     if (id && (shared("workspaces.defs") ?? []).some((d) => d.id === id)) return this.openScreen(id, "history", cx);
     openOverlay({ mod: "ws-history", kind: "dialog", width: 980, height: 700, props: { dialog: true } });
+  }
+
+  // "show/<screen>/<workspace>": that workspace's screen, never back to the tabs.
+  showScreen(c, cx) {
+    const [, key, ws] = c.split("/");
+    if (!SCREENS[key] || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(String(ws ?? ""))) return;
+    if ((shared("workspaces.defs") ?? []).some((d) => d.id === ws)) this.openScreen(ws, key, cx);
   }
 
   pin(ws, key) {
@@ -1320,11 +1347,13 @@ export default class Workspaces extends View {
 
     // The actions before the folders: a workspace can have many folders.
     items.push(line());
-    // The board has its own button beside the switcher, except on the narrow rail.
+    // The board and the notes have their own buttons beside the switcher, except on the narrow rail.
     if (active && narrow()) {
       // The board opens from the sidebar copy: a popup's tasks end when it closes.
       items.push(row("ws-board-open", svg("mods/ws-board/board.svg").size(14).flex_none().text_color(t.muted), `Open ${active.name} board`, div(),
         () => setShared("workspaces.board", { id: active.id, at: Date.now() })));
+      items.push(row("ws-notes-open", svg("mods/ws-notes/notes.svg").size(14).flex_none().text_color(t.muted), `Open ${active.name} notes`, div(),
+        () => setShared("workspaces.notes", { id: active.id, at: Date.now() })));
     }
     if (active && !active.error && !active.scratch) {
       items.push(row("ws-trees-open", icon("git-branch"), `Open ${active.name} worktrees`, div(),

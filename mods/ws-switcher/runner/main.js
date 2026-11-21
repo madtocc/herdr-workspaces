@@ -29,7 +29,7 @@ import {
 import { Runner, globalDir } from "../automations.js";
 import { PrWatcher } from "../prs.js";
 import { GhWatcher } from "../ghboard.js";
-import { dir, loadDefs, templatesDir, loadPresetDir, presetsFor, presetLaunch, withTask } from "../defs.js";
+import { dir, loadDefs, templatesDir, loadPresetDir, presetsFor, presetLaunch, withTask, notesOnly } from "../defs.js";
 
 const SPACE = "Automations";
 const BEAT = 10000;
@@ -167,7 +167,7 @@ async function main() {
       let paths;
       try { paths = await watchFolder(dir()); }
       catch (e) { log("can't watch the workspaces:", said(e)); setInterval(() => again([dir()]), 5000); return; }
-      again(paths);
+      if (!notesOnly(paths, dir())) again(paths); // a note being typed: nothing here reads notes
     }
   })();
   // The automations for every workspace.

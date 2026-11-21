@@ -9,11 +9,11 @@
 # worktree goes by its repo's name) and starts the agent with:
 #
 #   claude: --append-system-prompt <instructions> --add-dir <root, outside folders>
-#           --settings <its tasks folder as permissions.additionalDirectories>
-#   codex:  -c developer_instructions=<instructions> --add-dir <root, outside folders, its tasks folder>
+#           --settings <its tasks and notes folders as permissions.additionalDirectories>
+#   codex:  -c developer_instructions=<instructions> --add-dir <root, outside folders, its tasks and notes folders>
 #   agy:    --add-dir <a folder of Herdr's own that holds the instructions as AGENTS.md>
-#           --add-dir <root, outside folders, its tasks folder>
-#   pi:     --append-system-prompt <instructions, naming root, outside folders, its tasks folder>
+#           --add-dir <root, outside folders, its tasks and notes folders>
+#   pi:     --append-system-prompt <instructions, naming root, outside folders, its tasks and notes folders>
 #
 # Antigravity's CLI (agy) takes no instructions on its command line. It reads
 # AGENTS.md, and .agents/rules/*.md, from every folder it's given with --add-dir, as
@@ -470,6 +470,8 @@ EOF
     done < "$index"
     # Its board cards too: a card's agent notes its status and pull request there.
     [ -d "$wsdir/tasks" ] && give "$wsdir/tasks"
+    # And its notes: an agent asked to note something for later writes it there.
+    [ -d "$wsdir/notes" ] && give "$wsdir/notes"
   fi
   if [ "$name" = pi ]; then
     # Pi takes no folders, so it's told them. And a folder's own .pi/APPEND_SYSTEM.md,

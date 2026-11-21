@@ -18,6 +18,16 @@ export const tilde = (p) => (p === home() ? "~" : p.startsWith(home() + "/") ? "
 export const under = (p, d) => Boolean(p && d) && (p === d || p.startsWith(d === "/" ? d : d + "/"));
 export const base = (p) => p.replace(/\/+$/, "").split("/").pop();
 
+// A folder watch's paths that are all inside workspaces' notes/ folders (ws-notes saves
+// there as you type): nothing for a reload, which reads configs, presets and tasks.
+export function notesOnly(paths, root) {
+  if (!Array.isArray(paths) || !paths.length) return false;
+  return paths.every((p) => {
+    const rest = String(p).startsWith(root + "/") ? String(p).slice(root.length + 1).split("/") : [];
+    return rest.length >= 2 && rest[0] !== "" && rest[1] === "notes";
+  });
+}
+
 // JSON with // and /* */ comments and trailing commas.
 export function parseJsonc(text) {
   const pass = (s, other) => {

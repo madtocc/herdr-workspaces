@@ -16,6 +16,7 @@ mods/ws-board/preview.svg:previews/board.png
 mods/ws-board/preview-github.svg:previews/github.png
 mods/ws-worktrees/preview.svg:previews/worktrees.png
 mods/ws-history/preview.svg:previews/history.png
+mods/ws-notes/preview.svg:previews/notes.png
 mods/ws-automations/preview.svg:previews/automations.png
 mods/ws-agents/preview.svg:previews/agent-menu.png"
 chrome=${CHROME:-}

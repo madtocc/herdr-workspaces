@@ -250,6 +250,16 @@
                       "screen": true
                     }
                   }
+                },
+                {
+                  "id": "screen-notes",
+                  "type": "block",
+                  "content": {
+                    "mod": "ws-notes",
+                    "props": {
+                      "screen": true
+                    }
+                  }
                 }
               ]
             }

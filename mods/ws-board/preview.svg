@@ -13,15 +13,16 @@
   <circle cx="20" cy="24" r="6" fill="#ff5f57"/><circle cx="40" cy="24" r="6" fill="#febc2e"/><circle cx="60" cy="24" r="6" fill="#28c840"/>
   <text x="124" y="30" fill="#e8e9eb" font-size="15" font-weight="600">Herdr</text>
 
-  <!-- the switcher and the board button -->
-  <rect x="10" y="60" width="234" height="40" rx="8" fill="#232428"/>
+  <!-- the switcher, the board button and the notes button -->
+  <rect x="10" y="60" width="204" height="40" rx="8" fill="#232428"/>
   <rect x="20" y="70" width="20" height="20" rx="5" fill="#5b8def"/>
   <text x="30" y="85" fill="#fff" font-size="11" font-weight="700" text-anchor="middle">A</text>
   <text x="52" y="85" fill="#e8e9eb" font-size="14" font-weight="500">Acme</text>
-  <circle cx="194" cy="80" r="3" fill="#e5534b"/>
-  <text x="208" y="85" fill="#7d8089" font-size="11.5">3</text>
-  <path d="M222 78 l4 4 l4 -4" stroke="#7d8089" stroke-width="1.5" fill="none"/>
-  <g transform="translate(253 72.5) scale(0.6250)" fill="none" stroke="#a5a8ae" stroke-width="1.87" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M15 3v18"/><path d="M5.5 7h1.5"/><path d="M11.5 7h1.5"/><path d="M11.5 11h1.5"/><path d="M17.5 7h1"/></g>
+  <circle cx="164" cy="80" r="3" fill="#e5534b"/>
+  <text x="178" y="85" fill="#7d8089" font-size="11.5">3</text>
+  <path d="M192 78 l4 4 l4 -4" stroke="#7d8089" stroke-width="1.5" fill="none"/>
+  <g transform="translate(223 72.5) scale(0.6250)" fill="none" stroke="#a5a8ae" stroke-width="1.87" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M15 3v18"/><path d="M5.5 7h1.5"/><path d="M11.5 7h1.5"/><path d="M11.5 11h1.5"/><path d="M17.5 7h1"/></g>
+  <g transform="translate(253 72.5) scale(0.6250)" fill="none" stroke="#a5a8ae" stroke-width="1.87" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8Z"/><path d="M15 3v4a2 2 0 0 0 2 2h4"/></g>
 
   <!-- spaces -->
   <text x="19" y="128" fill="#7d8089" font-size="12">Spaces</text>
@@ -78,7 +79,7 @@
   <text x="325" y="181" fill="#a5a8ae" font-size="12.5" font-weight="600">Backlog</text>
   <text x="378" y="181" fill="#7d8089" font-size="12">2</text>
   <g transform="translate(470 170) scale(0.5417)" fill="none" stroke="#7d8089" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g>
-  <rect x="321" y="196" width="165" height="111" rx="8" fill="#202227" stroke="#2f3137"/>
+  <rect x="321" y="196" width="165" height="141" rx="8" fill="#202227" stroke="#2f3137"/>
   <text x="331" y="219" fill="#7d8089" font-size="11.5">ACM-7</text>
   <rect x="372.65" y="206" width="26.74" height="18" rx="5" fill="#2c2e34"/><text x="378.65" y="218.96" fill="#a5a8ae" font-size="11">api</text>
   <text x="476" y="219" fill="#e5534b" font-size="11.5" text-anchor="end">high</text>
@@ -86,34 +87,38 @@
   <text x="331" y="263" fill="#e8e9eb" font-size="13.5">deletes</text>
   <rect x="331" y="273" width="49.05" height="24" rx="6" fill="none" stroke="#2f3137"/><text x="340" y="289.14" fill="#e8e9eb" font-size="11.5">Start</text>
   <rect x="386.05" y="273" width="68.14" height="24" rx="6" fill="none" stroke="#2f3137"/><text x="395.05" y="289.14" fill="#e8e9eb" font-size="11.5">Worktree</text>
-  <rect x="321" y="315" width="165" height="111" rx="8" fill="#202227" stroke="#2f3137"/>
-  <text x="331" y="338" fill="#7d8089" font-size="11.5">ACM-1</text>
-  <rect x="372.65" y="325" width="26.74" height="18" rx="5" fill="#2c2e34"/><text x="378.65" y="337.96" fill="#a5a8ae" font-size="11">api</text>
-  <text x="476" y="338" fill="#d9a441" font-size="11.5" text-anchor="end">medium</text>
-  <text x="331" y="363" fill="#e8e9eb" font-size="13.5">Rate limit the export</text>
-  <text x="331" y="382" fill="#e8e9eb" font-size="13.5">endpoint</text>
-  <rect x="331" y="392" width="49.05" height="24" rx="6" fill="none" stroke="#2f3137"/><text x="340" y="408.14" fill="#e8e9eb" font-size="11.5">Start</text>
-  <rect x="386.05" y="392" width="68.14" height="24" rx="6" fill="none" stroke="#2f3137"/><text x="395.05" y="408.14" fill="#e8e9eb" font-size="11.5">Worktree</text>
+  <rect x="331" y="303" width="76.2" height="24" rx="6" fill="none" stroke="#2f3137"/><text x="340" y="319.14" fill="#e8e9eb" font-size="11.5">Start with…</text>
+  <rect x="321" y="345" width="165" height="141" rx="8" fill="#202227" stroke="#2f3137"/>
+  <text x="331" y="368" fill="#7d8089" font-size="11.5">ACM-1</text>
+  <rect x="372.65" y="355" width="26.74" height="18" rx="5" fill="#2c2e34"/><text x="378.65" y="367.96" fill="#a5a8ae" font-size="11">api</text>
+  <text x="476" y="368" fill="#d9a441" font-size="11.5" text-anchor="end">medium</text>
+  <text x="331" y="393" fill="#e8e9eb" font-size="13.5">Rate limit the export</text>
+  <text x="331" y="412" fill="#e8e9eb" font-size="13.5">endpoint</text>
+  <rect x="331" y="422" width="49.05" height="24" rx="6" fill="none" stroke="#2f3137"/><text x="340" y="438.14" fill="#e8e9eb" font-size="11.5">Start</text>
+  <rect x="386.05" y="422" width="68.14" height="24" rx="6" fill="none" stroke="#2f3137"/><text x="395.05" y="438.14" fill="#e8e9eb" font-size="11.5">Worktree</text>
+  <rect x="331" y="452" width="76.2" height="24" rx="6" fill="none" stroke="#2f3137"/><text x="340" y="468.14" fill="#e8e9eb" font-size="11.5">Start with…</text>
   <rect x="504" y="156" width="181" height="658" rx="10" fill="#17181b" stroke="#2a2c31"/>
   <text x="516" y="181" fill="#a5a8ae" font-size="12.5" font-weight="600">Todo</text>
   <text x="552.25" y="181" fill="#7d8089" font-size="12">2</text>
   <g transform="translate(661 170) scale(0.5417)" fill="none" stroke="#7d8089" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g>
-  <rect x="512" y="196" width="165" height="92" rx="8" fill="#202227" stroke="#2f3137"/>
+  <rect x="512" y="196" width="165" height="122" rx="8" fill="#202227" stroke="#2f3137"/>
   <text x="522" y="219" fill="#7d8089" font-size="11.5">ACM-4</text>
   <rect x="563.65" y="206" width="26.74" height="18" rx="5" fill="#2c2e34"/><text x="569.65" y="218.96" fill="#a5a8ae" font-size="11">api</text>
   <text x="667" y="219" fill="#d9a441" font-size="11.5" text-anchor="end">medium</text>
   <text x="522" y="244" fill="#e8e9eb" font-size="13.5">Search ignores accents</text>
   <rect x="522" y="254" width="49.05" height="24" rx="6" fill="none" stroke="#2f3137"/><text x="531" y="270.14" fill="#e8e9eb" font-size="11.5">Start</text>
   <rect x="577.05" y="254" width="68.14" height="24" rx="6" fill="none" stroke="#2f3137"/><text x="586.05" y="270.14" fill="#e8e9eb" font-size="11.5">Worktree</text>
-  <rect x="512" y="296" width="165" height="137" rx="8" fill="#202227" stroke="#2f3137"/>
-  <text x="522" y="319" fill="#7d8089" font-size="11.5">ACM-2</text>
-  <rect x="563.65" y="306" width="31.36" height="18" rx="5" fill="#2c2e34"/><text x="569.65" y="318.96" fill="#a5a8ae" font-size="11">web</text>
-  <text x="667" y="319" fill="#7d8089" font-size="11.5" text-anchor="end">low</text>
-  <text x="522" y="344" fill="#e8e9eb" font-size="13.5">Empty state for the</text>
-  <text x="522" y="363" fill="#e8e9eb" font-size="13.5">reports page</text>
-  <rect x="522" y="373" width="80.46" height="20" rx="5" fill="#2c2e34"/><g transform="translate(528 377.5) scale(0.4583)" fill="none" stroke="#a5a8ae" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="1"/></g><text x="543" y="386.96" fill="#a5a8ae" font-size="11">#201 Todo</text>
-  <rect x="522" y="399" width="49.05" height="24" rx="6" fill="none" stroke="#2f3137"/><text x="531" y="415.14" fill="#e8e9eb" font-size="11.5">Start</text>
-  <rect x="577.05" y="399" width="68.14" height="24" rx="6" fill="none" stroke="#2f3137"/><text x="586.05" y="415.14" fill="#e8e9eb" font-size="11.5">Worktree</text>
+  <rect x="522" y="284" width="76.2" height="24" rx="6" fill="none" stroke="#2f3137"/><text x="531" y="300.14" fill="#e8e9eb" font-size="11.5">Start with…</text>
+  <rect x="512" y="326" width="165" height="167" rx="8" fill="#202227" stroke="#2f3137"/>
+  <text x="522" y="349" fill="#7d8089" font-size="11.5">ACM-2</text>
+  <rect x="563.65" y="336" width="31.36" height="18" rx="5" fill="#2c2e34"/><text x="569.65" y="348.96" fill="#a5a8ae" font-size="11">web</text>
+  <text x="667" y="349" fill="#7d8089" font-size="11.5" text-anchor="end">low</text>
+  <text x="522" y="374" fill="#e8e9eb" font-size="13.5">Empty state for the</text>
+  <text x="522" y="393" fill="#e8e9eb" font-size="13.5">reports page</text>
+  <rect x="522" y="403" width="80.46" height="20" rx="5" fill="#2c2e34"/><g transform="translate(528 407.5) scale(0.4583)" fill="none" stroke="#a5a8ae" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="1"/></g><text x="543" y="416.96" fill="#a5a8ae" font-size="11">#201 Todo</text>
+  <rect x="522" y="429" width="49.05" height="24" rx="6" fill="none" stroke="#2f3137"/><text x="531" y="445.14" fill="#e8e9eb" font-size="11.5">Start</text>
+  <rect x="577.05" y="429" width="68.14" height="24" rx="6" fill="none" stroke="#2f3137"/><text x="586.05" y="445.14" fill="#e8e9eb" font-size="11.5">Worktree</text>
+  <rect x="522" y="459" width="76.2" height="24" rx="6" fill="none" stroke="#2f3137"/><text x="531" y="475.14" fill="#e8e9eb" font-size="11.5">Start with…</text>
   <rect x="695" y="156" width="181" height="658" rx="10" fill="#17181b" stroke="#2a2c31"/>
   <text x="707" y="181" fill="#a5a8ae" font-size="12.5" font-weight="600">Doing</text>
   <text x="747" y="181" fill="#7d8089" font-size="12">2</text>
