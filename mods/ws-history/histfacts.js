@@ -412,6 +412,81 @@ export function compactionsTip(n, last) {
   return `Compacted ${n === 1 ? "once" : n === 2 ? "twice" : `${n} times`}${what ? `, last ${what}` : ""}`;
 }
 
+// --- Automation runs ---
+// The runs the switcher publishes (shared "workspaces.automation.runs", newest first;
+// mods/ws-switcher/automations.js), as History's Automations list shows them.
+
+// A run's state in words, and its color by the Automations screen's rule (working:
+// the working color; needs you, failures, misses: the blocked one; the rest dim).
+// `quiet`: an entry for a run its check (or a miss, or a skip) kept from starting.
+// now: { status, live, open }: its agent's status word (null when nothing reports),
+// whether its terminal is alive, whether its tab is still there.
+export function runState(r, now = {}) {
+  const { status = null, live = false, open = false } = now;
+  const quiet = (word, tone = "dim") => ({ word, tone, quiet: true, open: false });
+  const times = r.times > 1 ? ` ×${r.times}` : "";
+  switch (r.status) {
+    case "started": break;
+    case "failed": return r.check ? quiet(`check failed${times}`, "blocked") : { word: "failed to start", tone: "blocked", quiet: false, open: false };
+    case "quiet": return quiet(`quiet${times}`);
+    case "missed": return quiet("missed", "blocked");
+    case "waiting": return quiet(`check not allowed${times}`, "blocked");
+    case "skipped": return quiet("skipped");
+    default: return quiet(String(r.status ?? ""));
+  }
+  const there = open && live && !r.closed;
+  if (r.closed) return { word: "finished, closed", tone: "dim", quiet: false, open: false };
+  if (!there) return { word: "closed", tone: "dim", quiet: false, open: false };
+  if (status === "working") return { word: "running", tone: "working", quiet: false, open: true };
+  if (status === "blocked") return { word: "needs you", tone: "blocked", quiet: false, open: true };
+  if (r.stuck) return { word: "stuck", tone: "blocked", quiet: false, open: true };
+  if (status === "done" || status === "idle") return { word: "finished", tone: "muted", quiet: false, open: true };
+  return { word: "open", tone: "muted", quiet: false, open: true }; // a script, or a shell
+}
+
+// Every word of the search is in the run's name, why it ran, its note, its state or its workspace.
+export function runMatches(r, query, extra = "") {
+  const words = String(query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return true;
+  const hay = [r.name, r.why, r.note, r.folder, extra].join("\n").toLowerCase();
+  return words.every((w) => hay.includes(w));
+}
+
+// The agent a run's report names ("claude-code", "pi"), as PROVIDERS has it.
+export function runProvider(r) {
+  if (r?.conv?.provider) return r.conv.provider;
+  const a = String(r?.app ?? "").toLowerCase();
+  if (a.startsWith("claude")) return "claude";
+  if (a.startsWith("antigravity") || a === "agy") return "antigravity";
+  const w = a.split(/[-_ ]/)[0];
+  return PROVIDERS[w] ? w : null;
+}
+
+// Each run's conversation among History's rows: run id -> session. The one the runner
+// noted (`conv`); a noted one that isn't among the rows (read before it was saved) still
+// resumes, plainly. For the others, a guess: each conversation of that agent in the run's
+// folder that no run noted goes to the run that started last before it (a minute's slack),
+// if it started before that run closed. Two runs in one folder at once can be told apart
+// only by their notes.
+export function runSessions(runs, sessions) {
+  const out = new Map();
+  const mine = (runs ?? []).filter((r) => r?.status === "started");
+  const taken = new Set(mine.filter((r) => r.conv?.id).map((r) => `${r.conv.provider}/${r.conv.id}`));
+  for (const r of mine) {
+    if (!r.conv?.id || !PROVIDERS[r.conv.provider]) continue;
+    const s = sessions.find((x) => x.provider === r.conv.provider && x.id === r.conv.id)
+      ?? (r.folder ? { provider: r.conv.provider, id: r.conv.id, cwd: r.folder, title: "", first: "", last: "", started: r.at, updated: r.closed ?? r.at } : null);
+    if (s) out.set(r.id, s);
+  }
+  const guessing = mine.filter((r) => !r.conv?.id && r.folder && runProvider(r)).sort((a, b) => b.at - a.at);
+  for (const s of [...sessions].sort((a, b) => a.started - b.started)) {
+    if (taken.has(`${s.provider}/${s.id}`)) continue;
+    const r = guessing.find((x) => !out.has(x.id) && runProvider(x) === s.provider && x.folder === s.cwd && x.at - 60e3 <= s.started && s.started <= (x.closed ?? Infinity));
+    if (r) out.set(r.id, s);
+  }
+  return out;
+}
+
 const DAY = 86400e3;
 const startOfDay = (ms) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];

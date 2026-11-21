@@ -9,6 +9,7 @@
 // is in is the switcher's `workspaces.assigned`, read from the app's shared.json.
 
 import { execFile, spawn } from "node:child_process";
+import net from "node:net";
 import * as nfs from "node:fs/promises";
 import { watch, readFileSync, statSync } from "node:fs";
 import os from "node:os";
@@ -22,7 +23,11 @@ export const appHome = () => process.env.HERDR_APP_HOME || `${home()}/.config/he
 export const runnerDir = () => `${home()}/.herdr/runner`;
 export const checking = () => false;
 export const window = () => ({ platform: process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux" });
-export const focused = () => null;
+// What the window shows: Herdr's view.json (the shown space, and each space's shown
+// tab), read with the layout document, while the window is open (its socket answers).
+// With the window closed nobody is looking: null.
+export const focused = () => (core.open && core.view?.active ? { space: core.view.active, tab: core.view.spaces?.[core.view.active] ?? null } : null);
+export const windowOpen = () => core.open;
 export const run = () => {}; // app commands: the window's, not ours
 export const hex = (n) => randomBytes(Math.ceil(n / 2)).toString("hex").slice(0, n);
 
@@ -149,7 +154,7 @@ async function desktop(file, note) {
 
 // --- herdr-core: one `hc connect` kept open, asked every second ---
 
-const core = { child: null, next: 1, calls: new Map(), terminals: [], doc: { spaces: [] }, docAt: 0 };
+const core = { child: null, next: 1, calls: new Map(), terminals: [], doc: { spaces: [] }, docAt: 0, view: null, open: false, viewAt: 0 };
 
 function connect() {
   if (core.child) return;
@@ -185,8 +190,10 @@ export function call(method, params = {}) {
   });
 }
 
-// The live terminals and, every 5s (or now), the app's spaces and tabs.
+// The live terminals and, every 5s (or now), the app's spaces and tabs. Every 3s,
+// whether the window is open and what it shows.
 export async function refresh(docNow = false) {
+  if (Date.now() - core.viewAt > 3000) { core.viewAt = Date.now(); await look(); }
   const r = await call("terminal.list", {});
   core.terminals = r?.terminals ?? [];
   if (docNow || Date.now() - core.docAt > 5000) {
@@ -194,6 +201,19 @@ export async function refresh(docNow = false) {
     if (d?.value?.spaces) core.doc = d.value;
     core.docAt = Date.now();
   }
+}
+
+// The window is open while its socket takes a connection.
+async function look() {
+  core.open = await new Promise((resolve) => {
+    const s = net.connect(`${appHome()}/herdr-app.sock`);
+    const done = (v) => { clearTimeout(t); s.destroy(); resolve(v); };
+    const t = setTimeout(() => done(false), 1000);
+    s.on("connect", () => done(true));
+    s.on("error", () => done(false));
+  });
+  if (!core.open) { core.view = null; return; }
+  try { core.view = JSON.parse(await nfs.readFile(`${appHome()}/view.json`, "utf8")); } catch {}
 }
 
 export const terminals = () => core.terminals;

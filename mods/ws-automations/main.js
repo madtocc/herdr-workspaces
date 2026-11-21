@@ -92,14 +92,14 @@ const FILLS = {
 
 const DRAFT_MODEL = "sonnet";
 const DRAFT_TIMEOUT = 120e3;
-// What Claude answers with: every field, as strings (card a boolean).
+// What Claude answers with: every field, as strings (card and keep booleans).
 const SCHEMA = {
   type: "object", additionalProperties: false,
-  required: ["scope", "name", "description", "when", "agent", "model", "effort", "folder", "check", "card", "prompt", "note"],
+  required: ["scope", "name", "description", "when", "agent", "model", "effort", "folder", "check", "card", "keep", "prompt", "note"],
   properties: {
     scope: { type: "string", enum: ["workspace", "global"] }, name: { type: "string" }, description: { type: "string" }, when: { type: "string" },
     agent: { type: "string" }, model: { type: "string" }, effort: { type: "string" }, folder: { type: "string" },
-    check: { type: "string" }, card: { type: "boolean" }, prompt: { type: "string" }, note: { type: "string" },
+    check: { type: "string" }, card: { type: "boolean" }, keep: { type: "boolean" }, prompt: { type: "string" }, note: { type: "string" },
   },
 };
 const GUIDE = `You set up automations for Herdr, a desktop app for terminals and coding agents. An automation starts a coding agent by itself, with a prompt, as a new tab in the workspace's "Automations" space, while Herdr is open. The person says what they want in their own words; you answer with the automation's fields. Nothing is saved until they have read your draft and clicked Create or Save.
@@ -124,6 +124,7 @@ Fields:
 - folder: where it runs. "" for the workspace root (for a github trigger, its repo's folder). Else one of the folders listed, written as listed. Pick the folder the agent's commands need (a git repo for git and gh).
 - check: "" for none, which is right for most automations. Otherwise one line of shell that Herdr itself runs first, in the folder, each time the automation is set off: the agent starts only if it prints something, and gets what it printed as {{check}}. On a schedule it must also differ from what the last check printed, so a check can simply list what is open or waiting now and the agent starts when that list changes; for a reminder that should repeat while nothing changed, have the check print the date before its output. Give one when a plain command can tell whether there is anything to do, so no agent starts for nothing: a schedule that looks for new commits, open pull requests, failed runs or files waiting in a folder. It prints what there is to act on, one item per line, and nothing when there is none. It only reads (git log, git status, gh ... list, ls, find, grep, jq, test): never a command that changes, sends, posts or deletes anything. Leave it "" when deciding takes judgment (that's the agent's job), when you'd have to guess a command or flag you aren't sure of, and for link. {{…}} isn't filled in inside a check: what set it off is in variables named after the fill-ins ($HERDR_NUMBER, $HERDR_TITLE, $HERDR_TASK_ID, $HERDR_FILES, $HERDR_DATE). When you give one, write the prompt so it works from {{check}}, and say in note that they should read the check and press Try it.
 - card: true only when the person wants each run as a card on the board.
+- keep: whether a run's tab stays open after its agent finishes. false (the default): the tab closes a few seconds after the agent is done, and the run stays listed under History. Choose true when the automation asks the person questions or is a conversation with them (a triage, an interview, a daily check-in they answer in its tab): an agent that ends its turn with a question looks finished, and its tab would close. Also true when the person says to keep the runs open.
 - prompt: the agent's whole task. It starts fresh and knows nothing of this conversation, so say what to look at (full paths, repos), what to do, what to leave alone, and how to finish (one line saying what it did or found). Keep it short and concrete, with numbered steps when there are several. It only reads and reports unless the person asks it to change something, and it never pushes, posts, comments, merges, deletes or messages anyone unless the person asked for exactly that. A scheduled check that finds nothing new changes nothing and says so. It can use these fill-ins: {{date}} {{time}} {{workspace}} {{folder}} {{event}} (what set it off); for board triggers {{task}} {{task.id}} {{task.title}} {{task.file}}; agent triggers {{agent}} {{terminal}} {{space}}; files triggers {{files}} {{file}}; github triggers {{pr}} or {{issue}} (number, title, author, link, labels and description) {{number}} {{title}} {{url}} {{author}} {{repo}} {{labels}}; link {{text}}; with a check {{check}} (what it printed). For anything but a schedule, what set it off is added at the end by itself unless the prompt uses one of these.
 - note: one or two short, plain sentences for the person about what you assumed or couldn't know and they should check before saving (a path you guessed, a field the agent has to find). Don't repeat the fields: they're shown already. "" when there's nothing to check.
 
@@ -179,6 +180,8 @@ function automationText(old, fields, body) {
 function runState(r, ag, tm) {
   if (!r) return null;
   if (r.status !== "started") return r.status;
+  // The runner closed its tab once its agent was done (automations.js: finished).
+  if (r.closed) return "finished, closed";
   const a = ag.find((x) => x.address === r.terminal);
   if (a) return STATE[a.status] ?? a.status;
   // Not an agent (or not one that reports): its tab is still open, or it's gone.
@@ -260,7 +263,7 @@ export default class Automations extends View {
     this.sel = null;  // { scope: "workspace" | "global", name, isNew }
     this.snap = null; // what was loaded: { text, file, name, description, when, agent, model, effort, folder, check, card, enabled, off, offHere, body }
     // enabled: as its file says. offHere (a global one): off in this workspace, by its file's `off:` line.
-    this.choice = { agent: "", model: "", effort: "", folder: "", card: false, enabled: true, offHere: false };
+    this.choice = { agent: "", model: "", effort: "", folder: "", card: false, keep: false, enabled: true, offHere: false };
     this.details = false; // the fields shown, not just the summary
     this.manual = false;  // a new one being filled in by hand, before any draft
     this.drafting = null; // the selection a draft is for, while Claude works
@@ -310,7 +313,7 @@ export default class Automations extends View {
         this.starters.push({
           name: n.slice(0, -3), description: field(head, "description") ?? "", when, summary: describe(trigger),
           agent: field(head, "agent") ?? "", model: field(head, "model") ?? "", effort: field(head, "effort") ?? "",
-          check: oneLine(field(head, "check") ?? ""), card: /^(true|yes|on|1)$/i.test(field(head, "card") ?? ""), body: body.trim(),
+          check: oneLine(field(head, "check") ?? ""), card: /^(true|yes|on|1)$/i.test(field(head, "card") ?? ""), keep: /^(true|yes|on|1)$/i.test(field(head, "keep") ?? ""), body: body.trim(),
         });
       }
       cx.notify();
@@ -360,7 +363,7 @@ export default class Automations extends View {
     return (this.sel?.isNew && this.nameIn.value().trim() !== s.name)
       || this.descIn.value() !== s.description || this.whenIn.value() !== s.when || this.bodyIn.value().trim() !== s.body
       || oneLine(this.checkIn.value()) !== s.check
-      || c.agent !== s.agent || c.model !== s.model || c.effort !== s.effort || c.folder !== s.folder || c.card !== s.card || c.enabled !== s.enabled
+      || c.agent !== s.agent || c.model !== s.model || c.effort !== s.effort || c.folder !== s.folder || c.card !== s.card || c.keep !== s.keep || c.enabled !== s.enabled
       || c.offHere !== (s.offHere ?? false);
   }
 
@@ -395,7 +398,7 @@ export default class Automations extends View {
       this.whenIn.set_value(snap.when);
       this.checkIn.set_value(snap.check);
       this.bodyIn.set_value(snap.body);
-      this.choice = { agent: snap.agent, model: snap.model, effort: snap.effort, folder: snap.folder, card: snap.card, enabled: snap.enabled, offHere: snap.offHere ?? false };
+      this.choice = { agent: snap.agent, model: snap.model, effort: snap.effort, folder: snap.folder, card: snap.card, keep: snap.keep ?? false, enabled: snap.enabled, offHere: snap.offHere ?? false };
       cx.notify();
     };
     if (fill) return load({ text: null, file: null, off: [], offHere: false, ...fill }, cx);
@@ -410,7 +413,7 @@ export default class Automations extends View {
         text, file, name: sel.name, description: field(head, "description") ?? "", when: field(head, "when") ?? "",
         agent: field(head, "agent") ?? "", model: field(head, "model") ?? "", effort: field(head, "effort") ?? "", folder: field(head, "folder") ?? "",
         check: oneLine(field(head, "check") ?? ""),
-        card: /^(true|yes|on|1)$/i.test(field(head, "card") ?? ""), enabled: !/^(false|no|off|0)$/i.test(field(head, "enabled") ?? ""),
+        card: /^(true|yes|on|1)$/i.test(field(head, "card") ?? ""), keep: /^(true|yes|on|1)$/i.test(field(head, "keep") ?? ""), enabled: !/^(false|no|off|0)$/i.test(field(head, "enabled") ?? ""),
         body: body.trim(),
       }, cx);
     });
@@ -421,7 +424,7 @@ export default class Automations extends View {
     let n = 1;
     while (names.has(`automation-${n}`)) n++;
     this.pick({ scope: this.none() ? "global" : "workspace", name: "", isNew: true }, {
-      name: `automation-${n}`, description: "", when: "weekdays 09:00", agent: "", model: "", effort: "", folder: "", check: "", card: false, enabled: true, body: "",
+      name: `automation-${n}`, description: "", when: "weekdays 09:00", agent: "", model: "", effort: "", folder: "", check: "", card: false, keep: false, enabled: true, body: "",
     }, cx);
     this.askIn.focus();
   }
@@ -433,7 +436,7 @@ export default class Automations extends View {
     const known = !s.agent || presetsFor(def.id).some((p) => p.name === s.agent) || installedAgents().some((a) => a.key === s.agent);
     this.pick({ scope: this.none() ? "global" : "workspace", name: "", isNew: true, starter: s.name }, {
       name: s.name, description: s.description, when: s.when, agent: known ? s.agent : "", model: known ? s.model : "", effort: known ? s.effort : "",
-      folder: "", check: s.check, card: s.card, enabled: true, body: s.body,
+      folder: "", check: s.check, card: s.card, keep: s.keep ?? false, enabled: true, body: s.body,
     }, cx);
     // Unsaved changes elsewhere asked for a second click first.
     if (this.sel?.starter !== s.name) return;
@@ -479,7 +482,7 @@ export default class Automations extends View {
     const c = this.choice;
     return {
       scope: this.sel.scope, name: this.sel.isNew ? this.nameIn.value().trim() : this.sel.name, description: this.descIn.value(), when: this.whenIn.value(),
-      agent: c.agent, model: c.model, effort: c.effort, folder: c.folder, check: oneLine(this.checkIn.value()), card: c.card, prompt: this.bodyIn.value().trim(),
+      agent: c.agent, model: c.model, effort: c.effort, folder: c.folder, check: oneLine(this.checkIn.value()), card: c.card, keep: c.keep, prompt: this.bodyIn.value().trim(),
     };
   }
 
@@ -546,7 +549,7 @@ export default class Automations extends View {
     const knobs = KNOBS[programOf(commandOf(def, okAgent).argv)];
     const model = knobs && MODEL_WORD.test(s(d.model)) ? s(d.model) : "";
     const effort = knobs?.effort && knobs.effort.levels.includes(s(d.effort)) ? s(d.effort) : "";
-    this.choice = { ...c, agent: okAgent, model, effort, folder: okFolder, card: d.card === true };
+    this.choice = { ...c, agent: okAgent, model, effort, folder: okFolder, card: d.card === true, keep: d.keep === true };
   }
 
   save(cx) {
@@ -568,7 +571,7 @@ export default class Automations extends View {
     const off = global ? [...(this.snap.off ?? []).filter((w) => w !== def.id), ...(c.offHere ? [def.id] : [])] : [];
     const text = automationText(sel.isNew ? null : this.snap.text, {
       description: this.descIn.value(), when, agent: c.agent, model: c.model, effort: c.effort, folder: c.folder,
-      check, card: c.card ? "true" : null, enabled: c.enabled ? null : "false", ...(global ? { off: off.join(", ") } : {}),
+      check, card: c.card ? "true" : null, keep: c.keep ? "true" : null, enabled: c.enabled ? null : "false", ...(global ? { off: off.join(", ") } : {}),
     }, body);
     this.busy = true;
     cx.spawn(async (cx) => {
@@ -578,7 +581,7 @@ export default class Automations extends View {
         await writeTextFile(file, text, sel.isNew ? null : this.snap.text);
         const record = {
           name, file, scope, description: oneLine(this.descIn.value()), when, trigger, summary: describe(trigger),
-          agent: c.agent || null, model: c.model || null, effort: c.effort || null, folder: c.folder || null, check: check || null, card: c.card, enabled: c.enabled,
+          agent: c.agent || null, model: c.model || null, effort: c.effort || null, folder: c.folder || null, check: check || null, card: c.card, keep: c.keep, enabled: c.enabled,
           body: body.replace(/<!--[\s\S]*?-->/g, "").trim(), error: null, next: null, warning: null, allowed: true,
         };
         if (global) {
@@ -724,7 +727,7 @@ export default class Automations extends View {
     if (!s || !this.sel || this.sel.scope !== "global") return;
     this.pick({ scope: "workspace", name: "", isNew: true }, {
       name: s.name, description: s.description, when: s.when, agent: s.agent, model: s.model, effort: s.effort, folder: s.folder,
-      check: s.check, card: s.card, enabled: true, body: s.body,
+      check: s.check, card: s.card, keep: s.keep ?? false, enabled: true, body: s.body,
     }, cx);
     this.manual = true;
   }
@@ -962,7 +965,7 @@ export default class Automations extends View {
     const runRow = (r) => {
       const state = runState(r, ag, tm);
       const color = state === "working" ? t.working : state === "needs you" || state === "failed" || state === "missed" || state === "waiting" ? t.blocked : t.dim;
-      const live = state !== "closed" && r.status === "started" && r.tab;
+      const live = state !== "closed" && !r.closed && r.status === "started" && r.tab;
       return h_flex().id(`a-run-${r.id}`).h(26).gap(10).items_center().text_size(12)
         .child(div().w(70).flex_none().text_color(t.dim).child(shortTime(r.at)))
         .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(r.note ? `${r.why}. ${r.note}` : r.why))
@@ -1072,7 +1075,11 @@ export default class Automations extends View {
         ...(c.folder && !folders.includes(c.folder) ? [pick("a-fo-other", c.folder, true, () => {})] : [])))
       .child(checkField)
       .child(label_("Each run"))
-      .child(chips(pick("a-card-no", "Just its tab", !c.card, () => { c.card = false; }), pick("a-card-yes", "A tab and a board card", c.card, () => { c.card = true; })));
+      .child(chips(pick("a-card-no", "Just its tab", !c.card, () => { c.card = false; }), pick("a-card-yes", "A tab and a board card", c.card, () => { c.card = true; })))
+      .child(label_("When it finishes"))
+      .child(chips(pick("a-keep-no", "Close the tab", !c.keep, () => { c.keep = false; }), pick("a-keep-yes", "Keep it open", c.keep, () => { c.keep = true; })))
+      .when(c.keep, (el) => el.child(div().pt(6).text_size(11.5).text_color(t.dim).child("Its newest three runs stay open. Right for one that asks you questions: an agent that ends its turn with a question looks finished.")))
+      .when(!c.keep, (el) => el.child(div().pt(6).text_size(11.5).text_color(t.dim).child(c.card ? "With a board card, each run's tab stays open: when the card gets a pull request, its agent hears about checks and reviews there." : "The tab closes a few seconds after the agent is done, unless it's waiting on you, its helpers are still at work or you're looking at it. History lists the run, with Resume.")));
 
     // A global one: the other workspaces it's off in; whether this workspace's own replaces it;
     // and for a workspace's own, the global one of the same name it replaces.

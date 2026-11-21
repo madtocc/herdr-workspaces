@@ -28,7 +28,7 @@ index=$dir/.index
 templates=${XDG_CONFIG_HOME:-$HOME/.config}/herdr-core/templates
 tab=$(printf '\t')
 usage="usage: herdr-ws-run <workspace> <automation> [text... | -]
-       herdr-ws-run --add (--at TIME | --when LINE) [--name NAME] [--agent NAME] [--model M] [--effort E] [--folder DIR] [--check CMD] [--card] [--workspace ID | --global] prompt... | -
+       herdr-ws-run --add (--at TIME | --when LINE) [--name NAME] [--agent NAME] [--model M] [--effort E] [--folder DIR] [--check CMD] [--card] [--keep] [--workspace ID | --global] prompt... | -
        herdr-ws-run --off <automation> [--workspace ID | --global]
        herdr-ws-run --on <automation> [--at TIME] [--workspace ID | --global]
        herdr-ws-run --list
@@ -87,6 +87,11 @@ Have an agent do something later, from a folder in the workspace:
                   Herdr asks them with a toast as soon as it's added, and
                   the automation doesn't start until they do. Tell them.
   --card          also put a card for each run on the workspace's board
+  --keep          leave each run's tab open when its agent finishes (the newest
+                  three stay). Without it the tab closes a few seconds after
+                  the agent is done, and History lists the run. Give it when
+                  the agent asks the person questions or the run is a
+                  conversation: ending a turn with a question looks finished
   --workspace ID  default: the workspace holding the current folder
   --global        for every workspace, not this one: it runs in each, in that
                   workspace's root (or --folder, from the root), unless the
@@ -277,7 +282,7 @@ fi
 if [ "${1:-}" = --add ] || [ "${1:-}" = --off ] || [ "${1:-}" = --on ]; then
   mode=${1#--}
   shift
-  at= when= name= agent= model= effort= folder= card= wsid= desc= auto= check= glob=
+  at= when= name= agent= model= effort= folder= card= keep= wsid= desc= auto= check= glob=
   while [ $# -gt 0 ]; do
     case $1 in
       --at|--when|--name|--agent|--model|--effort|--folder|--workspace|--description|--check)
@@ -289,6 +294,7 @@ if [ "${1:-}" = --add ] || [ "${1:-}" = --off ] || [ "${1:-}" = --on ]; then
         esac
         shift 2 ;;
       --card) card=1; shift ;;
+      --keep) keep=1; shift ;;
       --global) glob=1; shift ;;
       --) shift; break ;;
       -) break ;;
@@ -460,6 +466,7 @@ $usage" ;;
     [ -z "$rel" ] || echo "folder: $(q "$rel")"
     [ -z "$check" ] || echo "check: $(q "$check")"
     [ -z "$card" ] || echo "card: true"
+    [ -z "$keep" ] || echo "keep: true"
     echo ---
     printf '%s\n' "$prompt"
   } > "$tmp"
