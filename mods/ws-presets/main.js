@@ -18,11 +18,17 @@
 //
 // The same mod is the Start dialog, props { start: <preset name>, workspace }:
 // the preset, where it will run, and a task for its first message (optional).
+//
+// The list's foot also has "Agents in the + menu": a pane with a switch per installed
+// agent that hides it from ws-new-menu or brings it back (~/.herdr/agent-menu.json,
+// mirrored in shared "new-menu.hidden"; hidefacts.js, a copy of ws-new-menu's). The + menu's
+// "Choose agents…" opens this screen on it, props { workspace, pane: "agents" }.
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
-import { theme, shared, setShared, props, openOverlay, closeOverlay, home, readTextFile, writeTextFile, exec, notify, spaces, focused, window } from "herdr";
+import { theme, shared, setShared, props, openOverlay, closeOverlay, home, readTextFile, writeTextFile, exec, notify, spaces, focused, window, knownAgents } from "herdr";
 import * as fs from "fs/promises";
+import { HIDDEN, hiddenFile, parseHidden, saveHidden, shownAgents, countLine, notInstalledLine } from "./hidefacts.js";
 
 const templatesDir = () => `${home()}/.config/herdr-core/templates`;
 const modKey = () => (window()?.platform === "macos" ? "⌘" : "Ctrl+");
@@ -289,6 +295,54 @@ export default class Presets extends View {
     const readGuide = async (cx) => { this.guide = await guideState(); cx.notify(); };
     cx.spawn(readGuide);
     cx.timer.every(3000, readGuide);
+    // The agents this computer has (the + menu's last list at once, then asked again)
+    // and which the + menu leaves out.
+    this.pane = props()?.pane === "agents" ? "agents" : null; // shown when no preset is picked
+    this.known = shared("new-menu.agents")?.[""] ?? [];
+    this.hidden = shared(HIDDEN) ?? [];
+    cx.spawn(async (cx) => {
+      this.hidden = parseHidden(await readTextFile(hiddenFile(home())).catch(() => null));
+      if (JSON.stringify(this.hidden) !== JSON.stringify(shared(HIDDEN))) setShared(HIDDEN, this.hidden);
+      cx.notify();
+    });
+    cx.spawn(async (cx) => {
+      this.known = await knownAgents().catch(() => this.known);
+      cx.notify();
+    });
+  }
+
+  // The "Agents in the + menu" pane in place of the editor; unsaved edits ask for a second click.
+  showAgents(cx) {
+    if (this.dirty() && this.pending !== "agents") {
+      this.pending = "agents";
+      this.error = "This preset has unsaved changes. Click again to discard them.";
+      cx.notify();
+      return;
+    }
+    this.pending = null;
+    this.error = null;
+    this.sel = null;
+    this.snap = null;
+    this.pane = "agents";
+    cx.notify();
+  }
+
+  // One agent's switch: shown in the + menu or not. The switch moves at once, the file follows;
+  // a file that can't be written puts it back as the file has it.
+  flipAgent(key, cx) {
+    const hide = !this.hidden.includes(key);
+    this.hidden = hide ? [...this.hidden, key] : this.hidden.filter((k) => k !== key);
+    setShared(HIDDEN, this.hidden);
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try { this.hidden = await saveHidden({ home, readTextFile, writeTextFile }, key, hide); }
+      catch (e) {
+        notify({ title: "Couldn't change the + menu", body: `${tilde(hiddenFile(home()))}: ${message(e)}`, level: "error" });
+        this.hidden = parseHidden(await readTextFile(hiddenFile(home())).catch(() => null));
+      }
+      setShared(HIDDEN, this.hidden);
+      cx.notify();
+    });
   }
 
   // Give every agent the guide, or none: herdr-ws-agent --guide on / off.
@@ -367,6 +421,7 @@ export default class Presets extends View {
     this.confirming = false;
     // `cx` is passed in: the click's own is gone by the time the file has been read.
     const load = (snap, cx) => {
+      this.pane = null;
       this.sel = sel;
       this.snap = snap;
       this.nameIn.set_value(snap.name);
@@ -547,7 +602,8 @@ export default class Presets extends View {
         .children(global.map((p) => item(p, "global", p.error ? "error" : own.some((o) => o.name === p.name) ? "replaced here" : "")))
         .when(!global.length, (el) => el.child(div().px(14).text_size(12).text_color(t.dim).child("None yet."))))
       .when(Boolean(this.guide), (el) => el.child(this.guideRow(t)))
-      .when(Boolean(this.resume), (el) => el.child(this.resumeRow(t)));
+      .when(Boolean(this.resume), (el) => el.child(this.resumeRow(t)))
+      .child(this.agentsRow(t));
 
     return v_flex().id("presets").track_focus(this.handle).size_full().min_h(0).bg(t.popover).text_size(13).text_color(t.foreground)
       .on_key_down((e, cx) => {
@@ -558,7 +614,56 @@ export default class Presets extends View {
         .when(Boolean(def), (el) => el.child(div().text_size(12.5).text_color(t.dim).child(`for ${def.name}`)))
         .child(div().flex_1())
         .child(div().text_size(11).text_color(t.dim).child("Esc")))
-      .child(h_flex().flex_1().min_h(0).items_stretch().child(list).child(this.editor(t, def, own, iconOf)));
+      .child(h_flex().flex_1().min_h(0).items_stretch().child(list)
+        .child(!this.sel && this.pane === "agents" ? this.agentsPane(t) : this.editor(t, def, own, iconOf)));
+  }
+
+  // At the foot of the list: which agents the + menu shows; picking it shows agentsPane().
+  agentsRow(t) {
+    const on = !this.sel && this.pane === "agents";
+    return v_flex().flex_none().border_t(1).border_color(t.border).pb(8)
+      .child(div().px(14).pt(10).pb(4).text_size(11).text_color(t.dim).child("Agents in the + menu"))
+      .child(h_flex().id("p-agents").mx(6).px(8).py(6).gap(9).rounded(7).items_center().cursor_pointer()
+        .when(on, (el) => el.bg(t.selected)).when(!on, (el) => el.hover((s) => s.bg(t.hover)))
+        .tooltip("Hide agents you don't use from the tab bar's + menu, or bring them back.")
+        .on_click((_e, cx) => this.showAgents(cx))
+        .child(v_flex().flex_1().min_w(0).gap(2)
+          .child(div().truncate().child("Choose agents"))
+          .child(div().truncate().text_size(11).text_color(t.dim).child(this.known.length ? countLine(this.known, this.hidden) : "Checking installed agents…")))
+        .child(svg("mods/workspace-chrome/chevron-right.svg").size(11).flex_none().text_color(t.dim)));
+  }
+
+  // The pane: a switch per installed agent (on: the + menu shows it), the rest in words.
+  agentsPane(t) {
+    const installed = this.known.filter((a) => a.installed);
+    const shown = new Set(shownAgents(installed, this.hidden).map((a) => a.key));
+    const missing = notInstalledLine(this.known);
+    const iconOf = (a) => !a.icon ? svg("mods/workspace-chrome/terminal.svg").size(16).flex_none().text_color(t.muted)
+      : (a.tint ? svg(a.icon).text_color(t.foreground) : image(a.icon)).size(16).flex_none().rounded(3);
+    return v_flex().flex_1().min_w(0).min_h(0).p(18).gap(10).text_size(12.5)
+      .child(h_flex().gap(10).items_center()
+        .child(div().text_size(16).font_semibold().child("Agents in the + menu"))
+        .when(installed.length > 0, (el) => el.child(div().px(8).h(22).flex().items_center().rounded(11).bg(t.raised).text_size(11.5).text_color(t.muted)
+          .child(countLine(this.known, this.hidden)))))
+      .child(div().text_color(t.muted).child("The tab bar's + lists the agents installed here. Turn off the ones you don't use; a right-click on an agent in the + menu hides it too."))
+      .child(v_flex().id("p-agents-list").flex_1().min_h(0).pt(4).overflow_y_scrollbar()
+        .when(!installed.length, (el) => el.child(div().px(8).text_color(t.dim).child(this.known.length ? "No agents are installed here." : "Checking installed agents…")))
+        .children(installed.map((a) => {
+          const on = shown.has(a.key);
+          return h_flex().id(`p-agent-on-${a.key}`).h(36).px(8).gap(10).rounded(7).items_center().flex_none().cursor_pointer()
+            .hover((s) => s.bg(t.hover))
+            .tooltip(on ? `In the + menu. Click to hide ${a.name} there.` : `Hidden from the + menu. Click to bring ${a.name} back.`)
+            .on_click((_e, cx) => this.flipAgent(a.key, cx))
+            .child(iconOf(a))
+            .child(div().flex_1().min_w(0).truncate().text_color(on ? t.foreground : t.muted).child(a.name))
+            .when(!on, (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child("hidden")))
+            // On or off: the same switch as Bring agents back.
+            .child(h_flex().w(26).h(15).p(2).flex_none().rounded_full().items_center()
+              .bg(on ? t.accent : t.input).when(on, (el) => el.justify_end())
+              .child(div().size(11).rounded_full().bg(t.background)));
+        }))
+        .when(Boolean(missing), (el) => el.child(div().px(8).pt(12).text_size(11.5).text_color(t.dim).child(missing))))
+      .child(div().text_size(11.5).text_color(t.dim).child("Hidden agents are only left out of the + menu. Presets and automations can still start them."));
   }
 
   // At the foot of the list: the switch for Herdr's global guide, and Edit for its file.

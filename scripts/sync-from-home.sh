@@ -29,6 +29,12 @@ cmp -s "$src/mods/ws-switcher/ghfacts.js" "$src/mods/ws-board/ghfacts.js" || {
   exit 1
 }
 
+# The + menu and the Presets screen's "Agents in the + menu" pane hide agents by the same rules.
+cmp -s "$src/mods/ws-new-menu/hidefacts.js" "$src/mods/ws-presets/hidefacts.js" || {
+  echo "mods/ws-new-menu/hidefacts.js and mods/ws-presets/hidefacts.js differ: make them the same first" >&2
+  exit 1
+}
+
 mkdir -p "$dst/layouts"
 cp "$src/layouts/workspaces.json" "$dst/layouts/workspaces.json"
 
