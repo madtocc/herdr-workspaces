@@ -7,10 +7,15 @@
 // changes are inWorkspace(), the filter in render(), the empty text,
 // open(): a click on a sub-agent keeps it as a tab instead of peeking at it, and
 // a click on an agent goes back to the tabs from one of the workspace's screens (showTabs()).
+// Also: a second line on an agent's row with its model, how full its context is and
+// how often it was compacted, the rest on hover (readStats(), statLine(): stats.js
+// reads them from the agent's own records). The plans' usage is in the status bar
+// (ws-status).
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout } from "herdr";
+import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, exec, hc, appHome, checking } from "herdr";
+import { tokens } from "./statfacts.js";
 
 // The workspace ws-switcher shows, null for every space.
 const workspace = () => (shared("workspaces.defs") ?? []).find((d) => d.id === shared("workspaces.active")) ?? null;
@@ -94,6 +99,66 @@ function icon(p, size, color) {
   return p.tint ? svg(p.icon).size(size).flex_none().text_color(color) : image(p.icon).w(size).h(size).flex_none();
 }
 
+// --- Each agent's numbers (stats.js) ---
+// The agents whose records stats.js reads: by what they report (OSC 7501 app), else
+// by their program (programs.json's key).
+const KINDS = { "claude-code": "claude", claude: "claude", pi: "pi", agy: "agy", antigravity: "agy" };
+const kindOf = (a) => KINDS[a.app] ?? KINDS[a.program?.key] ?? null;
+// Read again this often while one of them works, and this often anyway.
+const STATS_WORKING = 5000;
+const STATS_IDLE = 60000;
+
+// Node, as History finds it: the app's PATH, else where the person's shell finds it.
+let nodeBin = null;
+async function node(args) {
+  const opts = { timeout: 30000 };
+  const missing = (r) => !r || r.code === 127;
+  if (nodeBin) {
+    const r = await exec(nodeBin, args, opts).catch(() => null);
+    if (!missing(r)) return r;
+    nodeBin = null;
+  }
+  const direct = await exec("node", args, opts).catch(() => null);
+  if (!missing(direct)) return direct;
+  // Only the path is taken from the shell's output, so whatever else an interactive
+  // shell prints can't get into what's read.
+  for (const flags of ["-lc", "-lic"]) {
+    const found = await exec("sh", ["-c", 'exec "${SHELL:-/bin/sh}" "$1" "command -v node"', "sh", flags], { timeout: 15000 }).catch(() => null);
+    const bin = String(found?.stdout ?? "").split("\n").map((l) => l.trim()).filter((l) => l.startsWith("/")).pop();
+    if (!bin) continue;
+    const r = await exec(bin, args, opts).catch(() => null);
+    if (!missing(r)) { nodeBin = bin; return r; }
+  }
+  return { code: 127, stdout: "", stderr: "node not found" };
+}
+
+// The context meter's color: plain, then a warning past 70%, then the blocked color past 85%.
+const fullness = (t, pct) => (pct >= 85 ? t.blocked : pct >= 70 ? t.ansi3 : t.muted);
+
+// A small bar, filled to pct.
+const meter = (t, pct, w) => div().w(w).h(4).flex_none().rounded(2).bg(t.border)
+  .child(div().h(4).rounded(2).bg(fullness(t, pct)).w(Math.max(2, Math.round((w * Math.min(pct, 100)) / 100))));
+
+// What the hover says about an agent's numbers, a fact a line.
+function statDetail(s) {
+  const out = [];
+  const via = s.provider ? ` via ${s.provider}` : "";
+  if (s.name || s.model) out.push(`${s.name ?? s.model}${s.effort ? `, ${s.effort} ${s.app === "pi" ? "thinking" : "effort"}` : ""}${s.model && s.name && s.name !== s.model ? ` (${s.model}${via})` : via}`);
+  if (s.used != null) out.push(`Context: ${tokens(s.used)}${s.size ? ` of ${tokens(s.size)} tokens (${s.pct}%)` : " tokens"}`);
+  if (s.compactions > 0) {
+    const c = s.compacted;
+    const how = c?.trigger === "manual" ? "by /compact" : c?.trigger === "auto" ? "automatically" : "";
+    const size = c?.pre ? (c.post ? `${tokens(c.pre)} → ${tokens(c.post)}` : `from ${tokens(c.pre)}`) : "";
+    const what = [how, size].filter(Boolean).join(", ");
+    out.push(`Compacted ${s.compactions === 1 ? "once" : `${s.compactions} times`}${what ? `, last ${what}` : ""}`);
+  } else if (s.used != null) out.push("Not compacted yet");
+  const spent = [];
+  if (s.cost != null) spent.push(`$${s.cost < 10 ? s.cost.toFixed(2) : Math.round(s.cost)}`);
+  if (s.lines && (s.lines.added || s.lines.removed)) spent.push(`+${s.lines.added} −${s.lines.removed} lines`);
+  if (spent.length) out.push(`This session: ${spent.join(", ")}`);
+  return out.join("\n");
+}
+
 export default class Agents extends View {
   init(_props, cx) {
     if (props()?.sortMenu) return;
@@ -104,6 +169,85 @@ export default class Agents extends View {
     if (!this.pendingPins.length) localStorage.removeItem("pins");
     this.migratingPins = new Set();
     cx.timer.every(30000, (cx) => cx.notify());
+    // Each agent's numbers, by address, and the terminals' programs (pid) they're read for.
+    this.stats = {};
+    this.statsRaw = "";
+    this.statsAt = 0;
+    this.statsFor = "";
+    this.pids = new Map();
+    if (checking()) return;
+    cx.spawn(async (cx) => this.readStats(cx));
+    cx.timer.every(STATS_WORKING, (cx) => {
+      if (this.statsBusy) return;
+      const list = this.statAgents();
+      const key = list.map((a) => a.address).join(" ");
+      const wait = list.some((a) => a.status === "working") ? STATS_WORKING : STATS_IDLE;
+      if (key !== this.statsFor || Date.now() - this.statsAt >= wait - 500) cx.spawn(async (cx) => this.readStats(cx));
+    });
+  }
+
+  // This computer's agents stats.js can read (another machine's records are there).
+  statAgents() {
+    return agents().filter((a) => !a.address.includes("/") && kindOf(a));
+  }
+
+  // Reads every agent's numbers (stats.js).
+  // Redraws only when something changed.
+  async readStats(cx) {
+    if (this.statsBusy) return;
+    this.statsBusy = true;
+    try {
+      const list = this.statAgents();
+      this.statsFor = list.map((a) => a.address).join(" ");
+      const args = [`${appHome()}/mods/ws-agents/stats.js`];
+      for (const a of list) {
+        const kind = kindOf(a);
+        // Which program runs there (to tell this Claude or Pi from one before it): asked
+        // again every minute. Antigravity goes by the launcher's note instead.
+        let p = this.pids.get(a.address);
+        if (kind !== "agy" && (!p || Date.now() - p.at > 60000)) {
+          const r = await hc(["get", a.address, "--json"]).catch(() => null);
+          let pid = null;
+          try { pid = JSON.parse(r?.stdout ?? "")?.foreground?.pid ?? null; } catch { pid = null; }
+          p = { pid, at: Date.now() };
+          this.pids.set(a.address, p);
+        }
+        args.push("--t", `${a.address}=${kind}${p?.pid ? `:${p.pid}` : ""}`);
+      }
+      for (const k of this.pids.keys()) if (!list.some((a) => a.address === k)) this.pids.delete(k);
+      const r = await node(args);
+      if (r.code !== 0 || r.stdout === this.statsRaw) return;
+      let data = null;
+      try { data = JSON.parse(r.stdout); } catch { return; }
+      this.statsRaw = r.stdout;
+      this.stats = data.agents ?? {};
+      cx.notify();
+    } finally {
+      this.statsBusy = false;
+      this.statsAt = Date.now();
+    }
+  }
+
+  // An agent row's second line: its model, a meter of its context and how often it
+  // was compacted; the rest (effort, tokens, cost) on hover.
+  statLine(t, a, s) {
+    const pct = s.pct;
+    return h_flex()
+      .id(`stat-${a.address}`)
+      .min_w(0)
+      .gap(5)
+      .items_center()
+      .text_size(11)
+      .text_color(t.dim)
+      .tooltip(statDetail(s))
+      .when(Boolean(s.name), (el) => el.child(div().min_w(0).truncate().child(s.name)))
+      .when(pct != null, (el) => el
+        .child(meter(t, pct, 26))
+        .child(div().flex_none().text_color(pct >= 70 ? fullness(t, pct) : t.dim).child(`${pct}%`)))
+      .when(pct == null && s.used != null, (el) => el.child(div().flex_none().child(tokens(s.used))))
+      .when(s.compactions > 0, (el) => el.child(h_flex().flex_none().gap(2).items_center()
+        .child(svg("mods/ws-agents/compacted.svg").size(10))
+        .child(String(s.compactions))));
   }
 
   // Stamps agents whose state changed. Done and idle count as one: looking at a
@@ -380,10 +524,14 @@ export default class Agents extends View {
       // Without a space header above (priority, pinned) the row names its space.
       const full = byPriority || isPinned;
       const name = full ? a.space_name || label(a) : more ?? (/^\d+$/.test(label(a)) ? a.program?.name || label(a) : label(a));
+      const stat = this.stats[a.address];
+      const nameLine = h_flex().min_w(0).gap(5).items_center()
+        .child(div().min_w(0).max_w(full && more ? 120 : 200).truncate().text_color(idle ? t.muted : t.foreground).child(name))
+        .when(full && Boolean(more), el => el.child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(`· ${more}`)));
       return h_flex()
         .id(`ag-${a.address}`)
         .px(8)
-        .h(30)
+        .h(stat ? 42 : 30)
         .flex_none()
         .rounded(8)
         .items_center()
@@ -403,9 +551,9 @@ export default class Agents extends View {
             this.folded.has(a.address) ? this.folded.delete(a.address) : this.folded.add(a.address);
             cx.notify();
           })).child(pic)))
-        .child(h_flex().flex_1().min_w(0).gap(5).items_center()
-          .child(div().min_w(0).max_w(full && more ? 120 : 200).truncate().text_color(idle ? t.muted : t.foreground).child(name))
-          .when(full && Boolean(more), el => el.child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(`\u00b7 ${more}`))))
+        .child(stat
+          ? v_flex().flex_1().min_w(0).gap(2).child(nameLine).child(this.statLine(t, a, stat))
+          : nameLine.flex_1())
         .when(Boolean(machine), el => el.child(div().text_size(10).text_color(t.dim).child(machine)))
         .when(subs.length > 0, el => el.child(fold(a, subs)))
         .when(this.hovered === a.address, el => el.child(pin))

@@ -36,6 +36,9 @@
 //   workspaces.prs       task file -> its pull request's one status (prs.js), drawn by ws-board
 //   workspaces.github    task file -> its GitHub board item's status (ghboard.js), drawn by ws-board
 //
+//   workspaces.usage     { <plan>: { rows, at, from, tried } }: each plan's usage, read by ws-status's bar for its panel
+//   workspaces.usage.ask { at }: ws-status's panel asks the bar to read the usage again
+//
 // It also runs each workspace's automations (automations.js) and follows board cards'
 // pull requests (prs.js) and GitHub board items (ghboard.js): the one runner of each lives in this sidebar
 // copy and ticks on its timer. Unless the background runner is on

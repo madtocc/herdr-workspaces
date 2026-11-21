@@ -1,0 +1,36 @@
+#!/bin/sh
+# Claude Code's status line for a Claude in a herdr-core terminal: keeps what Claude
+# hands its status line (the model, how full the context is, the account's limits,
+# the session's cost) where the Agents list (ws-agents) reads it, then shows yours.
+#
+#   herdr-ws-statusline [your status line command...]
+#
+# herdr-ws-agent gives each Claude it starts in a herdr-core terminal this as its
+# status line (inline --settings), unless a status line is already set: in
+# ~/.claude/settings.json, the folder's .claude/settings.json or settings.local.json,
+# or the command's own --settings. To keep yours and still feed the Agents list, put
+# this in front of your own command there:
+#   "statusLine": { "type": "command", "command": "herdr-ws-statusline ~/.claude/statusline.sh" }
+#
+# What Claude passed is kept, with the time it came, in
+#   ~/.herdr/agents/<core>/<terminal>.json    { "at": <unix seconds>, "status": { ... } }
+# where <core> is the core's socket name ("default") and <terminal> is $HC_TERMINAL_ID.
+# Outside a herdr-core terminal it keeps nothing. Your command, if given, gets the same
+# input and its output is the status line; without one the status line stays empty.
+
+input=$(cat)
+case "$input" in
+  '{'*)
+    if [ -n "${HC_TERMINAL_ID:-}" ] && [ -n "${HC_TERMINAL_SOCKET:-}" ]; then
+      core=${HC_TERMINAL_SOCKET##*/}
+      dir=${HERDR_WS_AGENTS_DIR:-$HOME/.herdr/agents}/${core%.sock}
+      if mkdir -p "$dir" 2>/dev/null; then
+        tmp=$dir/.$HC_TERMINAL_ID.$$
+        printf '{"at":%s,"status":%s}\n' "$(date +%s)" "$input" > "$tmp" 2>/dev/null && mv -f "$tmp" "$dir/$HC_TERMINAL_ID.json" 2>/dev/null
+        rm -f "$tmp" 2>/dev/null
+      fi
+    fi
+    ;;
+esac
+[ $# -gt 0 ] || exit 0
+printf '%s' "$input" | "$@"

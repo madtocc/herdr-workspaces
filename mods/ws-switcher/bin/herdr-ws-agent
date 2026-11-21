@@ -92,7 +92,9 @@
 #
 # In a herdr-core terminal, Claude also gets a hook (in --settings) and its command
 # a note in ~/.herdr/resume/<core>/<terminal>.cmd, so herdr-ws-resume brings it
-# back after a restart, in the same tab.
+# back after a restart, in the same tab. Its status line (in the same --settings) is
+# herdr-ws-statusline, which keeps the model, context and limits Claude hands it for
+# the Agents list, unless a status line is set already.
 #
 # HERDR_WS_AGENT_DRY=1 prints the command, one word per line, instead of running it.
 
@@ -162,6 +164,10 @@ for w in "$@"; do
       -i=* | --prompt-interactive=* | --conversation=*) continue ;;
       -p | --print | --prompt | -p=* | --print=* | --prompt=*) oneshot=1 ;;
     esac
+  fi
+  # Claude's print run gets no status line.
+  if [ "${agent##*/}" = claude ] && [ -z "$take" ]; then
+    case "$w" in -p | --print) oneshot=1 ;; esac
   fi
   if [ "$take" = one ]; then take=; case "$w" in -*) ;; *) note="$note $(q "$w")"; continue ;; esac; fi
   if [ "$take" = all ]; then case "$w" in -*) take= ;; *) note="$note $(q "$w")"; continue ;; esac; fi
@@ -549,11 +555,35 @@ if [ -n "$hooks" ] && [ -n "$ownset" ]; then
   [ -n "$inline" ] || hooks=
   case "$own" in *'"hooks"'*) hooks= ;; esac
 fi
+# The Agents list's numbers (model, context, the account's limits): in a herdr-core
+# terminal, Claude's status line is herdr-ws-statusline, which keeps what Claude hands
+# it. Not where a status line is set already (your settings, the folder's, the
+# command's own), nor in a print run (-p), which has none.
+sline=
+if [ "$name" = claude ] && [ -z "$oneshot" ] && [ -n "${HC_TERMINAL_ID:-}" ] && [ -n "${HC_TERMINAL_SOCKET:-}" ] && { [ -z "$ownset" ] || [ -n "$inline" ]; }; then
+  statusline=$(dirname "$self")/herdr-ws-statusline
+  [ -x "$statusline" ] || statusline=$(command -v herdr-ws-statusline 2>/dev/null) || statusline=
+  case "$own" in *'"statusLine"'*) statusline= ;; esac
+  for f in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" .claude/settings.json .claude/settings.local.json; do
+    grep -q '"statusLine"' "$f" 2>/dev/null && statusline=
+  done
+  [ -n "$statusline" ] && sline="{\"type\":\"command\",\"command\":\"$(json "'$statusline'")\"}"
+fi
+# Pi's numbers, the same way: in a herdr-core terminal it loads the extension
+# herdr-stats.ts (in ../pi beside this script), which keeps them. Not in a print run.
+if [ "$name" = pi ] && [ -n "${HC_TERMINAL_ID:-}" ] && [ -n "${HC_TERMINAL_SOCKET:-}" ]; then
+  piext=$(cd "$(dirname "$self")/.." 2>/dev/null && pwd -P)/pi/herdr-stats.ts
+  for w in "$@"; do
+    case "$w" in --) break ;; -p | --print) piext= ;; esac
+  done
+  [ -n "$piext" ] && [ -f "$piext" ] && set -- "$@" -e "$piext"
+fi
 # Inline settings JSON with the hooks and the folders added. The folders go first
 # in its own top-level "permissions", or in a new one.
 withextras() {
   s=$1 add=
   [ -n "$hooks" ] && add="\"hooks\":$hooks"
+  [ -n "$sline" ] && add=${add:+$add,}"\"statusLine\":$sline"
   if [ -n "$dirs" ]; then
     list="\"additionalDirectories\":[$dirs]"
     if p=$(printf '%s' "$s" | HERDR_WS_ADD=$list awk '
@@ -589,7 +619,7 @@ withextras() {
   esac
 }
 new=
-if [ -n "$hooks$dirs" ]; then
+if [ -n "$hooks$dirs$sline" ]; then
   base=$own
   [ -n "$ownset" ] || base='{}'
   new=$(withextras "$base")
