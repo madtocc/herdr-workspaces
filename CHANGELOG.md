@@ -7,6 +7,9 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 
 ## [Unreleased]
 
+### New
+- **Right-click an agent.** In the Agents list, right-clicking an agent's row (a sub-agent's, or a number on the narrow rail) opens a menu: Peek; Send a message…, a box that types into its prompt and sends it without going there; Interrupt while it works (Esc); Compact while it rests (`/compact`, Claude Code, Codex and Pi); Fork session, a new tab beside it that starts a copy of the conversation with the same preset (`--resume <id> --fork-session` for Claude, `--fork` for Pi); Rename…; Pin to top; Copy terminal id (its Herdr address, such as `t7`, for `hc read` and `hc send`); Copy session id; Close session, which asks first while it works or waits on you; and Wipe session…, which after a confirmation closes it and moves its conversation (Claude Code's transcript and the folders Claude keeps for it, or Pi's session file) to the Trash, so History and resume no longer find it. Items show only where they work: Codex has no Fork, Wipe or Copy session id, Antigravity no Fork or Wipe, and an agent that shows no numbers on its row has none of the three. To update, copy `mods/ws-agents`.
+
 ## [0.11.0] - 2026-11-21
 
 ### New

@@ -11,11 +11,17 @@
 // how often it was compacted, the rest on hover (readStats(), statLine(): stats.js
 // reads them from the agent's own records). The plans' usage is in the status bar
 // (ws-status).
+// Also: a right-click on an agent's row (a sub-agent's too, and on the rail) opens its
+// menu: Peek, Send a message, Interrupt, Compact, Fork session, Rename, Pin, Copy
+// terminal id, Copy session id, Close session, Wipe session (menufacts.js says which a
+// row gets), with the Send a message and Wipe dialogs (agentMenu(), act(), sendDialog(),
+// wipeDialog()).
 
 import { View, div, image, svg } from "gpui-kit";
-import { v_flex, h_flex } from "gpui-base";
-import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, exec, hc, appHome, checking } from "herdr";
+import { v_flex, h_flex, InputState, Input } from "gpui-base";
+import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, exec, hc, appHome, home, notify, checking } from "herdr";
 import { tokens } from "./statfacts.js";
+import { kindOf as menuKind, menuItems, menuHeight, closeAsks, forkArgv, wipeTargets } from "./menufacts.js";
 
 // The workspace ws-switcher shows, null for every space.
 const workspace = () => (shared("workspaces.defs") ?? []).find((d) => d.id === shared("workspaces.active")) ?? null;
@@ -159,9 +165,47 @@ function statDetail(s) {
   return out.join("\n");
 }
 
+// --- The right-click menu (menufacts.js) ---
+const tilde = (p) => {
+  const h = home();
+  return p && h && (p === h || p.startsWith(`${h}/`)) ? `~${p.slice(h.length)}` : p ?? "";
+};
+
+// Moves each path given after $1 that's there to the Trash, or into $1 where there's
+// no Trash command (as ws-switcher moves a scratch folder). Prints where each went.
+const TRASH = `
+dest=$1; shift
+for p in "$@"; do
+  [ -e "$p" ] || continue
+  if command -v trash >/dev/null 2>&1 && trash "$p"; then echo Trash; continue; fi
+  if command -v gio >/dev/null 2>&1 && gio trash "$p"; then echo Trash; continue; fi
+  mkdir -p "$dest" && mv "$p" "$dest/$(basename "$p")-$(date +%s)" && echo "$dest" || exit 1
+done`;
+
+// Puts $1 on the clipboard.
+const COPY = `
+if command -v pbcopy >/dev/null 2>&1; then printf %s "$1" | pbcopy
+elif command -v wl-copy >/dev/null 2>&1; then printf %s "$1" | wl-copy
+elif command -v xclip >/dev/null 2>&1; then printf %s "$1" | xclip -selection clipboard
+else echo "no clipboard command (pbcopy, wl-copy, xclip)" >&2; exit 1; fi`;
+
+// What hc (or a shell step) said went wrong, in its words.
+function failure(r) {
+  const out = String(r?.stdout ?? "").trim();
+  const err = String(r?.stderr ?? "").trim();
+  try {
+    const j = JSON.parse(out || err);
+    return String(j?.error?.message ?? j?.error ?? out);
+  } catch {
+    return err || out || "it didn't say why";
+  }
+}
+
 export default class Agents extends View {
   init(_props, cx) {
-    if (props()?.sortMenu) return;
+    const p = props();
+    if (p?.sortMenu) return;
+    if (p?.agentMenu || p?.send || p?.wipe) return this.initOverlay(p, cx);
     this.folded = new Set();
     // Each agent's last state and when it changed (ms), kept across restarts.
     this.changed = JSON.parse(localStorage.getItem("changed") ?? "{}");
@@ -305,6 +349,246 @@ export default class Agents extends View {
     return sawDone ? RANK.done : RANK[a.status] ?? 0;
   }
 
+  // The menu and its dialogs take the keyboard; Send a message starts in its box.
+  initOverlay(p, cx) {
+    this.at = 0;
+    this.busy = false;
+    this.error = null;
+    this.handle = cx.focus_handle();
+    this.handle.focus();
+    if (!p.send) return;
+    this.sendIn = InputState.new({ value: "", placeholder: `What to tell ${p.send.name}` });
+    this.sendIn.on("change", (_e, cx) => { this.error = null; cx.notify(); });
+    this.sendIn.on("submit", (_e, cx) => this.doSend(cx));
+    this.sendIn.focus();
+    cx.timer.after(600, () => this.sendIn.focus());
+  }
+
+  // What the menu needs to know about a row's agent (menufacts.js). The popup is a copy
+  // of its own without the list's numbers, so they go with it.
+  // a: an agents() entry, else a sub-agent's terminal; status: as the row shows it;
+  // top: a row of its own (it can be pinned).
+  menuFacts(a, name, status, top) {
+    const s = this.stats?.[a.address] ?? {};
+    const pane = a.pane ? panes().find((p) => p.pane === a.pane) : null;
+    const tab = a.tab ? spaces().flatMap((sp) => sp.tabs).find((x) => x.id === a.tab) : null;
+    return {
+      address: a.address, name: name || a.address, pane: pane ? a.pane : null, tab: tab ? a.tab : null, space: a.space ?? null,
+      tabName: tab?.named ? tab.name : null, program: a.program?.name ?? null,
+      status, kind: menuKind(a.app ?? a.agent, a.program?.key), pinned: Boolean(a.pinned), top, focused: Boolean(a.focused),
+      remote: a.address.includes("/"),
+      session: s.session ?? null, file: s.file ?? null, cwd: s.cwd ?? pane?.cwd ?? a.cwd ?? null, cmd: s.cmd ?? null,
+    };
+  }
+
+  openMenu(f) {
+    openOverlay({ mod: "ws-agents", kind: "popup", width: 220, height: menuHeight(menuItems(f)), props: { agentMenu: f } });
+  }
+
+  // A menu item. Quick ones run here and the popup closes after (its tasks end when it
+  // does); Send a message and Wipe open their own dialogs, Close asks first while it works.
+  act(it, cx) {
+    const p = props();
+    const f = p.agentMenu;
+    const done = () => closeOverlay(p.overlay);
+    if (!it || this.busy) return;
+    switch (it.id) {
+      case "peek":
+        done();
+        return run("terminal.peek", { terminal: f.address });
+      case "send":
+        done();
+        return openOverlay({ mod: "ws-agents", kind: "dialog", width: 460, height: 216, props: { send: f } });
+      case "interrupt":
+        return this.quick(cx, () => hc(["keys", f.address, "esc"]), "Couldn't interrupt it");
+      case "compact":
+        return this.quick(cx, () => hc(["send", f.address, "/compact"]), "Couldn't compact it");
+      case "fork": {
+        done();
+        const argv = forkArgv(f);
+        if (!argv) return;
+        showTabs();
+        return run("tab.new", { ...(f.space ? { space: f.space } : {}), name: `${f.tabName || f.program || "Agent"} fork`, ...(f.cwd ? { folder: f.cwd } : {}), argv });
+      }
+      case "rename":
+        done();
+        return run("tab.rename", { id: f.tab });
+      case "pin":
+        done();
+        return run("terminal.pin", { terminal: f.address, pinned: !f.pinned });
+      case "address":
+        return this.quick(cx, () => exec("sh", ["-c", COPY, "sh", f.address]), "Couldn't copy the terminal id",
+          () => notify({ title: "Terminal id copied", body: `${f.address}: hc read ${f.address}, hc send ${f.address} "…"`, level: "success", timeout: 2500 }));
+      case "copy":
+        return this.quick(cx, () => exec("sh", ["-c", COPY, "sh", f.session]), "Couldn't copy the session id",
+          () => notify({ title: "Session id copied", body: f.session, level: "success", timeout: 2500 }));
+      case "close": {
+        done();
+        const command = f.pane ? { name: "pane.close", args: { pane: f.pane } } : { name: "terminal.kill", args: { terminal: f.address } };
+        if (!closeAsks(f)) return run(command.name, command.args);
+        return openOverlay({ mod: "confirm", kind: "dialog", width: 420, height: 176, props: {
+          title: `Close ${f.name}?`,
+          detail: f.status === "working"
+            ? "It's working: closing it stops what it's doing. Its conversation stays in History."
+            : "It's waiting on you. Closing it ends it there; its conversation stays in History.",
+          command } });
+      }
+      case "wipe":
+        done();
+        return openOverlay({ mod: "ws-agents", kind: "dialog", width: 480, height: 218, props: { wipe: f } });
+    }
+  }
+
+  // Runs one quick step (hc, a shell line), then closes the popup; a toast says when it failed.
+  quick(cx, step, failed, after) {
+    const overlay = props().overlay;
+    this.busy = true;
+    cx.spawn(async () => {
+      const r = await step().catch((e) => ({ code: 1, stderr: String(e?.message ?? e) }));
+      if (r?.code !== 0) notify({ title: failed, body: failure(r), level: "error" });
+      else after?.();
+      closeOverlay(overlay);
+    });
+  }
+
+  agentMenu(t) {
+    const f = props().agentMenu;
+    const items = menuItems(f);
+    return v_flex()
+      .id("agent-menu")
+      .track_focus(this.handle)
+      .w_full()
+      .min_h(0)
+      .p(5)
+      .bg(t.popover)
+      .text_size(12.8)
+      .on_key_down((e, cx) => {
+        if (e.key === "down") this.at = (this.at + 1) % items.length;
+        else if (e.key === "up") this.at = (this.at + items.length - 1) % items.length;
+        else if (e.key === "enter") return this.act(items[this.at], cx);
+        else if (e.key === "escape") return closeOverlay(props().overlay);
+        else return;
+        cx.notify();
+      })
+      .child(div().px(8).pt(4).pb(6).text_size(11).text_color(t.dim).truncate().child(f.name))
+      .children(items.map((it, i) => v_flex()
+        .when(Boolean(it.sep), (el) => el.child(div().mx(7).my(4).h(1).bg(t.border)))
+        .child(h_flex()
+          .id(`am-${it.id}`)
+          .h(31)
+          .px(8)
+          .gap(9)
+          .rounded(7)
+          .items_center()
+          .text_color(it.danger ? t.blocked : t.foreground)
+          .when(i === this.at, (el) => el.bg(t.selected))
+          .hover((el) => el.bg(t.hover))
+          .on_click((_e, cx) => this.act(it, cx))
+          .child(svg(it.icon).size(14).flex_none().text_color(it.danger ? t.blocked : t.muted))
+          .child(div().flex_1().min_w(0).truncate().child(it.label))
+          .when(Boolean(it.hint), (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(it.hint))))));
+  }
+
+  // The dialogs' frame, title, buttons and error line, as the switcher's dialogs look.
+  dialogFrame(t, id, title, enter) {
+    return v_flex().id(id).track_focus(this.handle).size_full().min_h(0).p(18).bg(t.popover).text_size(13)
+      .on_key_down((e, cx) => {
+        if (e.key === "escape") closeOverlay(props().overlay);
+        else if (e.key === "enter" && enter) enter(cx);
+        else return;
+        cx.stop_propagation();
+      })
+      .child(h_flex().items_center()
+        .child(div().flex_1().min_w(0).truncate().text_size(15).font_semibold().text_color(t.foreground).child(title))
+        .child(div().text_size(11).text_color(t.dim).child("Esc")));
+  }
+
+  button(t, id, label, kind, action) {
+    const bg = kind === "danger" ? t.blocked : kind === "primary" ? t.solid : t.raised;
+    const fg = kind === "danger" ? "#ffffff" : kind === "primary" ? t.solid_foreground : t.foreground;
+    return h_flex().id(id).h(32).px(14).items_center().rounded(8)
+      .border_1().border_color(kind ? bg : t.input).bg(bg)
+      .text_color(fg).text_size(12.5).font_medium().cursor_pointer()
+      .when(this.busy && Boolean(kind), (el) => el.opacity(0.5)).hover((s) => s.opacity(0.88)).on_click(action).child(label);
+  }
+
+  // Send a message: typed into the agent's prompt and sent, without going to it.
+  sendDialog(t) {
+    const f = props().send;
+    return this.dialogFrame(t, "agent-send", `Message ${f.name}`, null)
+      .child(div().pt(14).pb(7).text_size(11.5).text_color(t.dim).child("Message"))
+      .child(Input.new(this.sendIn).h(36).px(10).rounded(9).border_1().border_color(t.input).bg(t.background).text_size(12.8).text_color(t.foreground))
+      .child(div().pt(10).text_size(11.5).text_color(t.dim).child(this.busy
+        ? "Sending… (if you left a draft in its prompt, it waits until that's sent or cleared)"
+        : "Typed into its prompt and sent, as if you'd typed it there."))
+      .when(Boolean(this.error), (el) => el.child(div().pt(8).text_size(11.5).text_color(t.blocked).child(this.error)))
+      .child(div().flex_1())
+      .child(h_flex().pt(14).gap(8).justify_end()
+        .child(this.button(t, "agent-send-cancel", "Cancel", null, () => closeOverlay(props().overlay)))
+        .child(this.button(t, "agent-send-go", this.busy ? "Sending…" : "Send", "primary", (_e, cx) => this.doSend(cx))));
+  }
+
+  doSend(cx) {
+    const p = props();
+    const text = this.sendIn.value().trim();
+    if (this.busy) return;
+    if (!text) { this.error = "Type what to tell it first."; cx.notify(); return; }
+    this.busy = true;
+    this.error = null;
+    cx.notify();
+    cx.spawn(async (cx) => {
+      const r = await hc(["send", p.send.address, text]).catch((e) => ({ code: 1, stderr: String(e?.message ?? e) }));
+      if (r.code === 0) return closeOverlay(p.overlay);
+      this.busy = false;
+      this.error = `Couldn't send it: ${failure(r)}`;
+      cx.notify();
+    });
+  }
+
+  // Wipe: closes the agent and moves its conversation to the Trash (menufacts.js:
+  // wipeTargets()), so History and its agent's own resume no longer find it.
+  wipeDialog(t) {
+    const f = props().wipe;
+    const targets = wipeTargets(f);
+    return this.dialogFrame(t, "agent-wipe", `Wipe ${f.name}?`, (cx) => this.doWipe(cx))
+      .child(div().pt(12).text_color(t.muted).child(`Closes it and moves its conversation to the Trash. History won't list it and it can't be resumed${f.status === "working" ? "; it's working, so this also stops what it's doing" : ""}.`))
+      .child(div().pt(10).text_size(11.5).text_color(t.dim).truncate().child(tilde(targets[0])))
+      .when(Boolean(this.error), (el) => el.child(div().pt(8).text_size(11.5).text_color(t.blocked).child(this.error)))
+      .child(div().flex_1())
+      .child(h_flex().pt(14).gap(8).justify_end()
+        .child(this.button(t, "agent-wipe-cancel", "Cancel", null, () => closeOverlay(props().overlay)))
+        .child(this.button(t, "agent-wipe-go", this.busy ? "Wiping…" : "Wipe", "danger", (_e, cx) => this.doWipe(cx))));
+  }
+
+  doWipe(cx) {
+    const p = props();
+    const f = p.wipe;
+    const targets = wipeTargets(f);
+    if (this.busy || !targets.length) return;
+    this.busy = true;
+    this.error = null;
+    cx.notify();
+    const running = () => terminals().some((x) => x.address === f.address && x.state === "live");
+    cx.spawn(async (cx) => {
+      try {
+        // Ended first, so it can't write to its transcript again.
+        if (running()) run("terminal.kill", { terminal: f.address });
+        for (let i = 0; i < 40 && running(); i++) await exec("sleep", ["0.15"]);
+        if (running()) throw new Error("it's still running");
+        if (f.pane && panes().some((x) => x.pane === f.pane)) run("pane.close", { pane: f.pane });
+        const r = await exec("sh", ["-c", TRASH, "sh", `${home()}/.herdr/trash`, ...targets]);
+        if (r.code !== 0) throw new Error(String(r.stderr ?? "").trim() || "moving it to the Trash failed");
+        const elsewhere = String(r.stdout ?? "").split("\n").map((l) => l.trim()).find((l) => l && l !== "Trash");
+        notify({ title: `Wiped ${f.name}`, body: elsewhere ? `Its conversation is in ${tilde(elsewhere)}.` : "Its conversation is in the Trash.", level: "success" });
+        closeOverlay(p.overlay);
+      } catch (e) {
+        this.busy = false;
+        this.error = `Couldn't wipe it: ${e?.message ?? e}`;
+        cx.notify();
+      }
+    });
+  }
+
   sortMenu(t) {
     const on = sortOf().id;
     return v_flex()
@@ -380,6 +664,10 @@ export default class Agents extends View {
       .when(on, (el) => el.bg(t.raised))
       .hover((s) => s.bg(t.hover))
       .on_click((e) => this.open(k, root, e))
+      .on_mouse_down("right", (_e, cx) => {
+        cx.stop_propagation();
+        this.openMenu(this.menuFacts(this.agentsBy?.get(k.address) ?? k, k.name || k.template || k.program?.name || k.address, st, false));
+      })
       .children(s.lines.map(l => div().self_start().mt(-4).w(9).h(17).mr(4).flex_none()
         .when(Boolean(l), el => el.border_l(1.5).border_color(t.input))
         .when(l === "└" || l === "├", el => el.border_b(1.5).rounded_bl(6))))
@@ -402,10 +690,14 @@ export default class Agents extends View {
   render(cx) {
     const t = theme();
     if (props()?.sortMenu) return this.sortMenu(t);
+    if (props()?.agentMenu) return this.agentMenu(t);
+    if (props()?.send) return this.sendDialog(t);
+    if (props()?.wipe) return this.wipeDialog(t);
     const collapsed = narrow();
     const sort = sortOf();
     let list = agents();
     this.listed = new Map(list.map((a) => [a.address, a.status]));
+    this.agentsBy = new Map(list.map((a) => [a.address, a]));
     const all = terminals();
     this.migratePins(all);
     const shown = focused()?.agent;
@@ -497,6 +789,7 @@ export default class Agents extends View {
           .gap(4)
           .hover((s) => s.bg(t.hover))
           .on_click(() => { showTabs(); run("pane.focus", { pane: a.pane }); })
+          .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openMenu(this.menuFacts(a, label(a) || a.space_name, a.status, true)); })
           .child(div().flex_1().min_w(0).whitespace_nowrap().text_right().text_color(t.muted).child(String(i + 1)))
           .child(h_flex().w(14).flex_none().items_center().justify_center().child(this.status(t, a, true)));
       }
@@ -545,6 +838,7 @@ export default class Agents extends View {
           cx.notify();
         })
         .on_click(() => { showTabs(); run("pane.focus", { pane: a.pane }); })
+        .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openMenu(this.menuFacts(a, full && more ? `${name} · ${more}` : name, a.status, true)); })
         .when(Boolean(pic), el => el.child(div().id(`agent-fold-${a.address}`)
           .when(subs.length > 0, el => el.on_click((_e, cx) => {
             cx.stop_propagation();

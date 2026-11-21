@@ -12,6 +12,10 @@
 // Antigravity: its transcript, through the conversation the launcher's restart hook
 // noted for the terminal (~/.herdr/resume/<core>/<terminal>.session).
 //
+// Each one's conversation too (session, and for Claude and Pi its transcript `file`),
+// and for Claude its folder (`cwd`) and the launcher's note of how it was started
+// (`cmd`): the right-click menu forks, wipes and copies with them (menufacts.js).
+//
 // Claude Code: the status line file herdr-ws-statusline keeps
 // (~/.herdr/agents/<core>/<terminal>.json), when it's the running session's; the
 // session itself from ~/.claude/sessions/<pid>.json, else from that file; and its
@@ -112,7 +116,11 @@ for (const w of wanted) {
   if (w.app === "pi") {
     // Kept by this Pi, not one that ran in this terminal before it.
     const raw = kept.get(w.address);
-    if (raw?.agent === "pi" && (!w.pid || !raw.pid || String(raw.pid) === w.pid)) agents[w.address] = piFacts(raw);
+    if (raw?.agent === "pi" && (!w.pid || !raw.pid || String(raw.pid) === w.pid)) {
+      const f = piFacts(raw);
+      // Its conversation, for the menu's Fork, Wipe and Copy session id.
+      if (f) agents[w.address] = { ...f, session: raw.status?.session_id ?? null, file: raw.status?.session_file ?? null };
+    }
     continue;
   }
   if (w.app === "agy") {
@@ -136,7 +144,15 @@ for (const w of wanted) {
     const file = session ? transcriptOf(session, status?.transcript) : null;
     const scan = file ? scanned(file) : null;
     if (!status && !scan) continue;
-    agents[w.address] = { ...claudeFacts(status, scan, cache.sizes), session };
+    // For the menu: the transcript (Wipe), the folder it runs in and how the launcher
+    // started it (Fork), the note only when it's this Claude's (written as it started).
+    let cmd = null;
+    try {
+      const note = path.join(NOTES, `${w.address}.cmd`);
+      const at = fs.statSync(note).mtimeMs;
+      if (!running?.startedAt || Math.abs(at - running.startedAt) < 5 * 60000) cmd = fs.readFileSync(note, "utf8").trim() || null;
+    } catch { /* started without the launcher */ }
+    agents[w.address] = { ...claudeFacts(status, scan, cache.sizes), session, file, cwd: running?.cwd ?? null, cmd };
   } catch (e) {
     notes.push(`${w.address}: ${String(e?.message ?? e)}`);
   }
