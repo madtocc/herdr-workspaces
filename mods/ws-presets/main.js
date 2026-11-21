@@ -8,8 +8,8 @@
 // is herdr-core's: front matter `description` and `command` (values as written),
 // instructions as the body. Other front matter lines (ready, submit, …) are kept.
 // `guide: off` leaves Herdr's global guide (~/.herdr/AGENTS.md) out for that
-// preset; the editor's "Herdr guide" choice writes it, and the list's foot has the
-// switch for every agent (ws-switcher/bin/herdr-ws-agent --guide on|off).
+// preset; the editor's "Herdr guide" choice writes it. The switches for every
+// agent live in Settings > Agents (ws-settings).
 //
 // The switcher loads presets into shared "workspaces.presets"; this writes the
 // files and updates that list at once, and the switcher's folder watch confirms
@@ -18,17 +18,10 @@
 //
 // The same mod is the Start dialog, props { start: <preset name>, workspace }:
 // the preset, where it will run, and a task for its first message (optional).
-//
-// The list's foot also has "Agents in the + menu": a pane with a switch per installed
-// agent that hides it from ws-new-menu or brings it back (~/.herdr/agent-menu.json,
-// mirrored in shared "new-menu.hidden"; hidefacts.js, a copy of ws-new-menu's). The + menu's
-// "Choose agents…" opens this screen on it, props { workspace, pane: "agents" }.
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
 import { theme, shared, setShared, props, openOverlay, closeOverlay, home, readTextFile, writeTextFile, exec, notify, spaces, focused, window, knownAgents } from "herdr";
-import * as fs from "fs/promises";
-import { HIDDEN, hiddenFile, parseHidden, saveHidden, shownAgents, countLine, notInstalledLine } from "./hidefacts.js";
 import { KNOBS, words, joinWords, programOf, flagValue, configValue, withFlag, withEffort, swapProgram, configModels, listable, keptModels, listModels, shownModels } from "./knobs.js";
 
 const templatesDir = () => `${home()}/.config/herdr-core/templates`;
@@ -91,39 +84,6 @@ function presetsFor(id) {
   return [...own, ...(p.global ?? []).filter((g) => !own.some((o) => o.name === g.name))].filter((x) => !x.error);
 }
 
-// After a restart (ws-switcher/bin/herdr-ws-resume): whether agents come back
-// (~/.herdr/resume/switch), how many have notes, and whether herdr-core's
-// config.toml starts terminals through the script.
-const resumeBin = () => `${home()}/.config/herdr-app/mods/ws-switcher/bin/herdr-ws-resume`;
-async function resumeState() {
-  const dir = `${home()}/.herdr/resume`;
-  const on = ((await readTextFile(`${dir}/switch`).catch(() => null)) ?? "").trim() !== "off";
-  let count = 0;
-  for (const core of await fs.readdir(dir).catch(() => [])) {
-    count += (await fs.readdir(`${dir}/${core}`).catch(() => [])).filter((f) => f.endsWith(".cmd")).length;
-  }
-  const config = await readTextFile(`${home()}/.config/herdr-core/config.toml`).catch(() => null);
-  return { on, count, ready: (config ?? "").includes("herdr-ws-resume") };
-}
-
-// Herdr's global guide (ws-switcher/bin/herdr-ws-agent): whether agents get it
-// (~/.herdr/guide/switch), and the file's size in characters (0: no guide yet).
-const agentBin = () => `${home()}/.config/herdr-app/mods/ws-switcher/bin/herdr-ws-agent`;
-const guideFile = () => `${home()}/.herdr/AGENTS.md`;
-const guideStarter = () => `${home()}/.config/herdr-app/mods/ws-switcher/guide.md`;
-async function guideState() {
-  const on = ((await readTextFile(`${home()}/.herdr/guide/switch`).catch(() => null)) ?? "").trim() !== "off";
-  const text = await readTextFile(guideFile()).catch(() => null);
-  return { on, bytes: text ? text.length : 0 };
-}
-const EDITORS = ["zed", "cursor", "code", "subl"]; // as in ws-switcher
-// Opens a file in the first installed editor of EDITORS, else the system's opener.
-function openFile(path) {
-  if (window()?.platform === "windows") return exec("explorer", [path]).catch(() => {});
-  const editors = EDITORS.map((e) => `command -v ${e} >/dev/null 2>&1 && exec ${e} "$1";`).join(" ");
-  return exec("sh", ["-c", `${editors} command -v open >/dev/null 2>&1 && exec open "$1"; exec xdg-open "$1"`, "sh", path]).catch(() => {});
-}
-
 // Opens the Start dialog for a preset (from this screen or the switcher's New agent).
 function openStart(name, workspace) {
   openOverlay({ mod: "ws-presets", kind: "dialog", width: 560, height: 430, props: { start: name, workspace } });
@@ -180,102 +140,11 @@ export default class Presets extends View {
     this.swapNote = null; // what the last agent switch left out of the command
     this.sel = null; // { scope, name, isNew }
     this.snap = null; // what was loaded: { text, file, description, command, body }
-    // The restart switch, read again every 3s (the CLI can change it too).
-    this.resume = null; // { on, count, ready }
-    const readResume = async (cx) => { this.resume = await resumeState(); cx.notify(); };
-    cx.spawn(readResume);
-    cx.timer.every(3000, readResume);
-    // The guide's switch and file, read again every 3s too.
-    this.guide = null; // { on, bytes }
     this.guideIn = true; // the editor's choice: this preset gets the guide
-    const readGuide = async (cx) => { this.guide = await guideState(); cx.notify(); };
-    cx.spawn(readGuide);
-    cx.timer.every(3000, readGuide);
-    // The agents this computer has (the + menu's last list at once, then asked again)
-    // and which the + menu leaves out.
-    this.pane = props()?.pane === "agents" ? "agents" : null; // shown when no preset is picked
+    // The agents this computer has (the + menu's last list at once, then asked again), for icons and the Agent chips.
     this.known = shared("new-menu.agents")?.[""] ?? [];
-    this.hidden = shared(HIDDEN) ?? [];
-    cx.spawn(async (cx) => {
-      this.hidden = parseHidden(await readTextFile(hiddenFile(home())).catch(() => null));
-      if (JSON.stringify(this.hidden) !== JSON.stringify(shared(HIDDEN))) setShared(HIDDEN, this.hidden);
-      cx.notify();
-    });
     cx.spawn(async (cx) => {
       this.known = await knownAgents().catch(() => this.known);
-      cx.notify();
-    });
-  }
-
-  // The "Agents in the + menu" pane in place of the editor; unsaved edits ask for a second click.
-  showAgents(cx) {
-    if (this.dirty() && this.pending !== "agents") {
-      this.pending = "agents";
-      this.error = "This preset has unsaved changes. Click again to discard them.";
-      cx.notify();
-      return;
-    }
-    this.pending = null;
-    this.error = null;
-    this.sel = null;
-    this.snap = null;
-    this.pane = "agents";
-    cx.notify();
-  }
-
-  // One agent's switch: shown in the + menu or not. The switch moves at once, the file follows;
-  // a file that can't be written puts it back as the file has it.
-  flipAgent(key, cx) {
-    const hide = !this.hidden.includes(key);
-    this.hidden = hide ? [...this.hidden, key] : this.hidden.filter((k) => k !== key);
-    setShared(HIDDEN, this.hidden);
-    cx.notify();
-    cx.spawn(async (cx) => {
-      try { this.hidden = await saveHidden({ home, readTextFile, writeTextFile }, key, hide); }
-      catch (e) {
-        notify({ title: "Couldn't change the + menu", body: `${tilde(hiddenFile(home()))}: ${message(e)}`, level: "error" });
-        this.hidden = parseHidden(await readTextFile(hiddenFile(home())).catch(() => null));
-      }
-      setShared(HIDDEN, this.hidden);
-      cx.notify();
-    });
-  }
-
-  // Give every agent the guide, or none: herdr-ws-agent --guide on / off.
-  flipGuide(cx) {
-    const on = !this.guide?.on;
-    this.guide = { ...this.guide, on };
-    cx.notify();
-    cx.spawn(async (cx) => {
-      const r = await exec(agentBin(), ["--guide", on ? "on" : "off"]).catch((e) => ({ code: 1, stdout: "", stderr: String(e) }));
-      if (r.code !== 0) notify({ title: "Couldn't change it", body: (r.stderr || r.stdout).trim() || `${tilde(agentBin())} failed.`, level: "error" });
-      this.guide = await guideState();
-      cx.notify();
-    });
-  }
-
-  // Edit opens the guide; with none yet, it's first written from the starter.
-  editGuide(cx) {
-    cx.spawn(async (cx) => {
-      if (!this.guide?.bytes) {
-        const starter = await readTextFile(guideStarter()).catch(() => null);
-        await writeTextFile(guideFile(), starter ?? "# Working in Herdr\n", null).catch(() => {});
-        this.guide = await guideState();
-        cx.notify();
-      }
-      openFile(guideFile());
-    });
-  }
-
-  // Bring agents back after a restart, or not: herdr-ws-resume --on / --off.
-  flipResume(cx) {
-    const on = !this.resume?.on;
-    this.resume = { ...this.resume, on };
-    cx.notify();
-    cx.spawn(async (cx) => {
-      const r = await exec(resumeBin(), [on ? "--on" : "--off"]).catch((e) => ({ code: 1, stdout: "", stderr: String(e) }));
-      if (r.code !== 0) notify({ title: "Couldn't change it", body: (r.stderr || r.stdout).trim() || `${tilde(resumeBin())} failed.`, level: "error" });
-      this.resume = await resumeState();
       cx.notify();
     });
   }
@@ -325,7 +194,6 @@ export default class Presets extends View {
     this.confirming = false;
     // `cx` is passed in: the click's own is gone by the time the file has been read.
     const load = (snap, cx) => {
-      this.pane = null;
       this.sel = sel;
       this.snap = snap;
       this.nameIn.set_value(snap.name);
@@ -505,10 +373,7 @@ export default class Presets extends View {
           .when(!own.length, (el) => el.child(div().px(14).text_size(12).text_color(t.dim).child("None yet."))))
         .child(head("Every workspace"))
         .children(global.map((p) => item(p, "global", p.error ? "error" : own.some((o) => o.name === p.name) ? "replaced here" : "")))
-        .when(!global.length, (el) => el.child(div().px(14).text_size(12).text_color(t.dim).child("None yet."))))
-      .when(Boolean(this.guide), (el) => el.child(this.guideRow(t)))
-      .when(Boolean(this.resume), (el) => el.child(this.resumeRow(t)))
-      .child(this.agentsRow(t));
+        .when(!global.length, (el) => el.child(div().px(14).text_size(12).text_color(t.dim).child("None yet."))));
 
     return v_flex().id("presets").track_focus(this.handle).size_full().min_h(0).bg(t.popover).text_size(13).text_color(t.foreground)
       .on_key_down((e, cx) => {
@@ -520,102 +385,7 @@ export default class Presets extends View {
         .child(div().flex_1())
         .child(div().text_size(11).text_color(t.dim).child("Esc")))
       .child(h_flex().flex_1().min_h(0).items_stretch().child(list)
-        .child(!this.sel && this.pane === "agents" ? this.agentsPane(t) : this.editor(t, def, own, iconOf)));
-  }
-
-  // At the foot of the list: which agents the + menu shows; picking it shows agentsPane().
-  agentsRow(t) {
-    const on = !this.sel && this.pane === "agents";
-    return v_flex().flex_none().border_t(1).border_color(t.border).pb(8)
-      .child(div().px(14).pt(10).pb(4).text_size(11).text_color(t.dim).child("Agents in the + menu"))
-      .child(h_flex().id("p-agents").mx(6).px(8).py(6).gap(9).rounded(7).items_center().cursor_pointer()
-        .when(on, (el) => el.bg(t.selected)).when(!on, (el) => el.hover((s) => s.bg(t.hover)))
-        .tooltip("Hide agents you don't use from the tab bar's + menu, or bring them back.")
-        .on_click((_e, cx) => this.showAgents(cx))
-        .child(v_flex().flex_1().min_w(0).gap(2)
-          .child(div().truncate().child("Choose agents"))
-          .child(div().truncate().text_size(11).text_color(t.dim).child(this.known.length ? countLine(this.known, this.hidden) : "Checking installed agents…")))
-        .child(svg("mods/workspace-chrome/chevron-right.svg").size(11).flex_none().text_color(t.dim)));
-  }
-
-  // The pane: a switch per installed agent (on: the + menu shows it), the rest in words.
-  agentsPane(t) {
-    const installed = this.known.filter((a) => a.installed);
-    const shown = new Set(shownAgents(installed, this.hidden).map((a) => a.key));
-    const missing = notInstalledLine(this.known);
-    const iconOf = (a) => !a.icon ? svg("mods/workspace-chrome/terminal.svg").size(16).flex_none().text_color(t.muted)
-      : (a.tint ? svg(a.icon).text_color(t.foreground) : image(a.icon)).size(16).flex_none().rounded(3);
-    return v_flex().flex_1().min_w(0).min_h(0).p(18).gap(10).text_size(12.5)
-      .child(h_flex().gap(10).items_center()
-        .child(div().text_size(16).font_semibold().child("Agents in the + menu"))
-        .when(installed.length > 0, (el) => el.child(div().px(8).h(22).flex().items_center().rounded(11).bg(t.raised).text_size(11.5).text_color(t.muted)
-          .child(countLine(this.known, this.hidden)))))
-      .child(div().text_color(t.muted).child("The tab bar's + lists the agents installed here. Turn off the ones you don't use; a right-click on an agent in the + menu hides it too."))
-      .child(v_flex().id("p-agents-list").flex_1().min_h(0).pt(4).overflow_y_scrollbar()
-        .when(!installed.length, (el) => el.child(div().px(8).text_color(t.dim).child(this.known.length ? "No agents are installed here." : "Checking installed agents…")))
-        .children(installed.map((a) => {
-          const on = shown.has(a.key);
-          return h_flex().id(`p-agent-on-${a.key}`).h(36).px(8).gap(10).rounded(7).items_center().flex_none().cursor_pointer()
-            .hover((s) => s.bg(t.hover))
-            .tooltip(on ? `In the + menu. Click to hide ${a.name} there.` : `Hidden from the + menu. Click to bring ${a.name} back.`)
-            .on_click((_e, cx) => this.flipAgent(a.key, cx))
-            .child(iconOf(a))
-            .child(div().flex_1().min_w(0).truncate().text_color(on ? t.foreground : t.muted).child(a.name))
-            .when(!on, (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child("hidden")))
-            // On or off: the same switch as Bring agents back.
-            .child(h_flex().w(26).h(15).p(2).flex_none().rounded_full().items_center()
-              .bg(on ? t.accent : t.input).when(on, (el) => el.justify_end())
-              .child(div().size(11).rounded_full().bg(t.background)));
-        }))
-        .when(Boolean(missing), (el) => el.child(div().px(8).pt(12).text_size(11.5).text_color(t.dim).child(missing))))
-      .child(div().text_size(11.5).text_color(t.dim).child("Hidden agents are only left out of the + menu. Presets and automations can still start them."));
-  }
-
-  // At the foot of the list: the switch for Herdr's global guide, and Edit for its file.
-  guideRow(t) {
-    const g = this.guide;
-    const size = g.bytes < 1024 ? `${g.bytes} bytes` : `${(g.bytes / 1024).toFixed(1)} KB`;
-    const note = !g.bytes ? "No guide yet" : g.on ? `On: ${size}` : "Off: agents go without it";
-    return v_flex().flex_none().border_t(1).border_color(t.border)
-      .child(h_flex().px(14).pt(10).pb(4).items_center()
-        .child(div().flex_1().text_size(11).text_color(t.dim).child("Herdr guide"))
-        .child(div().id("p-guide-edit").text_size(11).text_color(t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground))
-          .tooltip(g.bytes ? `Open ${tilde(guideFile())}` : `Write ${tilde(guideFile())} from the starter, then open it`)
-          .on_click((_e, cx) => this.editGuide(cx)).child(g.bytes ? "Edit" : "Write one")))
-      .child(h_flex().id("p-guide").mx(6).px(8).py(6).gap(9).rounded(7).items_center().cursor_pointer()
-        .hover((s) => s.bg(t.hover))
-        .tooltip(g.on ? `Claude, Codex, Antigravity and Pi started through Herdr get ${tilde(guideFile())} first: how to use automations, hc helpers and the board. A preset can leave it out. Click to turn it off for every agent.`
-          : "Agents start without the guide. Click to give it to Claude, Codex, Antigravity and Pi again.")
-        .on_click((_e, cx) => this.flipGuide(cx))
-        .child(v_flex().flex_1().min_w(0).gap(2)
-          .child(div().truncate().child("Give agents the guide"))
-          .child(div().truncate().text_size(11).text_color(t.dim).child(note)))
-        .child(h_flex().w(26).h(15).p(2).flex_none().rounded_full().items_center()
-          .bg(g.on ? t.accent : t.input).when(g.on, (el) => el.justify_end())
-          .child(div().size(11).rounded_full().bg(t.background))));
-  }
-
-  // At the foot of the list: the switch for bringing Claude agents back after a restart.
-  resumeRow(t) {
-    const r = this.resume;
-    const note = !r.ready ? "Not set up in herdr-core's config.toml"
-      : !r.on ? "Off: tabs come back as shells"
-      : r.count === 1 ? "On: 1 agent would come back" : `On: ${r.count} agents would come back`;
-    return v_flex().flex_none().border_t(1).border_color(t.border).pb(8)
-      .child(div().px(14).pt(10).pb(4).text_size(11).text_color(t.dim).child("After a restart"))
-      .child(h_flex().id("p-resume").mx(6).px(8).py(6).gap(9).rounded(7).items_center().cursor_pointer()
-        .hover((s) => s.bg(t.hover))
-        .tooltip(!r.ready ? `Add herdr-ws-resume's shell line to ~/.config/herdr-core/config.toml (see the recipe). ${r.on ? "On" : "Off"}: click to turn it ${r.on ? "off" : "on"}.`
-          : r.on ? "Claude agents you didn't close come back, resumed, in their tabs. Click to turn it off."
-          : "Tabs come back as shells. Click to bring Claude agents back.")
-        .on_click((_e, cx) => this.flipResume(cx))
-        .child(v_flex().flex_1().min_w(0).gap(2)
-          .child(div().truncate().child("Bring agents back"))
-          .child(div().truncate().text_size(11).text_color(!r.ready && r.on ? t.blocked : t.dim).child(note)))
-        // On or off: a track with its knob at the right when it's on, as in Automations.
-        .child(h_flex().w(26).h(15).p(2).flex_none().rounded_full().items_center()
-          .bg(r.on ? t.accent : t.input).when(r.on, (el) => el.justify_end())
-          .child(div().size(11).rounded_full().bg(t.background))));
+        .child(this.editor(t, def, own, iconOf)));
   }
 
   editor(t, def, own, iconOf) {
@@ -626,7 +396,8 @@ export default class Presets extends View {
         .child(div().child("A preset is an agent you can start by name: a command (the program, model and flags) and its instructions."))
         .child(div().child(`Presets for every workspace are herdr-core templates in ${tilde(templatesDir())}, so agents can start them too, with hc run <name>.`))
         .when(Boolean(def), (el) => el.child(div().child(`${def.name}'s own are in ${tilde(def.dir)}/agents, and replace a global one with the same name.`)))
-        .child(div().child("Start them from the switcher's New agent…, or pick one in a task's Agent row on the board."));
+        .child(div().child("Start them from the switcher's New agent…, or pick one in a task's Agent row on the board."))
+        .child(div().child("The switches for every agent (the Herdr guide, bringing agents back after a restart, and which agents show in the + menu) are in Settings > Agents."));
     }
     const sel = this.sel;
     const launcher = shared("workspaces.launcher") === true;
@@ -708,7 +479,7 @@ export default class Presets extends View {
             .child(pick("p-effort-default", "Default", effort === null, () => this.setEffort("")))
             .children((knobs.effort?.levels ?? []).map((l) => pick(`p-effort-${l}`, l, effort === l, () => this.setEffort(l)))))))
       .when(system, (el) => el
-        .child(label(this.guide && !this.guide.on ? "Herdr guide (off for every agent right now)" : "Herdr guide: how to use automations, hc helpers and the board"))
+        .child(label("Herdr guide: how to use automations, hc helpers and the board"))
         .child(h_flex().gap(6).flex_wrap()
           .child(pick("p-guide-in", "Gets it", this.guideIn, () => { this.guideIn = true; }))
           .child(pick("p-guide-out", "Goes without", !this.guideIn, () => { this.guideIn = false; }))))

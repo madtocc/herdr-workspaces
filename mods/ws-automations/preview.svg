@@ -117,8 +117,6 @@
   <text x="184" y="482" fill="#a5a8ae" font-size="13">main-is-red</text><text x="184" y="498" fill="#7d8089" font-size="11">Every 30 minutes</text><text x="400" y="489" fill="#7d8089" font-size="11" text-anchor="end">add</text>
   <circle cx="171.5" cy="531" r="3" fill="none" stroke="#7d8089"/>
   <text x="184" y="528" fill="#a5a8ae" font-size="13">review-finished-task</text><text x="184" y="544" fill="#7d8089" font-size="11">When a task enters Review</text><text x="400" y="535" fill="#7d8089" font-size="11" text-anchor="end">add</text>
-  <rect x="150" y="674" width="268" height="1" rx="0" fill="#303237"/><text x="168" y="698" fill="#7d8089" font-size="11">While Herdr is closed</text>
-  <text x="168" y="722" fill="#e8e9eb" font-size="13">Keep running</text><text x="168" y="739" fill="#7d8089" font-size="11">On: running in the background</text><rect x="372" y="718" width="28" height="16" rx="8" fill="#8ab4f8"/><circle cx="392" cy="726" r="5.5" fill="#17181b"/>
   <text x="446" y="132" fill="#e8e9eb" font-size="16" font-weight="600">review-new-prs</text>
   <rect x="579.36" y="116" width="84.24" height="22" rx="11" fill="#2c2e34"/><text x="588.36" y="131.14" fill="#a5a8ae" font-size="11.5">Only in Acme</text>
   <rect x="1060.08" y="115" width="41.92" height="24" rx="12" fill="none" stroke="#2f3137"/><text x="1071.08" y="131.32" fill="#a5a8ae" font-size="12">Off</text>

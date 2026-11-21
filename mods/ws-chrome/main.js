@@ -3,7 +3,7 @@
 // open the ws-automations and ws-presets screens for the shown workspace; History
 // asks the switcher (shared "workspaces.history") for the workspace's History
 // screen (ws-history). Settings opens our copy of Herdr's Settings window (ws-settings,
-// with the package's Extras as a section) instead of app.settings. The brand row still
+// with the package's Agents and Experimental sections) instead of app.settings. The brand row still
 // uses Herdr's own workspace-chrome.
 
 import { View, div, image, svg } from "gpui-kit";

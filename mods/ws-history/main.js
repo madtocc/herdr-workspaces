@@ -30,14 +30,31 @@
 // A Claude, Pi or Antigravity conversation that was compacted shows the compacted icon
 // and how often on its row; opened, it lists when (newest first), how, and how big the
 // context was before and after, and what's in the context at the end.
+//
+// Who started whom (treefacts.js): a conversation another agent started (an hc helper)
+// or an agent's own sub-agent isn't listed on its own: its parent's row has a chip
+// ("8 helpers", "3 sub-agents") that unfolds them under it, indented, and so on down. A
+// search shows a match under its parent. One whose parent isn't listed stays on its own
+// with a "started by …" line. Trees are sorted by their newest activity. Fold state is
+// kept in memory only.
+//
+// A right-click on a row opens its menu (treefacts.js historyMenu()): Resume or Go to,
+// Copy session id, Wipe session…. Wipe moves a Claude or Pi conversation to the Trash, as
+// the Agents list's Wipe does (menufacts.js, a copy of ws-agents' own: wipeTargets()),
+// in a dialog of this mod's (wipeDialog()): it closes the terminal it's known to be open
+// in first, refuses while another agent might be writing it (treefacts.js wipeCheck()),
+// and offers "Wipe all" for a conversation with helpers. An Antigravity conversation goes
+// to the Agents list's own Wipe dialog (agywipe.js), only while that experiment is on.
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input } from "gpui-base";
 import {
-  spaces, panes, terminals, run, theme, shared, setShared, props, closeOverlay,
-  home, appHome, exec, notify, checking, knownAgents,
+  spaces, panes, terminals, run, theme, shared, setShared, props, openOverlay, closeOverlay,
+  home, appHome, exec, notify, checking, knownAgents, readTextFile,
 } from "herdr";
 import { PROVIDERS, inWorkspace, whereOf, liveOf, keyOf, titleOf, matches, dayLabel, ago, span, modelLabel, resumeArgv, presetOf, tokens, compactionText, compactionsTip, runState, runMatches, runSessions } from "./histfacts.js";
+import { forest, treeRows, chipText, indent, historyMenu, wipeCheck, holdState, liveUnder, helpersOf } from "./treefacts.js";
+import { menuHeight, wipeTargets } from "./menufacts.js";
 
 const PALETTE = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
 const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b7cf6", ansi2: "#3fae6a", ansi1: "#d9649a" };
@@ -49,6 +66,64 @@ const PAGE = 120; // rows drawn at first, and more with each "Show more"
 const SPANS = [90, 365, 3650]; // days back: the first read, then each "Look further back"
 const STALE = 20e3; // ms after which the screen, shown again, reads again
 const FRESH = 45e3; // ms between reads while it stays shown
+// Shared "workspaces.history.act": { from, key, action, at }: the right-click menu (a popup
+// of its own, whose tasks end when it closes) asks the History it was opened from to
+// resume or go to a conversation, or to read again after an Antigravity wipe.
+const ACT = "workspaces.history.act";
+// Shared "workspaces.history.wiped": { keys, at }: what History's Wipe took, so every
+// History reads again, and a helper left behind says it was started by a wiped conversation.
+const WIPED = "workspaces.history.wiped";
+
+// Moves each path given after $1 that's there to the Trash, or into $1 where there's
+// no Trash command. The same as ws-agents/main.js' TRASH: change both together.
+const TRASH = `
+dest=$1; shift
+for p in "$@"; do
+  [ -e "$p" ] || continue
+  if command -v trash >/dev/null 2>&1 && trash "$p"; then echo Trash; continue; fi
+  if command -v gio >/dev/null 2>&1 && gio trash "$p"; then echo Trash; continue; fi
+  mkdir -p "$dest" && mv "$p" "$dest/$(basename "$p")-$(date +%s)" && echo "$dest" || exit 1
+done`;
+// Puts $1 on the clipboard (as ws-agents/main.js' COPY).
+const COPY = `
+if command -v pbcopy >/dev/null 2>&1; then printf %s "$1" | pbcopy
+elif command -v wl-copy >/dev/null 2>&1; then printf %s "$1" | wl-copy
+elif command -v xclip >/dev/null 2>&1; then printf %s "$1" | xclip -selection clipboard
+else echo "no clipboard command (pbcopy, wl-copy, xclip)" >&2; exit 1; fi`;
+// When each given transcript was last written (seconds, a tab, the path), after
+// "now<tab><seconds>" on the same clock (GNU stat, else BSD's): the newest of it and, for
+// Claude, its <id>/subagents/*.jsonl (a sub-agent at work writes only there). A file that
+// isn't there prints nothing.
+const WRITTEN = `printf "now\\t%s\\n" "$(date +%s)"
+at() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
+for f; do
+  [ -e "$f" ] || continue
+  m=$(at "$f") || continue
+  for g in "\${f%.jsonl}"/subagents/*.jsonl; do
+    [ -e "$g" ] || continue
+    n=$(at "$g") && [ "$n" -gt "$m" ] && m=$n
+  done
+  printf "%s\\t%s\\n" "$m" "$f"
+done
+exit 0`;
+// Claude's own record of each running process, ~/.claude/sessions/<pid>.json ($1 the
+// folder): the pid, its start time as ps says it (UTC, as Claude writes procStart) and the
+// file, a line each, for the processes still alive.
+const RUNNING = `for f in "$1"/*.json; do
+  [ -f "$f" ] || continue
+  p=\${f##*/}; p=\${p%.json}
+  case "$p" in '' | *[!0-9]*) continue ;; esac
+  s=$(LC_ALL=C TZ=UTC ps -o lstart= -p "$p" 2>/dev/null) && [ -n "$s" ] || continue
+  printf "%s\\t%s\\t" "$p" "$s"
+  tr -d '\\n\\t' < "$f"
+  echo
+done
+exit 0`;
+// Each given folder's real path, a line each (itself when it isn't there).
+const REAL = 'for d; do (cd "$d" 2>/dev/null && pwd -P) || printf "%s\\n" "$d"; done';
+// Agents History's own Wipe takes (menufacts.js wipeTargets()); Antigravity's is the Agents list's.
+const WIPES = new Set(["claude", "pi"]);
+const AGY_WIPE = "antigravity-wipe"; // its experiment's key in ~/.herdr/settings.jsonc
 
 const defs = () => shared("workspaces.defs") ?? [];
 const defOf = (id) => defs().find((d) => d.id === id) ?? null;
@@ -137,8 +212,28 @@ function mark(def, t, size) {
     .text_size(Math.round(size * 0.55)).font_bold().text_color("#ffffff").child([...def.name][0]?.toUpperCase() ?? "?");
 }
 
+// The Wipe dialog's words about the helpers under a conversation (its own, then all under it).
+function helperWords(f, wipeable) {
+  const direct = f.direct ?? f.helpers;
+  // Each with its title, so a helper that isn't what it seems shows before Wipe all.
+  const cut = (t) => (t.length > 34 ? `${t.slice(0, 33).trimEnd()}…` : t);
+  const names = direct.slice(0, 6).map((x) => (x.name ? `${x.name} “${cut(x.title)}”` : `“${cut(x.title)}”`)).join(", ") + (direct.length > 6 ? ", …" : "");
+  const all = f.helpers.length > direct.length ? `, ${f.helpers.length} conversations under it in all` : "";
+  const stay = f.helpers.length - wipeable;
+  return `It started ${plural(direct.length, "helper")} (${names})${all}. Wipe leaves them in History, on their own; Wipe all ${wipeable + 1} takes ${wipeable === 1 ? "that one" : "them"} too${stay ? ` (${stay} of another agent stay${stay === 1 ? "s" : ""})` : ""}.`;
+}
+// The Wipe dialog's height for what it may say: its text, the helpers line, and room for a
+// reason it can't (and one for Wipe all). The text scrolls past that, the buttons stay.
+function wipeHeight(f) {
+  const lines = (text, per) => Math.max(1, Math.ceil(text.length / per));
+  let h = 36 + 24 + 12 + 3 * 20 + 8 + 3 * 17 + 14 + 32;
+  if (f.helpers.length) h += 8 + lines(helperWords(f, f.helpers.filter((x) => WIPES.has(x.provider)).length), 62) * 18 + 8 + 3 * 17 + 8 + 2 * 17;
+  return Math.min(560, h);
+}
+
 export default class History extends View {
   init(_props, cx) {
+    if (props()?.histMenu || props()?.wipe) return this.initOverlay(props(), cx);
     this.handle = cx.focus_handle();
     this.dialog = Boolean(props()?.dialog);
     // The layout's screen follows the shown workspace; a tab or a dialog keeps what it was opened with.
@@ -160,10 +255,16 @@ export default class History extends View {
     this.turn = 0;
     this.showing = !this.follow;
     this.agents = shared(KNOWN)?.[""] ?? [];
+    this.me = Math.random().toString(36).slice(2); // which History a menu was opened from
+    this.unfolded = new Set(); // rows whose children show (keys; a run's by its conversation's)
+    this.core = "default";
+    this.actAt = shared(ACT)?.at ?? 0;
+    this.wipedAt = shared(WIPED)?.at ?? 0;
+    this.rescans = []; // times to read again (after handing a wipe to the Agents list)
     this.query = InputState.new({ value: "", placeholder: "Search conversations" });
     this.query.on("change", (_e, cx) => { this.max = PAGE; cx.notify(); });
     // Enter on a search goes to its first result.
-    this.query.on("submit", (_e, cx) => { if (this.query.value().trim()) { const first = this.view().shown[0]; if (first) this.act(first.s, first.at, cx); } });
+    this.query.on("submit", (_e, cx) => { if (this.query.value().trim()) { const first = this.view().shown.find((x) => x.hit && !x.s.readonly); if (first) this.act(first.s, first.at, cx); } });
     this.mode = "conversations"; // or "automations": the runs
     this.hideQuiet = true; // runs a check kept from starting, misses and skips
     this.runQuery = InputState.new({ value: "", placeholder: "Search runs" });
@@ -172,11 +273,21 @@ export default class History extends View {
     if (checking()) return;
     if (!this.follow) { this.load(cx); this.query.focus(); }
     // Looked at on a timer, not in render: a task started while rendering never gets to run.
-    cx.timer.every(this.follow ? 400 : 2000, (cx) => {
+    cx.timer.every(this.follow ? 400 : 500, (cx) => {
       const scr = this.follow ? shared("workspaces.screen") ?? null : null;
       const showing = !this.follow || scr?.screen === "history";
       const back = showing && !this.showing;
       this.showing = showing;
+      // What this History's right-click menu asked for.
+      const asked = shared(ACT);
+      if (asked?.at && asked.at !== this.actAt) {
+        this.actAt = asked.at;
+        if (asked.from === this.me && Date.now() - asked.at < 10000) this.menuAct(asked, cx);
+      }
+      // A wipe: read again now, or when shown.
+      const wiped = shared(WIPED);
+      if (wiped?.at && wiped.at !== this.wipedAt) { this.wipedAt = wiped.at; this.readAt = 0; }
+      if (this.rescans.length && Date.now() >= this.rescans[0]) { this.rescans.shift(); this.readAt = 0; }
       if (!showing) return; // the hidden screen reads nothing
       const ws = this.follow ? shared("workspaces.active") ?? null : this.workspace;
       if (ws !== this.workspace) {
@@ -213,7 +324,8 @@ export default class History extends View {
     let data = null;
     if (r.code === 0) { try { data = JSON.parse(r.stdout); } catch { data = null; } }
     if (data?.sessions) {
-      this.rows = data.sessions; this.notes = data.notes ?? []; this.error = null;
+      this.rows = data.sessions; this.notes = data.notes ?? []; this.error = null; this.core = data.core || "default";
+      this.keys = new Set(this.rows.map(keyOf));
       if (this.provider && !this.rows.some((s) => s.provider === this.provider)) this.provider = null;
     } else {
       this.error = r.code === 127 ? "History needs Node (20.6 or newer) on your PATH to read the conversations."
@@ -225,16 +337,32 @@ export default class History extends View {
     cx.notify();
   }
 
-  // What the list shows now: the rows under the filters, and what each is open in.
+  // What the list shows now: the rows as trees (treefacts.js), under the filters, and what
+  // each is open in. `shown`: the rows to draw in order ({ s, depth, kids, open, hit, at }),
+  // `here`: the conversations in the trees shown (sub-agents aside), `searched`: those the
+  // search lets through, `hidden`: those whose folder is gone, behind the chip.
   view() {
     const terms = liveTerms();
-    const live = liveOf(this.rows, terms, shared(RESUMED) ?? {});
+    // Sub-agents run inside their parent's terminal: never "open" on their own.
+    const own = this.rows.filter((s) => !s.readonly);
+    const live = liveOf(own, terms, shared(RESUMED) ?? {});
     const q = this.query.value();
-    const inScope = this.rows;
-    const here = inScope.filter((s) => this.gone || !s.gone || live.has(keyOf(s)));
-    const searched = here.filter((s) => matches(s, q, presetOf(s)));
-    const shown = searched.filter((s) => !this.provider || s.provider === this.provider).map((s) => ({ s, at: live.get(keyOf(s)) ?? null }));
-    return { live, here, searched, shown, hidden: inScope.length - here.length, status: new Map(terms.map((x) => [x.address, x.status])) };
+    const f = forest(this.rows);
+    // A tree whose root's folder is gone still shows while anything in it is open.
+    const anyLive = (s) => live.has(keyOf(s)) || (f.kids.get(keyOf(s)) ?? []).some(anyLive);
+    const rootOk = (s) => this.gone || !s.gone || anyLive(s);
+    const extra = (s) => [presetOf(s), s.helper?.name, s.helper?.preset, s.sub?.type, s.sub ? "sub-agent" : ""].filter(Boolean).join(" ");
+    const said = (s) => matches(s, q, extra(s));
+    const pass = (s) => said(s) && (!this.provider || s.provider === this.provider);
+    const inTrees = [], behind = [];
+    const walk = (s, into) => { into.push(s); for (const c of f.kids.get(keyOf(s)) ?? []) walk(c, into); };
+    for (const r of f.roots) walk(r, rootOk(r) ? inTrees : behind);
+    const here = inTrees.filter((s) => !s.readonly);
+    const searched = here.filter(said);
+    const filtering = Boolean(q.trim()) || Boolean(this.provider);
+    const shown = treeRows(f, { pass, root: rootOk, unfolded: this.unfolded, filtering })
+      .map((x) => ({ ...x, hit: pass(x.s), at: x.s.readonly ? null : live.get(keyOf(x.s)) ?? null }));
+    return { f, live, here, searched, shown, hidden: behind.filter((s) => !s.readonly).length, status: new Map(terms.map((x) => [x.address, x.status])) };
   }
 
   // The search box of the list shown.
@@ -255,16 +383,17 @@ export default class History extends View {
     const q = this.runQuery.value();
     const searched = rows.filter(({ r, st }) => runMatches(r, q, `${defOf(r.ws)?.name ?? ""} ${st.word}`));
     const shown = searched.filter(({ st }) => !this.hideQuiet || !st.quiet);
-    return { all, searched, shown, quiet: searched.length - shown.length, sessions: runSessions(shared("workspaces.automation.runs"), this.rows) };
+    return { all, searched, shown, quiet: searched.length - shown.length, sessions: runSessions(shared("workspaces.automation.runs"), this.rows.filter((s) => !s.readonly)) };
   }
 
   // A run's own action: to its tab while it's open, else its conversation (Go to where
   // it's open now, or Resume).
   runAct(r, st, cx) {
     if (st.open) return this.goToRun(r);
-    const s = runSessions(shared("workspaces.automation.runs"), this.rows).get(r.id);
+    const own = this.rows.filter((x) => !x.readonly);
+    const s = runSessions(shared("workspaces.automation.runs"), own).get(r.id);
     if (!s) return;
-    const at = liveOf(this.rows, liveTerms(), shared(RESUMED) ?? {}).get(keyOf(s));
+    const at = liveOf(own, liveTerms(), shared(RESUMED) ?? {}).get(keyOf(s));
     if (at) this.goTo(at);
     else if (!s.gone) this.resume(s, cx);
   }
@@ -356,6 +485,8 @@ export default class History extends View {
 
   render() {
     const t = theme();
+    if (props()?.histMenu) return this.menuView(t);
+    if (props()?.wipe) return this.wipeDialog(t);
     const def = defOf(this.workspace);
     const shell = v_flex().id("history").size_full().min_h(0).bg(this.dialog ? t.popover : t.canvas).text_size(13).text_color(t.foreground)
       .on_size_change((size, cx) => { if (size.width !== this.width) { this.width = size.width; cx.notify(); } })
@@ -366,7 +497,7 @@ export default class History extends View {
     if (this.follow && (shared("workspaces.active") ?? null) !== this.workspace) return shell;
     const everywhere = this.scope === "all";
     const autos = this.mode === "automations";
-    const { here, searched, shown, hidden, status } = this.view();
+    const { f, here, searched, shown, hidden, status } = this.view();
     const rv = autos ? this.runsView() : null;
     const now = Date.now();
 
@@ -414,13 +545,23 @@ export default class History extends View {
           .child(chip("runs-quiet", this.hideQuiet, () => { this.hideQuiet = !this.hideQuiet; }, ["Hide quiet runs", ...(this.hideQuiet && rv.quiet ? [count(rv.quiet)] : [])],
             "Runs that never started: a check that printed nothing (or the same as before) or failed, a missed schedule, a run skipped while the last one was still working")))
         .child(searchBox(this.runQuery));
-      const live = liveOf(this.rows, liveTerms(), shared(RESUMED) ?? {});
+      const live = liveOf(this.rows.filter((s) => !s.readonly), liveTerms(), shared(RESUMED) ?? {});
       const kids = [];
       let day = null;
       for (const { r, st } of rv.shown.slice(0, this.max)) {
         const label = dayLabel(r.at, now);
         if (label !== day) { day = label; kids.push(div().h(30).mt(4).px(8).flex().flex_none().items_end().pb(5).text_size(11.5).text_color(t.dim).child(label)); }
-        kids.push(this.runRow(r, st, live, rv.sessions, t, now, everywhere, tight));
+        // Its conversation's helpers and sub-agents, as in the Conversations list.
+        const s = st.open || st.quiet ? null : rv.sessions.get(r.id) ?? null;
+        const under = s ? f.kids.get(keyOf(s)) ?? [] : [];
+        kids.push(this.runRow(r, st, live, rv.sessions, t, now, everywhere, tight, under));
+        if (under.length && this.unfolded.has(keyOf(s))) {
+          for (const x of treeRows({ ...f, roots: [s] }, { unfolded: this.unfolded }).slice(1)) {
+            const at = x.s.readonly ? null : live.get(keyOf(x.s)) ?? null;
+            kids.push(this.row(x.s, at, at ? status.get(at) : null, t, now, everywhere ? null : def, tight, x));
+            if (this.open === keyOf(x.s)) kids.push(this.details(x.s, at, t, x.depth));
+          }
+        }
       }
       if (rv.shown.length > this.max) {
         kids.push(h_flex().h(40).flex_none().items_center().justify_center()
@@ -447,16 +588,22 @@ export default class History extends View {
       .child(searchBox(this.query));
 
     const kids = [];
-    let day = null;
-    for (const { s, at } of shown.slice(0, this.max)) {
-      const label = dayLabel(s.updated, now);
-      if (label !== day) { day = label; kids.push(div().h(30).mt(4).px(8).flex().flex_none().items_end().pb(5).text_size(11.5).text_color(t.dim).child(label)); }
-      kids.push(this.row(s, at, at ? status.get(at) : null, t, now, everywhere ? null : def, tight));
-      if (this.open === keyOf(s)) kids.push(this.details(s, at, t));
+    let day = null, drawn = 0;
+    const roots = shown.filter((x) => x.depth === 0).length;
+    // A tree is listed under the day of its newest activity; the page counts trees.
+    for (const x of shown) {
+      const { s, at } = x;
+      if (x.depth === 0) {
+        if (++drawn > this.max) break;
+        const label = dayLabel(f.latest.get(keyOf(s)) ?? s.updated, now);
+        if (label !== day) { day = label; kids.push(div().h(30).mt(4).px(8).flex().flex_none().items_end().pb(5).text_size(11.5).text_color(t.dim).child(label)); }
+      }
+      kids.push(this.row(s, at, at ? status.get(at) : null, t, now, everywhere ? null : def, tight, x));
+      if (this.open === keyOf(s)) kids.push(this.details(s, at, t, x.depth));
     }
-    if (shown.length > this.max) {
+    if (roots > this.max) {
       kids.push(h_flex().h(40).flex_none().items_center().justify_center()
-        .child(button("more", `Show ${Math.min(PAGE, shown.length - this.max)} more`, (cx) => { this.max += PAGE; cx.notify(); })));
+        .child(button("more", `Show ${Math.min(PAGE, roots - this.max)} more`, (cx) => { this.max += PAGE; cx.notify(); })));
     }
     if (this.error) kids.push(div().p(16).text_color(t.blocked).child(this.error));
     else if (this.loaded && !shown.length) {
@@ -464,7 +611,7 @@ export default class History extends View {
         : everywhere || !def ? `No conversations${since}.` : `No conversations in ${def.name}${since}.`));
     }
     // The end of what was read: older ones are one more read away.
-    if (this.loaded && !this.error && this.span < SPANS.length - 1 && shown.length <= this.max) {
+    if (this.loaded && !this.error && this.span < SPANS.length - 1 && roots <= this.max) {
       kids.push(h_flex().h(40).flex_none().items_center().justify_center()
         .child(button("older", "Look further back", (cx) => { this.span++; this.load(cx); }, { tip: this.span === 0 ? "The last year" : "Everything that's kept" })));
     }
@@ -482,26 +629,41 @@ export default class History extends View {
     this.load(cx); // a read under way for the old scope is dropped (turn)
   }
 
-  // `at`: the terminal it's open in now, if any, and `status`, that agent's.
-  row(s, at, status, t, now, def, tight) {
+  // `at`: the terminal it's open in now, if any, and `status`, that agent's. `x`: where
+  // it sits in its tree ({ depth, kids, open }, treefacts.js treeRows()).
+  row(s, at, status, t, now, def, tight, x = { depth: 0, kids: [], open: false }) {
     const key = keyOf(s);
-    const preset = presetOf(s);
-    const sub = [whereOf(s.cwd, def, home(), trees()), s.branch, s.last ? `last: ${s.last}` : s.title ? s.first : ""].filter(Boolean).join("  ·  ");
+    const preset = presetOf(s) || s.helper?.preset || "";
+    const sub = [this.startedBy(s), whereOf(s.cwd, def, home(), trees()), s.branch, s.last ? `last: ${s.last}` : s.title ? s.first : ""].filter(Boolean).join("  ·  ");
     const tag = (text, c, tip) => div().flex_none().h(20).px(6).flex().items_center().rounded(5).bg(t.raised).text_size(11.5).text_color(c)
       .when(Boolean(tip), (el) => el.tooltip(tip)).child(text);
+    // Its helpers and sub-agents: a chip that folds them in and out.
+    const fold = x.kids.length > 0 ? h_flex().id(`hk-${key}`).flex_none().h(20).px(6).gap(4).items_center().rounded(10).border_1().cursor_pointer().text_size(11.5)
+      .border_color(x.open ? t.accent : t.input).text_color(x.open ? t.foreground : t.muted).hover((el) => el.text_color(t.foreground))
+      .tooltip(x.open ? "Fold them away" : "Show the conversations it started")
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_click((_e, cx) => { cx.stop_propagation(); if (this.unfolded.has(key)) this.unfolded.delete(key); else this.unfolded.add(key); cx.notify(); })
+      .child(svg(`mods/workspace-chrome/chevron-${x.open ? "down" : "right"}.svg`).size(10).flex_none())
+      .child(chipText(x.kids)) : null;
+    const name = s.helper?.name || "";
     const act = (id, text, action, tip, solid) => div().id(id).h(24).px(9).flex().flex_none().items_center().rounded(6)
       .text_size(11.5).cursor_pointer().tooltip(tip).on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .when(solid, (el) => el.bg(t.solid).text_color(t.solid_foreground).font_medium().hover((x) => x.opacity(0.88)))
       .when(!solid, (el) => el.border_1().border_color(t.input).text_color(t.muted).hover((x) => x.bg(t.hover).text_color(t.foreground)))
       .on_click((_e, cx) => { cx.stop_propagation(); action(cx); }).child(text);
-    return h_flex().id(`h-${key}`).h(46).px(8).gap(10).items_center().flex_none().rounded(7).cursor_pointer()
-      .hover((x) => x.bg(t.hover)).when(this.open === key, (el) => el.bg(t.selected))
+    return h_flex().id(`h-${key}`).h(s.readonly ? 40 : 46).pl(8 + indent(x.depth)).pr(8).gap(10).items_center().flex_none().rounded(7).cursor_pointer()
+      .hover((el) => el.bg(t.hover)).when(this.open === key, (el) => el.bg(t.selected))
       .on_click((_e, cx) => { this.open = this.open === key ? null : key; cx.notify(); })
-      .child(this.icon(s.provider, t, 16))
+      .when(!s.readonly, (el) => el.on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openMenu(s, at); }))
+      .child(this.icon(s.provider, t, s.readonly ? 13 : 16))
       .child(v_flex().flex_1().min_w(0).gap(2)
-        .child(div().truncate().text_color(s.gone && !at ? t.muted : t.foreground).child(titleOf(s)))
+        .child(h_flex().min_w(0).gap(7).items_center()
+          .when(Boolean(name), (el) => el.child(div().flex_none().max_w(180).truncate().font_medium().text_color(s.gone && !at ? t.muted : t.foreground).child(name)))
+          .child(div().flex_1().min_w(0).truncate().text_size(s.readonly ? 12 : 13).text_color(s.gone && !at ? t.muted : name || s.readonly ? t.muted : t.foreground).child(titleOf(s))))
         .child(div().truncate().text_size(11.5).text_color(t.dim).child(sub)))
+      .when(Boolean(fold), (el) => el.child(fold))
       .when(Boolean(preset) && !tight, (el) => el.child(tag(preset, t.muted, "Started from this agent preset; Resume starts it the same way")))
+      .when(Boolean(s.readonly) && !tight, (el) => el.child(tag(s.sub?.type || "sub-agent", t.dim, "The agent's own sub-agent: read here, it can't be resumed on its own")))
       .when(s.via === "app" && !tight, (el) => el.child(tag("app", t.muted, "Started in the agent's desktop app or an editor, not in a terminal. Resume continues it here.")))
       .when(Boolean(at), (el) => el.child(h_flex().flex_none().h(20).px(6).gap(5).items_center().rounded(5).bg(t.raised).text_size(11.5).text_color(t.accent)
         .tooltip(`Open in ${at} now`)
@@ -515,13 +677,23 @@ export default class History extends View {
       .child(h_flex().w(62).flex_none().justify_end()
         .when(Boolean(at), (el) => el.child(act(`go-${key}`, "Go to", () => this.goTo(at), "Show the terminal it's open in")))
         .when(!at && !s.gone && this.starting === key, (el) => el.child(div().text_size(11.5).text_color(t.dim).child("Starting…")))
-        .when(!at && !s.gone && this.starting !== key, (el) => el.child(act(`re-${key}`, "Resume", (cx) => this.resume(s, cx), "Continue it in a new tab, in the folder it ran in", true))));
+        .when(!at && !s.gone && !s.readonly && this.starting !== key, (el) => el.child(act(`re-${key}`, "Resume", (cx) => this.resume(s, cx), "Continue it in a new tab, in the folder it ran in", true))));
+  }
+
+  // "started by …" for a row whose parent isn't listed: its title when the reader knew it,
+  // a wiped one's word, else its id, short.
+  startedBy(s) {
+    if (!s.parent || this.keys?.has(s.parent)) return "";
+    const id = s.parent.split("/").pop();
+    if ((shared(WIPED)?.keys ?? []).some((k) => k.split("/").pop() === id)) return "started by a wiped conversation";
+    if (s.parentTitle) return `started by “${s.parentTitle}”`;
+    return `started by ${s.parent.split("/").pop().slice(0, 8)}`;
   }
 
   // One automation run: its name, why it ran (and what came of it), its state, when,
   // and what can be done: Go to its tab, Resume its conversation, open the automation.
   // A run that never started is drawn quieter.
-  runRow(r, st, live, sessions, t, now, everywhere, tight) {
+  runRow(r, st, live, sessions, t, now, everywhere, tight, under = []) {
     const s = st.open || st.quiet ? null : sessions.get(r.id) ?? null;
     const at = s ? live.get(keyOf(s)) ?? null : null;
     const wsName = everywhere ? defOf(r.ws)?.name ?? r.ws : null;
@@ -537,6 +709,15 @@ export default class History extends View {
       .child(v_flex().flex_1().min_w(0).gap(2)
         .child(div().truncate().text_color(st.quiet ? t.muted : t.foreground).text_size(st.quiet ? 12 : 13).child(r.name))
         .child(div().truncate().text_size(11.5).text_color(t.dim).child(sub)))
+      .when(under.length > 0 && Boolean(key), (el) => {
+        const open = this.unfolded.has(key);
+        return el.child(h_flex().id(`rk-${r.id}`).flex_none().h(20).px(6).gap(4).items_center().rounded(10).border_1().cursor_pointer().text_size(11.5)
+          .border_color(open ? t.accent : t.input).text_color(open ? t.foreground : t.muted).hover((x) => x.text_color(t.foreground))
+          .tooltip(open ? "Fold them away" : "Show the conversations its run started")
+          .on_click((_e, cx) => { cx.stop_propagation(); if (open) this.unfolded.delete(key); else this.unfolded.add(key); cx.notify(); })
+          .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(10).flex_none())
+          .child(chipText(under)));
+      })
       .child(div().flex_none().text_size(11.5).text_color(t[st.tone] ?? t.dim).child(st.word))
       .child(div().w(30).flex_none().text_size(11.5).text_color(t.dim).child(ago(r.at, now)))
       .child(h_flex().w(tight ? 70 : 150).flex_none().gap(6).justify_end()
@@ -550,14 +731,17 @@ export default class History extends View {
 
   // Under an opened row: what was asked first and last, where and when, and the
   // command Resume runs.
-  details(s, at, t) {
+  details(s, at, t, depth = 0) {
     const a = this.agent(s.provider);
     const argv = resumeArgv(s, a?.run) ?? [];
     const quote = (w) => (/^[A-Za-z0-9_\/.:=@%+-]+$/.test(w) ? w : `'${w.replace(/'/g, "'\\''")}'`);
     const line = (label, text) => h_flex().gap(10).items_start()
       .child(div().w(84).flex_none().text_color(t.dim).child(label))
       .child(div().flex_1().min_w(0).text_color(t.muted).child(text));
-    return v_flex().ml(34).mr(8).mb(8).p(12).gap(7).rounded(8).border_1().border_color(t.border).bg(t.surface).text_size(12)
+    const started = s.helper ? [s.helper.name && `as ${s.helper.name}`, s.helper.preset && `(${s.helper.preset})`].filter(Boolean).join(" ") : "";
+    const parent = s.parent ? this.rows.find((x) => keyOf(x) === s.parent) : null;
+    return v_flex().ml(34 + indent(depth)).mr(8).mb(8).p(12).gap(7).rounded(8).border_1().border_color(t.border).bg(t.surface).text_size(12)
+      .when(Boolean(s.parent), (el) => el.child(line(s.readonly ? "Sub-agent of" : "Started by", `${parent ? `“${titleOf(parent)}”` : this.startedBy(s).replace(/^started by /, "")}${started ? `  ${started}` : ""}`)))
       .when(Boolean(s.first), (el) => el.child(line("First asked", s.first)))
       .when(Boolean(s.last), (el) => el.child(line("Last asked", s.last)))
       .child(line("Folder", `${tilde(s.cwd)}${s.branch ? `  (${s.branch})` : ""}${s.gone ? "  ·  gone" : ""}`))
@@ -570,6 +754,302 @@ export default class History extends View {
           .when(s.compactions > Math.min(5, s.compacted?.length ?? 0), (el) => el.child(div().text_color(t.dim)
             .child(`${s.compactions === 1 ? "Once" : `${s.compactions} times`} in all`))))))
       .when(Boolean(at), (el) => el.child(line("Open in", at)))
-      .when(!s.gone && !at, (el) => el.child(line("Resume runs", argv.map((w) => (quote(w) === w ? tilde(w) : quote(w))).join(" "))));
+      .when(!s.gone && !at && !s.readonly, (el) => el.child(line("Resume runs", argv.map((w) => (quote(w) === w ? tilde(w) : quote(w))).join(" "))));
+  }
+
+  // --- The right-click menu and the Wipe dialog ---
+
+  // A popup or dialog of its own (props histMenu / wipe): nothing of the list.
+  initOverlay(p, cx) {
+    this.at = 0;
+    this.busy = false;
+    this.error = null;
+    this.hint = null;
+    this.handle = cx.focus_handle();
+    this.handle.focus();
+    if (p.wipe) { this.checks = null; if (!checking()) cx.spawn(async (cx) => { await this.checkWipe(cx); }); }
+  }
+
+  // What a row's menu and its Wipe need, worked out here where the list is: the row, the
+  // terminal it's open in, the helpers under it, and which terminals hold what.
+  openMenu(s, at) {
+    const f = forest(this.rows);
+    const lean = (x) => ({ provider: x.provider, id: x.id, file: x.file ?? null, cwd: x.cwd, title: titleOf(x), name: x.helper?.name || "", terminal: x.terminal ?? null, gone: Boolean(x.gone), readonly: Boolean(x.readonly), via: x.via ?? "" });
+    const agyOn = shared("workspaces.settings")?.experimental?.[AGY_WIPE] === true;
+    const wipe = WIPES.has(s.provider) ? wipeTargets({ kind: s.provider, session: s.id, file: s.file }).length > 0
+      : s.provider === "antigravity" && agyOn && !at && Boolean(s.file);
+    const menu = { from: this.me, key: keyOf(s), row: lean(s), at, gone: Boolean(s.gone), readonly: Boolean(s.readonly), wipe, agy: s.provider === "antigravity",
+      helpers: helpersOf(f, s).map(lean), direct: (f.kids.get(keyOf(s)) ?? []).filter((x) => !x.readonly).map(lean), core: this.core };
+    openOverlay({ mod: "ws-history", kind: "popup", width: 220, height: menuHeight(historyMenu(menu)), props: { histMenu: menu } });
+  }
+
+  // What the menu asked this History for (shared ACT): it can resume, the popup can't.
+  menuAct(asked, cx) {
+    if (asked.action === "rescan") { const now = Date.now(); this.rescans = [now + 4000, now + 15000, now + 45000]; return; }
+    const s = this.rows.find((x) => keyOf(x) === asked.key);
+    if (!s) return;
+    if (asked.action === "goto" && asked.terminal) return this.goTo(asked.terminal);
+    if (asked.action === "resume") this.act(s, liveOf(this.rows.filter((x) => !x.readonly), liveTerms(), shared(RESUMED) ?? {}).get(keyOf(s)) ?? null, cx);
+  }
+
+  menuView(t) {
+    const f = props().histMenu;
+    const items = historyMenu(f);
+    return v_flex().id("hist-menu").track_focus(this.handle).w_full().min_h(0).p(5).bg(t.popover).text_size(12.8)
+      .on_key_down((e, cx) => {
+        if (e.key === "down") this.at = (this.at + 1) % items.length;
+        else if (e.key === "up") this.at = (this.at + items.length - 1) % items.length;
+        else if (e.key === "enter") return this.pick(items[this.at], cx);
+        else if (e.key === "escape") return closeOverlay(props().overlay);
+        else return;
+        cx.notify();
+      })
+      .child(div().px(8).pt(4).pb(6).text_size(11).text_color(t.dim).truncate().child(f.row.name ? `${f.row.name} · ${f.row.title}` : f.row.title))
+      .children(items.map((it, i) => v_flex()
+        .when(Boolean(it.sep), (el) => el.child(div().mx(7).my(4).h(1).bg(t.border)))
+        .child(h_flex().id(`hm-${it.id}`).h(31).px(8).gap(9).rounded(7).items_center()
+          .text_color(it.danger ? t.blocked : t.foreground)
+          .when(i === this.at, (el) => el.bg(t.selected))
+          .hover((el) => el.bg(t.hover))
+          .on_click((_e, cx) => this.pick(it, cx))
+          .child(svg(it.icon).size(14).flex_none().text_color(it.danger ? t.blocked : t.muted))
+          .child(div().flex_1().min_w(0).truncate().child(it.label))
+          .when(Boolean(it.hint), (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(it.hint))))));
+  }
+
+  // A menu item. Resume and Go to are the History's it was opened from (shared ACT);
+  // Copy runs here and the popup closes after (its tasks end when it does); Wipe opens
+  // its dialog, or the Agents list's for Antigravity.
+  pick(it, cx) {
+    const p = props();
+    const f = p.histMenu;
+    const done = () => closeOverlay(p.overlay);
+    if (!it || this.busy) return;
+    switch (it.id) {
+      case "resume":
+      case "goto":
+        setShared(ACT, { from: f.from, key: f.key, action: it.id, terminal: f.at ?? null, at: Date.now() });
+        return done();
+      case "copy": {
+        this.busy = true;
+        return cx.spawn(async () => {
+          const r = await exec("sh", ["-c", COPY, "sh", f.row.id]).catch((e) => ({ code: 1, stderr: message(e) }));
+          if (r?.code !== 0) notify({ title: "Couldn't copy the session id", body: String(r?.stderr ?? "").trim() || "it didn't say why", level: "error" });
+          else notify({ title: "Session id copied", body: f.row.id, level: "success", timeout: 2500 });
+          done();
+        });
+      }
+      case "wipe":
+        done();
+        if (f.agy) {
+          // The Agents list's Wipe, as it does it (agywipe.js), for a conversation open in no terminal.
+          setShared(ACT, { from: f.from, key: f.key, action: "rescan", at: Date.now() });
+          return openOverlay({ mod: "ws-agents", kind: "dialog", width: 480, height: 410, props: { wipe: {
+            address: null, name: f.row.title, pane: null, tab: null, space: null, status: null, kind: "agy", remote: false,
+            session: f.row.id, file: f.row.file, cwd: f.row.cwd, cmd: null, agyWipe: true, agyFresh: true, pid: null } } });
+        }
+        return openOverlay({ mod: "ws-history", kind: "dialog", width: 480, height: wipeHeight(f), props: { wipe: f } });
+    }
+  }
+
+  // What stands in the way of wiping each conversation the dialog could take (treefacts.js
+  // wipeCheck()), read fresh. For each live terminal running that agent, which conversation
+  // it holds (holdState()): Claude's .session note and its status line's stats note
+  // (~/.herdr/resume/<core>/<t>.session, ~/.herdr/agents/<core>/<t>.json), Pi's stats note,
+  // History's own resume claim; folders by real path; when each transcript was last written;
+  // and the live helpers hc ends with a terminal that's closed (`ends`).
+  async checkWipe(cx) {
+    const f = props().wipe;
+    const all = [f.row, ...f.helpers].filter((x) => WIPES.has(x.provider));
+    const files = all.map((x) => x.file).filter(Boolean);
+    const terms = liveTerms();
+    const w = await exec("sh", ["-c", WRITTEN, "sh", ...files], { timeout: 10000 }).catch(() => null);
+    let now = Date.now();
+    const written = new Map();
+    for (const l of String(w?.stdout ?? "").split("\n")) {
+      const i = l.indexOf("\t");
+      if (i < 0) continue;
+      const n = Number(l.slice(0, i)) * 1000, rest = l.slice(i + 1);
+      if (!Number.isFinite(n)) { if (l.startsWith("now\t")) now = Number(rest) * 1000 || now; continue; }
+      written.set(rest, n);
+    }
+    const dirs = [...new Set([...all.map((x) => x.cwd), ...terms.map((x) => x.cwd)].filter(Boolean))];
+    const rp = dirs.length ? await exec("sh", ["-c", REAL, "sh", ...dirs], { timeout: 10000 }).catch(() => null) : null;
+    const reals = String(rp?.stdout ?? "").split("\n");
+    const real = new Map(dirs.map((d, i) => [d, rp?.code === 0 && reals[i] ? reals[i] : d]));
+    const core = /^[A-Za-z0-9._-]+$/.test(f.core ?? "") ? f.core : "default";
+    const claims = Object.entries(shared(RESUMED) ?? {});
+    const idOf = (v) => (typeof v === "string" && /^[0-9A-Za-z-]+$/.test(v) ? v : null);
+    // Every running Claude, by Claude's own record (pid reused by another program: left out).
+    const procs = new Map(); // session id -> pids
+    const ran = await exec("sh", ["-c", RUNNING, "sh", `${home()}/.claude/sessions`], { timeout: 10000 }).catch(() => null);
+    const norm = (x) => String(x ?? "").replace(/\s+/g, " ").trim();
+    for (const l of String(ran?.stdout ?? "").split("\n")) {
+      const [pid, started, json] = l.split("\t");
+      let j = null;
+      try { j = JSON.parse(json ?? ""); } catch { j = null; }
+      const sid = idOf(j?.sessionId);
+      if (!sid || (j.procStart && norm(j.procStart) !== norm(started))) continue;
+      if (!procs.has(sid)) procs.set(sid, []);
+      procs.get(sid).push(Number(pid));
+    }
+    // Each Claude or Pi terminal: the program running there now (hc's foreground pid, 3 s
+    // at most), and what's noted for it.
+    const facts = new Map();
+    for (const term of terms) {
+      if (term.program !== "claude" && term.program !== "pi") continue;
+      const got = await exec("hc", ["get", term.address, "--json"], { timeout: 3000 }).catch(() => null);
+      let pid = null;
+      try { pid = JSON.parse(got?.stdout ?? "")?.foreground?.pid ?? null; } catch { pid = null; }
+      let note = null, stats = null, statsPid = null, running = null;
+      if (term.program === "claude") {
+        note = idOf(String(await readTextFile(`${home()}/.herdr/resume/${core}/${term.address}.session`).catch(() => "")).split("\n")[0].trim());
+        if (pid) { try { running = idOf(JSON.parse(await readTextFile(`${home()}/.claude/sessions/${pid}.json`))?.sessionId); } catch { running = null; } }
+      }
+      try {
+        const j = JSON.parse(await readTextFile(`${home()}/.herdr/agents/${core}/${term.address}.json`));
+        stats = idOf(j?.status?.session_id);
+        statsPid = j?.pid ?? null;
+      } catch { stats = null; }
+      facts.set(term.address, { pid, note, stats, statsPid, running, claims: claims.filter(([, a]) => a === term.address).map(([k]) => k) });
+    }
+    const everyone = terminals();
+    const checks = new Map();
+    let gone = false;
+    for (const x of all) {
+      const k = `${x.provider}/${x.id}`;
+      const program = PROVIDERS[x.provider]?.program;
+      let open = null;
+      const maybe = [], others = [];
+      for (const term of terms) {
+        if (term.program !== program) continue;
+        const h = facts.get(term.address) ?? {};
+        const claim = (h.claims ?? []).includes(k) ? x.id : null;
+        const st = holdState(x.provider, x.id, { pid: h.pid, running: h.running, note: h.note, stats: h.stats, statsPid: h.statsPid, claim });
+        if (st === "exact") open = term.address; // wherever its folder is now
+        else if (st === "maybe") maybe.push(term.address);
+        else if (st === "unknown" && (real.get(term.cwd) ?? term.cwd) === (real.get(x.cwd) ?? x.cwd)) others.push(term.address);
+      }
+      // A running Claude with it open that isn't the one in `open`.
+      const mine = open ? facts.get(open)?.pid : null;
+      const outside = x.provider === "claude" ? (procs.get(x.id) ?? []).filter((p) => String(p) !== String(mine)) : [];
+      const missing = Boolean(x.file) && w?.code === 0 && !written.has(x.file);
+      if (missing) gone = true;
+      const targets = wipeTargets({ kind: x.provider, session: x.id, file: x.file });
+      const check = wipeCheck(x, { targets, open, maybe, others, procs: outside, missing, written: written.get(x.file) ?? null, now, name: PROVIDERS[x.provider]?.name, app: x.via === "app" });
+      checks.set(k, { x, targets, ends: check.ok && check.close ? liveUnder(check.close, everyone) : [], ...check });
+    }
+    // Something here is gone already: every History reads again.
+    if (gone && !this.toldGone) { this.toldGone = true; setShared(WIPED, { keys: shared(WIPED)?.keys ?? [], at: Date.now() }); }
+    this.checks = checks;
+    cx.notify();
+    return checks;
+  }
+
+  // What Wipe all would end besides what it wipes: the live helpers under the terminals it
+  // closes that aren't among them.
+  allEnds(checks, keys) {
+    const list = keys.map((k) => checks.get(k)).filter((x) => x?.ok);
+    const closing = new Set(list.map((x) => x.close).filter(Boolean));
+    const seen = new Set();
+    return list.flatMap((x) => x.ends).filter((e) => !closing.has(e.address) && !seen.has(e.address) && seen.add(e.address));
+  }
+
+  wipeDialog(t) {
+    const f = props().wipe;
+    const c = this.checks?.get(f.key) ?? null;
+    const wipeable = f.helpers.filter((x) => WIPES.has(x.provider));
+    const helperChecks = wipeable.map((x) => this.checks?.get(`${x.provider}/${x.id}`)).filter(Boolean);
+    const blockedHelper = helperChecks.find((x) => !x.ok);
+    const who = (list) => list.map((e) => (e.name ? `${e.name} (${e.address})` : e.address)).join(", ");
+    // Closing an open conversation's terminal ends its running helpers too (hc).
+    const ends = c?.ok ? c.ends : [];
+    const allEnds = this.checks ? this.allEnds(this.checks, [f.key, ...wipeable.map((x) => `${x.provider}/${x.id}`)]) : [];
+    const opens = [c, ...helperChecks].filter((x) => x?.ok && x.close).length;
+    const what = f.row.provider === "pi" ? "its session file" : "its transcript and what Claude keeps beside it";
+    // danger: filled red; more: red words on the plain button (Wipe all, the bigger step, isn't the default).
+    const button = (id, label, kind, action, off) => h_flex().id(id).h(32).px(14).items_center().rounded(8).border_1()
+      .border_color(kind ? t.blocked : t.input).bg(kind === "danger" ? t.blocked : t.raised)
+      .text_color(kind === "danger" ? "#ffffff" : kind === "more" ? t.blocked : t.foreground).text_size(12.5).font_medium().cursor_pointer()
+      .when(this.busy || off, (el) => el.opacity(0.5)).hover((el) => el.opacity(0.88)).on_click(action).child(label);
+    const enter = (cx) => this.doWipe(false, cx);
+    const line = (text, color, size = 11.5) => div().pt(8).text_size(size).text_color(color).child(text);
+    return v_flex().id("hist-wipe").track_focus(this.handle).size_full().min_h(0).p(18).bg(t.popover).text_size(13)
+      .on_key_down((e, cx) => {
+        if (e.key === "escape") closeOverlay(props().overlay);
+        else if (e.key === "enter") enter(cx);
+        else return;
+        cx.stop_propagation();
+      })
+      .child(h_flex().flex_none().items_center()
+        .child(div().flex_1().min_w(0).truncate().text_size(15).font_semibold().text_color(t.foreground).child(`Wipe “${f.row.title}”?`))
+        .child(div().text_size(11).text_color(t.dim).child("Esc")))
+      // What it says scrolls when it's more than the dialog holds; the buttons stay.
+      .child(v_flex().id("hist-wipe-text").flex_1().min_h(0).overflow_y_scrollbar()
+        .child(div().pt(12).text_color(t.muted).child(`Moves this conversation to the Trash (${what}), so History won't list it and it can't be resumed.${c?.ok && c.close ? ` It's open in ${c.close}: Wipe closes that first.` : ""}`))
+        .when(f.helpers.length > 0, (el) => el.child(line(`${helperWords(f, wipeable.length)}${opens > (c?.close ? 1 : 0) ? " Wipe all closes the ones that are open." : ""}`, t.muted, 12)))
+        .when(!this.checks && !this.error, (el) => el.child(line("Looking at what has it open…", t.dim)))
+        .when(Boolean(c) && !c.ok && !this.error, (el) => el.child(line(`Can't wipe it now: ${c.why}`, t.blocked)))
+        .when(ends.length > 0 && !this.error, (el) => el.child(line(`Closing ${c.close} would also end ${who(ends)}, still running, so Wipe waits until they're done${wipeable.length ? "; Wipe all wipes the ones History lists here too" : ""}.`, t.blocked)))
+        .when(Boolean(blockedHelper) && c?.ok && !this.error, (el) => el.child(line(`Wipe all can't go on: ${blockedHelper.x.name || blockedHelper.x.title}: ${blockedHelper.why}`, t.muted)))
+        .when(wipeable.length > 0 && allEnds.length > 0 && !blockedHelper && c?.ok && !this.error, (el) => el.child(line(`Wipe all also ends ${who(allEnds)}, still running (their conversations stay).`, t.muted)))
+        .when(Boolean(this.error), (el) => el.child(line(this.error, t.blocked))))
+      .child(h_flex().flex_none().pt(14).gap(8).justify_end()
+        .child(button("hist-wipe-cancel", "Cancel", null, () => closeOverlay(props().overlay), false))
+        .when(wipeable.length > 0, (el) => el.child(button("hist-wipe-all", this.busy ? "Wiping…" : `Wipe all ${wipeable.length + 1}`, "more", (_e, cx) => this.doWipe(true, cx), !c?.ok || Boolean(blockedHelper))))
+        .child(button("hist-wipe-go", this.busy ? "Wiping…" : "Wipe", "danger", (_e, cx) => this.doWipe(false, cx), !c?.ok || ends.length > 0)));
+  }
+
+  // Looks again (what has it open may have changed while the dialog was open), closes the
+  // terminals that hold what it takes (helpers first), then moves the files to the Trash,
+  // says where they went and has every History read again. A single Wipe of a conversation
+  // whose terminal has live helpers refuses: closing it would end them (hc).
+  doWipe(all, cx) {
+    const p = props();
+    const f = p.wipe;
+    if (this.busy || !this.checks) return;
+    this.busy = true;
+    this.error = null;
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        const shownChecks = this.checks;
+        const checks = await this.checkWipe(cx);
+        const keys = [f.key, ...(all ? f.helpers.filter((x) => WIPES.has(x.provider)).map((x) => `${x.provider}/${x.id}`) : [])];
+        // Helpers started since the dialog showed what Wipe all ends: show them first.
+        if (all) {
+          const shown = new Set(this.allEnds(shownChecks, keys).map((e) => e.address));
+          const fresh = this.allEnds(checks, keys).filter((e) => !shown.has(e.address));
+          if (fresh.length) throw new Error(`${fresh.map((e) => e.name || e.address).join(", ")} started since this opened and would end too. It's in the list now: press Wipe all again to go on`);
+        }
+        const list = keys.map((k) => checks.get(k)).filter(Boolean);
+        const no = list.find((x) => !x.ok);
+        if (!list.length || no) throw new Error(no ? `${no.x === f.row ? "" : `${no.x.name || no.x.title}: `}${no.why}` : "there's nothing to wipe");
+        const main = checks.get(f.key);
+        if (!all && main.ends.length) throw new Error(`closing ${main.close} would also end ${main.ends.map((e) => e.name || e.address).join(", ")}, still running`);
+        // Ended first, so they can't write to their transcripts again.
+        const live = (address) => terminals().some((x) => x.address === address && x.state === "live");
+        for (const x of [...list].reverse()) {
+          if (!x.close) continue;
+          const pane = panes().find((q) => q.terminal === x.close)?.pane ?? null;
+          if (live(x.close)) run("terminal.kill", { terminal: x.close });
+          for (let i = 0; i < 40 && live(x.close); i++) await exec("sleep", ["0.15"]);
+          if (live(x.close)) throw new Error(`${x.close} is still running, so nothing was wiped`);
+          if (pane && panes().some((q) => q.pane === pane)) run("pane.close", { pane });
+        }
+        const r = await exec("sh", ["-c", TRASH, "sh", `${home()}/.herdr/trash`, ...list.flatMap((x) => x.targets)]);
+        if (r.code !== 0) throw new Error(String(r.stderr ?? "").trim() || "moving it to the Trash failed");
+        const elsewhere = String(r.stdout ?? "").split("\n").map((l) => l.trim()).find((l) => l && l !== "Trash");
+        const more = list.length > 1 ? ` and ${plural(list.length - 1, "helper")}` : "";
+        notify({ title: `Wiped “${f.row.title}”${more}`, body: elsewhere ? `${list.length > 1 ? "Their conversations are" : "Its conversation is"} in ${tilde(elsewhere)}.` : `${list.length > 1 ? "Their conversations are" : "Its conversation is"} in the Trash.`, level: "success" });
+        const before = shared(WIPED)?.keys ?? [];
+        setShared(WIPED, { keys: [...new Set([...before, ...keys])].slice(-200), at: Date.now() });
+        closeOverlay(p.overlay);
+      } catch (e) {
+        this.busy = false;
+        this.error = `Couldn't wipe it: ${message(e)}`;
+        cx.notify();
+      }
+    });
   }
 }

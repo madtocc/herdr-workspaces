@@ -29,9 +29,9 @@ cmp -s "$src/mods/ws-switcher/ghfacts.js" "$src/mods/ws-board/ghfacts.js" || {
   exit 1
 }
 
-# The + menu and the Presets screen's "Agents in the + menu" pane hide agents by the same rules.
-cmp -s "$src/mods/ws-new-menu/hidefacts.js" "$src/mods/ws-presets/hidefacts.js" || {
-  echo "mods/ws-new-menu/hidefacts.js and mods/ws-presets/hidefacts.js differ: make them the same first" >&2
+# The + menu and Settings > Agents hide agents by the same rules.
+cmp -s "$src/mods/ws-new-menu/hidefacts.js" "$src/mods/ws-settings/hidefacts.js" || {
+  echo "mods/ws-new-menu/hidefacts.js and mods/ws-settings/hidefacts.js differ: make them the same first" >&2
   exit 1
 }
 
@@ -41,9 +41,15 @@ cmp -s "$src/mods/ws-switcher/knobs.js" "$src/mods/ws-presets/knobs.js" || {
   exit 1
 }
 
-# Settings' Extras section and the Agents list read the package's settings (~/.herdr/settings.jsonc) by the same rules.
+# Settings' Experimental section and the Agents list read the package's settings (~/.herdr/settings.jsonc) by the same rules.
 cmp -s "$src/mods/ws-settings/settingsfacts.js" "$src/mods/ws-agents/settingsfacts.js" || {
   echo "mods/ws-settings/settingsfacts.js and mods/ws-agents/settingsfacts.js differ: make them the same first" >&2
+  exit 1
+}
+
+# History's Wipe moves the same files to the Trash as the Agents list's (wipeTargets()) and draws its menu the same size.
+cmp -s "$src/mods/ws-agents/menufacts.js" "$src/mods/ws-history/menufacts.js" || {
+  echo "mods/ws-agents/menufacts.js and mods/ws-history/menufacts.js differ: make them the same first" >&2
   exit 1
 }
 

@@ -1,8 +1,8 @@
 // GENERATED: don't edit. ws-settings is Herdr's Settings window (its bundled mod frame-settings,
-// frame/settings/main.js) with the Workspaces package's Extras as one more section (extras.js).
+// frame/settings/main.js) with the Workspaces package's Agents and Experimental sections (extras.js).
 // Written by the ws-switcher mod (settingsbuild.js) from Herdr 0.1.16's file, source a8e6091a.
-// Patches: icons by full path, Extras after Herdr's sections, a section asked through shared state, its page, its init.
-import { extrasPage, extrasInit, askedSection, EXTRAS_SECTION } from "./extras.js";
+// Patches: icons by full path, Agents and Experimental after Herdr's sections, a section asked through shared state, their pages, their init.
+import { packagePage, packageInit, askedSection, PACKAGE_SECTIONS } from "./extras.js";
 // App-owned settings mod. Writes changes immediately; no Save step.
 
 import { View, div, svg, image } from "gpui-kit";
@@ -19,7 +19,7 @@ const HERDR_SECTIONS = [
   { id: "updates", title: "Updates", icon: "refresh" },
   { id: "privacy", title: "Privacy", icon: "shield" },
 ];
-const SECTIONS = [...HERDR_SECTIONS, EXTRAS_SECTION];
+const SECTIONS = [...HERDR_SECTIONS, ...PACKAGE_SECTIONS];
 
 const LOOKS = { main: "Herdr", terminals: "Terminals", win98: "Herdr 98" };
 const APPEARANCES = [
@@ -979,8 +979,8 @@ export default class Settings extends View {
                   .px(28)
                   .py(22)
                   .child(
-                    this.section === "extras"
-                      ? extrasPage(this)
+                    PACKAGE_SECTIONS.some((s) => s.id === this.section)
+                      ? packagePage(this)
                       : this.section === "look"
                       ? this.look(t, cx)
                       : this.section === "keyboard"
@@ -1000,11 +1000,11 @@ export default class Settings extends View {
   }
 }
 
-// ws-settings: the Extras page's state, read once the window has set up its own.
+// ws-settings: the package pages' state, read once the window has set up its own.
 {
   const herdrInit = Settings.prototype.init;
   Settings.prototype.init = function (p, cx) {
     herdrInit.call(this, p, cx);
-    extrasInit(this, cx);
+    packageInit(this, cx);
   };
 }

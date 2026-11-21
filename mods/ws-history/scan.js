@@ -27,12 +27,24 @@
 // A transcript can be many megabytes, so only its first and last pieces are read,
 // and what they said is kept in ~/.herdr/cache/history/index.json until the file changes.
 // Its compactions (Claude, Pi, Antigravity) are looked for in the whole file, once:
-// after that only what a transcript gained is read, since they only grow.
+// after that only what a transcript gained is read, since they only grow. In the same
+// pass, a Claude transcript's `hc run` calls: the helpers that conversation started.
+//
+// Which conversation started which (treefacts.js: link()): the launcher's ledger
+// ~/.herdr/resume/parents (herdr-ws-resume writes it), those `hc run` calls matched to
+// the conversation whose first prompt is the task, and the agents' own sub-agents:
+// Claude's <session>/subagents/agent-<id>.jsonl with its .meta.json beside it (only
+// those two are read, and the transcript only stat'ed), Antigravity's
+// parent_conversation_id, OpenCode's parent_id and Codex's thread_spawn source. A row
+// another started has `parent` (its key) and `helper` ({ name, preset }) or, for a
+// sub-agent, `readonly` and `sub` ({ type }). The helpers of a conversation listed are
+// listed with it, whatever folder they ran in.
 
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { claudeHead, claudeTail, piFacts, codexRow, opencodeRow, grokFacts, agyFacts, agyCwd, agyRow, clean, samePrompt, inside, PROVIDERS, titleOf, ago, COMPACTION, compactionOf, contextAtEnd } from "./histfacts.js";
+import { hcRunCalls, ledgerOf, link, promptEnd, subRow, codexParentOf } from "./treefacts.js";
 
 // node:sqlite says it's experimental on every import; nobody reads that here.
 process.removeAllListeners("warning");
@@ -64,29 +76,33 @@ const stat = (file) => { try { return fs.statSync(file); } catch { return null; 
 // What a file said the last time it was read, while it hasn't changed since.
 const cacheFile = path.join(HOME, ".herdr", "cache", "history", "index.json");
 let cache = {};
-try { const c = JSON.parse(fs.readFileSync(cacheFile, "utf8")); if (c.v === 4) cache = c.files ?? {}; } catch { cache = {}; }
+try { const c = JSON.parse(fs.readFileSync(cacheFile, "utf8")); if (c.v === 5) cache = c.files ?? {}; } catch { cache = {}; }
 const kept = {};
 let dirty = false;
 // read(old) gets what was kept before; a `_k` it returns (compactions()) is kept beside the row.
 function cached(file, st, read) {
   const old = cache[file];
-  if (old && old.m === st.mtimeMs && old.s === st.size) { kept[file] = old; return old.row; }
+  // A copy each time: link() writes on the rows, and that mustn't be kept.
+  if (old && old.m === st.mtimeMs && old.s === st.size) { kept[file] = old; return old.row ? { ...old.row } : null; }
   let row = null;
   try { row = read(old); } catch { row = null; }
   const k = row?._k ?? null;
   if (row) delete row._k;
   kept[file] = k ? { m: st.mtimeMs, s: st.size, row, k } : { m: st.mtimeMs, s: st.size, row };
   dirty = true;
-  return row;
+  return row ? { ...row } : null;
 }
 
-// Every compaction in a transcript: { n, list (the newest KEEP), off (read up to) }.
+// Every compaction in a transcript: { n, list (the newest KEEP), off (read up to) }, and
+// for Claude its `hc run` calls (`calls`, the newest CALLS; treefacts.js hcRunCalls()).
 // When the file only grew since `old` read it, it reads on from there.
-const CHUNK = 8 << 20, KEEP = 20;
+const CHUNK = 8 << 20, KEEP = 20, CALLS = 100;
+const HC_RUN = Buffer.from("hc run"), ASSISTANT = '"type":"assistant"';
 function compactions(file, st, provider, old) {
   const needle = Buffer.from(COMPACTION[provider]);
+  const calls = provider === "claude";
   const prev = old?.k && old.k.off <= st.size ? old.k : { n: 0, list: [], off: 0 };
-  const out = { n: prev.n, list: [...prev.list], off: prev.off };
+  const out = { n: prev.n, list: [...prev.list], off: prev.off, ...(calls ? { calls: [...(prev.calls ?? [])] } : {}) };
   const fd = fs.openSync(file, "r");
   try {
     let pos = prev.off, carry = Buffer.alloc(0);
@@ -105,6 +121,15 @@ function compactions(file, st, provider, old) {
         const c = compactionOf(provider, data.toString("utf8", from, to));
         if (c) { out.n += 1; out.list.push(c); if (out.list.length > KEEP) out.list.shift(); }
         i = to + 1;
+      }
+      // An assistant's line that runs `hc run`: the helpers it started.
+      if (calls) {
+        for (let i = data.indexOf(HC_RUN); i >= 0 && i < nl; i = data.indexOf(HC_RUN, i)) {
+          const from = data.lastIndexOf(10, i) + 1, to = data.indexOf(10, i);
+          const line = data.toString("utf8", from, to);
+          if (line.includes(ASSISTANT)) for (const c of hcRunCalls(line)) { out.calls.push(c); if (out.calls.length > CALLS) out.calls.shift(); }
+          i = to + 1;
+        }
       }
       carry = data.subarray(nl + 1);
       out.off = pos - carry.length;
@@ -127,7 +152,7 @@ function claudeRow(file, st, id, old) {
     if (!head.cwd || head.side) return null;
     if (!head.first && !tail.title && !tail.last) return null; // opened and closed with nothing asked
     return {
-      provider: "claude", id, cwd: head.cwd, title: clean(tail.title, 120), first: clean(head.first, 240),
+      provider: "claude", id, file, cwd: head.cwd, title: clean(tail.title, 120), first: clean(head.first, 240), firstEnd: promptEnd(head.first),
       last: samePrompt(head.first, tail.last) ? "" : clean(tail.last, 240),
       model: tail.model ?? "", branch: head.branch ?? "", started: head.started ?? st.birthtimeMs, updated: tail.ended ?? st.mtimeMs,
       via: head.entry === "claude-desktop" ? "app" : "", headless: head.entry === "sdk-cli",
@@ -139,14 +164,39 @@ function scanClaude(out) {
   const root = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(HOME, ".claude"), "projects");
   for (const d of readdir(root)) {
     if (!d.isDirectory()) continue;
-    for (const f of readdir(path.join(root, d.name))) {
+    const entries = readdir(path.join(root, d.name));
+    const folders = new Set(entries.filter((e) => e.isDirectory()).map((e) => e.name));
+    for (const f of entries) {
       if (!f.isFile() || !f.name.endsWith(".jsonl")) continue;
       const file = path.join(root, d.name, f.name);
       const st = stat(file);
       if (!st || st.mtimeMs < since) continue;
-      const row = cached(file, st, (old) => claudeRow(file, st, f.name.slice(0, -6), old));
-      if (row && (!row.headless || flag("--headless"))) out.push(row);
+      const id = f.name.slice(0, -6);
+      const row = cached(file, st, (old) => claudeRow(file, st, id, old));
+      if (!row || (row.headless && !flag("--headless"))) continue;
+      // Its hc run calls, kept once in the cache beside the compactions (link() reads them).
+      row.calls = kept[file]?.k?.calls ?? [];
+      out.push(row);
+      if (folders.has(id)) claudeSubs(path.join(root, d.name, id, "subagents"), row, out);
     }
+  }
+}
+// Its own sub-agents (the Agent tool): agent-<id>.jsonl, only stat'ed, and the small
+// agent-<id>.meta.json beside it ({ agentType, description }).
+function claudeSubs(dir, parent, out) {
+  for (const f of readdir(dir)) {
+    if (!f.isFile() || !f.name.endsWith(".jsonl")) continue;
+    const file = path.join(dir, f.name);
+    const st = stat(file);
+    if (!st || st.mtimeMs < since) continue;
+    const row = cached(file, st, () => {
+      let meta = {};
+      try { meta = JSON.parse(fs.readFileSync(`${file.slice(0, -6)}.meta.json`, "utf8")) ?? {}; } catch { meta = {}; }
+      const id = f.name.slice(0, -6);
+      // Without its .meta.json: "sub-agent" and its id, short.
+      return subRow("claude", id, `claude/${parent.id}`, { title: meta.description || `sub-agent ${id.replace(/^agent-/, "").slice(0, 8)}`, type: meta.agentType, cwd: parent.cwd, started: st.birthtimeMs, updated: st.mtimeMs });
+    });
+    if (row) out.push({ ...row, cwd: parent.cwd });
   }
 }
 
@@ -162,7 +212,7 @@ function piRow(file, st, old) {
     const id = facts.id ?? /_([0-9a-f-]{8,})\.jsonl$/.exec(file)?.[1];
     if (!id || !facts.cwd || !facts.first) return null;
     return {
-      provider: "pi", id, file, cwd: facts.cwd, title: clean(facts.name, 120), first: clean(facts.first, 240),
+      provider: "pi", id, file, cwd: facts.cwd, title: clean(facts.name, 120), first: clean(facts.first, 240), firstEnd: promptEnd(facts.first),
       last: samePrompt(facts.first, facts.last) ? "" : clean(facts.last, 240), model: facts.model ?? "", branch: "",
       started: facts.started ?? st.birthtimeMs, updated: facts.ended ?? st.mtimeMs, via: "",
       ...compactFields(compactions(file, st, "pi", old), facts),
@@ -234,14 +284,30 @@ async function scanCodex(out) {
   if (!dbs.length) return;
   const rows = await sqlite(path.join(home, dbs[0][0]), `select * from threads where archived = 0 and updated_at >= ${Math.floor(since / 1000)} order by updated_at desc limit ${limit * 2}`);
   if (!rows) return notes.push("Codex's conversations couldn't be read: that needs Node 22.13 or newer, or the sqlite3 program.");
-  for (const r of rows) { const row = codexRow(r); if (row) out.push(row); }
+  for (const r of rows) {
+    const parent = codexParentOf(r.source);
+    if (parent) {
+      out.push(subRow("codex", String(r.id), `codex/${parent}`, { title: r.title || r.first_user_message, type: r.agent_role || r.agent_nickname || "", cwd: r.cwd,
+        started: Number(r.created_at_ms) || Number(r.created_at) * 1000 || 0, updated: Number(r.updated_at_ms) || Number(r.updated_at) * 1000 || 0 }));
+      continue;
+    }
+    const row = codexRow(r);
+    if (row) out.push(row);
+  }
 }
 async function scanOpencode(out) {
   const file = path.join(process.env.XDG_DATA_HOME || path.join(HOME, ".local", "share"), "opencode", "opencode.db");
   if (!stat(file)) return;
   const rows = await sqlite(file, `select id, parent_id, directory, title, model, time_created, time_updated, time_archived from session where time_updated >= ${Math.floor(since)} order by time_updated desc limit ${limit}`);
   if (!rows) return notes.push("OpenCode's conversations couldn't be read: that needs Node 22.13 or newer, or the sqlite3 program.");
-  for (const r of rows) { const row = opencodeRow(r); if (row && (row.title || row.first)) out.push(row); }
+  for (const r of rows) {
+    if (r.parent_id && !r.time_archived) {
+      out.push(subRow("opencode", String(r.id), `opencode/${r.parent_id}`, { title: r.title, cwd: r.directory, started: Number(r.time_created) || 0, updated: Number(r.time_updated) || 0 }));
+      continue;
+    }
+    const row = opencodeRow(r);
+    if (row && (row.title || row.first)) out.push(row);
+  }
 }
 
 // --- Antigravity ---
@@ -275,11 +341,17 @@ async function scanAntigravity(out) {
     }
   } catch { /* none */ }
   for (const r of rows) {
-    if (r.parent_conversation_id || Number(r.nesting_depth) > 0 || !/^[0-9A-Za-z-]+$/.test(String(r.conversation_id))) continue;
-    if (wiped.has(String(r.conversation_id))) continue;
+    if (!/^[0-9A-Za-z-]+$/.test(String(r.conversation_id)) || wiped.has(String(r.conversation_id))) continue;
     let uris = [];
     try { uris = JSON.parse(r.workspace_uris || "[]"); } catch { uris = []; }
     const cwd = agyCwd(uris, agyDir, readRules, lastIn.get(r.conversation_id));
+    // A sub-agent's: under its parent, read-only, its transcript not read.
+    if (r.parent_conversation_id || Number(r.nesting_depth) > 0) {
+      if (!/^[0-9A-Za-z-]+$/.test(String(r.parent_conversation_id ?? ""))) continue;
+      const updated = Date.parse(String(r.last_modified_time ?? "").replace(" ", "T")) || 0;
+      out.push(subRow("antigravity", String(r.conversation_id), `antigravity/${r.parent_conversation_id}`, { title: r.title || r.preview, cwd: cwd ?? "", started: updated, updated }));
+      continue;
+    }
     const log = path.join(home, "brain", r.conversation_id, ".system_generated", "logs", "transcript.jsonl");
     const st = stat(log);
     const facts = st ? cached(log, st, (old) => {
@@ -289,7 +361,8 @@ async function scanAntigravity(out) {
       return { ...f, ...compactFields(compactions(log, st, "antigravity", old), f) };
     }) : null;
     const row = agyRow(r, facts ?? {}, cwd);
-    if (row && facts) Object.assign(row, { compactions: facts.compactions, compacted: facts.compacted, context: facts.context });
+    if (row && facts) Object.assign(row, { compactions: facts.compactions, compacted: facts.compacted, context: facts.context, firstEnd: promptEnd(facts.first) });
+    if (row && st) row.file = log;
     if (row && (!row.headless || flag("--headless"))) out.push(row);
   }
 }
@@ -328,21 +401,41 @@ await safely("OpenCode", scanOpencode);
 await safely("Antigravity", scanAntigravity);
 
 const open = openNotes(), started = startNotes();
+
+// Who started whom (treefacts.js link()), with the launcher's ledger; folders compared
+// by where they really are (/tmp is /private/tmp on macOS).
+const reals = new Map();
+const real = (p) => { if (!reals.has(p)) { let r = p; try { r = fs.realpathSync(p); } catch { /* gone */ } reals.set(p, r); } return reals.get(p); };
+let ledger = { sessions: [], starts: [] };
+try { ledger = ledgerOf(fs.readFileSync(path.join(process.env.HERDR_WS_RESUME_DIR || path.join(HOME, ".herdr", "resume"), "parents"), "utf8")); } catch { /* none yet */ }
+link(sessions, ledger, (a, b) => Boolean(a && b) && (a === b || real(a) === real(b)));
+
 // A folder that's gone (a removed worktree, a deleted scratch folder) can't be resumed
 // in: those don't count toward the limit, so they never crowd out the ones that can.
-// Up to a third as many again are listed, from the same stretch of time.
+// Up to a third as many again are listed, from the same stretch of time. Sub-agents
+// and helpers come with the conversation that started them, wherever they ran.
 const there = new Map();
-const gone = (cwd) => { if (!there.has(cwd)) there.set(cwd, Boolean(stat(cwd)?.isDirectory())); return !there.get(cwd); };
-const all = sessions.filter((s) => s.updated >= since && wanted(s.cwd)).sort((a, b) => b.updated - a.updated);
+const gone = (cwd) => { if (!cwd) return false; if (!there.has(cwd)) there.set(cwd, Boolean(stat(cwd)?.isDirectory())); return !there.get(cwd); };
+const all = sessions.filter((s) => !s.readonly && s.updated >= since && wanted(s.cwd)).sort((a, b) => b.updated - a.updated);
 const live = all.filter((s) => !gone(s.cwd)).slice(0, limit);
 const oldest = live.length === limit ? live[live.length - 1].updated : 0;
 const lost = all.filter((s) => gone(s.cwd) && s.updated >= oldest).slice(0, Math.ceil(limit / 3));
-const rows = [...live, ...lost].sort((a, b) => b.updated - a.updated).map((s) => {
-  const { headless: _h, ...row } = s;
-  if (s.provider === "claude" || s.provider === "antigravity") {
+const keyOf = (s) => `${s.provider}/${s.id}`;
+const picked = new Map([...live, ...lost].map((s) => [keyOf(s), s]));
+const under = new Map();
+for (const s of sessions) if (s.parent) { if (!under.has(s.parent)) under.set(s.parent, []); under.get(s.parent).push(s); }
+for (const list = [...picked.values()]; list.length;) {
+  for (const c of under.get(keyOf(list.pop())) ?? []) if (!picked.has(keyOf(c))) { picked.set(keyOf(c), c); list.push(c); }
+}
+const known = new Map(sessions.map((s) => [keyOf(s), s]));
+const rows = [...picked.values()].sort((a, b) => b.updated - a.updated).map((s) => {
+  const { headless: _h, calls: _c, ...row } = s;
+  if (!s.readonly && (s.provider === "claude" || s.provider === "antigravity")) {
     if (open.has(s.id)) row.terminal = open.get(s.id);
     if (started.has(s.id)) row.words = started.get(s.id);
   }
+  // Its parent, when it was read but isn't listed (another folder): what it's called.
+  if (s.parent && !picked.has(s.parent) && known.has(s.parent)) row.parentTitle = titleOf(known.get(s.parent));
   if (gone(s.cwd)) row.gone = true;
   return row;
 });
@@ -350,18 +443,19 @@ const rows = [...live, ...lost].sort((a, b) => b.updated - a.updated).map((s) =>
 if (dirty || Object.keys(kept).length !== Object.keys(cache).length) {
   try {
     fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
-    fs.writeFileSync(`${cacheFile}.${process.pid}.tmp`, JSON.stringify({ v: 4, files: kept }));
+    fs.writeFileSync(`${cacheFile}.${process.pid}.tmp`, JSON.stringify({ v: 5, files: kept }));
     fs.renameSync(`${cacheFile}.${process.pid}.tmp`, cacheFile);
   } catch { /* the next read parses them again */ }
 }
 
 const counts = {};
-for (const s of rows) counts[s.provider] = (counts[s.provider] ?? 0) + 1;
+for (const s of rows) if (!s.readonly) counts[s.provider] = (counts[s.provider] ?? 0) + 1;
 
 if (flag("--list")) {
   const tilde = (p) => (HOME && (p === HOME || p.startsWith(HOME + "/")) ? "~" + p.slice(HOME.length) : p);
   for (const s of rows) console.log([ago(s.updated, now).padStart(4), (PROVIDERS[s.provider]?.name ?? s.provider).padEnd(11), clean(tilde(s.cwd), 44).padEnd(44), titleOf(s)].join("  "));
   for (const n of notes) console.error(n);
 } else {
-  process.stdout.write(JSON.stringify({ v: 1, at: now, days, sessions: rows, counts, notes }));
+  // core: the herdr-core whose notes were read (the Wipe dialog reads Pi's stats notes there).
+  process.stdout.write(JSON.stringify({ v: 1, at: now, days, sessions: rows, counts, notes, core: process.env.HC_SESSION || "default" }));
 }

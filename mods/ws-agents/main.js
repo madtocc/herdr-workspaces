@@ -11,6 +11,8 @@
 // how often it was compacted, the rest on hover (readStats(), statLine(): stats.js
 // reads them from the agent's own records). The plans' usage is in the status bar
 // (ws-status).
+// Also: History's own right-click Wipe hands an Antigravity conversation that's open in no
+// terminal to the Wipe dialog here (props wipe with no address: nothing to close first).
 // Also: a right-click on an agent's row (a sub-agent's too, and on the rail) opens its
 // menu: Peek, Send a message, Interrupt, Compact, Fork session, Rename, Pin, Copy
 // terminal id, Copy session id, Close session, Wipe session (menufacts.js says which a
@@ -265,7 +267,7 @@ export default class Agents extends View {
     this.pids = new Map();
     if (checking()) return;
     cx.spawn(async (cx) => this.readStats(cx));
-    // The package's settings (an edit in the file shows within a minute; Settings > Extras sets them
+    // The package's settings (an edit in the file shows within a minute; Settings > Agents and Experimental set them
     // at once), and an Antigravity wipe left to finish.
     cx.spawn(async () => this.readSettings());
     cx.timer.every(60000, (cx) => {
@@ -662,7 +664,7 @@ export default class Agents extends View {
     ].filter(Boolean).join(" ") : "";
     const go = this.busy ? "Wiping…" : this.agyClosed ? "Try again" : this.agyConfirm && c ? `Wipe all ${c.tree.length}` : "Wipe";
     return this.dialogFrame(t, "agent-wipe", `Wipe ${f.name}?`, (cx) => this.doWipe(cx))
-      .child(div().pt(12).text_color(t.muted).child(`Closes it, takes this conversation out of Antigravity's own lists and moves its files into ~/.herdr/trash, so History and /resume won't show it${working}. Experimental: what it removes is kept there too, and agywipe.js restore puts it back.`))
+      .child(div().pt(12).text_color(t.muted).child(`${f.address ? "Closes it, takes" : "Takes"} this conversation out of Antigravity's own lists and moves its files into ~/.herdr/trash, so History and /resume won't show it${working}. Experimental: what it removes is kept there too, and agywipe.js restore puts it back.`))
       .child(facts)
       .when(Boolean(ask) && !this.error, (el) => el.child(div().pt(8).text_size(11.5).text_color(t.ansi3).child(ask)))
       .when(Boolean(others) && !this.error && !ask, (el) => el.child(div().pt(8).text_size(11.5).text_color(t.muted).child(others)))
@@ -735,8 +737,8 @@ export default class Agents extends View {
   // or the wipe again when nothing was recorded.
   async doWipeAgy(p, f, running, cx) {
     const stop = (msg, last) => { this.busy = false; this.error = msg; this.agyLast = last; cx.notify(); };
-    // Turned off in Extras since the menu opened: nothing happens.
-    if (!this.agyClosed && !experimentOn(shared("workspaces.settings"), "antigravity-wipe")) return stop("Nothing was changed: \"Wipe Antigravity conversations\" was turned off in Settings > Extras.");
+    // Turned off in Settings > Experimental since the menu opened: nothing happens.
+    if (!this.agyClosed && !experimentOn(shared("workspaces.settings"), "antigravity-wipe")) return stop("Nothing was changed: \"Wipe Antigravity conversations\" was turned off in Settings > Experimental.");
     const dir = agyDir(f);
     const title = this.agyCheck.title || this.agyCheck.preview || "the conversation";
     if (this.agyClosed && this.agyLast !== "refused") {
@@ -757,7 +759,7 @@ export default class Agents extends View {
       return stop(`It still didn't finish: ${e.error ?? "it's waiting"}. It tries again each minute while no Antigravity runs, and says if it gives up.`, "failed");
     }
     // Its program now (it may have changed since the menu opened).
-    const got = await hc(["get", f.address, "--json"]).catch(() => null);
+    const got = f.address ? await hc(["get", f.address, "--json"]).catch(() => null) : null;
     let pid = f.pid;
     try { pid = JSON.parse(got?.stdout ?? "")?.foreground?.pid ?? pid; } catch { /* the menu's */ }
     let family = this.agyFamily ?? [];

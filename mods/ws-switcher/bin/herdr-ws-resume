@@ -8,6 +8,9 @@
 #   herdr-ws-resume --forget [T] don't bring back terminal T's agent (default: this terminal's)
 #   herdr-ws-resume --off | --on bring agents back after a restart, or not (on at first)
 #   herdr-ws-resume --status     whether it's on, how many come back, and whether it's set up
+#   herdr-ws-resume --parent A F P [hooked]  the launcher's, in the background: notes who
+#                                started this terminal's agent (A, in folder F, preset P) when
+#                                it's an hc helper
 #
 # herdr-core keeps a Herdr terminal through a reboot, a logout or a core crash: same
 # address, same folder, but a new shell instead of what ran there. herdr-ws-agent
@@ -19,6 +22,25 @@
 #   ~/.herdr/resume/started                     every session's id and the launcher's words, a line
 #                                               each, kept after it ends: the History screen resumes
 #                                               a conversation with the command that started it
+#
+# And for the History screen's family tree (which conversation started which), for an
+# agent started under another one with `hc run`, whatever its agent and whether this is
+# on or off:
+#
+#   ~/.herdr/resume/<core>/<terminal>.parent    its parent terminal, its hc name, its preset and
+#                                               the parent's agent (--parent, from `hc ls`, once per start)
+#   ~/.herdr/resume/parents                     a line each, kept like started:
+#     <ms> start   <terminal> <agent> <folder>  <parent session> <parent terminal> <name> <preset>
+#     <ms> session <terminal> <agent> <session> <parent session> <parent terminal> <name> <preset>
+#       session: exact. The hook's, as an agent with a hook opens a session (not one it
+#         goes back to with /resume, nor an Antigravity sub-agent's); --parent's when the hook
+#         came first, and for Claude without the hook and Pi, the session the agent's own
+#         record names (~/.claude/sessions/<pid>.json; Pi's stats note of that pid), looked
+#         for for 30 seconds;
+#       start: --parent's fallback when that isn't found, and for Codex, Grok and OpenCode:
+#         History matches it by agent, folder and time.
+#       The parent session is what the parent terminal holds then, by the notes of the agent
+#       hc says runs there (holds()), else -.
 #
 # <core> is the core's socket name ("default"), <terminal> is $HC_TERMINAL_ID ("t18").
 # Leaving Claude yourself (/exit, Ctrl-D, Ctrl-C twice) or logging out of it drops
@@ -67,6 +89,66 @@ field() { printf '%s' "$input" | tr -d '\n' | sed -n "s/.*\"$1\"[[:space:]]*:[[:
 # The same, under Claude's name or else Antigravity's (camelCase): hook_event_name, hookEventName.
 either() { v=$(field "$1"); [ -n "$v" ] || v=$(field "$2"); printf '%s' "$v"; }
 
+# The conversation terminal $1 holds now, by the notes of the agent hc says runs there ($2:
+# claude-code, pi, agy, …): the launcher's .session note for Claude and Antigravity (an
+# Antigravity sub-agent's taken to the conversation it belongs to), else the stats note's
+# session_id for Claude, and for Pi only while the Pi that wrote it still runs. Any other
+# agent, or nothing noted: -. (A note an earlier agent in that terminal left says nothing.)
+holds() {
+  s=
+  case "$2" in
+    claude* | agy* | antigravity*)
+      s=$(sed -n 1p "$dir/$core/$1.session" 2>/dev/null)
+      case "$s" in '' | *[!0-9A-Za-z-]*) s= ;; *) case "$2" in agy* | antigravity*) s=$(agyroot "$s") ;; esac ;; esac ;;
+  esac
+  if [ -z "$s" ]; then
+    stats=$(tr -d '\n' 2>/dev/null < "${HERDR_WS_AGENTS_DIR:-$HOME/.herdr/agents}/$core/$1.json")
+    case "$2" in
+      claude*) s=$(printf '%s' "$stats" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([0-9A-Za-z-]*\)".*/\1/p') ;;
+      pi)
+        p=$(printf '%s' "$stats" | sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p')
+        [ -n "$p" ] && kill -0 "$p" 2>/dev/null &&
+          s=$(printf '%s' "$stats" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([0-9A-Za-z-]*\)".*/\1/p') ;;
+    esac
+  fi
+  case "$s" in '' | *[!0-9A-Za-z-]*) s=- ;; esac
+  printf '%s' "$s"
+}
+# The session the agent with pid $2 opened, by its own record, when it has one: Claude's
+# ~/.claude/sessions/<pid>.json, Pi's stats note for this terminal written by that pid
+# ($1: the agent's program). Empty when there's none (yet).
+ownsession() {
+  case "$1" in
+    claude) f=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions/$2.json
+      tr -d '\n' 2>/dev/null < "$f" | sed -n 's/.*"sessionId"[[:space:]]*:[[:space:]]*"\([0-9A-Za-z-]*\)".*/\1/p' ;;
+    pi) j=$(tr -d '\n' 2>/dev/null < "${HERDR_WS_AGENTS_DIR:-$HOME/.herdr/agents}/$core/$id.json")
+      case "$j" in *"\"pid\":$2,"* | *"\"pid\":$2}"*)
+        printf '%s' "$j" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([0-9A-Za-z-]*\)".*/\1/p' ;; esac ;;
+  esac
+}
+# Adds a line to ~/.herdr/resume/parents, kept to the newest 2000 once it passes 4000.
+parents() {
+  printf '%s\n' "$1" >> "$dir/parents" 2>/dev/null || return 0
+  if [ "$(wc -l < "$dir/parents" 2>/dev/null | tr -d ' ')" -gt 4000 ] 2>/dev/null; then
+    tail -n 2000 "$dir/parents" > "$dir/parents.tmp.$$" 2>/dev/null && mv -f "$dir/parents.tmp.$$" "$dir/parents"
+  fi
+}
+# What `hc "$@"` prints, or nothing: it gets 3 seconds.
+hcjson() {
+  out=$dir/$core/.hcjson.$$
+  hc "$@" > "$out" 2>/dev/null &
+  p=$!
+  ( sleep 3; kill "$p" 2>/dev/null ) >/dev/null 2>&1 &
+  w=$!
+  wait "$p" 2>/dev/null
+  r=$?
+  kill "$w" 2>/dev/null
+  [ "$r" = 0 ] && tr -d '\n' < "$out" 2>/dev/null
+  rm -f "$out"
+  return "$r"
+}
+tab=$(printf '\t')
+
 # Antigravity: the conversation a sub-agent's belongs to, from its own database (the
 # sqlite3 program), so a restart continues the one you talked to.
 agyroot() {
@@ -99,13 +181,24 @@ case "${1:-}" in
         [ "$(sed -n 1p "$note.session" 2>/dev/null)" = "$session" ] && exit 0
         printf '%s\n%s\n' "$session" "$(either transcript_path transcriptPath)" > "$note.session.tmp" &&
           mv -f "$note.session.tmp" "$note.session"
+        # An hc helper (--parent noted its parent): who started this session, for History.
+        # Not a conversation it went back to (/resume: maybe yours, or another's), nor an
+        # Antigravity sub-agent's (it belongs to the conversation that's noted already).
+        if [ -r "$note.parent" ] && IFS=$tab read -r pt pname ppreset pagent < "$note.parent" && [ -n "$pt" ]; then
+          a=claude
+          [ "$(either hook_event_name hookEventName)" = PreInvocation ] && a=agy
+          if [ "$a" = claude ] && [ "$(field source)" = resume ]; then :
+          elif [ "$a" = agy ] && [ "$(agyroot "$session")" != "$session" ]; then :
+          else parents "$(date +%s)000$tab""session$tab$id$tab$a$tab$session$tab$(holds "$pt" "$pagent")$tab$pt$tab${pname:--}$tab${ppreset:--}"
+          fi
+        fi
         # Kept after the session ends, for the History screen: the command that started
         # it, so it's resumed the same way (a preset's model, permissions, instructions).
         # One line each; a command that spans lines isn't noted and resumes plainly.
         if [ "$(wc -l < "$note.cmd" | tr -d ' ')" = 1 ]; then
           printf '%s\t%s\n' "$session" "$(cat "$note.cmd")" >> "$dir/started" 2>/dev/null
           if [ "$(wc -l < "$dir/started" 2>/dev/null | tr -d ' ')" -gt 4000 ] 2>/dev/null; then
-            tail -n 2000 "$dir/started" > "$dir/started.tmp" 2>/dev/null && mv -f "$dir/started.tmp" "$dir/started"
+            tail -n 2000 "$dir/started" > "$dir/started.tmp.$$" 2>/dev/null && mv -f "$dir/started.tmp.$$" "$dir/started"
           fi
         fi
         ;;
@@ -115,6 +208,69 @@ case "${1:-}" in
         esac
         ;;
     esac
+    exit 0
+    ;;
+  --parent)
+    # Run by herdr-ws-agent in the background as it starts an agent (never in its way):
+    # when hc says this terminal has a parent, note it for the hook and the History screen.
+    agent=${2:-} folder=${3:-} preset=${4:-} hooked=${5:-}
+    id=${HC_TERMINAL_ID:-}
+    case "$id" in '' | *[!A-Za-z0-9._-]*) exit 0 ;; esac
+    command -v hc >/dev/null 2>&1 && mkdir -p "$dir/$core" 2>/dev/null || exit 0
+    rm -f "$dir/$core/$id.parent"
+    # hc ls --json: one object per terminal, without the fields that are null; its only
+    # object inside is "labels", emptied here so a label called name or parent can't count.
+    live=$(hcjson ls --json) || exit 0
+    case "$live" in *'"address"'*) ;; *) exit 0 ;; esac
+    me=$(printf '%s' "$live" | sed 's/},{/}\
+{/g' | grep "{\"address\":\"$id\"," | head -n 1 | sed 's/"labels":{[^}]*}/"labels":{}/')
+    # A quote inside a string is \", so ,"parent":" is never inside one.
+    pt=$(printf '%s' "$me" | sed -n 's/.*[,{]"parent":"\([A-Za-z0-9._-]*\)".*/\1/p')
+    name=$(printf '%s' "$me" | sed -n 's/.*[,{]"name":"\([A-Za-z0-9_-]*\)".*/\1/p')
+    # The parent's agent, as hc reports it, so only its own notes name its conversation.
+    pagent=
+    [ -n "$pt" ] && pagent=$(printf '%s' "$live" | sed 's/},{/}\
+{/g' | grep "{\"address\":\"$pt\"," | head -n 1 | sed 's/"labels":{[^}]*}/"labels":{}/' | sed -n 's/.*[,{]"agent":"\([A-Za-z0-9._-]*\)".*/\1/p')
+    case "$preset" in *[!A-Za-z0-9._-]*) preset= ;; esac
+    if [ -n "$pt" ]; then
+      printf '%s\t%s\t%s\t%s\n' "$pt" "${name:--}" "${preset:--}" "${pagent:--}" > "$dir/$core/$id.parent.tmp" && mv -f "$dir/$core/$id.parent.tmp" "$dir/$core/$id.parent"
+      case "$folder" in /*) ;; *) folder= ;; esac
+      case "$folder" in *"$tab"* | *'
+'*) folder= ;; esac
+      case "$agent" in *[!A-Za-z0-9._-]* | '') agent= ;; esac
+      if [ -n "$hooked" ]; then
+        # The hook writes the session line; when it ran before this note was there, here.
+        session=$(sed -n 1p "$dir/$core/$id.session" 2>/dev/null)
+        case "$session" in '' | *[!0-9A-Za-z-]*) ;; *)
+          [ -n "$agent" ] && parents "$(date +%s)000$tab""session$tab$id$tab$agent$tab$session$tab$(holds "$pt" "$pagent")$tab$pt$tab${name:--}$tab${preset:--}" ;;
+        esac
+      elif [ -n "$folder" ] && [ -n "$agent" ]; then
+        # The agent's own session, exactly: the launcher runs this just before it execs the
+        # agent, so $PPID is the agent. Looked for for 30 seconds (Claude without the hook,
+        # Pi); a start line (matched by folder and time) only when it isn't found.
+        own=$PPID session= i=0
+        held=$(holds "$pt" "$pagent") # the parent's conversation now, before any wait
+        case "$agent" in
+          claude | pi)
+            while [ "$i" -lt 30 ]; do
+              session=$(ownsession "$agent" "$own")
+              case "$session" in '' | *[!0-9A-Za-z-]*) session= ;; *) break ;; esac
+              kill -0 "$own" 2>/dev/null || break
+              sleep 1
+              i=$((i + 1))
+            done ;;
+        esac
+        if [ -n "$session" ]; then parents "$(date +%s)000$tab""session$tab$id$tab$agent$tab$session$tab$held$tab$pt$tab${name:--}$tab${preset:--}"
+        else parents "$(date +%s)000$tab""start$tab$id$tab$agent$tab$folder$tab$held$tab$pt$tab${name:--}$tab${preset:--}"
+        fi
+      fi
+    fi
+    # The .parent notes of terminals that are gone.
+    for f in "$dir/$core"/*.parent; do
+      [ -f "$f" ] || continue
+      t=${f##*/}; t=${t%.parent}
+      case "$live" in *"\"address\":\"$t\""*) ;; *) rm -f "$f" ;; esac
+    done
     exit 0
     ;;
   --on | --off)
@@ -145,12 +301,12 @@ case "${1:-}" in
     t=${2:-${HC_TERMINAL_ID:-}}
     [ -n "$t" ] || { echo "usage: herdr-ws-resume --forget <terminal, like t18>" >&2; exit 2; }
     case "$t" in */* | .*) echo "herdr-ws-resume: \"$t\" is a terminal's address (t18)" >&2; exit 2 ;; esac
-    rm -f "$dir/$core/$t.cmd" "$dir/$core/$t.session"
+    rm -f "$dir/$core/$t.cmd" "$dir/$core/$t.session" "$dir/$core/$t.parent"
     exit 0
     ;;
   '') ;;
   *)
-    echo "usage: herdr-ws-resume [--hook | --list | --forget [terminal] | --on | --off | --status]" >&2
+    echo "usage: herdr-ws-resume [--hook | --list | --forget [terminal] | --on | --off | --status | --parent <agent> <folder> <preset>]" >&2
     exit 2
     ;;
 esac

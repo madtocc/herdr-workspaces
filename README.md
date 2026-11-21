@@ -157,7 +157,7 @@ and the prompt, and you read the draft before it's saved.
   alone. `github * issue opened` watches every repo of the workspace it runs in.
 - **A check first**: a command that runs before the agent, so no agent starts
   when there's nothing to do. It runs only once you've allowed it.
-- **Keep running**, at the foot of the list: a background process herdr-core
+- **Keep running**, in Settings > Agents: a background process herdr-core
   keeps going while Herdr is closed (it needs Node 20.6 or newer). Without it
   they run while Herdr is open. A schedule missed while nothing was running
   runs when Herdr opens if it was due in the last 12 hours; older ones are
@@ -204,24 +204,32 @@ own, where you can't watch it or type to it:
 None of them changes code. With the starter guide (see Install), Claude and
 Codex start one of these where they'd use their own subagent.
 
-### Settings, with Extras
+### Settings: Agents and Experimental
 
-![Settings on its Extras section](previews/settings.png)
+![Settings on its Agents section](previews/settings.png)
 
-The sidebar's Settings opens Herdr's own Settings window with one more section
-at the end, Extras: the package's own settings. Experimental features wait
-there, off until you turn them on, each saying why it's experimental (the
-first: wiping Antigravity conversations from the Agents list's menu), beside
-the package's switches (keep automations running while Herdr is closed, bring
-agents back after a restart, the Herdr guide for every agent). They're kept in
-`~/.herdr/settings.jsonc`, each with what it does in a comment above it.
+The sidebar's Settings opens Herdr's own Settings window with two sections of
+ours at the end, after Privacy:
+
+- **Agents**: every switch the package has for agents, in one place: **Starting
+  agents** (the Herdr guide for every agent, with Edit / Write one, and bringing
+  Claude and Antigravity agents back after a restart), **In the + menu** (which
+  installed agents the tab bar's + menu lists; the menu's "Choose agents…" opens
+  this page) and **While Herdr is closed** (Keep running for automations and
+  board cards' pull requests).
+- **Experimental**: features that lean on things other programs don't promise to
+  keep the same, each off until you turn it on and saying why it's experimental
+  (the first: wiping Antigravity conversations from the Agents list's menu).
+  They're kept in `~/.herdr/settings.jsonc`, each with what it does in a comment
+  above it.
 
 Herdr's sections are Herdr's: the package rebuilds its copy from Herdr's own
 file whenever Herdr updates it. The macOS menu's Settings… still opens Herdr's
 plain window; to have Cmd+, open this one, set `"cmd-,"` in the `global`
 section of your `~/.config/herdr-app/keys.json` to `"mod.open:ws-settings"`
-(or to `ws-switcher.settings/extras` to open it on Extras). Herdr then leaves
-that file to you: new default shortcuts in its updates are added by hand.
+(or to `ws-switcher.settings/agents` or `ws-switcher.settings/experimental` to
+open it on a section; `ws-switcher.settings/extras` opens Agents). Herdr then
+leaves that file to you: new default shortcuts in its updates are added by hand.
 
 ### And when you're away
 
@@ -260,7 +268,7 @@ says how), or by hand:
 3. To bring Claude and Antigravity agents back after a restart, add this line to
    `~/.config/herdr-core/config.toml`. herdr-core then starts terminals through
    `herdr-ws-resume`, which resumes a terminal's agent, else runs your usual shell.
-   The switch at the foot of the Agent presets screen turns it off and on again
+   The switch in Settings > Agents turns it off and on again
    (or `herdr-ws-resume --off` / `--on`). The `ln` line puts `herdr-ws-resume`
    (`--status`, `--list`, `--forget`) on your `PATH`:
    ```toml
@@ -288,8 +296,8 @@ says how), or by hand:
      ones (`mods/ws-automations/starters/`), and Create adds the one you open.
      They're written for the `implementer` and `reviewer` presets;
    - a guide for every agent the launcher starts (how to use automations, hc
-     helpers and the board): open Agent presets in the footer and pick
-     **Write one** under "Herdr guide", which writes the starter to
+     helpers and the board): open Settings > Agents and pick **Write one**
+     beside "Herdr guide for every agent", which writes the starter to
      `~/.herdr/AGENTS.md` and opens it. The switch beside it turns it off.
 
 **What it touches:** it reads `~/.herdr/workspaces` and the folders of
@@ -325,7 +333,7 @@ agent from the Agents list's right-click menu: that Claude Code or Pi
 conversation's transcript and the folders Claude keeps for it under
 `~/.claude/`. That menu also types into an agent with `hc send` (Send a message,
 Compact), presses Esc there with `hc keys` (Interrupt) and puts a terminal or
-session id on the clipboard (`pbcopy`, `wl-copy` or `xclip`). Settings' Extras
+session id on the clipboard (`pbcopy`, `wl-copy` or `xclip`). Settings > Experimental
 writes `~/.herdr/settings.jsonc`, and the switcher reads Herdr's own Settings
 window (`frame/settings/main.js` in Herdr's folder) to write its copy,
 `mods/ws-settings/main.js`. With its experiment turned on, wiping an Antigravity
@@ -351,7 +359,17 @@ only what it gained), never the rest, and it changes nothing there.
 It runs `node` (and `sqlite3` when Node is older than 22.13) to read them, keeps what it read in
 `~/.herdr/cache/history/index.json`, and starts your agent with its resume command when you click
 Resume. With restart resume on, the launcher's hook also notes each Claude session's start command
-in `~/.herdr/resume/started`. Nothing it reads leaves the computer. The Agents list's numbers
+in `~/.herdr/resume/started`. For which conversation started which, it reads Claude's sub-agent
+files (`<session>/subagents/*.meta.json`) and finds the `hc run` calls in Claude transcripts in
+that same reading; and the launcher, starting an agent in an hc terminal, asks `hc ls` in the
+background which terminal started it (and for up to 30 seconds which session the agent opened, from
+`~/.claude/sessions/<pid>.json` or Pi's stats note) and appends a line to `~/.herdr/resume/parents` (with
+`~/.herdr/resume/<core>/<terminal>.parent` while it runs; the hook adds one when Claude or
+Antigravity opens a session). Its right-click Wipe moves a Claude Code or Pi conversation's files
+to the Trash as the Agents list's does (after `terminal.kill` on the terminal it's open in; to tell
+which, it asks `hc get` for each agent terminal's program and reads Claude's `~/.claude/sessions/`,
+the launcher's notes and `ps`, and `stat` to see whether its transcript was just written), puts a session id on the clipboard for
+Copy session id, and hands an Antigravity one to the Agents list's Wipe. Nothing it reads leaves the computer. The Agents list's numbers
 come from the same places, read by `node` every few seconds while an agent works: what Claude
 Code hands its status line, which `herdr-ws-statusline` keeps in `~/.herdr/agents/<core>/`
 (the launcher sets it as the status line, in that session's `--settings`, where you have none),
@@ -377,7 +395,7 @@ folders included, to the Trash with it. A repo's two
 worktree scripts (`~/.herdr/workspaces/<id>/worktrees.json`) are shell lines Herdr
 runs as you: setup in a new worktree the board makes, archive before a removal.
 Like a check, only a line you saved or allowed in the screen runs
-(`~/.herdr/workspaces/.worktree-scripts.json`). The launcher reads `~/.herdr/AGENTS.md`, your global guide, and `~/.herdr/guide/switch`, which the Presets screen's guide switch writes; the screen's Write one creates the guide from the starter and opens it in your editor. The launcher lets Claude, Codex and Antigravity read and edit
+(`~/.herdr/workspaces/.worktree-scripts.json`). The launcher reads `~/.herdr/AGENTS.md`, your global guide, and `~/.herdr/guide/switch`, which Settings > Agents' guide switch writes; Write one there creates the guide from the starter and opens it in your editor. The launcher lets Claude, Codex and Antigravity read and edit
 the workspace's root, its folders elsewhere and its `tasks` and `notes` folders; Claude gets Herdr's own folders in that one session's `--settings`, and no settings file is written. For Antigravity it writes the instructions as a rules file under `~/.herdr/agy/`, gives Antigravity that folder, and removes the folders there that no launch has used for 90 days. Pi takes no folders, so the launcher names them in Pi's instructions, and passes your `~/.pi/agent/APPEND_SYSTEM.md`, when you have one, along with them. Automations watch the folders a files automation
 names, read calls `herdr-ws-run` leaves in `~/.herdr/workspaces/.inbox` (and
 delete them), and close an automation's older run tabs once their agent is done.

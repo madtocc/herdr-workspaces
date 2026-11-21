@@ -96,6 +96,10 @@
 # herdr-ws-statusline, which keeps the model, context and limits Claude hands it for
 # the Agents list, unless a status line is set already.
 #
+# Started from another agent's terminal (an hc helper), it also has herdr-ws-resume
+# --parent note which terminal started it, in the background, so the History screen
+# can fold the helper's conversation under the one that started it.
+#
 # HERDR_WS_AGENT_DRY=1 prints the command, one word per line, instead of running it.
 
 usage="usage: herdr-ws-agent [--instructions FILE]... [--task TEXT] <agent> [args...]
@@ -133,6 +137,17 @@ if [ -z "$mode" ]; then
   agent=$1
   shift
 fi
+# Continuing a conversation (a restart's resume, History's Resume) isn't a new start:
+# History's family tree (noteparent below) leaves it out.
+resumed=
+case "${agent##*/}:${1:-}" in codex:resume | codex:fork) resumed=1 ;; esac
+for w in "$@"; do
+  case "${agent##*/}:$w" in
+    claude:--resume | claude:--resume=* | claude:-r | claude:--continue | claude:-c | agy:--conversation | agy:--conversation=* | \
+    pi:--session | pi:--session=* | pi:--continue | pi:-c | pi:--resume | pi:-r | pi:--fork | pi:--fork=* | grok:--resume | grok:--resume=* | \
+    opencode:--session | opencode:--session=* | opencode:--continue | opencode:-c) resumed=1 ;;
+  esac
+done
 # The words that start this again after a restart (herdr-ws-resume): Claude's
 # command without its prompt (the first message, sent once) and without a session
 # to resume, which herdr-ws-resume adds. As Claude reads its words: the flags in
@@ -187,6 +202,22 @@ index=$HOME/.herdr/workspaces/.index
 trees=$HOME/.herdr/worktrees
 tab=$(printf '\t')
 cwd=$(pwd -P)
+
+# herdr-ws-resume, which brings agents back after a restart: beside this script
+# (following its symlink), else on PATH.
+self=$0
+[ -L "$self" ] && link=$(readlink "$self") && case "$link" in /*) self=$link ;; *) self=$(dirname "$self")/$link ;; esac
+resume=$(dirname "$self")/herdr-ws-resume
+[ -x "$resume" ] || resume=$(command -v herdr-ws-resume 2>/dev/null) || resume=
+# Started under another agent (hc run from its terminal): herdr-ws-resume --parent notes
+# who started it, for the History screen, in the background so the agent never waits
+# for it. $1: the agent's program, $2: its preset, $3: "hooked" when it got the hook that
+# notes its session (Claude, Antigravity), which then says exactly which conversation it
+# is. Not for a conversation it continues.
+noteparent() {
+  [ -z "${HERDR_WS_AGENT_DRY:-}" ] && [ -z "$resumed" ] && [ -n "${HC_TERMINAL_ID:-}" ] && [ -n "${HC_TERMINAL_SOCKET:-}" ] && [ -n "$resume" ] || return 0
+  "$resume" --parent "${1##*/}" "$cwd" "$2" "${3:-}" </dev/null >/dev/null 2>&1 &
+}
 
 # The folder as the file system sees it (a root may be a symlink).
 real() { (cd "$1" 2>/dev/null && pwd -P) || printf '%s' "$1"; }
@@ -301,6 +332,7 @@ $body"
     printf '%s\n' "$@"
     exit 0
   fi
+  noteparent "$1" "$pname"
   exec "$@"
 fi
 
@@ -331,12 +363,6 @@ give() {
 "
 }
 added=
-# herdr-ws-resume, which brings agents back after a restart: beside this script
-# (following its symlink), else on PATH.
-self=$0
-[ -L "$self" ] && link=$(readlink "$self") && case "$link" in /*) self=$link ;; *) self=$(dirname "$self")/$link ;; esac
-resume=$(dirname "$self")/herdr-ws-resume
-[ -x "$resume" ] || resume=$(command -v herdr-ws-resume 2>/dev/null) || resume=
 # Antigravity's rules folder: the text $2 as $1/AGENTS.md, and what doesn't fit in
 # 22,000 bytes, a paragraph at a time, as always-on rules in $1/.agents/rules/herdr-N.md.
 # Built beside the folder and swapped in only when something changed, because a running
@@ -658,7 +684,7 @@ if [ -n "$hooks$agynote" ]; then
             [ -f "$f" ] || continue
             t=${f##*/}; t=${t%.cmd}
             [ "$t" = "$HC_TERMINAL_ID" ] && continue
-            case "$live" in *"\"address\":\"$t\""*) ;; *) rm -f "$f" "${f%.cmd}.session" ;; esac
+            case "$live" in *"\"address\":\"$t\""*) ;; *) rm -f "$f" "${f%.cmd}.session" "${f%.cmd}.parent" ;; esac
           done) >/dev/null 2>&1 &
       fi
     fi
@@ -683,4 +709,10 @@ if [ -n "${HERDR_WS_AGENT_DRY:-}" ]; then
   printf '%s\n' "$agent" "$@"
   exit 0
 fi
+# Its preset: the last --instructions file's name.
+last=$(printf '%s' "$presets" | sed '/^$/d' | tail -n 1)
+last=${last##*/}
+hooked=
+[ -n "$hooks$agynote" ] && hooked=hooked
+noteparent "$agent" "${last%.md}" "$hooked"
 exec "$agent" "$@"

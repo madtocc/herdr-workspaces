@@ -11,7 +11,8 @@
 // - Only installed agents, less the ones hidden from this menu (~/.herdr/agent-menu.json,
 //   mirrored in shared "new-menu.hidden"; hidefacts.js). A right-click on an agent's
 //   row offers "Hide from this menu"; "Choose agents…" at the foot of the list opens
-//   ws-presets on its "Agents in the + menu" pane. Number keys follow what's shown.
+//   Settings on its Agents section directly (ws-settings, through shared "workspaces.settings.section"),
+//   so it works even while the sidebar is hidden. Number keys follow what's shown.
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex, Popup } from "gpui-base";
@@ -54,9 +55,11 @@ function programOf(command) {
 
 const openStart = (name, workspace) =>
   openOverlay({ mod: "ws-presets", kind: "dialog", width: 560, height: 430, props: { start: name, workspace } });
-// The Agent presets screen (as ws-chrome opens it) on its "Agents in the + menu" pane.
-const openChoose = (workspace) =>
-  openOverlay({ mod: "ws-presets", kind: "dialog", width: 900, height: 640, props: { workspace, pane: "agents" } });
+// Opens Settings on its Agents section directly (works even while the sidebar is hidden).
+const openChoose = () => {
+  setShared("workspaces.settings.section", { id: "agents", at: Date.now() });
+  run("mod.open", { name: "ws-settings" });
+};
 
 export default class NewMenu extends View {
   init(_props, cx) {
@@ -157,9 +160,9 @@ export default class NewMenu extends View {
       .child(v_flex().flex_1().min_h(0).overflow_y_scrollbar()
         .children(installed.map((a, i) => this.agentRow(a, keyed(i))))
         .when(installed.length > 0, el => el.child(this.row("choose", svg("mods/workspace-chrome/settings.svg").size(14).flex_none().text_color(t.muted),
-          div().text_color(t.muted).child("Choose agents\u2026"), () => openChoose(ws?.id ?? null), "", true, "Hide agents from this menu, or bring them back")))
+          div().text_color(t.muted).child("Choose agents\u2026"), () => openChoose(), "", true, "Hide agents from this menu, or bring them back")))
         .when(allHidden, el => el.child(this.row("choose", svg("mods/workspace-chrome/settings.svg").size(14).flex_none().text_color(t.muted),
-          div().text_color(t.dim).child("No agents shown. Choose agents\u2026"), () => openChoose(ws?.id ?? null))))
+          div().text_color(t.dim).child("No agents shown. Choose agents\u2026"), () => openChoose())))
         .when(!allHidden && installed.length === 0, el => el.child(div().px(9).py(6).text_color(t.dim)
           .child(this.failed ? "Could not load agents" : this.agents.length && this.hiddenKnown ? "No agents installed" : "Checking installed agents…")))
         .when(presets.length > 0, el => el

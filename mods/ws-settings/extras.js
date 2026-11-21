@@ -1,42 +1,52 @@
-// The Extras section of ws-settings: the Workspaces package's own settings, drawn inside the
-// Settings window that ws-switcher/settingsbuild.js builds from Herdr's (main.js here). These
-// are plain functions on that window's view, so they don't depend on Herdr's own methods; their
-// state lives on the view as `view.wsx`.
+// The Workspaces package's own sections of ws-settings (Agents and Experimental), drawn inside
+// the Settings window that ws-switcher/settingsbuild.js builds from Herdr's (main.js here).
+// These are plain functions on that window's view, so they don't depend on Herdr's own methods;
+// their state lives on the view as `view.wsx`.
 //
+// - Agents: every switch the package has for agents, in one place:
+//   - STARTING AGENTS: Herdr guide for every agent (herdr-ws-agent --guide on/off, Edit / Write
+//     one for ~/.herdr/AGENTS.md) and Bring agents back after a restart (herdr-ws-resume --on/--off).
+//   - IN THE + MENU: one row per installed agent (hidefacts.js: ~/.herdr/agent-menu.json,
+//     mirrored in shared "new-menu.hidden", knownAgents()).
+//   - WHILE HERDR IS CLOSED: Keep running (shared "workspaces.runner", set through
+//     "workspaces.runner.set").
 // - Experimental: the experiments in ~/.herdr/settings.jsonc (settingsfacts.js), each off until
 //   turned on, with what it does and why it's experimental. A switch rewrites only its value in
 //   the file (comments kept) and sets shared "workspaces.settings" so the mods that read it
 //   (ws-agents) follow at once.
-// - Switches: the package's switches that live in other screens too: Keep running
-//   (ws-automations; shared "workspaces.runner", set through "workspaces.runner.set"), bring
-//   agents back after a restart (herdr-ws-resume --on/--off) and the Herdr guide for every agent
-//   (herdr-ws-agent --guide on/off), as ws-presets flips them.
-// - Open the file: ~/.herdr/settings.jsonc in your editor (written from the starter first when
-//   there's none).
 
-import { div } from "gpui-kit";
+import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { theme, shared, setShared, exec, home, readTextFile, writeTextFile, notify, window, checking } from "herdr";
-import { SETTINGS_FILE, EXPERIMENTS, parseSettings, withExperiment, starter, experimentOn } from "./settingsfacts.js";
+import { theme, shared, setShared, exec, home, appHome, readTextFile, writeTextFile, notify, window, checking, knownAgents } from "herdr";
+import * as fs from "fs/promises";
+import { SETTINGS_FILE, EXPERIMENTS, parseSettings, withExperiment, experimentOn } from "./settingsfacts.js";
+import { HIDDEN, hiddenFile, parseHidden, saveHidden, shownAgents, countLine, notInstalledLine } from "./hidefacts.js";
 
-// Its entry in the window's list of sections, after Herdr's.
-export const EXTRAS_SECTION = { id: "extras", title: "Extras", icon: "mods/ws-settings/extras.svg" };
+// Our sections in the window's list, after Herdr's.
+export const PACKAGE_SECTIONS = [
+  { id: "agents", title: "Agents", icon: "mods/ws-settings/extras.svg" },
+  { id: "experimental", title: "Experimental", icon: "mods/ws-settings/experimental.svg" },
+];
 
 // A section asked for by whoever opened the window (ws-switcher.settings/<section>): mod.open
 // passes no props, so it comes through shared state, for a moment. Taking it clears it, which
 // tells the asker the window opened (else its mod.open closed an open one: it opens it again).
+// "extras" stays an alias for "agents" so existing key bindings keep working.
 export function askedSection() {
   const a = shared("workspaces.settings.section");
   if (!a || typeof a.id !== "string" || Date.now() - (a.at ?? 0) >= 5000) return undefined;
   setShared("workspaces.settings.section", null);
-  return a.id;
+  return a.id === "extras" ? "agents" : a.id;
 }
 
 const file = () => `${home()}/${SETTINGS_FILE}`;
-const bin = (name) => `${home()}/.config/herdr-app/mods/ws-switcher/bin/${name}`;
+const bin = (name) => `${appHome()}/mods/ws-switcher/bin/${name}`;
+const guideFile = () => `${home()}/.herdr/AGENTS.md`;
+const guideStarter = () => `${appHome()}/mods/ws-switcher/guide.md`;
 const tilde = (p) => (p.startsWith(`${home()}/`) ? `~${p.slice(home().length)}` : p);
+const errMsg = (e) => String(e?.message ?? e);
 
-// As ws-presets opens a file: the first installed editor, else the system's opener.
+// Opens a file in the first installed editor of EDITORS, else the system's text editor.
 const EDITORS = ["zed", "cursor", "code", "subl"];
 function openFile(path) {
   if (window()?.platform === "windows") return exec("explorer", [path]).catch(() => {});
@@ -44,26 +54,72 @@ function openFile(path) {
   return exec("sh", ["-c", `${editors} command -v open >/dev/null 2>&1 && exec open -t "$1"; exec xdg-open "$1"`, "sh", path]).catch(() => {});
 }
 
-// From the window's init: read the file and the switches once.
-export function extrasInit(view, cx) {
+// From the window's init: read the settings file, switches and installed agents once,
+// then re-read the files every 3 seconds so CLI flips and external edits show while open.
+export function packageInit(view, cx) {
   view.wsx = {
-    text: null, // the file as last read (null: there's none)
+    text: null, // ~/.herdr/settings.jsonc as last read (null: there's none)
     settings: parseSettings(null),
-    resume: null, // { on, ready }
-    guide: null, // { on }
-    busy: false,
+    resume: null, // { on, count, ready }
+    guide: null, // { on, bytes }
+    known: shared("new-menu.agents")?.[""] ?? [],
+    hidden: shared(HIDDEN) ?? [],
+    busy: false, // an experiment write is in flight
+    hiding: 0, // count of in-flight flipAgent saves
+    loading: null, // active load() promise, to prevent overlapping polls
   };
   if (checking()) return;
-  cx.spawn(async (cx) => { await load(view.wsx); cx.notify(); });
+  const refresh = (cx) => cx.spawn(async (cx) => {
+    if (await load(view.wsx)) cx.notify();
+  });
+  refresh(cx);
+  cx.timer.every(3000, refresh);
+  cx.spawn(async (cx) => {
+    view.wsx.known = await knownAgents().catch(() => view.wsx.known);
+    cx.notify();
+  });
 }
 
-async function load(x) {
-  x.text = await readTextFile(file()).catch(() => null);
-  x.settings = parseSettings(x.text);
-  const sw = async (p) => ((await readTextFile(p).catch(() => null)) ?? "").trim() !== "off";
-  const config = await readTextFile(`${home()}/.config/herdr-core/config.toml`).catch(() => null);
-  x.resume = { on: await sw(`${home()}/.herdr/resume/switch`), ready: (config ?? "").includes("herdr-ws-resume") };
-  x.guide = { on: await sw(`${home()}/.herdr/guide/switch`) };
+// Reads the package files on disk. Guards against overlapping polls (when wait is false),
+// in-flight experiment writes (x.busy), and in-flight + menu saves (x.hiding).
+async function load(x, wait = false) {
+  if (x.loading) {
+    if (!wait) return false;
+    await x.loading;
+  }
+  const p = (async () => {
+    if (!x.busy) {
+      const text = await readTextFile(file()).catch(() => null);
+      if (!x.busy) {
+        x.text = text;
+        x.settings = parseSettings(text);
+      }
+    }
+    const sw = async (path) => ((await readTextFile(path).catch(() => null)) ?? "").trim() !== "off";
+    const resumeDir = `${home()}/.herdr/resume`;
+    let count = 0;
+    for (const core of await fs.readdir(resumeDir).catch(() => [])) {
+      count += (await fs.readdir(`${resumeDir}/${core}`).catch(() => [])).filter((f) => f.endsWith(".cmd")).length;
+    }
+    const config = await readTextFile(`${home()}/.config/herdr-core/config.toml`).catch(() => null);
+    x.resume = { on: await sw(`${resumeDir}/switch`), count, ready: (config ?? "").includes("herdr-ws-resume") };
+    const guideText = await readTextFile(guideFile()).catch(() => null);
+    x.guide = { on: await sw(`${home()}/.herdr/guide/switch`), bytes: guideText ? guideText.length : 0 };
+    if (!x.hiding) {
+      const hidden = parseHidden(await readTextFile(hiddenFile(home())).catch(() => null));
+      if (!x.hiding) {
+        x.hidden = hidden;
+        if (JSON.stringify(hidden) !== JSON.stringify(shared(HIDDEN))) setShared(HIDDEN, hidden);
+      }
+    }
+  })();
+  x.loading = p;
+  try {
+    await p;
+    return true;
+  } finally {
+    if (x.loading === p) x.loading = null;
+  }
 }
 
 // One experiment on or off: only its value changes in the file.
@@ -80,47 +136,89 @@ function setExperiment(x, key, on, cx) {
       x.settings = parseSettings(next);
       setShared("workspaces.settings", x.settings);
     } catch (e) {
-      notify({ title: "Couldn't change it", body: String(e?.message ?? e), level: "error" });
+      notify({ title: "Couldn't change it", body: errMsg(e), level: "error" });
     }
     x.busy = false;
     cx.notify();
   });
 }
 
-// A switch's script, then how it is now.
-function flip(x, script, args, cx) {
+// Give every agent the guide, or none: herdr-ws-agent --guide on / off.
+function flipGuide(x, cx) {
+  const on = !(x.guide?.on ?? true);
+  x.guide = { ...(x.guide ?? { bytes: 0 }), on };
+  cx.notify();
   cx.spawn(async (cx) => {
-    const r = await exec(bin(script), args).catch((e) => ({ code: 1, stdout: "", stderr: String(e) }));
-    if (r.code !== 0) notify({ title: "Couldn't change it", body: String(r.stderr || r.stdout).trim() || `${script} failed.`, level: "error" });
-    await load(x);
+    const r = await exec(bin("herdr-ws-agent"), ["--guide", on ? "on" : "off"]).catch((e) => ({ code: 1, stdout: "", stderr: String(e) }));
+    if (r.code !== 0) notify({ title: "Couldn't change it", body: String(r.stderr || r.stdout).trim() || "herdr-ws-agent failed.", level: "error" });
+    await load(x, true);
     cx.notify();
   });
 }
 
-function openTheFile(x, cx) {
+// Edit opens ~/.herdr/AGENTS.md; with none yet, it's first written from the starter (create-only).
+function editGuide(x, cx) {
   cx.spawn(async (cx) => {
-    const old = await readTextFile(file()).catch(() => null);
-    if (old == null) {
-      await writeTextFile(file(), starter(x.settings.experimental)).catch(() => {});
-      await load(x);
+    const existing = await readTextFile(guideFile()).catch(() => null);
+    if (existing == null) {
+      const starterText = await readTextFile(guideStarter()).catch(() => null);
+      await writeTextFile(guideFile(), starterText ?? "# Working in Herdr\n", null).catch(() => {});
+      await load(x, true);
       cx.notify();
     }
-    openFile(file());
+    openFile(guideFile());
+  });
+}
+
+// Bring agents back after a restart, or not: herdr-ws-resume --on / --off.
+function flipResume(x, cx) {
+  const on = !(x.resume?.on ?? true);
+  x.resume = { ...(x.resume ?? { count: 0, ready: true }), on };
+  cx.notify();
+  cx.spawn(async (cx) => {
+    const r = await exec(bin("herdr-ws-resume"), [on ? "--on" : "--off"]).catch((e) => ({ code: 1, stdout: "", stderr: String(e) }));
+    if (r.code !== 0) notify({ title: "Couldn't change it", body: String(r.stderr || r.stdout).trim() || "herdr-ws-resume failed.", level: "error" });
+    await load(x, true);
+    cx.notify();
+  });
+}
+
+// One agent's switch: shown in the + menu or not. The switch moves at once, the file follows;
+// a file that can't be written puts it back as the file has it.
+function flipAgent(x, key, cx) {
+  const cur = shared(HIDDEN) ?? x.hidden ?? [];
+  const hide = !cur.includes(key);
+  x.hidden = hide ? [...cur, key] : cur.filter((k) => k !== key);
+  x.hiding = (x.hiding ?? 0) + 1;
+  setShared(HIDDEN, x.hidden);
+  cx.notify();
+  cx.spawn(async (cx) => {
+    try {
+      try { x.hidden = await saveHidden({ home, readTextFile, writeTextFile }, key, hide); }
+      catch (e) {
+        notify({ title: "Couldn't change the + menu", body: `${tilde(hiddenFile(home()))}: ${errMsg(e)}`, level: "error" });
+        x.hidden = parseHidden(await readTextFile(hiddenFile(home())).catch(() => null));
+      }
+      setShared(HIDDEN, x.hidden);
+    } finally {
+      x.hiding = Math.max(0, (x.hiding ?? 1) - 1);
+    }
+    cx.notify();
   });
 }
 
 // --- drawn as Herdr's Settings window draws them (our own copies, so a change to Herdr's
-// methods can't break this page) ---
+// methods can't break these pages) ---
 function heading(t, text) {
   return div().pt(6).pb(8).text_size(12).font_semibold().text_color(t.dim).child(text.toUpperCase());
 }
 
-function row(t, id, title, about, extra, control) {
+function row(t, id, title, about, extra, control, warn = false) {
   return h_flex().id(id).w_full().gap(16).py(12).items_center().border_b(1).border_color(t.border)
     .child(v_flex().flex_1().min_w(0).gap(3)
       .child(div().text_size(14).text_color(t.foreground).child(title))
       .when(Boolean(about), (el) => el.child(div().text_size(12.5).line_height("18px").text_color(t.dim).child(about)))
-      .when(Boolean(extra), (el) => el.child(div().text_size(12).line_height("17px").text_color(t.muted).child(extra))))
+      .when(Boolean(extra), (el) => el.child(div().text_size(12).line_height("17px").text_color(warn ? t.blocked : t.muted).child(extra))))
     .child(div().flex_none().child(control));
 }
 
@@ -132,19 +230,87 @@ function toggle(t, id, on, onClick, off = false) {
     .child(div().w(16).h(16).rounded(8).bg(on ? t.accent_foreground : t.muted));
 }
 
-function button(t, id, label, onClick) {
+function button(t, id, label, onClick, tip = "") {
   return div().id(id).px(12).py(5).rounded(7).border_1().border_color(t.border).bg(t.raised).cursor_pointer()
-    .text_size(13).text_color(t.foreground).hover((s) => s.bg(t.hover)).on_click(onClick).child(label);
+    .text_size(13).text_color(t.foreground).hover((s) => s.bg(t.hover))
+    .when(Boolean(tip), (el) => el.tooltip(tip))
+    .on_click(onClick).child(label);
 }
 
-function experimental(t, x) {
+function agentsPage(t, x) {
+  const g = x.guide ?? { on: true, bytes: 0 };
+  const guideSize = g.bytes < 1024 ? `${g.bytes} bytes` : `${(g.bytes / 1024).toFixed(1)} KB`;
+  const guideNote = !x.guide ? "" : !g.bytes ? "No guide yet" : g.on ? `On: ${guideSize}` : "Off: agents go without it";
+  const guideBtn = !x.guide || g.bytes ? "Edit" : "Write one";
+  const guideTip = g.bytes ? `Open ${tilde(guideFile())}` : `Write ${tilde(guideFile())} from the starter, then open it`;
+
+  const r = x.resume ?? { on: true, count: 0, ready: true };
+  const resumeNote = !x.resume ? ""
+    : !r.ready ? "Not set up in herdr-core's config.toml (see the recipe)."
+    : !r.on ? "Off: tabs come back as shells"
+    : r.count === 1 ? "On: 1 agent would come back" : `On: ${r.count} agents would come back`;
+
+  const hidden = shared(HIDDEN) ?? x.hidden ?? [];
+  const installed = x.known.filter((a) => a.installed);
+  const shown = new Set(shownAgents(installed, hidden).map((a) => a.key));
+  const missing = notInstalledLine(x.known);
+  const iconOf = (a) => !a.icon
+    ? svg("mods/workspace-chrome/terminal.svg").size(16).flex_none().text_color(t.muted)
+    : (a.tint ? svg(a.icon).text_color(t.foreground) : image(a.icon)).size(16).flex_none().rounded(3);
+
+  const runner = shared("workspaces.runner") ?? { on: false, running: false };
+  const runnerNote = !runner.on ? "Off: they run while Herdr is open"
+    : runner.running ? "On: running in the background" : "On, but not running yet";
+
+  return v_flex().w_full()
+    .child(heading(t, "Starting agents"))
+    .child(row(t, "wsx-s-guide", "Herdr guide for every agent",
+      "Agents started through the launcher get ~/.herdr/AGENTS.md, how to use automations, helpers and the board, before the workspace's own instructions.",
+      guideNote,
+      h_flex().gap(10).items_center()
+        .child(button(t, "wsx-s-guide-edit", guideBtn, (_e, cx) => editGuide(x, cx), guideTip))
+        .child(toggle(t, "wsx-s-guide-switch", g.on, (_e, cx) => flipGuide(x, cx)))))
+    .child(row(t, "wsx-s-resume", "Bring agents back after a restart",
+      "Claude and Antigravity agents started through the launcher continue their conversation after a reboot or a logout.",
+      resumeNote,
+      toggle(t, "wsx-s-resume-switch", r.on, (_e, cx) => flipResume(x, cx)),
+      Boolean(x.resume && !r.ready && r.on)))
+    .child(div().h(22))
+    .child(h_flex().items_center().gap(10)
+      .child(heading(t, "In the + menu"))
+      .when(installed.length > 0, (el) => el.child(div().pt(6).pb(8).text_size(12).text_color(t.muted).child(countLine(x.known, hidden)))))
+    .child(div().pb(6).text_size(12.5).line_height("18px").text_color(t.dim)
+      .child("The tab bar's + lists the agents installed here. Turn off the ones you don't use; a right-click on an agent in the + menu hides it too."))
+    .when(!installed.length, (el) => el.child(div().py(10).text_size(12.5).text_color(t.dim)
+      .child(x.known.length ? "No agents are installed here." : "Checking installed agents…")))
+    .children(installed.map((a) => {
+      const on = shown.has(a.key);
+      return h_flex().id(`wsx-a-${a.key}`).w_full().gap(12).py(10).items_center().border_b(1).border_color(t.border)
+        .child(iconOf(a))
+        .child(div().flex_1().min_w(0).truncate().text_size(14).text_color(on ? t.foreground : t.muted).child(a.name))
+        .when(!on, (el) => el.child(div().flex_none().text_size(12).text_color(t.dim).child("hidden")))
+        .child(toggle(t, `wsx-a-${a.key}-switch`, on, (_e, cx) => flipAgent(x, a.key, cx)));
+    }))
+    .when(Boolean(missing), (el) => el.child(div().pt(10).text_size(12).line_height("17px").text_color(t.dim).child(missing)))
+    .child(div().pt(missing ? 6 : 10).text_size(12).line_height("17px").text_color(t.dim)
+      .child("Hidden agents are only left out of the + menu. Presets and automations can still start them."))
+    .child(div().h(22))
+    .child(heading(t, "While Herdr is closed"))
+    .child(row(t, "wsx-s-runner", "Keep running",
+      "Automations and board cards' pull requests are followed by a background process herdr-core keeps going. Off, Herdr runs them itself while it's open.",
+      runnerNote,
+      toggle(t, "wsx-s-runner-switch", runner.on, () => setShared("workspaces.runner.set", { on: !runner.on, at: Date.now() })),
+      Boolean(runner.on && !runner.running)));
+}
+
+function experimentalPage(t, x) {
   const broken = x.settings.error;
   return v_flex().w_full()
     .child(heading(t, "Experimental"))
     .child(div().pb(6).text_size(12.5).line_height("18px").text_color(t.dim)
       .child("Features that lean on things other programs don't promise to keep the same. Each is off until you turn it on, and says why it's experimental."))
     .when(Boolean(broken), (el) => el.child(div().my(8).p(10).rounded(8).bg(t.blocked + "1f").text_size(12.5).line_height("18px").text_color(t.blocked)
-      .child(`${tilde(file())} isn't valid JSONC (${broken}). These stay off until it's fixed: Open the file.`)))
+      .child(`${tilde(file())} isn't valid JSONC (${broken}). These stay off until it's fixed.`)))
     .children(EXPERIMENTS.map((e) => {
       const on = experimentOn(x.settings, e.key);
       return row(t, `wsx-x-${e.key}`, e.title, e.what, `Why it's experimental: ${e.why.charAt(0).toLowerCase()}${e.why.slice(1)}`,
@@ -152,36 +318,9 @@ function experimental(t, x) {
     }));
 }
 
-function switches(t, x) {
-  const runner = shared("workspaces.runner") ?? { on: false, running: false };
-  const r = x.resume ?? { on: true, ready: true };
-  const g = x.guide ?? { on: true };
-  return v_flex().w_full()
-    .child(heading(t, "Switches"))
-    .child(row(t, "wsx-s-runner", "Keep running while Herdr is closed",
-      "Automations and board cards' pull requests are followed by a background process herdr-core keeps going. Off, Herdr runs them itself while it's open.",
-      runner.on && !runner.running ? "On, but not running yet." : "Also at the foot of Automations.",
-      toggle(t, "wsx-s-runner-switch", runner.on, () => setShared("workspaces.runner.set", { on: !runner.on, at: Date.now() }))))
-    .child(row(t, "wsx-s-resume", "Bring agents back after a restart",
-      "Claude and Antigravity agents started through the launcher continue their conversation after a reboot or a logout.",
-      r.ready ? "Also at the foot of Agent presets." : "Needs herdr-ws-resume's shell line in ~/.config/herdr-core/config.toml (see the recipe).",
-      toggle(t, "wsx-s-resume-switch", r.on, (_e, cx) => flip(x, "herdr-ws-resume", [r.on ? "--off" : "--on"], cx))))
-    .child(row(t, "wsx-s-guide", "Herdr guide for every agent",
-      "Agents started through the launcher get ~/.herdr/AGENTS.md, how to use automations, helpers and the board, before the workspace's own instructions.",
-      "Also at the foot of Agent presets, where you can edit it.",
-      toggle(t, "wsx-s-guide-switch", g.on, (_e, cx) => flip(x, "herdr-ws-agent", ["--guide", g.on ? "off" : "on"], cx))));
-}
-
-// The page: the window's body shows it for the "extras" section.
-export function extrasPage(view) {
+// The page: the window's body shows it for our section ids ("agents" and "experimental").
+export function packagePage(view) {
   const t = theme();
-  const x = view.wsx ?? (view.wsx = { text: null, settings: parseSettings(null), resume: null, guide: null, busy: false });
-  return v_flex().w_full()
-    .child(experimental(t, x))
-    .child(div().h(22))
-    .child(switches(t, x))
-    .child(h_flex().pt(18).gap(12).items_center()
-      .child(button(t, "wsx-open", "Open the file", (_e, cx) => openTheFile(x, cx)))
-      .child(div().flex_1().min_w(0).text_size(12.5).line_height("18px").text_color(t.dim)
-        .child(`The experiments are kept in ${tilde(file())}, each with what it does above it.`)));
+  const x = view.wsx ?? (view.wsx = { text: null, settings: parseSettings(null), resume: null, guide: null, known: [], hidden: [], busy: false, hiding: 0, loading: null });
+  return view.section === "experimental" ? experimentalPage(t, x) : agentsPage(t, x);
 }

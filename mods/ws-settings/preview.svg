@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800" font-family="Geist, -apple-system, 'Helvetica Neue', sans-serif">
-  <!-- Settings (ws-settings: Herdr's Settings window with the package's Extras section), open on Extras. Demo names only (the main drawing's Acme). -->
+  <!-- Settings (ws-settings: Herdr's Settings window with the package's Agents and Experimental sections), open on Agents. Demo names only (the main drawing's Acme). -->
   <defs>
     <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
       <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000" flood-opacity="0.45"/>
@@ -94,8 +94,10 @@
   <!-- dimmed behind the dialog -->
   <rect width="1280" height="800" fill="#000" opacity="0.45"/>
 
-  <!-- the Settings dialog, 880 wide like Herdr's: its sections, then Extras -->
+  <!-- the Settings dialog, 880 wide like Herdr's: its sections, then Agents and Experimental -->
   <g filter="url(#shadow)"><rect x="200" y="90" width="880" height="620" rx="12" fill="#202125" stroke="#303237"/></g>
+  <clipPath id="st-dialog"><rect x="200" y="90" width="880" height="620" rx="12"/></clipPath>
+  <g clip-path="url(#st-dialog)">
   <rect x="390" y="91" width="1" height="618" fill="#303237"/>
   <text x="220" y="128" fill="#e8e9eb" font-size="16" font-weight="600">Settings</text>
   <g transform="translate(220 154.5) scale(0.625)" fill="none" stroke="#7d8089" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22a1 1 0 0 1 0-20 10 9 0 0 1 10 9 5 5 0 0 1-5 5h-2.25a1.75 1.75 0 0 0-1.4 2.8l.3.4a1.75 1.75 0 0 1-1.4 2.8z"/><circle cx="13.5" cy="6.5" r=".5"/><circle cx="17.5" cy="10.5" r=".5"/><circle cx="6.5" cy="12.5" r=".5"/><circle cx="8.5" cy="7.5" r=".5"/></g>
@@ -112,34 +114,56 @@
   <text x="245" y="337" fill="#a5a8ae" font-size="13.5">Privacy</text>
   <rect x="210" y="350" width="170" height="32" rx="7" fill="#2a2b30"/>
   <g transform="translate(220 358.5) scale(0.625)" fill="none" stroke="#5b8def" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/></g>
-  <text x="245" y="371" fill="#e8e9eb" font-size="13.5">Extras</text>
+  <text x="245" y="371" fill="#e8e9eb" font-size="13.5">Agents</text>
+  <g transform="translate(220 392.5) scale(0.625)" fill="none" stroke="#7d8089" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2"/><path d="M6.453 15h11.094"/><path d="M8.5 2h7"/></g>
+  <text x="245" y="405" fill="#a5a8ae" font-size="13.5">Experimental</text>
   <rect x="210" y="662" width="170" height="32" rx="7" fill="#2a2b30" stroke="#303237"/><text x="222" y="683" fill="#e8e9eb" font-size="13">Send feedback</text>
-  <text x="419" y="126" fill="#7d8089" font-size="12" font-weight="600" letter-spacing="0.4">EXPERIMENTAL</text>
-  <text x="419" y="150" fill="#7d8089" font-size="12.5">Features that lean on things other programs don't promise to keep the same. Each is off until you turn it on,</text>
-  <text x="419" y="168" fill="#7d8089" font-size="12.5">and says why it's experimental.</text>
-  <text x="419" y="206" fill="#e8e9eb" font-size="14">Wipe Antigravity conversations</text>
-  <text x="419" y="228" fill="#7d8089" font-size="12.5">Adds Wipe session… to an Antigravity agent's right-click menu in the Agents list: it</text>
-  <text x="419" y="246" fill="#7d8089" font-size="12.5">closes the agent, takes the conversation out of Antigravity's own lists and moves its</text>
-  <text x="419" y="264" fill="#7d8089" font-size="12.5">files into ~/.herdr/trash, so History and Antigravity's /resume no longer show it.</text>
-  <text x="419" y="284" fill="#a5a8ae" font-size="12">Why it's experimental: it edits Antigravity's own index files, whose format isn't</text>
-  <text x="419" y="301" fill="#a5a8ae" font-size="12">documented: an Antigravity update could change them. It refuses what it can't read,</text>
-  <text x="419" y="318" fill="#a5a8ae" font-size="12">keeps a copy in ~/.herdr/trash first, and waits while another Antigravity runs.</text>
-  <rect x="1016" y="248.0" width="36" height="20" rx="10" fill="#5b8def"/><circle cx="1042" cy="258.0" r="8" fill="#fff"/>
-  <rect x="419" y="334" width="633" height="1" fill="#303237"/>
-  <text x="419" y="374" fill="#7d8089" font-size="12" font-weight="600" letter-spacing="0.4">SWITCHES</text>
-  <text x="419" y="410" fill="#e8e9eb" font-size="14">Keep running while Herdr is closed</text>
-  <text x="419" y="432" fill="#7d8089" font-size="12.5">Automations and board cards' pull requests are followed by a background process</text>
-  <text x="419" y="450" fill="#7d8089" font-size="12.5">herdr-core keeps going. Off, Herdr runs them itself while it's open.</text>
-  <text x="419" y="470" fill="#a5a8ae" font-size="12">Also at the foot of Automations.</text>
-  <rect x="1016" y="426.0" width="36" height="20" rx="10" fill="#5b8def"/><circle cx="1042" cy="436.0" r="8" fill="#fff"/>
-  <rect x="419" y="486" width="633" height="1" fill="#303237"/>
-  <text x="419" y="516" fill="#e8e9eb" font-size="14">Bring agents back after a restart</text>
-  <text x="419" y="538" fill="#7d8089" font-size="12.5">Claude and Antigravity agents started through the launcher continue their conversation</text>
-  <text x="419" y="556" fill="#7d8089" font-size="12.5">after a reboot or a logout.</text>
-  <text x="419" y="576" fill="#a5a8ae" font-size="12">Also at the foot of Agent presets.</text>
-  <rect x="1016" y="532.0" width="36" height="20" rx="10" fill="#5b8def"/><circle cx="1042" cy="542.0" r="8" fill="#fff"/>
-  <rect x="419" y="592" width="633" height="1" fill="#303237"/>
-  <text x="419" y="622" fill="#e8e9eb" font-size="14">Herdr guide for every agent</text>
-  <rect x="1016" y="607" width="36" height="20" rx="10" fill="#5b8def"/><circle cx="1042" cy="617" r="8" fill="#fff"/>
+  <text x="419" y="124" fill="#7d8089" font-size="12" font-weight="600" letter-spacing="0.4">STARTING AGENTS</text>
+  <text x="419" y="150" fill="#e8e9eb" font-size="14">Herdr guide for every agent</text>
+  <text x="419" y="170.0" fill="#7d8089" font-size="12.5">Agents started through the launcher get ~/.herdr/AGENTS.md, how to use</text>
+  <text x="419" y="187.5" fill="#7d8089" font-size="12.5">automations, helpers and the board, before the workspace's own</text>
+  <text x="419" y="205.0" fill="#7d8089" font-size="12.5">instructions.</text>
+  <text x="419" y="224.0" fill="#a5a8ae" font-size="12">On: 5.2 KB</text>
+  <rect x="960" y="171.0" width="46" height="28" rx="7" fill="#2a2b30" stroke="#303237"/>
+  <text x="983.0" y="189.0" fill="#e8e9eb" font-size="13" text-anchor="middle">Edit</text>
+  <rect x="1016" y="175.0" width="36" height="20" rx="10" fill="#5b8def"/><circle cx="1042" cy="185.0" r="8" fill="#fff"/>
+  <rect x="419" y="238.0" width="633" height="1" fill="#303237"/>
+  <text x="419" y="262.0" fill="#e8e9eb" font-size="14">Bring agents back after a restart</text>
+  <text x="419" y="282.0" fill="#7d8089" font-size="12.5">Claude and Antigravity agents started through the launcher continue their</text>
+  <text x="419" y="299.5" fill="#7d8089" font-size="12.5">conversation after a reboot or a logout.</text>
+  <text x="419" y="318.5" fill="#a5a8ae" font-size="12">On: 3 agents would come back</text>
+  <rect x="1016" y="278.25" width="36" height="20" rx="10" fill="#5b8def"/><circle cx="1042" cy="288.25" r="8" fill="#fff"/>
+  <rect x="419" y="332.5" width="633" height="1" fill="#303237"/>
+  <text x="419" y="362.5" fill="#7d8089" font-size="12" font-weight="600" letter-spacing="0.4">IN THE + MENU</text>
+  <text x="525" y="362.5" fill="#a5a8ae" font-size="12">3 of 4 shown</text>
+  <text x="419" y="382.5" fill="#7d8089" font-size="12.5">The tab bar's + lists the agents installed here. Turn off the ones you don't use; a right-click</text>
+  <text x="419" y="400.0" fill="#7d8089" font-size="12.5">on an agent in the + menu hides it too.</text>
+  <rect x="419" y="423.0" width="16" height="16" rx="4" fill="#d97757" opacity="1"/>
+  <text x="447" y="436.0" fill="#e8e9eb" font-size="14">Claude Code</text>
+  <rect x="1016" y="421.0" width="36" height="20" rx="10" fill="#5b8def"/><circle cx="1042" cy="431.0" r="8" fill="#fff"/>
+  <rect x="419" y="450.0" width="633" height="1" fill="#303237"/>
+  <rect x="419" y="459.0" width="16" height="16" rx="4" fill="#10a37f" opacity="1"/>
+  <text x="447" y="472.0" fill="#e8e9eb" font-size="14">Codex</text>
+  <rect x="1016" y="457.0" width="36" height="20" rx="10" fill="#5b8def"/><circle cx="1042" cy="467.0" r="8" fill="#fff"/>
+  <rect x="419" y="486.0" width="633" height="1" fill="#303237"/>
+  <rect x="419" y="495.0" width="16" height="16" rx="4" fill="#4285f4" opacity="1"/>
+  <text x="447" y="508.0" fill="#e8e9eb" font-size="14">Antigravity</text>
+  <rect x="1016" y="493.0" width="36" height="20" rx="10" fill="#5b8def"/><circle cx="1042" cy="503.0" r="8" fill="#fff"/>
+  <rect x="419" y="522.0" width="633" height="1" fill="#303237"/>
+  <rect x="419" y="531.0" width="16" height="16" rx="4" fill="#8b7cf6" opacity="0.55"/>
+  <text x="447" y="544.0" fill="#a5a8ae" font-size="14">Gemini</text>
+  <text x="1004" y="543.0" fill="#7d8089" font-size="12" text-anchor="end">hidden</text>
+  <rect x="1016" y="529.0" width="36" height="20" rx="10" fill="#34363b"/><circle cx="1026" cy="539.0" r="8" fill="#a5a8ae"/>
+  <rect x="419" y="558.0" width="633" height="1" fill="#303237"/>
+  <text x="419" y="576.0" fill="#7d8089" font-size="12">Not installed: copilot, amp.</text>
+  <text x="419" y="595.0" fill="#7d8089" font-size="12">Hidden agents are only left out of the + menu. Presets and automations can still start them.</text>
+  <text x="419" y="623.0" fill="#7d8089" font-size="12" font-weight="600" letter-spacing="0.4">WHILE HERDR IS CLOSED</text>
+  <text x="419" y="647.0" fill="#e8e9eb" font-size="14">Keep running</text>
+  <text x="419" y="667.0" fill="#7d8089" font-size="12.5">Automations and board cards' pull requests are followed by a background process</text>
+  <text x="419" y="684.5" fill="#7d8089" font-size="12.5">herdr-core keeps going. Off, Herdr runs them itself while it's open.</text>
+  <text x="419" y="703.5" fill="#a5a8ae" font-size="12">On: running in the background</text>
+  <rect x="1016" y="663.25" width="36" height="20" rx="10" fill="#5b8def"/><circle cx="1042" cy="673.25" r="8" fill="#fff"/>
+  <rect x="419" y="717.5" width="633" height="1" fill="#303237"/>
   <rect x="1071" y="98" width="4" height="446" rx="2" fill="#3a3c42"/>
+  </g>
 </svg>

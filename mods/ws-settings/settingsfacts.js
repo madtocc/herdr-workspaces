@@ -1,12 +1,12 @@
 // The package's own settings, ~/.herdr/settings.jsonc, as rules with no imports so
 // node can test them. Herdr's settings are its own (~/.config/herdr-app/settings.json);
 // these are the Workspaces package's: for now its experimental features, each off
-// until turned on in the Settings window's Extras section (ws-settings) or in the file.
+// until turned on in the Settings window's Experimental section (ws-settings) or in the file.
 // Copied in ws-settings (the screen) and ws-agents (which reads it); change both together.
 
 export const SETTINGS_FILE = ".herdr/settings.jsonc"; // under home
 
-// Each experiment: its key in "experimental", and what Extras and the file say about it.
+// Each experiment: its key in "experimental", and what Experimental and the file say about it.
 export const EXPERIMENTS = [
   {
     key: "antigravity-wipe",
@@ -26,7 +26,7 @@ export function starter(values = {}) {
     `    "${e.key}": ${values[e.key] === true}`,
   ].join("\n"));
   return `// Workspaces settings: the package's own (Herdr's are in ~/.config/herdr-app/settings.json).
-// Settings > Extras (the sidebar footer's Settings) changes them; you can edit them here too.
+// Settings > Experimental (the sidebar footer's Settings) changes them; you can edit them here too.
 {
   // Off until you turn them on. Each says what it does and why it's experimental.
   "experimental": {

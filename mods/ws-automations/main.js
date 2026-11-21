@@ -752,26 +752,6 @@ export default class Automations extends View {
   }
 
 
-  // At the foot of the list: whether automations (and board cards' pull requests) keep
-  // running while Herdr is closed. The switcher turns the background runner on or
-  // off (herdr-ws-runner) and says how it is: shared "workspaces.runner".
-  runnerRow(t) {
-    const r = shared("workspaces.runner") ?? { on: false, running: false };
-    const note = !r.on ? "Off: they run while Herdr is open" : r.running ? "On: running in the background" : "On, but not running yet";
-    return v_flex().flex_none().border_t(1).border_color(t.border).pb(8)
-      .child(div().px(14).pt(10).pb(4).text_size(11).text_color(t.dim).child("While Herdr is closed"))
-      .child(h_flex().id("a-runner").mx(6).px(8).py(6).gap(9).rounded(7).items_center().cursor_pointer()
-        .hover((s) => s.bg(t.hover))
-        .tooltip(r.on ? "Automations and pull requests are followed by a background process that herdr-core keeps going. Click to turn it off: Herdr then runs them itself, while it's open."
-          : "Schedules, GitHub checks and pull requests stop when you close Herdr. Click to keep them going in the background (needs Node).")
-        .on_click(() => setShared("workspaces.runner.set", { on: !r.on, at: Date.now() }))
-        .child(v_flex().flex_1().min_w(0).gap(2)
-          .child(div().truncate().child("Keep running"))
-          .child(div().truncate().text_size(11).text_color(r.on && !r.running ? t.blocked : t.dim).child(note)))
-        .child(h_flex().w(26).h(15).p(2).flex_none().rounded_full().items_center()
-          .bg(r.on ? t.accent : t.input).when(r.on, (el) => el.justify_end())
-          .child(div().size(11).rounded_full().bg(t.background))));
-  }
   render() {
     const t = theme();
     const def = this.def();
@@ -867,8 +847,7 @@ export default class Automations extends View {
         .when(ready.length > 0, (el) => el
           .child(div().h(12))
           .child(group("Ready-made"))
-          .children(ready.map(starter))))
-      .child(this.runnerRow(t));
+          .children(ready.map(starter))));
     return shell.child(h_flex().flex_1().min_h(0).items_stretch().child(list).child(this.editor(t, def)));
   }
 
@@ -882,7 +861,7 @@ export default class Automations extends View {
         .child(div().child(`The ready-made ones under the list are a place to start: open one to read it, change what you like, and Create adds it${def.none ? " for every workspace" : ` to ${def.name} or to every workspace`}.`))
         .child(div().child(`Each run is a tab in ${def.none ? "its workspace" : def.name}'s Automations space, made the first time. Your view stays where it is.`))
         .child(div().child(`An automation can have a check: a command Herdr runs first, so no agent starts when there's nothing to do.`))
-        .child(div().child(`They run while Herdr is open, or all the time with Keep running on, under the list. A schedule missed while nothing was running or the Mac slept runs once when it can, if that's within 12 hours. A one-time schedule turns itself off after it runs.`))
+        .child(div().child(`They run while Herdr is open, or all the time with Keep running on, in Settings > Agents. A schedule missed while nothing was running or the Mac slept runs once when it can, if that's within 12 hours. A one-time schedule turns itself off after it runs.`))
         .child(div().child(`One made for every workspace runs in each of them, as that workspace's own; a workspace's own automation of the same name replaces it there, and its switch in the list turns it off for that workspace alone.`))
         .child(div().child(def.none ? `No workspace is shown, so these are the ones for every workspace. Their files are in ${tilde(globalDir())}.`
           : `${def.name}'s files are in ${tilde(def.dir)}/automations, and the ones for every workspace in ${tilde(globalDir())}.`));

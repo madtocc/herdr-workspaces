@@ -1,5 +1,5 @@
 // Which agents the + menu shows, as rules with no imports so node can test them. A copy
-// is in ws-new-menu (the menu) and ws-presets (its "Agents in the + menu" pane); keep
+// is in ws-new-menu (the menu) and ws-settings (Settings > Agents, In the + menu); keep
 // them equal (scripts/sync-from-home.sh checks).
 //
 // The owner's list is ~/.herdr/agent-menu.json, { "hidden": ["gemini", "cursor"] }:

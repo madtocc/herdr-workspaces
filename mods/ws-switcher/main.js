@@ -23,6 +23,9 @@
 //                        Worktrees screen (ws-worktrees), as workspaces.board does the board
 //   workspaces.history   { id, at }: the sidebar's History row and the + menu ask this block to show a
 //                        workspace's History screen (ws-history); with no id (All spaces), as a dialog
+// Not this block's: ws-history's own, between its copies (its right-click menu and Wipe dialog are copies of their own).
+//   workspaces.history.act    { from, key, action, terminal, at }: the menu asks the History it was opened from to resume or go to a row
+//   workspaces.history.wiped  { keys, at }: what History's Wipe took; every History reads again
 //   workspaces.notes     { id, at }: the + menu asks this block to show a workspace's Notes screen (ws-notes)
 //   workspaces.board.start  { owner, file, worktree, over, at }: ws-board's Start with… dialog asks the board
 //                        copy that opened it (owner) to start a card with another agent, folder or first message
@@ -54,13 +57,13 @@
 //   workspaces.runner      { on, running }: the background runner, for the screens
 //   workspaces.runner.set  { on, at }: a screen asks to turn it on or off
 // Not this block's: the package's own settings, ~/.herdr/settings.jsonc, as ws-agents
-// reads it (and Settings' Extras section, ws-settings, sets it when you change one; settingsfacts.js).
+// reads it (and Settings' Experimental section, ws-settings, sets it when you change one; settingsfacts.js).
 //   workspaces.settings    { experimental: { <key>: true|false } }
 //   workspaces.settings.section  { id, at } or null: the section our Settings window (ws-settings) opens on,
 //                        for a moment after "ws-switcher.settings/<section>" asks (mod.open passes no props); the
 //                        window clears it as it opens
-// This block writes ws-settings' main.js: Herdr's Settings window with an Extras section
-// (settingsbuild.js), rebuilt when Herdr's own file changes (settingsCopy()).
+// This block writes ws-settings' main.js: Herdr's Settings window with Agents and Experimental
+// sections (settingsbuild.js), rebuilt when Herdr's own file changes (settingsCopy()).
 //
 // A space joins a workspace once and stays: when its first terminal is under the
 // workspace's root or one of its folders (a herdr worktree goes by its repo's
@@ -271,7 +274,7 @@ ${folders.map((f) => `    ${JSON.stringify(f)},`).join("\n")}
 `;
 }
 
-// Our Settings window (ws-settings: Herdr's, with an Extras section), as a dialog 880 wide
+// Our Settings window (ws-settings: Herdr's, with Agents and Experimental), as a dialog 880 wide
 // (its mod.json), which mod.open toggles. Asking for a section opens it there: mod.open passes
 // no props, so the section goes through shared state and the window clears it as it opens.
 // Still there a moment later: the window was open and mod.open closed it, so open it again.
@@ -355,7 +358,7 @@ export default class Workspaces extends View {
     // them to keys) show the shown workspace's screen, and go back to the tabs when it's the one shown;
     // "ws-switcher.show/<screen>/<workspace>" only shows it (a toast's action: Notes' Move to the board);
     // "ws-switcher.settings" opens or closes our Settings window (ws-settings) and
-    // "ws-switcher.settings/<section>" opens it on that section (extras, look, machines, …).
+    // "ws-switcher.settings/<section>" opens it on that section (agents, experimental, look, machines, …; extras is an alias for agents).
     cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
@@ -446,8 +449,8 @@ export default class Workspaces extends View {
     });
   }
 
-  // ws-settings' main.js: Herdr's Settings window (frame/settings/main.js) with the Extras
-  // section, built by settingsbuild.js. Rebuilt only when Herdr's file changed since the last
+  // ws-settings' main.js: Herdr's Settings window (frame/settings/main.js) with Agents and
+  // Experimental, built by settingsbuild.js. Rebuilt only when Herdr's file changed since the last
   // look and written only when the text differs, so writing it (which reloads ws-settings)
   // never loops. Not before ws-settings is installed (its extras.js is there), and never
   // during a check (appHome() is then the person's own Herdr home).
@@ -464,8 +467,8 @@ export default class Workspaces extends View {
           const old = await readTextFile(target).catch(() => null);
           if (old !== r.text) {
             await writeTextFile(target, r.text, old ?? undefined);
-            if (!r.ok) notify({ title: "Settings shows only Extras for now", level: "warning",
-              body: "Herdr's Settings changed in a way the package's copy can't follow yet: until the package is updated, the footer's Settings has only Extras and a button to Herdr's own." });
+            if (!r.ok) notify({ title: "Settings shows only the package's sections for now", level: "warning",
+              body: "Herdr's Settings changed in a way the package's copy can't follow yet: until the package is updated, the footer's Settings has only Agents and Experimental and a button to Herdr's own." });
           }
           this.settingsSeen = seen;
         }
