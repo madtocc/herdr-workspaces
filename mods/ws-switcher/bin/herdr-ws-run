@@ -62,10 +62,13 @@ Have an agent do something later, from a folder in the workspace:
   --agent NAME    a preset (herdr-ws-agent --presets lists them) or a program;
                   default: the workspace board's agent, else claude
   --model MODEL   its model, in place of the preset's: for claude fable, opus,
-                  sonnet or haiku; codex and pi take their own names. Pick the
-                  smallest that does the job: haiku for checks and summaries
+                  sonnet or haiku; codex, pi, agy, opencode, grok and gemini
+                  take their own names (pi and opencode as provider/model).
+                  Pick the smallest that does the job: haiku for checks and
+                  summaries
   --effort LEVEL  its effort: claude low, medium, high, xhigh, max; codex
-                  minimal to max; pi off to max
+                  minimal to max; pi off to max; agy low to max; opencode,
+                  grok and gemini take none
   --folder DIR    where it runs; default: the current folder
   --check CMD     one line of shell that Herdr runs first, in the folder, each
                   time: the agent starts only if it prints something, and gets

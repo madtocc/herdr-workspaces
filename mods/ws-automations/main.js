@@ -31,9 +31,9 @@
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
-import { theme, shared, setShared, props, closeOverlay, home, appHome, readTextFile, writeTextFile, exec, notify, agents, terminals, run } from "herdr";
+import { theme, shared, setShared, props, closeOverlay, home, appHome, readTextFile, writeTextFile, exec, notify, agents, terminals, run, knownAgents } from "herdr";
 import { parseWhen, describe, nextAt, shortTime } from "./when.js";
-import { KNOBS, words, programOf, knobsIn, agyModels } from "./knobs.js";
+import { KNOBS, words, programOf, knobsIn, configModels, listable, keptModels, listModels, shownModels, knobsText } from "./knobs.js";
 import { runCheck } from "./check.js";
 import * as fs from "fs/promises";
 
@@ -63,8 +63,11 @@ const columnsOf = (def) => (Array.isArray(def?.board?.columns) && def.board.colu
 const rel = (def, path) => (path === def.root ? "" : path.startsWith(def.root + "/") ? path.slice(def.root.length + 1) : tilde(path));
 const folderChoices = (def) => (def.folders.length ? def.folders : def.children.map((c) => `${def.root}/${c}`)).map((f) => rel(def, f));
 const boardAgentOf = (def) => String(def?.board?.agent || "claude");
-// The agents the + menu can start (ws-new-menu publishes them), installed here.
-const installedAgents = () => (shared("new-menu.agents")?.[""] ?? []).filter((a) => a.installed && Array.isArray(a.run));
+// The agents Herdr can start: what knownAgents() said when the screen opened, else the
+// + menu's last list (ws-new-menu publishes it). installedAgents(): those installed here.
+let agentsSeen = null;
+const agentList = () => agentsSeen ?? shared("new-menu.agents")?.[""] ?? [];
+const installedAgents = () => agentList().filter((a) => a.installed && Array.isArray(a.run));
 
 // What sets it off, as the When chips group it. A schedule is every, at, cron or once.
 const kindOf = (w) => (w.kind === "every" || w.kind === "at" || w.kind === "cron" || w.kind === "once" ? "schedule" : w.kind);
@@ -117,7 +120,7 @@ Fields:
   - link: only when started by hand (Run now) or from a script
   Prefer the plain forms. Use cron only when they can't say it: every 30 minutes on weekdays from 9:00 to 18:30 is */30 9-18 * * 1-5.
 - agent: "" for the board's agent, else exactly one of the presets or installed agents listed. A preset that fits the job wins (a reviewer for reviews).
-- model and effort: the smallest that does the job well. For claude: haiku for checks, syncs, summaries and reports that read things and update a file or two; sonnet for ordinary code changes and reviews; opus for hard, long or many-step work; fable only when the person asks for the strongest. Effort "" (the default) unless the job is trivial (low) or hard (high). If the agent is a preset that already sets a model that suits the job, leave model "" to keep it. For codex and pi, leave model "" unless the person names one. If the person names a model or an effort, use it. Effort levels: claude low, medium, high, xhigh, max; codex minimal, low, medium, high, xhigh, max; pi off, minimal, low, medium, high, xhigh, max. Other agents take neither: leave both "".
+- model and effort: the smallest that does the job well. For claude: haiku for checks, syncs, summaries and reports that read things and update a file or two; sonnet for ordinary code changes and reviews; opus for hard, long or many-step work; fable only when the person asks for the strongest. Effort "" (the default) unless the job is trivial (low) or hard (high). If the agent is a preset that already sets a model that suits the job, leave model "" to keep it. For any other agent, leave model "" unless the person names one, and then write it as that agent's list below has it. If the person names a model or an effort, use it. Each agent's models and effort levels are listed with the request, by the program it runs (a preset runs the program of its command); one that takes no effort gets effort "", and an agent not listed there takes neither: leave both "".
 - folder: where it runs. "" for the workspace root (for a github trigger, its repo's folder). Else one of the folders listed, written as listed. Pick the folder the agent's commands need (a git repo for git and gh).
 - check: "" for none, which is right for most automations. Otherwise one line of shell that Herdr itself runs first, in the folder, each time the automation is set off: the agent starts only if it prints something, and gets what it printed as {{check}}. On a schedule it must also differ from what the last check printed, so a check can simply list what is open or waiting now and the agent starts when that list changes; for a reminder that should repeat while nothing changed, have the check print the date before its output. Give one when a plain command can tell whether there is anything to do, so no agent starts for nothing: a schedule that looks for new commits, open pull requests, failed runs or files waiting in a folder. It prints what there is to act on, one item per line, and nothing when there is none. It only reads (git log, git status, gh ... list, ls, find, grep, jq, test): never a command that changes, sends, posts or deletes anything. Leave it "" when deciding takes judgment (that's the agent's job), when you'd have to guess a command or flag you aren't sure of, and for link. {{…}} isn't filled in inside a check: what set it off is in variables named after the fill-ins ($HERDR_NUMBER, $HERDR_TITLE, $HERDR_TASK_ID, $HERDR_FILES, $HERDR_DATE). When you give one, write the prompt so it works from {{check}}, and say in note that they should read the check and press Try it.
 - card: true only when the person wants each run as a card on the board.
@@ -213,7 +216,7 @@ function commandOf(def, agent) {
   const name = agent || boardAgentOf(def);
   const preset = presetsFor(def.id).find((p) => p.name === name);
   if (preset) return { name, preset, argv: words(preset.command ?? "") };
-  const known = (shared("new-menu.agents")?.[""] ?? []).find((a) => a.key === name);
+  const known = agentList().find((a) => a.key === name);
   return { name, preset: null, argv: known?.run ?? [name] };
 }
 
@@ -271,16 +274,25 @@ export default class Automations extends View {
     // Codex's models, from its config.
     this.codexModels = [];
     cx.spawn(async (cx) => {
-      const text = await readTextFile(`${home()}/.codex/config.toml`).catch(() => null);
-      this.codexModels = [...new Set([...(text ?? "").matchAll(/^\s*model\s*=\s*"([^"]+)"/gm)].map((m) => m[1]))];
+      this.codexModels = configModels(await readTextFile(`${home()}/.codex/config.toml`).catch(() => null));
       cx.notify();
     });
-    // Antigravity's model families (asked of `agy models` at most once a day).
-    this.agyModels = [];
+    // The models each agent lists (knobs.js): what was kept at once, then asked again
+    // when that's a day old. Each lookup is its own task, so a slow CLI holds up nothing.
+    this.listed = {}; // program -> models
     cx.spawn(async (cx) => {
-      this.agyModels = await agyModels({ exec, readTextFile, writeTextFile, home }).catch(() => []);
-      cx.notify();
+      const all = await knownAgents().catch(() => null);
+      if (Array.isArray(all) && all.length) { agentsSeen = all; cx.notify(); }
     });
+    const io = { exec, readTextFile, writeTextFile, home };
+    for (const program of listable()) {
+      cx.spawn(async (cx) => {
+        this.listed[program] = (await keptModels(io, program).catch(() => null))?.models ?? [];
+        cx.notify();
+        this.listed[program] = await listModels(io, program).catch(() => this.listed[program]);
+        cx.notify();
+      });
+    }
     // The ready-made ones that come with this mod (starters/*.md): listed under the
     // others until one of that name exists, and opened as a new automation, filled in.
     this.starters = [];
@@ -443,7 +455,8 @@ export default class Automations extends View {
       ]),
       `Board columns: ${columnsOf(def).join(", ")}. The board's agent: ${boardAgentOf(def)}`,
       `Presets: ${presets.map((p) => `${p.name} (${p.scope === "global" ? "global" : "this workspace's"}; runs: ${p.command ?? "?"})${p.description ? `: ${p.description}` : ""}`).join("; ") || "none"}`,
-      `Installed agents: ${installedAgents().map((a) => a.key).join(", ") || "claude"}`,
+      `Installed agents: ${installedAgents().map((a) => (programOf(a.run) === a.key ? a.key : `${a.key} (runs ${programOf(a.run)})`)).join(", ") || "claude"}`,
+      `Models and effort, by program:\n${knobsText(this.listed)}`,
       `Names taken: ${[...new Set([...this.list(), ...this.globals()].map((a) => a.name))].join(", ") || "none"}`,
       `Scope now: ${this.sel.scope} (${this.sel.scope === "global" ? "every workspace" : "this workspace only"})${this.sel.isNew ? "" : ". It's saved, so the scope stays as it is"}`,
       `Now: ${d.toLocaleDateString("en-GB", { weekday: "short" })} ${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}, this computer's clock`,
@@ -532,7 +545,7 @@ export default class Automations extends View {
     const okFolder = global ? (/^[/~]/.test(folder) ? "" : folder) : !folder || folderChoices(def).includes(folder) ? folder : c.folder;
     const knobs = KNOBS[programOf(commandOf(def, okAgent).argv)];
     const model = knobs && MODEL_WORD.test(s(d.model)) ? s(d.model) : "";
-    const effort = knobs && knobs.effort.levels.includes(s(d.effort)) ? s(d.effort) : "";
+    const effort = knobs?.effort && knobs.effort.levels.includes(s(d.effort)) ? s(d.effort) : "";
     this.choice = { ...c, agent: okAgent, model, effort, folder: okFolder, card: d.card === true };
   }
 
@@ -920,21 +933,29 @@ export default class Automations extends View {
       : [];
     // A global one runs in every workspace: only the presets and folders they all have.
     const presets = global ? this.globalPresets() : presetsFor(def.id);
+    const agentChoices = installedAgents().filter((a) => !presets.some((p) => p.name === a.key));
+    // Another agent: a model or effort chosen for a different program doesn't carry over.
+    const chooseAgent = (name) => {
+      if (programOf(commandOf(def, name).argv) !== programOf(commandOf(def, c.agent).argv)) { c.model = ""; c.effort = ""; }
+      c.agent = name;
+      this.modelIn.set_value("");
+    };
     const folders = global ? [] : folderChoices(def);
     const boardAgent = boardAgentOf(def);
     // The agent it starts, and the model and effort that will run: its own, else what its command sets.
     const cmd = commandOf(def, c.agent);
     const program = programOf(cmd.argv);
-    const knobs = KNOBS[program] ? { ...KNOBS[program], models: program === "codex" ? this.codexModels : program === "agy" ? this.agyModels : KNOBS[program].models } : null;
+    const knobs = KNOBS[program] ?? null;
     const own = knobsIn(cmd.argv);
-    const models = knobs ? [...new Set([...knobs.models, ...(own.model ? [own.model] : []), ...(c.model ? [c.model] : [])])] : [];
-    const model = c.model || own.model, effort = c.effort || own.effort;
+    const models = knobs ? [...new Set([...knobs.models, ...(program === "codex" ? this.codexModels : []), ...(this.listed[program] ?? []), ...(own.model ? [own.model] : []), ...(c.model ? [c.model] : [])])] : [];
+    const { shown: shownList, more: moreModels } = shownModels(models, this.modelIn.value(), c.model || own.model);
+    const model = c.model || own.model, effort = knobs?.effort ? c.effort || own.effort : null;
     const who = `${c.agent || (global ? "each board's agent" : boardAgent)}${cmd.preset && program && program !== cmd.name ? ` (${program})` : ""}`;
     const knobText = [model && `on ${model}`, effort && `${effort} effort`].filter(Boolean).join(", ");
     const where = c.folder || (kind === "github" ? "its repo's folder" : global ? "each workspace's root" : "the root");
     const checkCmd = oneLine(this.checkIn.value());
     const runsText = `Starts ${who}${knobText ? ` ${knobText}` : ""}, in ${where}${c.card ? ", with a board card each run" : ""}.`;
-    const noKnobs = !knobs && (c.model || c.effort);
+    const noKnobs = (!knobs && (c.model || c.effort)) || (Boolean(knobs) && !knobs.effort && c.effort);
 
     const runs = saved && !saved.replaced ? (shared("workspaces.automation.runs") ?? []).filter((r) => r.ws === def.id && r.name === saved.name).slice(0, 4) : [];
     const ag = agents(), tm = terminals();
@@ -986,7 +1007,7 @@ export default class Automations extends View {
       .when(Boolean(checkCmd), (el) => el
         .child(div().pt(2).text_size(12).text_color(t.muted).child(`First, Herdr runs this in ${where}. No agent starts unless it prints something${kind === "schedule" && w.kind !== "once" ? " new" : ""}:`))
         .child(div().mt(2).px(8).py(5).rounded(6).bg(t.raised).font_family("JetBrains Mono").text_size(11.5).text_color(t.foreground).child(checkCmd)))
-      .when(Boolean(noKnobs), (el) => el.child(div().text_size(11.5).text_color(t.working).child(`${who} doesn't take a model or effort here, so they're left out when it runs.`)))
+      .when(Boolean(noKnobs), (el) => el.child(div().text_size(11.5).text_color(t.working).child(knobs ? `${who} doesn't take an effort, so it's left out when it runs.` : `${who} doesn't take a model or effort here, so they're left out when it runs.`)))
       .when(Boolean(saved?.warning), (el) => el.child(div().text_size(11.5).text_color(t.working).child(saved.warning)))
       // A check that came from outside this screen (an agent, the file): yours to allow, as it's saved.
       .when(saved?.allowed === false && checkCmd === (saved.check ?? ""), (el) => el.child(h_flex().pt(4)
@@ -1027,19 +1048,24 @@ export default class Automations extends View {
       .child(div().pt(8).child(box(this.whenIn, true)))
       .when(quick.length > 0, (el) => el.child(div().pt(8).child(chips(...quick))))
       .child(label_(global ? "Agent: a preset for every workspace, or each board's agent" : "Agent: a preset, or the board's agent"))
-      .child(chips(pick("a-ag-default", global ? "Each board's" : `Board's (${boardAgent})`, !c.agent, () => { c.agent = ""; }),
-        ...presets.map((p) => pick(`a-ag-${p.name}`, p.name, c.agent === p.name, () => { c.agent = p.name; })),
-        ...(c.agent && !presets.some((p) => p.name === c.agent) ? [pick("a-ag-other", c.agent, true, () => {})] : [])))
+      .child(chips(pick("a-ag-default", global ? "Each board's" : `Board's (${boardAgent})`, !c.agent, () => chooseAgent("")),
+        ...presets.map((p) => pick(`a-ag-${p.name}`, p.name, c.agent === p.name, () => chooseAgent(p.name))),
+        // The installed agents, as they come: picking one shows its own models and efforts.
+        ...agentChoices.map((a) => pick(`a-ag-${a.key}`, a.name, c.agent === a.key, () => chooseAgent(a.key))),
+        ...(c.agent && !presets.some((p) => p.name === c.agent) && !agentChoices.some((a) => a.key === c.agent) ? [pick("a-ag-other", c.agent, true, () => {})] : [])))
       .when(Boolean(knobs), (el) => el
         .child(label_(cmd.preset ? `Model: Default is what ${cmd.name} sets` : "Model"))
         .child(h_flex().gap(6).flex_wrap().items_center()
           .child(pick("a-model-default", own.model ? `Default (${own.model})` : program === "codex" && this.codexModels[0] ? `Default (${this.codexModels[0]})` : "Default", !c.model, () => { c.model = ""; }))
-          .children(models.map((m) => pick(`a-model-${m}`, m, c.model === m, () => { c.model = m; })))
+          .children(shownList.map((m) => pick(`a-model-${m}`, m, c.model === m, () => { c.model = m; this.modelIn.set_value(""); })))
           .child(div().w(190).child(Input.new(this.modelIn).h(26).px(8).rounded(13).border_1().border_color(this.focusedIn === this.modelIn ? t.accent : t.input).bg(t.background).text_size(11.5).text_color(t.foreground))))
-        .child(label_("Effort"))
-        .child(h_flex().gap(6).flex_wrap()
-          .child(pick("a-effort-default", own.effort ? `Default (${own.effort})` : "Default", !c.effort, () => { c.effort = ""; }))
-          .children(knobs.effort.levels.map((l) => pick(`a-effort-${l}`, l, c.effort === l, () => { c.effort = l; })))))
+        .when(moreModels > 0, (el) => el.child(div().pt(6).text_size(11.5).text_color(t.dim)
+          .child(this.modelIn.value().trim() ? `${moreModels} more like that: type more of the name.` : `${program} lists ${models.length} models: type part of a name to find one.`)))
+        .when(Boolean(knobs.effort), (el) => el
+          .child(label_("Effort"))
+          .child(h_flex().gap(6).flex_wrap()
+            .child(pick("a-effort-default", own.effort ? `Default (${own.effort})` : "Default", !c.effort, () => { c.effort = ""; }))
+            .children((knobs.effort?.levels ?? []).map((l) => pick(`a-effort-${l}`, l, c.effort === l, () => { c.effort = l; }))))))
       .child(label_(global ? "Folder: where it runs, in each workspace" : "Folder: where it runs"))
       .child(chips(pick("a-fo-root", kind === "github" ? "Its repo's folder" : "Root", !c.folder, () => { c.folder = ""; }),
         ...folders.map((f) => pick(`a-fo-${f}`, f, c.folder === f, () => { c.folder = f; })),
