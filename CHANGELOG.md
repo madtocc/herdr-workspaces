@@ -7,6 +7,8 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-11-21
+
 ### Fixed
 - **No more Google sign-in tabs from the status bar.** With Antigravity installed but not signed in (or in a test sandbox with its own home), the status bar's usage check, `agy -p /usage`, opened a new "Sign in - Google Accounts" tab in your browser every 10 minutes and whenever Herdr reloaded the mod. The check now runs with a do-nothing `open` in front, so it can't open a browser, and when Antigravity says it isn't signed in the bar stops asking for 6 hours (Refresh in the usage panel asks at once). To update, copy `mods/ws-status`.
 
