@@ -384,6 +384,18 @@ export function chipText(kids = []) {
   return [helpers && n(helpers, "helper"), subs && n(subs, "sub-agent")].filter(Boolean).join(", ");
 }
 
+// The names on the line under a row with helpers ("tree-check, review, Explore ×2"): each
+// helper's hc name and each sub-agent's type, in order, a repeat counted on its first.
+// A helper with no hc name isn't named.
+export function kidNames(kids = []) {
+  const n = new Map();
+  for (const s of kids) {
+    const w = s.helper?.name || (s.readonly ? s.sub?.type || "sub-agent" : "");
+    if (w) n.set(w, (n.get(w) ?? 0) + 1);
+  }
+  return [...n].map(([w, k]) => (k > 1 ? `${w} ×${k}` : w)).join(", ");
+}
+
 // The rows to draw, in order: { s, depth, kids, open, forced }. `pass(s)`: a row the
 // search and filters let through; `root(s)`: whether a tree may show at all (the folder-
 // gone rule); `unfolded`: keys opened by hand. With a filter on (`filtering`), a tree shows

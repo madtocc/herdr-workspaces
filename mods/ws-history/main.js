@@ -32,8 +32,8 @@
 // context was before and after, and what's in the context at the end.
 //
 // Who started whom (treefacts.js): a conversation another agent started (an hc helper)
-// or an agent's own sub-agent isn't listed on its own: its parent's row has a chip
-// ("8 helpers", "3 sub-agents") that unfolds them under it, indented, and so on down. A
+// or an agent's own sub-agent isn't listed on its own: under its parent's row a quiet line
+// ("› 8 helpers  fix-login, review") unfolds them, indented, and so on down. A
 // search shows a match under its parent. One whose parent isn't listed stays on its own
 // with a "started by …" line. Trees are sorted by their newest activity. Fold state is
 // kept in memory only.
@@ -53,7 +53,7 @@ import {
   home, appHome, exec, notify, checking, knownAgents, readTextFile,
 } from "herdr";
 import { PROVIDERS, inWorkspace, whereOf, liveOf, keyOf, titleOf, matches, dayLabel, ago, span, modelLabel, resumeArgv, presetOf, tokens, compactionText, compactionsTip, runState, runMatches, runSessions } from "./histfacts.js";
-import { forest, treeRows, chipText, indent, historyMenu, wipeCheck, holdState, liveUnder, helpersOf } from "./treefacts.js";
+import { forest, treeRows, chipText, kidNames, indent, historyMenu, wipeCheck, holdState, liveUnder, helpersOf } from "./treefacts.js";
 import { menuHeight, wipeTargets } from "./menufacts.js";
 
 const PALETTE = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
@@ -558,8 +558,8 @@ export default class History extends View {
         if (under.length && this.unfolded.has(keyOf(s))) {
           for (const x of treeRows({ ...f, roots: [s] }, { unfolded: this.unfolded }).slice(1)) {
             const at = x.s.readonly ? null : live.get(keyOf(x.s)) ?? null;
-            kids.push(this.row(x.s, at, at ? status.get(at) : null, t, now, everywhere ? null : def, tight, x));
-            if (this.open === keyOf(x.s)) kids.push(this.details(x.s, at, t, x.depth));
+            kids.push(this.item(this.row(x.s, at, at ? status.get(at) : null, t, now, everywhere ? null : def, tight, x), t,
+              this.open === keyOf(x.s) ? this.details(x.s, at, t, x.depth) : null));
           }
         }
       }
@@ -598,8 +598,8 @@ export default class History extends View {
         const label = dayLabel(f.latest.get(keyOf(s)) ?? s.updated, now);
         if (label !== day) { day = label; kids.push(div().h(30).mt(4).px(8).flex().flex_none().items_end().pb(5).text_size(11.5).text_color(t.dim).child(label)); }
       }
-      kids.push(this.row(s, at, at ? status.get(at) : null, t, now, everywhere ? null : def, tight, x));
-      if (this.open === keyOf(s)) kids.push(this.details(s, at, t, x.depth));
+      kids.push(this.item(this.row(s, at, at ? status.get(at) : null, t, now, everywhere ? null : def, tight, x), t,
+        this.open === keyOf(s) ? this.details(s, at, t, x.depth) : null));
     }
     if (roots > this.max) {
       kids.push(h_flex().h(40).flex_none().items_center().justify_center()
@@ -637,31 +637,27 @@ export default class History extends View {
     const sub = [this.startedBy(s), whereOf(s.cwd, def, home(), trees()), s.branch, s.last ? `last: ${s.last}` : s.title ? s.first : ""].filter(Boolean).join("  ·  ");
     const tag = (text, c, tip) => div().flex_none().h(20).px(6).flex().items_center().rounded(5).bg(t.raised).text_size(11.5).text_color(c)
       .when(Boolean(tip), (el) => el.tooltip(tip)).child(text);
-    // Its helpers and sub-agents: a chip that folds them in and out.
-    const fold = x.kids.length > 0 ? h_flex().id(`hk-${key}`).flex_none().h(20).px(6).gap(4).items_center().rounded(10).border_1().cursor_pointer().text_size(11.5)
-      .border_color(x.open ? t.accent : t.input).text_color(x.open ? t.foreground : t.muted).hover((el) => el.text_color(t.foreground))
-      .tooltip(x.open ? "Fold them away" : "Show the conversations it started")
-      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-      .on_click((_e, cx) => { cx.stop_propagation(); if (this.unfolded.has(key)) this.unfolded.delete(key); else this.unfolded.add(key); cx.notify(); })
-      .child(svg(`mods/workspace-chrome/chevron-${x.open ? "down" : "right"}.svg`).size(10).flex_none())
-      .child(chipText(x.kids)) : null;
     const name = s.helper?.name || "";
     const act = (id, text, action, tip, solid) => div().id(id).h(24).px(9).flex().flex_none().items_center().rounded(6)
       .text_size(11.5).cursor_pointer().tooltip(tip).on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .when(solid, (el) => el.bg(t.solid).text_color(t.solid_foreground).font_medium().hover((x) => x.opacity(0.88)))
       .when(!solid, (el) => el.border_1().border_color(t.input).text_color(t.muted).hover((x) => x.bg(t.hover).text_color(t.foreground)))
       .on_click((_e, cx) => { cx.stop_propagation(); action(cx); }).child(text);
-    return h_flex().id(`h-${key}`).h(s.readonly ? 40 : 46).pl(8 + indent(x.depth)).pr(8).gap(10).items_center().flex_none().rounded(7).cursor_pointer()
-      .hover((el) => el.bg(t.hover)).when(this.open === key, (el) => el.bg(t.selected))
+    // A row with helpers or sub-agents holds the line that folds them in and out, under its
+    // own line, in one highlight.
+    const folds = x.kids.length > 0;
+    const shell = (folds ? v_flex().pt(4).pb(6) : h_flex().h(s.readonly ? 40 : 46).gap(10).items_center())
+      .id(`h-${key}`).pl(8 + indent(x.depth)).pr(8).flex_none().rounded(7).cursor_pointer()
+      .when(this.open !== key, (el) => el.hover((el) => el.bg(t.hover)))
       .on_click((_e, cx) => { this.open = this.open === key ? null : key; cx.notify(); })
-      .when(!s.readonly, (el) => el.on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openMenu(s, at); }))
+      .when(!s.readonly, (el) => el.on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openMenu(s, at); }));
+    const fill = (el) => el
       .child(this.icon(s.provider, t, s.readonly ? 13 : 16))
       .child(v_flex().flex_1().min_w(0).gap(2)
         .child(h_flex().min_w(0).gap(7).items_center()
           .when(Boolean(name), (el) => el.child(div().flex_none().max_w(180).truncate().font_medium().text_color(s.gone && !at ? t.muted : t.foreground).child(name)))
           .child(div().flex_1().min_w(0).truncate().text_size(s.readonly ? 12 : 13).text_color(s.gone && !at ? t.muted : name || s.readonly ? t.muted : t.foreground).child(titleOf(s))))
         .child(div().truncate().text_size(11.5).text_color(t.dim).child(sub)))
-      .when(Boolean(fold), (el) => el.child(fold))
       .when(Boolean(preset) && !tight, (el) => el.child(tag(preset, t.muted, "Started from this agent preset; Resume starts it the same way")))
       .when(Boolean(s.readonly) && !tight, (el) => el.child(tag(s.sub?.type || "sub-agent", t.dim, "The agent's own sub-agent: read here, it can't be resumed on its own")))
       .when(s.via === "app" && !tight, (el) => el.child(tag("app", t.muted, "Started in the agent's desktop app or an editor, not in a terminal. Resume continues it here.")))
@@ -678,6 +674,31 @@ export default class History extends View {
         .when(Boolean(at), (el) => el.child(act(`go-${key}`, "Go to", () => this.goTo(at), "Show the terminal it's open in")))
         .when(!at && !s.gone && this.starting === key, (el) => el.child(div().text_size(11.5).text_color(t.dim).child("Starting…")))
         .when(!at && !s.gone && !s.readonly && this.starting !== key, (el) => el.child(act(`re-${key}`, "Resume", (cx) => this.resume(s, cx), "Continue it in a new tab, in the folder it ran in", true))));
+    if (!folds) return fill(shell);
+    return shell.child(fill(h_flex().h(s.readonly ? 32 : 38).gap(10).items_center()))
+      .child(this.foldLine(`hf-${key}`, key, x.kids, x.open, s.readonly ? 23 : 26, t, "Show the conversations it started"));
+  }
+
+  // A row as the list draws it: opened, the row and its details are one piece, the row's
+  // highlight holding both.
+  item(row, t, details) {
+    if (!details) return row;
+    return v_flex().flex_none().rounded(7).bg(t.selected).mb(6).child(row).child(details);
+  }
+
+  // The quiet line inside a row with helpers or sub-agents, under its own line, from its
+  // title's edge (`left`): "› 4 helpers  tree-check, review", which unfolds them; unfolded,
+  // the count alone. (A negative margin to pull it up made the row lose its height.)
+  foldLine(id, key, kids, open, left, t, tip) {
+    const names = open ? "" : kidNames(kids);
+    return h_flex().id(id).h(18).ml(left).gap(6).items_center().flex_none().cursor_pointer()
+      .text_size(11.5).text_color(t.muted).hover((el) => el.text_color(t.foreground))
+      .tooltip(open ? "Fold them away" : tip)
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_click((_e, cx) => { cx.stop_propagation(); if (this.unfolded.has(key)) this.unfolded.delete(key); else this.unfolded.add(key); cx.notify(); })
+      .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(10).flex_none())
+      .child(div().flex_none().child(chipText(kids)))
+      .when(Boolean(names), (el) => el.child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(names)));
   }
 
   // "started by …" for a row whose parent isn't listed: its title when the reader knew it,
@@ -704,20 +725,15 @@ export default class History extends View {
       .when(!solid, (el) => el.border_1().border_color(t.input).text_color(t.muted).hover((x) => x.bg(t.hover).text_color(t.foreground)))
       .on_click((_e, cx) => { cx.stop_propagation(); action(cx); }).child(text);
     const key = s ? keyOf(s) : null;
-    return h_flex().id(`run-${r.id}`).h(st.quiet ? 38 : 46).px(8).gap(10).items_center().flex_none().rounded(7).hover((x) => x.bg(t.hover))
+    // With helpers, the line that folds them sits under its own, in its highlight.
+    const folds = under.length > 0 && Boolean(key);
+    const shell = (folds ? v_flex().pt(4).pb(6) : h_flex().h(st.quiet ? 38 : 46).gap(10).items_center())
+      .id(`run-${r.id}`).px(8).flex_none().rounded(7).hover((x) => x.bg(t.hover));
+    const fill = (el) => el
       .child(svg("mods/ws-automations/automations.svg").size(st.quiet ? 13 : 15).flex_none().text_color(st.quiet ? t.dim : t.muted))
       .child(v_flex().flex_1().min_w(0).gap(2)
         .child(div().truncate().text_color(st.quiet ? t.muted : t.foreground).text_size(st.quiet ? 12 : 13).child(r.name))
         .child(div().truncate().text_size(11.5).text_color(t.dim).child(sub)))
-      .when(under.length > 0 && Boolean(key), (el) => {
-        const open = this.unfolded.has(key);
-        return el.child(h_flex().id(`rk-${r.id}`).flex_none().h(20).px(6).gap(4).items_center().rounded(10).border_1().cursor_pointer().text_size(11.5)
-          .border_color(open ? t.accent : t.input).text_color(open ? t.foreground : t.muted).hover((x) => x.text_color(t.foreground))
-          .tooltip(open ? "Fold them away" : "Show the conversations its run started")
-          .on_click((_e, cx) => { cx.stop_propagation(); if (open) this.unfolded.delete(key); else this.unfolded.add(key); cx.notify(); })
-          .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(10).flex_none())
-          .child(chipText(under)));
-      })
       .child(div().flex_none().text_size(11.5).text_color(t[st.tone] ?? t.dim).child(st.word))
       .child(div().w(30).flex_none().text_size(11.5).text_color(t.dim).child(ago(r.at, now)))
       .child(h_flex().w(tight ? 70 : 150).flex_none().gap(6).justify_end()
@@ -727,10 +743,13 @@ export default class History extends View {
         .when(!st.open && !at && Boolean(s) && !s.gone && this.starting !== key, (el) => el.child(act(`rre-${r.id}`, "Resume", (cx) => this.resume(s, cx),
           r.conv ? "Continue its conversation in a new tab, in the folder it ran in" : "Continue the conversation that ran in its folder then, in a new tab", true)))
         .when(!tight, (el) => el.child(act(`rau-${r.id}`, "Automation", () => this.openAutomation(r), `Open ${r.name} in Automations`))));
+    if (!folds) return fill(shell);
+    return shell.child(fill(h_flex().h(38).gap(10).items_center()))
+      .child(this.foldLine(`rf-${r.id}`, key, under, this.unfolded.has(key), 25, t, "Show the conversations its run started"));
   }
 
-  // Under an opened row: what was asked first and last, where and when, and the
-  // command Resume runs.
+  // Under an opened row, inside its highlight (item()): what was asked first and last,
+  // where and when, and the command Resume runs.
   details(s, at, t, depth = 0) {
     const a = this.agent(s.provider);
     const argv = resumeArgv(s, a?.run) ?? [];
@@ -740,7 +759,7 @@ export default class History extends View {
       .child(div().flex_1().min_w(0).text_color(t.muted).child(text));
     const started = s.helper ? [s.helper.name && `as ${s.helper.name}`, s.helper.preset && `(${s.helper.preset})`].filter(Boolean).join(" ") : "";
     const parent = s.parent ? this.rows.find((x) => keyOf(x) === s.parent) : null;
-    return v_flex().ml(34 + indent(depth)).mr(8).mb(8).p(12).gap(7).rounded(8).border_1().border_color(t.border).bg(t.surface).text_size(12)
+    return v_flex().pl((s.readonly ? 31 : 34) + indent(depth)).pr(8).pt(2).pb(12).gap(7).text_size(12)
       .when(Boolean(s.parent), (el) => el.child(line(s.readonly ? "Sub-agent of" : "Started by", `${parent ? `“${titleOf(parent)}”` : this.startedBy(s).replace(/^started by /, "")}${started ? `  ${started}` : ""}`)))
       .when(Boolean(s.first), (el) => el.child(line("First asked", s.first)))
       .when(Boolean(s.last), (el) => el.child(line("Last asked", s.last)))
