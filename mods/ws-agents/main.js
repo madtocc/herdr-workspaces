@@ -7,6 +7,8 @@
 // changes are inWorkspace(), the filter in render(), the empty text,
 // open(): a click on a sub-agent keeps it as a tab instead of peeking at it, and
 // a click on an agent goes back to the tabs from one of the workspace's screens (showTabs()).
+// A + in the header, right of the sort button, opens ws-new-menu with only the agents and
+// presets (props.agentsOnly); hidden while the workspace has no space.
 // Also: a second line on an agent's row with its model, how full its context is and
 // how often it was compacted, the rest on hover (readStats(), statLine(): stats.js
 // reads them from the agent's own records). The plans' usage is in the status bar
@@ -1151,7 +1153,7 @@ export default class Agents extends View {
             .flex_none()
             .items_center()
             .justify_between()
-            .child(div().text_size(11.5).font_medium().text_color(t.dim).child("Agents"))
+            .child(div().flex_1().text_size(11.5).font_medium().text_color(t.dim).child("Agents"))
             .child(
               div()
                 .id("ag-sort")
@@ -1161,7 +1163,19 @@ export default class Agents extends View {
                 .on_click(() => openOverlay({ mod: "ws-agents", kind: "popup", width: 200, height: 140, props: { sortMenu: true } }))
                 .tooltip(`Sort agents: ${sort.label}`)
                 .child(svg(`mods/workspace-chrome/${sort.icon}.svg`).size(14)),
-            ),
+            )
+            // + : the + menu with only the agents and presets, starting in the shown space.
+            // Not while the workspace has no space: the tab bar's + makes one.
+            .when(!shared("workspaces.covered"), (el) => el.child(
+              div()
+                .id("ag-new")
+                .ml(10)
+                .text_color(t.dim)
+                .hover((s) => s.text_color(t.foreground))
+                .on_click(() => openOverlay({ mod: "ws-new-menu", kind: "popup", width: 250, height: 0.85, props: { agentsOnly: true } }))
+                .tooltip("Start an agent")
+                .child(svg("mods/workspace-chrome/plus.svg").size(14)),
+            )),
         ),
       )
       .when(list.length === 0 && !collapsed, (el) =>

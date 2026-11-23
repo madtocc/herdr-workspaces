@@ -7,6 +7,9 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 
 ## [Unreleased]
 
+### New
+- **Start an agent from the Agents list.** A + at the right of the Agents header, beside the sort button, opens the + menu's agents and presets alone and starts the one you pick in the shown space, so you don't have to go to the tab bar. To update, copy `mods/ws-agents` and `mods/ws-new-menu`.
+
 ## [0.20.0] - 2026-11-23
 
 ### New

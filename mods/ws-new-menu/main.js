@@ -11,6 +11,8 @@
 //   Settings on its Agents section directly (ws-settings, through shared "workspaces.settings.section"),
 //   so it works even while the sidebar is hidden. Number keys follow what's shown.
 // The views (History, Notes, Board, …) open from the tab bar's Views menu (ws-tabs), not here.
+// - props.agentsOnly (the Agents panel's +, ws-agents): only the agents and the presets,
+//   under "Start an agent in <space>"; no Terminal, no space or worktree rows.
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex, Popup } from "gpui-base";
@@ -141,7 +143,8 @@ export default class NewMenu extends View {
       return a.tint ? svg(a.icon).size(14).text_color(t.foreground) : image(a.icon).size(14);
     };
     const keyed = (i) => (i < 9 ? String(i + 1) : "");
-    return v_flex().min_h(0).w_full().h(Math.min(721, 167 + (Math.max(1, installed.length) + (installed.length ? 1 : 0)) * 31 + (presets.length ? 34 + presets.length * 31 : 0)))
+    const only = Boolean(props()?.agentsOnly);
+    return v_flex().min_h(0).w_full().h(Math.min(721, (only ? 39 : 167) + (Math.max(1, installed.length) + (installed.length ? 1 : 0)) * 31 + (presets.length ? 34 + presets.length * 31 : 0)))
       .bg(t.popover).p(5).text_size(12.8)
       .id("new-menu").track_focus(this.handle)
       .on_key_down((e, cx) => {
@@ -153,8 +156,9 @@ export default class NewMenu extends View {
         if (target.agent) run("tab.new", { name: target.agent.name, space: space?.id, argv: target.agent.run });
         else startPreset(target.preset);
       })
-      .child(this.row("terminal", svg("icons/shell.svg").size(14), "Terminal", () => run("tab.new", { space: space?.id }), shortcut("tab.new")))
-      .child(div().px(9).pt(8).pb(4).text_size(11).text_color(t.dim).child("Start an agent"))
+      .when(!only, el => el.child(this.row("terminal", svg("icons/shell.svg").size(14), "Terminal", () => run("tab.new", { space: space?.id }), shortcut("tab.new"))))
+      .child(div().px(9).pt(only ? 4 : 8).pb(4).text_size(11).text_color(t.dim).truncate()
+        .child(only && space?.name ? `Start an agent in ${space.name}` : "Start an agent"))
       .child(v_flex().flex_1().min_h(0).overflow_y_scrollbar()
         .children(installed.map((a, i) => this.agentRow(a, keyed(i))))
         .when(installed.length > 0, el => el.child(this.row("choose", svg("mods/workspace-chrome/settings.svg").size(14).flex_none().text_color(t.muted),
@@ -167,9 +171,10 @@ export default class NewMenu extends View {
           .child(div().px(9).pt(10).pb(4).flex_none().text_size(11).text_color(t.dim).child("Agent presets"))
           .children(presets.map((p, i) => this.row(`preset-${p.name}`, iconOf(p), p.name, () => startPreset(p), keyed(installed.length + i), true,
             [p.description, p.scope === "workspace" ? `Only in ${ws?.name ?? "this workspace"}` : "Every workspace"].filter(Boolean).join("\n"))))))
+      .when(!only, el => el
       .child(div().h(1).mx(4).my(5).bg(t.border))
       .child(this.row("space", div().w(14).child("+"), "New space", () => run("space.new"), shortcut("space.new")))
       .child(this.row("worktree", svg("mods/workspace-chrome/branch.svg").size(14), "New worktree…", () => openOverlay({ mod: "worktree", kind: "dialog", width: 460, height: 280, props: { space: space?.id, folder: panes().find(p => p.focused)?.cwd, action: "new" } }), "", Boolean(space)))
-      .child(this.row("worktree-open", svg("mods/workspace-chrome/branch.svg").size(14), "Open worktree\u2026", () => openOverlay({ mod: "worktree", kind: "dialog", width: 560, height: 480, props: { space: space?.id, folder: panes().find(p => p.focused)?.cwd, action: "open" } }), "", Boolean(space)));
+      .child(this.row("worktree-open", svg("mods/workspace-chrome/branch.svg").size(14), "Open worktree\u2026", () => openOverlay({ mod: "worktree", kind: "dialog", width: 560, height: 480, props: { space: space?.id, folder: panes().find(p => p.focused)?.cwd, action: "open" } }), "", Boolean(space))));
   }
 }
