@@ -21,10 +21,6 @@ another workspace needs you or finished.
 
 - **New space**: a click on the Spaces + makes one in the workspace's root. Hold
   it (or right-click) to name the space and choose its folder.
-- **Views**: the tab bar's Views button opens the space's Changes and Files and
-  the workspace's Board, Notes, Worktrees and History, each full size in place
-  of the terminals (a pill before the tabs brings it back) or beside them as a
-  pane. Changes and Files follow the terminal you were using.
 - **Scratch**, always last in the switcher, holds throwaway spaces for ideas that
   belong to no project. You name each one as you make it, and it gets a fresh
   folder carrying that name, tidied away when you're done unless you keep it.
@@ -42,6 +38,15 @@ another workspace needs you or finished.
   wipe it (close it and move its conversation to the Trash).
 
 ![The Agents list's right-click menu](previews/agent-menu.png)
+
+### Views
+
+![The Views menu, with Changes open beside an agent](previews/views.png)
+
+The tab bar's Views button opens the space's Changes and Files and the
+workspace's Board, Notes, Worktrees and History, each full size in place of the
+terminals (a pill before the tabs brings it back) or beside them as a pane.
+Changes and Files follow the terminal you were using.
 
 ### A task board
 
