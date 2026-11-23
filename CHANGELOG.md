@@ -8,7 +8,11 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 ## [Unreleased]
 
 ### New
+- **History says what each automation run did.** On the Automations side, a run's grey line is now the start of what its agent said at the end, and its word says how it went: done, failed, nothing to do, needs you, running, or no report (its tab was closed while it worked). A click opens the whole report, when it ran and for how long, and Open the automation (the button moved there; Resume stays on the row, no longer the loudest button). A day's heading counts what needs a look ("Yesterday · 1 failed"), and the search finds a run by what it said. To tell done from failed, every automation run's agent is now asked to end its last message with an outcome line (`Outcome: done`, `Outcome: failed` or `Outcome: nothing to do`), which History shows as the word and leaves out of the report; runs from before and agents that skip it say "done". Reports are read for Claude Code, Pi and Antigravity runs. History reads every transcript of the last 90 days once more on its first read. To update, copy `mods/ws-history` and `mods/ws-switcher`.
 - **Start an agent from the Agents list.** A + at the right of the Agents header, beside the sort button, opens the + menu's agents and presets alone and starts the one you pick in the shown space, so you don't have to go to the tab bar. To update, copy `mods/ws-agents` and `mods/ws-new-menu`.
+
+### Fixed
+- **Agent presets: the buttons stay in reach.** A preset with many model chips pushed Save, Start and Delete below the dialog's edge. The editor now scrolls above a footer that stays put, each preset opens at its top, and Instructions is a fixed 260px box. To update, copy `mods/ws-presets`.
 
 ## [0.20.0] - 2026-11-23
 

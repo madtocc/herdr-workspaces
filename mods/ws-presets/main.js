@@ -389,9 +389,9 @@ export default class Presets extends View {
   }
 
   editor(t, def, own, iconOf) {
-    const pane = v_flex().flex_1().min_w(0).min_h(0).p(18);
+    const pane = v_flex().flex_1().min_w(0).min_h(0);
     if (!this.sel) {
-      return pane.gap(10).text_color(t.muted).text_size(12.5)
+      return pane.p(18).gap(10).text_color(t.muted).text_size(12.5)
         .child(div().text_size(14).font_semibold().text_color(t.foreground).child("Pick a preset, or make a new one."))
         .child(div().child("A preset is an agent you can start by name: a command (the program, model and flags) and its instructions."))
         .child(div().child(`Presets for every workspace are herdr-core templates in ${tilde(templatesDir())}, so agents can start them too, with hc run <name>.`))
@@ -437,7 +437,8 @@ export default class Presets extends View {
     const file = sel.isNew ? null : this.snap?.file;
     const overridesGlobal = sel.scope === "global" && def && own.some((o) => o.name === sel.name);
 
-    return pane
+    // Its own id per preset, so each opens scrolled to the top; the buttons stay below it.
+    const form = v_flex().id(`p-form-${sel.isNew ? "+new" : `${sel.scope}-${sel.name}`}`).flex_1().min_h(0).px(18).pt(18).pb(8).overflow_y_scrollbar()
       .child(h_flex().gap(10).items_center()
         .child(iconOf(this.cmdIn.value(), 20))
         .when(!sel.isNew, (el) => el.child(div().text_size(16).font_semibold().child(sel.name)))
@@ -486,18 +487,21 @@ export default class Presets extends View {
       .child(label(system
         ? "Instructions: this agent gets these as system instructions, after the workspace's"
         : "Instructions: sent as the agent's first message, before any task"))
-      .child(div().flex_1().min_h(80).child(Textarea.new(this.bodyIn).size_full().p(10).rounded(8).border_1().border_color(this.focusedIn === this.bodyIn ? t.accent : t.input)
-        .bg(t.background).text_size(12.5).text_color(t.foreground)))
-      .when(Boolean(this.error), (el) => el.child(div().pt(8).text_size(11.5).text_color(t.blocked).child(this.error)))
-      .when(!this.error && Boolean(this.notice), (el) => el.child(div().pt(8).text_size(11.5).text_color(t.done).child(this.notice)))
-      .child(h_flex().pt(14).gap(8).items_center()
-        .when(!sel.isNew, (el) => el
-          .child(button("p-delete", this.confirming ? "Click again to delete" : "Delete", "danger", (_e, cx) => this.remove(cx)))
-          .child(button("p-dup", "Duplicate", "plain", (_e, cx) => this.copy(sel.scope, `${sel.name}-copy`, cx)))
-          .when(sel.scope === "global" && Boolean(def) && !own.some((o) => o.name === sel.name), (el) => el
-            .child(button("p-custom", `Change for ${def.name}`, "plain", (_e, cx) => this.copy("workspace", sel.name, cx)))))
-        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(file ? tilde(file) : ""))
-        .when(!sel.isNew, (el) => el.child(button("p-start", "Start", "plain", () => this.start(), !dirty)))
-        .child(button("p-save", sel.isNew ? "Create" : "Save", "primary", (_e, cx) => this.save(cx), sel.isNew || dirty)));
+      .child(div().h(260).flex_none().child(Textarea.new(this.bodyIn).size_full().p(10).rounded(8).border_1().border_color(this.focusedIn === this.bodyIn ? t.accent : t.input)
+        .bg(t.background).text_size(12.5).text_color(t.foreground)));
+    return pane
+      .child(form)
+      .child(v_flex().flex_none().px(18).pb(14).pt(8).border_t(1).border_color(t.border)
+        .when(Boolean(this.error), (el) => el.child(div().pb(8).text_size(11.5).text_color(t.blocked).child(this.error)))
+        .when(!this.error && Boolean(this.notice), (el) => el.child(div().pb(8).text_size(11.5).text_color(t.done).child(this.notice)))
+        .child(h_flex().gap(8).items_center()
+          .when(!sel.isNew, (el) => el
+            .child(button("p-delete", this.confirming ? "Click again to delete" : "Delete", "danger", (_e, cx) => this.remove(cx)))
+            .child(button("p-dup", "Duplicate", "plain", (_e, cx) => this.copy(sel.scope, `${sel.name}-copy`, cx)))
+            .when(sel.scope === "global" && Boolean(def) && !own.some((o) => o.name === sel.name), (el) => el
+              .child(button("p-custom", `Change for ${def.name}`, "plain", (_e, cx) => this.copy("workspace", sel.name, cx)))))
+          .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(file ? tilde(file) : ""))
+          .when(!sel.isNew, (el) => el.child(button("p-start", "Start", "plain", () => this.start(), !dirty)))
+          .child(button("p-save", sel.isNew ? "Create" : "Save", "primary", (_e, cx) => this.save(cx), sel.isNew || dirty))));
   }
 }

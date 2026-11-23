@@ -59,6 +59,32 @@ function lines(text) {
 
 const time = (v) => { const t = typeof v === "number" ? v : Date.parse(v ?? ""); return Number.isFinite(t) ? t : null; };
 
+// What an agent said last, as History shows it: `said` (plain text, the outcome line
+// taken off) and `outcome`, from the line Herdr asks every automation run to end with
+// ("Outcome: done", "Outcome: failed" or "Outcome: nothing to do"; ws-switcher's
+// automations.js: OUTCOME_ASK). Only the last line counts, and markdown around it.
+const OUTCOME = /^[\s>*_`#-]*outcome[*_`]*\s*:\s*[*_`]*\s*(done|failed|nothing to do)\b/i;
+export const OUTCOMES = ["done", "failed", "nothing to do"];
+export function reportOf(text) {
+  const rows = String(text ?? "").replace(/\r/g, "").split("\n");
+  let i = rows.length - 1;
+  while (i >= 0 && !rows[i].trim()) i--;
+  const m = i >= 0 ? OUTCOME.exec(rows[i]) : null;
+  const said = plainText((m ? rows.slice(0, i) : rows).join("\n")).trim();
+  return { said: said || null, outcome: m ? m[1].toLowerCase() : null };
+}
+
+// Markdown as plain text: no ** or __ or `, links as their words, headings without
+// their #, bullets as •.
+export function plainText(md) {
+  return String(md ?? "").split("\n").map((l) => l
+    .replace(/^(\s*)#{1,6}\s+/, "$1")
+    .replace(/^(\s*)[-*+]\s+/, "$1• ")
+    .replace(/\*\*(.+?)\*\*/g, "$1").replace(/__(.+?)__/g, "$1")
+    .replace(/`([^`\n]+)`/g, "$1").replace(/\[([^\]\n]+)\]\([^)\s]+\)/g, "$1")
+    .replace(/\s+$/, "")).join("\n").replace(/\n{3,}/g, "\n\n");
+}
+
 // The start of a Claude Code transcript: where it ran, how it was started, and the
 // first thing asked. `entry` is Claude's own word: "cli" (a terminal), "sdk-cli"
 // (headless, `claude -p`), "claude-desktop" (the desktop app).
@@ -92,31 +118,49 @@ function field(text, name) {
 // The end of a Claude Code transcript: its title (one you gave it, else Claude's
 // own), the last thing asked, the model that answered last, and when.
 export function claudeTail(text) {
-  const out = { title: null, last: null, model: null, ended: null, context: null, replied: null };
+  const out = { title: null, last: null, model: null, ended: null, context: null, replied: null, said: null, outcome: null };
   let custom = null, ai = null, summary = null;
+  // What it said last: the text of its last message, while nothing came after it (a
+  // tool call or a prompt). One message's blocks are lines of their own, with its id.
+  let said = null, saidId = null;
   for (const o of lines(text)) {
     if (o.type === "custom-title" && o.customTitle) custom = o.customTitle;
     else if (o.type === "ai-title" && o.aiTitle) ai = o.aiTitle;
     else if (o.type === "summary" && o.summary) summary = o.summary;
     else if (o.type === "last-prompt" && o.lastPrompt) out.last = promptText(o.lastPrompt) ?? out.last;
-    else if (o.type === "assistant" && o.message?.model && o.message.model !== "<synthetic>") {
-      out.model = o.message.model;
-      const u = o.message.usage;
-      const used = u ? (Number(u.input_tokens) || 0) + (Number(u.cache_creation_input_tokens) || 0) + (Number(u.cache_read_input_tokens) || 0) : 0;
-      if (used > 0) { out.context = used; out.replied = time(o.timestamp); }
+    else if (o.type === "assistant") {
+      const id = o.message?.id ?? null;
+      for (const c of Array.isArray(o.message?.content) ? o.message.content : []) {
+        if (c?.type === "tool_use") { said = null; saidId = null; }
+        else if (c?.type === "text" && typeof c.text === "string" && c.text.trim()) {
+          said = said !== null && id && id === saidId ? `${said}\n\n${c.text}` : c.text;
+          saidId = id;
+        }
+      }
+      if (o.message?.model && o.message.model !== "<synthetic>") {
+        out.model = o.message.model;
+        const u = o.message.usage;
+        const used = u ? (Number(u.input_tokens) || 0) + (Number(u.cache_creation_input_tokens) || 0) + (Number(u.cache_read_input_tokens) || 0) : 0;
+        if (used > 0) { out.context = used; out.replied = time(o.timestamp); }
+      }
     }
-    else if (o.type === "user" && !o.isMeta && !o.toolUseResult) out.last = promptText(o.message?.content) ?? out.last;
+    else if (o.type === "user" && !o.isMeta && !o.toolUseResult) {
+      const p = promptText(o.message?.content);
+      if (p) { out.last = p; said = null; saidId = null; }
+    }
     const t = time(o.timestamp);
     if (t) out.ended = t;
   }
   out.title = custom ?? ai ?? summary;
+  Object.assign(out, reportOf(said));
   return out;
 }
 
 // A pi session file: its first line names the session and its folder; messages
 // follow, each `{ type: "message", message: { role, content } }`.
 export function piFacts(head, tail = "") {
-  const out = { id: null, cwd: null, first: null, last: null, model: null, started: null, ended: null, name: null, context: null, replied: null };
+  const out = { id: null, cwd: null, first: null, last: null, model: null, started: null, ended: null, name: null, context: null, replied: null, said: null, outcome: null };
+  let said = null; // its last message's text, while no tool call or prompt came after
   const read = (o, isHead) => {
     if (o.type === "session") { out.id ??= o.id ?? null; out.cwd ??= o.cwd ?? null; out.started ??= time(o.timestamp); }
     else if (o.type === "model_change" && o.modelId) out.model = o.modelId;
@@ -124,10 +168,14 @@ export function piFacts(head, tail = "") {
     else if (o.type === "message" && o.message?.role === "user") {
       const p = promptText(o.message.content);
       if (p && isHead && !out.first) out.first = p;
-      if (p) out.last = p;
-    } else if (o.type === "message" && o.message?.role === "assistant" && o.message.usage) {
+      if (p) { out.last = p; said = null; }
+    } else if (o.type === "message" && o.message?.role === "assistant") {
+      const parts = Array.isArray(o.message.content) ? o.message.content : [];
+      const text = parts.filter((x) => x?.type === "text" && typeof x.text === "string").map((x) => x.text).join("\n\n").trim();
+      if (parts.some((x) => x?.type === "toolCall")) said = null;
+      else if (text) said = text;
       const u = o.message.usage;
-      const used = (Number(u.input) || 0) + (Number(u.cacheRead) || 0) + (Number(u.cacheWrite) || 0);
+      const used = u ? (Number(u.input) || 0) + (Number(u.cacheRead) || 0) + (Number(u.cacheWrite) || 0) : 0;
       if (used > 0) { out.context = used; out.replied = time(o.timestamp); }
     }
     const t = time(o.timestamp);
@@ -135,6 +183,7 @@ export function piFacts(head, tail = "") {
   };
   for (const o of lines(head)) read(o, true);
   for (const o of lines(tail)) read(o, false);
+  Object.assign(out, reportOf(said));
   return out;
 }
 
@@ -186,22 +235,27 @@ export function grokFacts(summary, first = "") {
 // first and last thing asked, the model that answered last, and when it started. A
 // prompt is the text inside <USER_REQUEST>; what hc types in is left out, as for the others.
 export function agyFacts(head, tail = "") {
-  const out = { first: null, last: null, model: null, started: null, context: null, replied: null };
+  const out = { first: null, last: null, model: null, started: null, context: null, replied: null, said: null, outcome: null };
+  let said = null; // its last response's words, while no tool call or prompt came after
   const read = (o, isHead) => {
     if (isHead && !out.started) out.started = time(o.created_at);
     if (typeof o.model === "string" && o.model) out.model = o.model;
     if (o.type === "PLANNER_RESPONSE") {
       const used = (Number(o.input_tokens) || 0) + (Number(o.cache_read_tokens) || 0);
       if (used > 0) { out.context = used; out.replied = time(o.created_at); }
+      const calls = o.tool_calls;
+      if (Array.isArray(calls) ? calls.length : calls && calls !== "[]") said = null;
+      else if (typeof o.content === "string" && o.content.trim()) said = o.content;
     }
     if (o.type !== "USER_INPUT" || o.source !== "USER_EXPLICIT") return;
     const m = /<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/.exec(String(o.content ?? ""));
     const p = m ? promptText(m[1]) : null;
     if (p && isHead && !out.first) out.first = p;
-    if (p) out.last = p;
+    if (p) { out.last = p; said = null; }
   };
   for (const o of lines(head)) read(o, true);
   for (const o of lines(tail)) read(o, false);
+  Object.assign(out, reportOf(said));
   return out;
 }
 
@@ -419,10 +473,14 @@ export function compactionsTip(n, last) {
 // A run's state in words, and its color by the Automations screen's rule (working:
 // the working color; needs you, failures, misses: the blocked one; the rest dim).
 // `quiet`: an entry for a run its check (or a miss, or a skip) kept from starting.
-// now: { status, live, open }: its agent's status word (null when nothing reports),
-// whether its terminal is alive, whether its tab is still there.
+// now: { status, live, open, found, said, outcome }: its agent's status word (null when
+// nothing reports), whether its terminal is alive, whether its tab is still there,
+// whether its conversation was found, and what it said last (reportOf). Once it's
+// ended, its outcome line says how it went; without one, a report says done. A run
+// asked for that line (`reports`) that ended its turn without one is waiting on an
+// answer, while its tab is open.
 export function runState(r, now = {}) {
-  const { status = null, live = false, open = false } = now;
+  const { status = null, live = false, open = false, found = false, said = null, outcome = null } = now;
   const quiet = (word, tone = "dim") => ({ word, tone, quiet: true, open: false });
   const times = r.times > 1 ? ` ×${r.times}` : "";
   switch (r.status) {
@@ -434,17 +492,30 @@ export function runState(r, now = {}) {
     case "skipped": return quiet("skipped");
     default: return quiet(String(r.status ?? ""));
   }
+  const state = (word, tone, isOpen) => ({ word, tone, quiet: false, open: isOpen });
+  const ended = outcome === "failed" ? ["failed", "blocked"] : outcome === "nothing to do" ? ["nothing to do", "dim"] : outcome || said ? ["done", "muted"] : null;
   const there = open && live && !r.closed;
-  if (r.closed) return { word: "finished, closed", tone: "dim", quiet: false, open: false };
-  if (!there) return { word: "closed", tone: "dim", quiet: false, open: false };
-  if (status === "working") return { word: "running", tone: "working", quiet: false, open: true };
-  if (status === "blocked") return { word: "needs you", tone: "blocked", quiet: false, open: true };
-  if (r.stuck) return { word: "stuck", tone: "blocked", quiet: false, open: true };
-  if (status === "done" || status === "idle") return { word: "finished", tone: "muted", quiet: false, open: true };
-  return { word: "open", tone: "muted", quiet: false, open: true }; // a script, or a shell
+  if (there) {
+    if (status === "working") return state("running", "working", true);
+    if (status === "blocked") return state("needs you", "blocked", true);
+    if (r.stuck) return state("stuck", "blocked", true);
+    if (status === "done" || status === "idle") {
+      if (r.reports && said && !outcome) return state("needs you", "blocked", true);
+      return ended ? state(...ended, true) : state("finished", "muted", true);
+    }
+    return state("open", "muted", true); // a script, or a shell
+  }
+  if (ended) return state(...ended, false);
+  if (found && runProvider(r) && READS.has(runProvider(r))) return state("no report", "dim", false);
+  return state(r.closed ? "finished" : "closed", "dim", false);
 }
 
-// Every word of the search is in the run's name, why it ran, its note, its state or its workspace.
+// The agents whose last words History reads (scan.js): a run of another ends as
+// "finished" or "closed", never "no report".
+export const READS = new Set(["claude", "pi", "antigravity"]);
+
+// Every word of the search is in the run's name, why it ran, its note, its state, its
+// workspace or what it said last (`extra`).
 export function runMatches(r, query, extra = "") {
   const words = String(query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
   if (!words.length) return true;
@@ -464,7 +535,7 @@ export function runProvider(r) {
 
 // Each run's conversation among History's rows: run id -> session. The one the runner
 // noted (`conv`); a noted one that isn't among the rows (read before it was saved) still
-// resumes, plainly. For the others, a guess: each conversation of that agent in the run's
+// resumes, plainly (`stub`: nothing of it was read). For the others, a guess: each conversation of that agent in the run's
 // folder that no run noted goes to the run that started last before it (a minute's slack),
 // if it started before that run closed. Two runs in one folder at once can be told apart
 // only by their notes.
@@ -475,7 +546,7 @@ export function runSessions(runs, sessions) {
   for (const r of mine) {
     if (!r.conv?.id || !PROVIDERS[r.conv.provider]) continue;
     const s = sessions.find((x) => x.provider === r.conv.provider && x.id === r.conv.id)
-      ?? (r.folder ? { provider: r.conv.provider, id: r.conv.id, cwd: r.folder, title: "", first: "", last: "", started: r.at, updated: r.closed ?? r.at } : null);
+      ?? (r.folder ? { provider: r.conv.provider, id: r.conv.id, cwd: r.folder, title: "", first: "", last: "", started: r.at, updated: r.closed ?? r.at, stub: true } : null);
     if (s) out.set(r.id, s);
   }
   const guessing = mine.filter((r) => !r.conv?.id && r.folder && runProvider(r)).sort((a, b) => b.at - a.at);
@@ -523,6 +594,34 @@ export function span(from, to) {
   if (!a && !b) return "";
   if (!a || !b) { const d = a ?? b; return `${day(d)} ${hour(d)}`; }
   return day(a) === day(b) && a.getFullYear() === b.getFullYear() ? `${day(a)} ${hour(a)} to ${hour(b)}` : `${day(a)} ${hour(a)} to ${day(b)} ${hour(b)}`;
+}
+
+// The time of day, "21:15".
+export function clock(ms) {
+  if (!ms) return "";
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+// How long something took, in words: "40 s", "1 min 33 s", "25 min", "2 h 5 min".
+export function took(ms) {
+  const s = Math.max(0, Math.round((Number(ms) || 0) / 1000));
+  if (s < 60) return `${s} s`;
+  const m = Math.floor(s / 60);
+  if (m < 10) return s % 60 ? `${m} min ${s % 60} s` : `${m} min`;
+  if (m < 60) return `${Math.round(s / 60)} min`;
+  return m % 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${Math.floor(m / 60)} h`;
+}
+
+// When a run ran, for its opened row: "Yesterday 21:15, for 1 min 33 s", "Today 10:41,
+// running for 3 min", or the start alone. Its end: when its conversation was last
+// written (`updated`, when it's its own: `found`), else when the runner closed its tab.
+export function ranText(r, st, s, now = Date.now()) {
+  const began = `${dayLabel(r.at, now)} ${clock(r.at)}`;
+  if (r.status !== "started") return began;
+  if (st.word === "running") return `${began}, running for ${took(now - r.at)}`;
+  const end = s && !s.stub && s.updated > r.at ? s.updated : r.closed;
+  return end && end > r.at ? `${began}, for ${took(end - r.at)}` : began;
 }
 
 // A model's id, short enough for a row: without the vendor prefix or a date stamp.

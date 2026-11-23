@@ -8,6 +8,8 @@
 //   node scan.js --limit 500     at most this many whose folder is still there (default 1200)
 //   node scan.js --headless      also runs nobody typed into (claude -p)
 //   node scan.js --in <folder>   only what ran in that folder or below (repeat it for more)
+//   node scan.js --said <agent> <file>   what that conversation's agent said last, whole:
+//                                { said, outcome } (History opens a run's report with it)
 //
 // It only reads. Where it looks, each agent's own store:
 //   Claude Code  ~/.claude/projects/<folder>/<session>.jsonl
@@ -29,6 +31,9 @@
 // Its compactions (Claude, Pi, Antigravity) are looked for in the whole file, once:
 // after that only what a transcript gained is read, since they only grow. In the same
 // pass, a Claude transcript's `hc run` calls: the helpers that conversation started.
+// What a Claude, Pi or Antigravity agent said last (when it ended its turn with words)
+// comes from the same last piece: a row has its start (`said`, `saidMore` when there's
+// more) and its outcome line (`outcome`, histfacts.js: reportOf).
 //
 // Which conversation started which (treefacts.js: link()): the launcher's ledger
 // ~/.herdr/resume/parents (herdr-ws-resume writes it), those `hc run` calls matched to
@@ -76,7 +81,7 @@ const stat = (file) => { try { return fs.statSync(file); } catch { return null; 
 // What a file said the last time it was read, while it hasn't changed since.
 const cacheFile = path.join(HOME, ".herdr", "cache", "history", "index.json");
 let cache = {};
-try { const c = JSON.parse(fs.readFileSync(cacheFile, "utf8")); if (c.v === 5) cache = c.files ?? {}; } catch { cache = {}; }
+try { const c = JSON.parse(fs.readFileSync(cacheFile, "utf8")); if (c.v === 7) cache = c.files ?? {}; } catch { cache = {}; }
 const kept = {};
 let dirty = false;
 // read(old) gets what was kept before; a `_k` it returns (compactions()) is kept beside the row.
@@ -139,6 +144,13 @@ function compactions(file, st, provider, old) {
 }
 // What a row says about them: how many, the newest KEEP, and what's in the context at the end.
 const compactFields = (k, tail) => ({ compactions: k.n, compacted: k.list, context: contextAtEnd(tail, k.list[k.list.length - 1]), _k: k });
+// What a row says of the agent's last words (facts from claudeTail, piFacts, agyFacts):
+// their start, and whether there's more to read with --said.
+const SAID = 240;
+const saidFields = (f) => ({
+  ...(f?.said ? { said: clean(f.said, SAID), ...(f.said.length > SAID || f.said.includes("\n") ? { saidMore: true } : {}) } : {}),
+  ...(f?.outcome ? { outcome: f.outcome } : {}),
+});
 
 // --- Claude Code ---
 function claudeRow(file, st, id, old) {
@@ -155,7 +167,7 @@ function claudeRow(file, st, id, old) {
       provider: "claude", id, file, cwd: head.cwd, title: clean(tail.title, 120), first: clean(head.first, 240), firstEnd: promptEnd(head.first),
       last: samePrompt(head.first, tail.last) ? "" : clean(tail.last, 240),
       model: tail.model ?? "", branch: head.branch ?? "", started: head.started ?? st.birthtimeMs, updated: tail.ended ?? st.mtimeMs,
-      via: head.entry === "claude-desktop" ? "app" : "", headless: head.entry === "sdk-cli",
+      via: head.entry === "claude-desktop" ? "app" : "", headless: head.entry === "sdk-cli", ...saidFields(tail),
       ...compactFields(compactions(file, st, "claude", old), tail),
     };
   } finally { fs.closeSync(fd); }
@@ -214,7 +226,7 @@ function piRow(file, st, old) {
     return {
       provider: "pi", id, file, cwd: facts.cwd, title: clean(facts.name, 120), first: clean(facts.first, 240), firstEnd: promptEnd(facts.first),
       last: samePrompt(facts.first, facts.last) ? "" : clean(facts.last, 240), model: facts.model ?? "", branch: "",
-      started: facts.started ?? st.birthtimeMs, updated: facts.ended ?? st.mtimeMs, via: "",
+      started: facts.started ?? st.birthtimeMs, updated: facts.ended ?? st.mtimeMs, via: "", ...saidFields(facts),
       ...compactFields(compactions(file, st, "pi", old), facts),
     };
   } finally { fs.closeSync(fd); }
@@ -358,10 +370,10 @@ async function scanAntigravity(out) {
       const fd = fs.openSync(log, "r");
       let f;
       try { f = agyFacts(piece(fd, 0, Math.min(HEAD, st.size)), st.size > HEAD ? piece(fd, Math.max(0, st.size - TAIL), TAIL) : ""); } finally { fs.closeSync(fd); }
-      return { ...f, ...compactFields(compactions(log, st, "antigravity", old), f) };
+      return { ...f, said: f.said ? f.said.slice(0, SAID + 1) + (f.said.includes("\n") ? "\n" : "") : null, ...compactFields(compactions(log, st, "antigravity", old), f) };
     }) : null;
     const row = agyRow(r, facts ?? {}, cwd);
-    if (row && facts) Object.assign(row, { compactions: facts.compactions, compacted: facts.compacted, context: facts.context, firstEnd: promptEnd(facts.first) });
+    if (row && facts) Object.assign(row, { compactions: facts.compactions, compacted: facts.compacted, context: facts.context, firstEnd: promptEnd(facts.first), ...saidFields(facts) });
     if (row && st) row.file = log;
     if (row && (!row.headless || flag("--headless"))) out.push(row);
   }
@@ -389,6 +401,21 @@ function startNotes() {
     }
   } catch { /* nothing noted yet */ }
   return map;
+}
+
+// --said <agent> <file>: that conversation's last words, whole, and nothing else.
+const SAID_TAIL = 1 << 20;
+if (flag("--said")) {
+  const i = args.indexOf("--said"), agent = args[i + 1], file = args[i + 2];
+  const parse = { claude: (t) => claudeTail(t), pi: (t) => piFacts("", t), antigravity: (t) => agyFacts("", t) }[agent];
+  let said = null, outcome = null;
+  const st = parse && file ? stat(file) : null;
+  if (st) {
+    const fd = fs.openSync(file, "r");
+    try { ({ said, outcome } = parse(piece(fd, Math.max(0, st.size - SAID_TAIL), Math.min(SAID_TAIL, st.size)))); } finally { fs.closeSync(fd); }
+  }
+  process.stdout.write(JSON.stringify({ said: said ? said.slice(0, 20000) : null, outcome }));
+  process.exit(0);
 }
 
 const sessions = [];
@@ -443,7 +470,7 @@ const rows = [...picked.values()].sort((a, b) => b.updated - a.updated).map((s) 
 if (dirty || Object.keys(kept).length !== Object.keys(cache).length) {
   try {
     fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
-    fs.writeFileSync(`${cacheFile}.${process.pid}.tmp`, JSON.stringify({ v: 5, files: kept }));
+    fs.writeFileSync(`${cacheFile}.${process.pid}.tmp`, JSON.stringify({ v: 7, files: kept }));
     fs.renameSync(`${cacheFile}.${process.pid}.tmp`, cacheFile);
   } catch { /* the next read parses them again */ }
 }

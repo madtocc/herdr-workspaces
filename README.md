@@ -122,9 +122,10 @@ the workspace: a pill in the tab bar of each of its spaces.
 - **Compactions**: a Claude Code, Pi or Antigravity conversation shows how many
   times it was compacted; opened, when each one was, how, how big the context
   was before and after, and what was in it at the end.
-- **Automations**, the header's other side: each automation run with its state
-  in words (running, needs you, finished, closed, quiet, missed), Go to while
-  its tab is open and Resume once it's closed.
+- **Automations**, the header's other side: each automation run with what its
+  agent said at the end and how it went (running, needs you, done, failed,
+  nothing to do), the whole report a click away, Go to while its tab is open
+  and Resume once it's closed.
 - It only reads what the agents already keep; nothing is copied or changed.
   It needs Node 20.6 or newer.
 

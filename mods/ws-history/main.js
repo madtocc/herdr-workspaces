@@ -25,15 +25,20 @@
 //
 // Conversations | Automations in the header: the second lists the workspace's automation
 // runs (shared "workspaces.automation.runs", published by the switcher's runner), newest
-// first, with their state in words, Go to while a run's tab is open, Resume once it's
-// closed (its conversation as the runner noted it, histfacts.js: runSessions) and a way
-// into the automation. Runs a check kept from starting are hidden unless asked for.
+// first, under day headings that count what needs a look ("Yesterday · 1 failed"). Each
+// run's grey line is the start of what its agent said last (its report; scan.js reads it
+// for Claude, Pi and Antigravity), its state is a word (running, needs you, done, failed,
+// nothing to do: the outcome line the runner asks every agent to end with, histfacts.js:
+// runState), and its one action is Go to while its tab is open, Resume once it's closed
+// (its conversation as the runner noted it, histfacts.js: runSessions). A click opens a
+// run: the whole report (scan.js --said), when it ran and for how long, and a way into
+// the automation. Runs a check kept from starting are hidden unless asked for.
 //
 // A Claude, Pi or Antigravity conversation that was compacted shows the compacted icon
 // and how often on its row; opened, it lists when (newest first), how, and how big the
 // context was before and after, and what's in the context at the end. Neither shows while
-// Agent numbers is off in Settings > Features (shared "workspaces.settings"), and a run
-// has no way into the automation while Automations is off.
+// Agent numbers is off in Settings > Features (shared "workspaces.settings"), and an
+// opened run has no way into the automation while Automations is off.
 //
 // Who started whom (treefacts.js): a conversation another agent started (an hc helper)
 // or an agent's own sub-agent isn't listed on its own: under its parent's row a quiet line
@@ -56,7 +61,7 @@ import {
   spaces, panes, terminals, run, theme, shared, setShared, props, openOverlay, closeOverlay,
   home, appHome, exec, notify, checking, knownAgents, readTextFile,
 } from "herdr";
-import { PROVIDERS, inWorkspace, whereOf, liveOf, keyOf, titleOf, matches, dayLabel, ago, span, modelLabel, resumeArgv, presetOf, tokens, compactionText, compactionsTip, runState, runMatches, runSessions } from "./histfacts.js";
+import { PROVIDERS, inWorkspace, whereOf, liveOf, keyOf, titleOf, matches, dayLabel, ago, span, modelLabel, resumeArgv, presetOf, tokens, compactionText, compactionsTip, runState, runMatches, runSessions, clock, ranText, READS } from "./histfacts.js";
 import { forest, treeRows, chipText, kidNames, indent, historyMenu, wipeCheck, holdState, liveUnder, helpersOf } from "./treefacts.js";
 import { menuHeight, wipeTargets } from "./menufacts.js";
 
@@ -67,6 +72,9 @@ const KNOWN = "new-menu.agents"; // the agents ws-new-menu last found installed:
 // so it shows as open there (and isn't resumed twice) whichever agent it is.
 const RESUMED = "workspaces.history.resumed";
 const PAGE = 120; // rows drawn at first, and more with each "Show more"
+const REPORT_LINES = 60; // lines of a run's report shown when it's opened
+// What a day's heading counts among its runs, and in which color (null: the heading's own).
+const LOOK = [["needs you", "blocked"], ["failed", "blocked"], ["failed to start", "blocked"], ["stuck", "blocked"], ["running", null]];
 const SPANS = [90, 365, 3650]; // days back: the first read, then each "Look further back"
 const STALE = 20e3; // ms after which the screen, shown again, reads again
 // A pane beside the terminals narrower than this keeps search in its slim row and folds the
@@ -256,7 +264,8 @@ export default class History extends View {
     this.gone = false; // also show the ones whose folder is gone
     this.span = 0; // index into SPANS
     this.max = PAGE;
-    this.open = null; // the row whose details show
+    this.open = null; // the row whose details show (a run's: "run:<id>")
+    this.reports = new Map(); // runs' whole reports, by conversation file: { at, said, outcome } or "reading"
     this.starting = null; // the row being resumed, until Herdr says which terminal it made
     this.rows = [];
     this.notes = [];
@@ -384,20 +393,46 @@ export default class History extends View {
 
   // The Automations view: the runs of the workspace shown (or of every one), each with
   // its state now (`st`, histfacts.js: runState).
+  // `s`: its conversation (runSessions), with what its agent said last.
   runsView() {
-    const all = (shared("workspaces.automation.runs") ?? []).filter((r) => this.scope === "all" || r.ws === this.workspace);
+    const runs = shared("workspaces.automation.runs") ?? [];
+    const all = runs.filter((r) => this.scope === "all" || r.ws === this.workspace);
+    const sessions = runSessions(runs, this.rows.filter((s) => !s.readonly));
     const tabs = new Set(spaces().flatMap((x) => (x.tabs ?? []).map((c) => c.id)));
     const terms = new Map(terminals().filter((x) => x.state === "live").map((x) => [String(x.address), x]));
     const rows = all.map((r) => {
       const term = r.terminal ? terms.get(r.terminal) : null;
       // An address can come back for another terminal later: Herdr's tab label tells them apart.
       const mine = Boolean(term) && (!term.labels?.["herdr.tab"] || term.labels["herdr.tab"] === r.tab);
-      return { r, st: runState(r, { status: mine ? term.status ?? null : null, live: mine, open: Boolean(r.tab && tabs.has(r.tab)) }) };
+      const s = sessions.get(r.id) ?? null;
+      const found = Boolean(s) && !s.stub;
+      return { r, s, st: runState(r, { status: mine ? term.status ?? null : null, live: mine, open: Boolean(r.tab && tabs.has(r.tab)), found, said: found ? s.said ?? null : null, outcome: found ? s.outcome ?? null : null }) };
     });
     const q = this.runQuery.value();
-    const searched = rows.filter(({ r, st }) => runMatches(r, q, `${defOf(r.ws)?.name ?? ""} ${st.word}`));
+    const searched = rows.filter(({ r, s, st }) => runMatches(r, q, `${defOf(r.ws)?.name ?? ""} ${st.word} ${s?.said ?? ""}`));
     const shown = searched.filter(({ st }) => !this.hideQuiet || !st.quiet);
-    return { all, searched, shown, quiet: searched.length - shown.length, sessions: runSessions(shared("workspaces.automation.runs"), this.rows.filter((s) => !s.readonly)) };
+    return { all, searched, shown, quiet: searched.length - shown.length, sessions };
+  }
+
+  // A click on a run opens it, and reads its whole report when the row has only its start.
+  toggleRun(r, s, cx) {
+    const id = `run:${r.id}`;
+    this.open = this.open === id ? null : id;
+    if (this.open && s && !s.stub && s.saidMore && s.file && READS.has(s.provider)) this.readReport(s, cx);
+    cx.notify();
+  }
+
+  readReport(s, cx) {
+    const had = this.reports.get(s.file);
+    if (had === "reading" || (had && had.at === s.updated && !had.failed)) return;
+    this.reports.set(s.file, "reading");
+    cx.spawn(async (cx) => {
+      const r = await node([`${appHome()}/mods/ws-history/scan.js`, "--said", s.provider, s.file]);
+      let data = null;
+      if (r.code === 0) { try { data = JSON.parse(r.stdout); } catch { data = null; } }
+      this.reports.set(s.file, data ? { at: s.updated, said: data.said ?? null, outcome: data.outcome ?? null } : { at: s.updated, said: null, failed: true });
+      cx.notify();
+    });
   }
 
   // A run's own action: to its tab while it's open, else its conversation (Go to where
@@ -537,7 +572,7 @@ export default class History extends View {
       .on_click((_e, cx) => { if (this.mode === mode) return; this.mode = mode; this.max = PAGE; this.open = null; this.input().focus(); cx.notify(); }).child(text);
     const modes = h_flex().h(26).p(2).gap(2).flex_none().items_center().rounded(8).bg(t.raised)
       .child(side("mode-conv", "Conversations", !autos, "conversations", "Your agents' conversations, with Resume"))
-      .child(side("mode-runs", "Automations", autos, "automations", "What the automations ran: each run's state, Go to while its tab is open, Resume once it's closed"));
+      .child(side("mode-runs", "Automations", autos, "automations", "What the automations ran and what each one said at the end"));
     const counted = autos ? plural(rv.all.length, "run") : this.loaded ? `${plural(here.length, "conversation")}${since}` : "Reading…";
     // Which conversations (the workspace's or every one), and Refresh: in the header, or in a
     // narrow pane's filter strip.
@@ -581,15 +616,30 @@ export default class History extends View {
           .when(narrowPane, (el) => el.child(refresh())))
         .when(!narrowPane, (el) => el.child(searchBox(this.runQuery)));
       const live = liveOf(this.rows.filter((s) => !s.readonly), liveTerms(), shared(RESUMED) ?? {});
+      // Each day's heading counts what needs a look, in the list as it's filtered.
+      const tally = new Map();
+      for (const { r, st } of rv.shown) {
+        const m = tally.get(dayLabel(r.at, now)) ?? {};
+        m[st.word] = (m[st.word] ?? 0) + 1;
+        tally.set(dayLabel(r.at, now), m);
+      }
+      const heading = (label) => {
+        const m = tally.get(label) ?? {};
+        const parts = LOOK.filter(([w]) => m[w]);
+        return h_flex().h(30).mt(4).px(8).gap(6).flex_none().items_end().pb(5).text_size(11.5).text_color(t.dim).child(label)
+          .when(parts.length > 0, (el) => el.child(div().child("·"))
+            .child(h_flex().gap(4).children(parts.map(([w, tone], i) => div().text_color(tone ? t[tone] : t.dim).child(`${m[w]} ${w}${i < parts.length - 1 ? "," : ""}`)))));
+      };
       const kids = [];
       let day = null;
-      for (const { r, st } of rv.shown.slice(0, this.max)) {
+      for (const { r, s: conv, st } of rv.shown.slice(0, this.max)) {
         const label = dayLabel(r.at, now);
-        if (label !== day) { day = label; kids.push(div().h(30).mt(4).px(8).flex().flex_none().items_end().pb(5).text_size(11.5).text_color(t.dim).child(label)); }
+        if (label !== day) { day = label; kids.push(heading(label)); }
         // Its conversation's helpers and sub-agents, as in the Conversations list.
-        const s = st.open || st.quiet ? null : rv.sessions.get(r.id) ?? null;
+        const s = st.open || st.quiet ? null : conv;
         const under = s ? f.kids.get(keyOf(s)) ?? [] : [];
-        kids.push(this.runRow(r, st, live, rv.sessions, t, now, everywhere, tight, under));
+        kids.push(this.item(this.runRow(r, st, conv, live, t, now, everywhere, tight, under), t,
+          this.open === `run:${r.id}` ? this.runDetails(r, st, conv, t, now) : null));
         if (under.length && this.unfolded.has(keyOf(s))) {
           for (const x of treeRows({ ...f, roots: [s] }, { unfolded: this.unfolded }).slice(1)) {
             const at = x.s.readonly ? null : live.get(keyOf(x.s)) ?? null;
@@ -749,41 +799,78 @@ export default class History extends View {
     return `started by ${s.parent.split("/").pop().slice(0, 8)}`;
   }
 
-  // One automation run: its name, why it ran (and what came of it), its state, when,
-  // and what can be done: Go to its tab, Resume its conversation, open the automation.
-  // A run that never started is drawn quieter.
-  runRow(r, st, live, sessions, t, now, everywhere, tight, under = []) {
-    const s = st.open || st.quiet ? null : sessions.get(r.id) ?? null;
-    const at = s ? live.get(keyOf(s)) ?? null : null;
+  // One automation run: its name (and workspace, everywhere), the start of what its agent
+  // said last (else why it ran), its state, when, and one action: Go to its tab while it's
+  // open, else Go to or Resume its conversation. A click opens it (runDetails()). A run
+  // that never started is drawn quieter. `s`: its conversation (runsView()).
+  runRow(r, st, s, live, t, now, everywhere, tight, under = []) {
+    const own = st.open || st.quiet ? null : s; // the conversation Go to and Resume act on
+    const at = own ? live.get(keyOf(own)) ?? null : null;
+    const opened = this.open === `run:${r.id}`;
     const wsName = everywhere ? defOf(r.ws)?.name ?? r.ws : null;
-    const sub = [wsName, r.note ? `${r.why}. ${r.note}` : r.why].filter(Boolean).join("  ·  ");
+    const said = s && !s.stub ? s.said ?? "" : "";
+    const why = r.note ? `${r.why}. ${r.note}` : r.why;
+    // Opened, the report shows whole below: the line says why it ran.
+    const sub = opened || st.quiet ? why : st.word === "running" ? `Running since ${clock(r.at)}  ·  ${r.why}` : said || why;
     const act = (id, text, action, tip, solid) => div().id(id).h(24).px(9).flex().flex_none().items_center().rounded(6)
-      .text_size(11.5).cursor_pointer().tooltip(tip)
+      .text_size(11.5).cursor_pointer().tooltip(tip).on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .when(solid, (el) => el.bg(t.solid).text_color(t.solid_foreground).font_medium().hover((x) => x.opacity(0.88)))
       .when(!solid, (el) => el.border_1().border_color(t.input).text_color(t.muted).hover((x) => x.bg(t.hover).text_color(t.foreground)))
       .on_click((_e, cx) => { cx.stop_propagation(); action(cx); }).child(text);
-    const key = s ? keyOf(s) : null;
+    const key = own ? keyOf(own) : null;
     // With helpers, the line that folds them sits under its own, in its highlight.
     const folds = under.length > 0 && Boolean(key);
     const shell = (folds ? v_flex().pt(4).pb(6) : h_flex().h(st.quiet ? 38 : 46).gap(10).items_center())
-      .id(`run-${r.id}`).px(8).flex_none().rounded(7).hover((x) => x.bg(t.hover));
+      .id(`run-${r.id}`).px(8).flex_none().rounded(7).cursor_pointer()
+      .when(!opened, (el) => el.hover((x) => x.bg(t.hover)))
+      .on_click((_e, cx) => this.toggleRun(r, s, cx));
     const fill = (el) => el
       .child(svg("mods/ws-automations/automations.svg").size(st.quiet ? 13 : 15).flex_none().text_color(st.quiet ? t.dim : t.muted))
       .child(v_flex().flex_1().min_w(0).gap(2)
-        .child(div().truncate().text_color(st.quiet ? t.muted : t.foreground).text_size(st.quiet ? 12 : 13).child(r.name))
-        .child(div().truncate().text_size(11.5).text_color(t.dim).child(sub)))
+        .child(h_flex().min_w(0).gap(7).items_center()
+          .child(div().flex_none().max_w(320).truncate().text_color(st.quiet ? t.muted : t.foreground).text_size(st.quiet ? 12 : 13).child(r.name))
+          .when(Boolean(wsName), (el) => el.child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(wsName))))
+        .child(div().truncate().text_size(11.5).text_color(said && sub === said ? t.muted : t.dim).child(sub)))
       .child(div().flex_none().text_size(11.5).text_color(t[st.tone] ?? t.dim).child(st.word))
       .child(div().w(30).flex_none().text_size(11.5).text_color(t.dim).child(ago(r.at, now)))
-      .child(h_flex().w(tight ? 70 : 150).flex_none().gap(6).justify_end()
-        .when(st.open, (el) => el.child(act(`rgo-${r.id}`, "Go to", () => this.goToRun(r), "Show its tab")))
+      .child(h_flex().w(70).flex_none().gap(6).justify_end()
+        .when(st.open, (el) => el.child(act(`rgo-${r.id}`, "Go to", () => this.goToRun(r), "Show its tab", st.word === "needs you")))
         .when(!st.open && Boolean(at), (el) => el.child(act(`rgo-${r.id}`, "Go to", () => this.goTo(at), `Its conversation is open in ${at} now`)))
-        .when(!st.open && !at && Boolean(s) && !s.gone && this.starting === key, (el) => el.child(div().text_size(11.5).text_color(t.dim).child("Starting…")))
-        .when(!st.open && !at && Boolean(s) && !s.gone && this.starting !== key, (el) => el.child(act(`rre-${r.id}`, "Resume", (cx) => this.resume(s, cx),
-          r.conv ? "Continue its conversation in a new tab, in the folder it ran in" : "Continue the conversation that ran in its folder then, in a new tab", true)))
-        .when(!tight && featureOn("automations"), (el) => el.child(act(`rau-${r.id}`, "Automation", () => this.openAutomation(r), `Open ${r.name} in Automations`))));
+        .when(!st.open && !at && Boolean(own) && !own.gone && this.starting === key, (el) => el.child(div().text_size(11.5).text_color(t.dim).child("Starting…")))
+        .when(!st.open && !at && Boolean(own) && !own.gone && this.starting !== key, (el) => el.child(act(`rre-${r.id}`, "Resume", (cx) => this.resume(own, cx),
+          r.conv ? "Continue its conversation in a new tab, in the folder it ran in" : "Continue the conversation that ran in its folder then, in a new tab"))));
     if (!folds) return fill(shell);
     return shell.child(fill(h_flex().h(38).gap(10).items_center()))
       .child(this.foldLine(`rf-${r.id}`, key, under, this.unfolded.has(key), 25, t, "Show the conversations its run started"));
+  }
+
+  // Under an opened run, inside its highlight: what its agent said last, whole (read with
+  // scan.js --said when the row had only its start), when it ran and for how long, its
+  // check, its folder, and a way into the automation.
+  runDetails(r, st, s, t, now) {
+    const line = (label, value) => h_flex().gap(10).items_start()
+      .child(div().w(84).flex_none().text_color(t.dim).child(label))
+      .child(typeof value === "string" ? div().flex_1().min_w(0).text_color(t.muted).child(value) : value);
+    const found = Boolean(s) && !s.stub;
+    const whole = found && s.file ? this.reports.get(s.file) : null;
+    const reading = whole === "reading";
+    const said = whole && !reading && whole.said ? whole.said : found ? s.said ?? null : null;
+    const cut = found && s.saidMore && !(whole && !reading && whole.said);
+    // A report's paragraphs and list items as lines of their own, at most REPORT_LINES.
+    const paras = said ? said.split("\n") : [];
+    const report = v_flex().flex_1().min_w(0).gap(2).text_color(t.foreground)
+      .children(paras.slice(0, REPORT_LINES).map((p) => (p.trim() ? div().child(p) : div().h(5))))
+      .when(paras.length > REPORT_LINES || cut, (el) => el.child(div().text_color(t.dim).child(reading ? "Reading the rest…" : paras.length > REPORT_LINES ? "… the rest is in its conversation" : "…")));
+    const automation = div().id(`rau-${r.id}`).h(24).px(9).flex().flex_none().items_center().rounded(6).text_size(11.5).cursor_pointer()
+      .border_1().border_color(t.input).text_color(t.muted).hover((x) => x.bg(t.hover).text_color(t.foreground)).tooltip(`Open ${r.name} in Automations`)
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_click((_e, cx) => { cx.stop_propagation(); this.openAutomation(r); }).child("Open the automation");
+    return v_flex().pl(33).pr(8).pt(2).pb(12).gap(7).text_size(12)
+      .when(Boolean(said), (el) => el.child(line(st.word === "needs you" ? "It asked" : "It said", report)))
+      .child(line(r.status === "started" ? "Ran" : "When", ranText(r, st, s, now)))
+      .when(Boolean(r.cmd), (el) => el.child(line("Check", r.cmd)))
+      .when(Boolean(r.folder), (el) => el.child(line("Folder", tilde(r.folder))))
+      .when(featureOn("automations"), (el) => el.child(h_flex().gap(10).child(div().w(84).flex_none()).child(automation)));
   }
 
   // Under an opened row, inside its highlight (item()): what was asked first and last,

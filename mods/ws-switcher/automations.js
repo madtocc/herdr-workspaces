@@ -51,7 +51,8 @@
 //                                `tab`, `space`, `folder`, `expects` (its agent reports), and
 //                                once it does `up`, `app` and, when it's known, `conv`
 //                                { provider, id }: its conversation; `closed` (when) and
-//                                `closedWhy` once the runner closed its tab
+//                                `closedWhy` once the runner closed its tab; `reports` when its
+//                                agent was asked to end with an outcome line (OUTCOME_ASK)
 // Asked for (shared), by the screen's Run now (the switcher passes it on):
 //   workspaces.automation.run    { workspace, name, at }
 // … and by its Create, Save and Allow this check (read here):
@@ -81,6 +82,11 @@ const LOOK_BACK = 31 * 86400e3; // older misses, up to this far back, are report
 const GAP = 50e3;           // an automatic run doesn't start within this of the same one's last start
 const QUIET = 3000;         // files must be quiet this long before a files automation starts
 const OLD_CALL = 3600e3;    // an outside call that waited longer than this (Herdr closed) is dropped
+
+// The last line every run's agent is asked for: how it went, in a word History can read
+// (ws-history/histfacts.js: reportOf). An agent that's waiting on an answer leaves it out.
+const OUTCOME_ASK = "When you're done, end your last message with a line of its own saying how it went: `Outcome: done`, `Outcome: failed` or `Outcome: nothing to do`. Herdr shows it in History. If you need an answer from the person before you can finish, ask, and leave that line out.";
+const withOutcome = (task) => (task ? `${task}\n\n${OUTCOME_ASK}` : task);
 const KEEP_TABS = 3;        // each automation keeps its newest runs' tabs; older finished ones close
 const KEEP_RUNS = 100;
 const POLL = 120e3;         // how often GitHub automations look at their repos
@@ -887,7 +893,7 @@ export class Runner {
     const preset = this.h.presetsFor(ws).find((x) => x.name === name);
     let argv, first;
     const known = await knownAgents().catch(() => []);
-    if (preset) ({ argv, task: first } = this.h.presetLaunch(preset, task));
+    if (preset) ({ argv, task: first } = this.h.presetLaunch(preset, withOutcome(task)));
     else {
       argv = known.find((x) => x.key === name)?.run ?? [name];
       first = task;
@@ -895,10 +901,13 @@ export class Runner {
     // One of the agents Herdr knows, which report what they're doing (see stalled).
     const programs = new Set(known.flatMap((x) => [x.key, String(x.run?.[0] ?? "").split("/").pop()]));
     const expects = argv.slice(0, 8).some((w) => programs.has(String(w).split("/").pop()));
+    // An agent is asked to end with its outcome line (History reads it); a script isn't.
+    if (!preset && expects) first = withOutcome(first);
+    const reports = Boolean(task) && (Boolean(preset) || expects);
     argv = withKnobs(argv, a.model, a.effort);
     const made = this.h.open ? await this.h.open(ws, a.name, folder, argv, first) : await this.open(ws, a.name, folder, argv, first);
     if (card) await this.updateCard(card.file, { terminal: made.terminal ?? null, tab: made.tab ?? null, started: today() });
-    this.log({ ws, name: a.name, at, why, status: "started", terminal: made.terminal ?? null, tab: made.tab ?? null, space: made.space ?? null, folder, card: card?.id ?? null, ...(made.adopt ? { adopt: true } : {}), ...(expects ? { expects: true } : {}) });
+    this.log({ ws, name: a.name, at, why, status: "started", terminal: made.terminal ?? null, tab: made.tab ?? null, space: made.space ?? null, folder, card: card?.id ?? null, ...(made.adopt ? { adopt: true } : {}), ...(expects ? { expects: true } : {}), ...(reports ? { reports: true } : {}) });
     this.tidy(ws, a.name);
     notify({
       title: `${a.name} started`, body: `${why}. In ${def.name} › ${SPACE}.`, level: "info",
