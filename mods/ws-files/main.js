@@ -1,4 +1,5 @@
-// A lazy file browser for the focused pane's folder, with bounded read-only previews.
+// A file browser and editor for the focused pane's folder: a Files | Search rail beside the open
+// file, which can be edited, previewed (Markdown, SVG, images) and opened in another app.
 //
 // A copy of Herdr's `files` mod, 0.1.17 (made with mod.clone), for the Files view.
 // Changes from Herdr's, each kept small so the copy can be rebuilt on a newer Herdr:
@@ -15,20 +16,92 @@
 //    view covers the tabs and no terminal of the tab is zoomed. The folder watch is
 //    cancelled while hidden. The checks run on a 400ms timer, not from
 //    render (a task started while rendering may never run).
-// 3. The look: as a pane, no card of its own (Herdr's pane frame is the card) and no
-//    title row (the pane's header names it): one slim row with ← (a file open) and the
-//    file or the folder. Full size, a header row like the other views' (icon, "Files",
-//    the folder, the open file at the right) and no card. Herdr's card stays for any
-//    other placement.
+// 3. The look (reshaped, see 5): no card of its own as a pane or full size (Herdr's pane
+//    frame or the view's area is the card) and no title row of its own (the pane's header
+//    names it; full size, the tab bar's pill does). Herdr's card stays for any other placement.
 // 4. A focus handle of its own on its root (in every placement); full size, it takes
 //    the keyboard when it comes into view, so keys don't land in a terminal nobody sees.
+//    mod.json says "focusable", so pane.go can hand it the keyboard ("focus" command).
+// 5. Two columns at 640px wide and over: a resizable rail (Files | Search: the folder and its
+//    git branch, Show ignored, Refresh, a filter box, the tree with file-type icons, git marks
+//    and an unsaved dot; or content search through rg, else grep) beside the open file. Under
+//    640px (a pane beside a terminal, at first) one column: the rail, or the file with ←.
+// 6. Editing: text, code, Markdown and SVG are edited in place (Source, and Split's left side)
+//    with an explicit Save (⌘S / Ctrl+S) and Discard, never saved on its own. writeTextFile
+//    rejects a save when the file changed on disk: the draft stays, with Overwrite and Reload
+//    from disk. A file changed on disk reloads when nothing is unsaved, and a file deleted on
+//    disk keeps an unsaved draft (Save as new). Read-only: files cut at 400 KB (over 1 MiB
+//    Herdr can't read them whole) and files on another machine (writeTextFile is local only).
+//    An unsaved draft holds the view: it doesn't follow another terminal's folder until it's
+//    saved or discarded, and switching files asks first. The open file asked for again (tree,
+//    search match, Cmd-click, Changes) is never reloaded: only the cursor moves (filesfacts sameFile).
+//    Each load has a number, so a load overtaken by another does nothing.
+// 7. Preview: Markdown and SVG get Source | Preview | Split (Split hidden under 640px); they
+//    open in the "markdown" setting's mode (see 10), and the mode last picked per kind is kept
+//    (localStorage) until that setting changes. Images
+//    (PNG, JPG, WebP, GIF, BMP, ICO, under 10 MB, on this computer) show through a link
+//    under appHome()/data/ws-files/ (Herdr's assets follow links); links in Markdown open
+//    here (files) or in the browser (http, mailto).
+// 8. Open in <app> ▾: the app picked from the list for the file's extension (else the "default-app"
+//    setting, else the last one used, else an installed code editor for text), and a list of the code editors installed
+//    (filesfacts.js EDITOR_CATALOG) and the apps macOS offers for the file, with Reveal in
+//    Finder and Copy path. Kept in ~/.herdr/files-prefs.json and mirrored in shared
+//    "workspaces.files.prefs", so every copy follows a pick at once.
+// 9. Opened from elsewhere: shared "workspaces.files.target" { id, scope, space?, tab?, pane?,
+//    path, isDir, line, on, at }, published by the switcher's sidebar copy for the asks in
+//    "workspaces.files.open" (a Cmd-click in a terminal through link.js, Changes' Open in
+//    Files, Settings' Herdr guide): the copy it names opens that file (at its line, in Source)
+//    or folder; a path outside the folder shown pins Files to that path's folder, with ↩
+//    back to the followed one. As a dialog (props { file }, when there's no space to open
+//    it in) it shows that file and its folder, with × to close.
+// 10. Settings: the "files" block of ~/.herdr/settings.jsonc (settingsfacts.js, Settings > Files),
+//    read on start, every 10s while in sight and on coming into view, and published in shared
+//    "workspaces.settings" when it changed, so a hand edit reaches every copy in seconds. Each
+//    copy follows a change on its 400ms timer: "markdown" (what Markdown and SVG open in),
+//    "default-app" (what Open in names before it has remembered an app) and "show-ignored"
+//    (Show ignored's start; the eye still toggles it per copy, until the setting changes).
+//    A change of "markdown" or "show-ignored" starts every copy over from the new value: what a
+//    copy kept is kept with the setting it was picked under. link.js reads "cmd-click" and "catch".
 // mod.clone itself rewrote the icon paths from mods/files/ to mods/ws-files/.
-import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex, Editor, EditorState } from "gpui-base";
-import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, window, props, shared, setShared, checking, machines } from "herdr";
+import { View, div, svg, image } from "gpui-kit";
+import { v_flex, h_flex, Editor, EditorState, TextView, InputState, Input, Popup, ScrollHandle, h_resizable, resizable_panel } from "gpui-base";
+import { spaces, panes, focused, exec, readTextFile, writeTextFile, watchFolder, theme, settings, window, props, shared, setShared, checking, machines, home, appHome, closeOverlay, nextCommand, notify } from "herdr";
+import * as fs from "fs/promises";
 import { locate, toRemember } from "./follow.js";
-const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html" };
+import {
+  DISPLAY_LIMIT, API_LIMIT, IMAGE_LIMIT, EDITOR_CATALOG, SYSTEM_APP, extOf, fileKind, previewKind, languageOf, typeName, formatSize,
+  canEdit, resolveRelativeLink, splitDirBase, relFromRoot, dirName, baseName, offsetForLine, filterEntries, parseSearchOutput,
+  mergeApps, pickDefaultApp, rememberApp, parsePrefs, launchCommand, targetFor, svgSize, fitImage, sameFile,
+} from "./filesfacts.js";
+import { SETTINGS_FILE, FILES_KEYS, FILES_DEFAULTS, parseSettings, fileSetting } from "./settingsfacts.js";
 const PER_FOLDER = 500, TOTAL = 5000;
+const NARROW = 640, RAIL = 248;
+const PREFS_FILE = () => `${home()}/.herdr/files-prefs.json`;
+const ASSETS = "data/ws-files";
+const APPS_FRESH = 60000;
+const SYNTAX = (t) => ({ keyword: t.ansi5, string: t.ansi2, comment: t.dim, function: t.ansi4, type: t.ansi3, number: t.ansi1, constant: t.ansi6 });
+// A theme color with some transparency (#rrggbb only; anything else as it is).
+const fade = (c, a) => (/^#[0-9a-f]{6}$/i.test(String(c)) ? `${c}${Math.round(a * 255).toString(16).padStart(2, "0")}` : c);
+// Bytes of a string as UTF-8 (the file's size after a save).
+function utf8Bytes(s) {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x80) n += 1; else if (c < 0x800) n += 2;
+    else if (c >= 0xd800 && c <= 0xdbff) { n += 4; i++; } else n += 3;
+  }
+  return n;
+}
+// The icon of a tree row.
+function iconOf(name, dir) {
+  if (dir) return "folder";
+  const k = fileKind(name), ext = extOf(name);
+  if (k === "markdown") return "file-text";
+  if (k === "image" || k === "svg") return "image";
+  if (["json", "jsonc", "yaml", "yml", "toml"].includes(ext)) return "braces";
+  if (k === "text" && ext && !["txt", "log", "csv", "env", "lock"].includes(ext)) return "file-code";
+  return "file";
+}
 
 async function directory(path, on) {
   const windowsDirectory = async () => {
@@ -55,15 +128,74 @@ async function directory(path, on) {
   return out;
 }
 
+// A file's size in bytes on its machine, or null when it isn't there (or isn't a file).
+async function sizeOf(path, on) {
+  if (!on && window()?.platform === "windows") {
+    const r = await exec("powershell", ["-NoProfile", "-Command", "& { param($p) if (Test-Path -LiteralPath $p -PathType Leaf) { (Get-Item -LiteralPath $p).Length } } '" + path.replace(/['‘’‚‛]/g, "$&$&") + "'"]).catch(() => null);
+    const n = Number(String(r?.stdout ?? "").trim());
+    return r?.code === 0 && String(r.stdout).trim() && Number.isFinite(n) ? n : null;
+  }
+  const r = await exec("sh", ["-c", '[ -f "$1" ] && wc -c < "$1"', "files", path], { on }).catch(() => null);
+  const n = Number(String(r?.stdout ?? "").trim());
+  return r?.code === 0 && Number.isFinite(n) ? n : null;
+}
+
 export default class Files extends View {
   init(_props, cx) {
     this.saved = new Map();
-    this.entries = new Map(); this.folders = new Set(); this.pending = new Set(); this.marks = {};
+    this.entries = new Map(); this.folders = new Set(); this.pending = new Set(); this.marks = {}; this.ignored = new Set();
     this.handle = cx.focus_handle();
+    this.treeScroll = ScrollHandle.new();
     this.shown = false;
+    this.rail = "files";
+    this.filter = InputState.new({ placeholder: "Filter files…" });
+    this.filter.on("change", (_e, cx) => cx.notify());
+    this.finder = InputState.new({ placeholder: "Search in files…" });
+    this.finder.on("change", (_e, cx) => { this.searchAt = Date.now(); cx.notify(); });
+    this.finder.on("submit", (_e, cx) => { this.searchAt = 0; this.runSearch(cx); });
+    this.search = { query: "", results: [], count: 0, truncated: false, busy: false, error: null };
+    // The "files" settings as last seen (defaults until shared "workspaces.settings" says).
+    this.fcfg = { ...FILES_DEFAULTS }; this.fcfgKnown = false;
+    const fnow = this.filesNow();
+    if (fnow) { this.fcfg = fnow; this.fcfgKnown = true; }
+    this.showIgnored = this.ignoredNow();
+    this.pin = null; // { root, on }: a folder opened from elsewhere, until ↩
+    this.id = Math.random().toString(36).slice(2, 8);
+    this.assetSeq = 0;
+    this.mdSeq = 0;
+    this.prefs = { byExt: {}, last: null };
+    this.appsCache = new Map();
+    this.targetsDone = new Set();
+    this.resetFile();
+    const p = props() ?? {};
+    if (p.file) this.wanted = { path: p.file, line: p.line ?? null, col: null, isDir: false, on: null };
     this.refresh(cx);
-    cx.timer.every(10000, cx => this.refresh(cx));
-    if (!checking()) cx.timer.every(400, cx => this.tick(cx));
+    if (checking()) return;
+    this.readSettings(cx);
+    cx.timer.every(10000, cx => { this.refresh(cx); if (this.shown) this.readSettings(cx); });
+    cx.timer.every(400, cx => this.tick(cx));
+    cx.timer.every(120, cx => this.fast(cx));
+    // Open with… memory: the file, mirrored in shared "workspaces.files.prefs" so every copy follows a pick at once.
+    cx.spawn(async cx => {
+      this.prefs = parsePrefs(await readTextFile(PREFS_FILE()).catch(() => null));
+      if (!shared("workspaces.files.prefs")) setShared("workspaces.files.prefs", this.prefs);
+      cx.notify();
+    });
+    // Preview links left by copies that quit, crashed or were reloaded: gone after an hour (the links, not their files).
+    if (window()?.platform !== "windows") exec("find", [`${appHome()}/${ASSETS}`, "-name", "preview-*", "-mmin", "+60", "-delete"]).catch(() => {});
+    cx.spawn(async cx => {
+      for (;;) {
+        const c = await nextCommand();
+        if (c === "focus") this.handle.focus();
+        else if (c === "save") this.save(cx);
+        cx.notify();
+      }
+    });
+  }
+
+  async close() {
+    this.code?.release(); this.code = null;
+    await this.dropAsset();
   }
 
   // Where it looks now (follow.js), remembering the terminal it follows when that terminal has
@@ -72,13 +204,21 @@ export default class Files extends View {
   // given, and after a restart Herdr hands them back in another order).
   // Render notes it (this.held) and the timer writes it down: never set shared state while rendering.
   // Full size, the space it was opened in (shared "workspaces.screen".space) when that's said.
+  // As a dialog (props.file), that file's folder.
   place() {
     const p = props() ?? {}, held = this.held, all = panes();
+    if (p.file) return { cwd: dirName(p.file), on: null, space: null, tab: null, pane: null };
     const last = { ...(shared("workspaces.follow") ?? {}), ...(held ? { [held.tab]: held.pane } : {}) };
     const view = p.screen ? { ...p, space: shared("workspaces.screen")?.space ?? null } : p;
     const loc = locate(view, { spaces: spaces(), panes: all, focused: focused(), last });
     if ((p.beside || p.screen) && loc.pane && loc.tab && all.find((x) => x.pane === loc.pane)?.focused) this.held = { tab: loc.tab, pane: loc.pane };
     return loc;
+  }
+
+  // Where it shows: the folder it follows, or the one a file opened from elsewhere pinned it to.
+  where() {
+    const loc = this.place();
+    return this.pin ? { ...loc, cwd: this.pin.root, on: this.pin.on } : loc;
   }
 
   // Only a copy in sight writes (follow.js' toRemember): a hidden one holds what it saw last time.
@@ -91,7 +231,7 @@ export default class Files extends View {
     if (next) setShared("workspaces.follow", next);
   }
 
-  key() { const { cwd, on, space } = this.place(); return JSON.stringify({ cwd, on, space }); }
+  key() { const { cwd, on, space } = this.where(); return JSON.stringify({ cwd, on, space: this.pin ? null : space }); }
 
   // In sight: full size while it's the view shown, in the space it was opened in; a pane while its
   // tab is shown, no view covers the tabs and no terminal of that tab is zoomed over it.
@@ -104,14 +244,119 @@ export default class Files extends View {
 
   // Comes into view: read again (full size, take the keyboard); out of view: stop watching.
   tick(cx) {
+    const fnow = this.filesNow();
+    if (fnow && (!this.fcfgKnown || JSON.stringify(fnow) !== JSON.stringify(this.fcfg))) this.followSettings(fnow, cx);
     const seen = this.seen();
     if (!seen) this.held = null;
     this.remember(seen);
     if (!seen) { if (this.shown) { this.shown = false; this.unwatch(); } return; }
     const back = !this.shown;
     this.shown = true;
+    if (back) this.readSettings(cx);
     if (back && props()?.screen) this.handle.focus();
-    if (back || this.key() !== this.context?.key) this.refresh(cx);
+    // An unsaved draft holds the place: it doesn't follow another folder until saved or discarded.
+    if (back || (this.key() !== this.context?.key && !this.dirty)) this.refresh(cx);
+    if (this.wanted) this.applyWanted(cx);
+  }
+
+  // The "files" settings now (shared "workspaces.settings", every key checked), null while nothing's there.
+  filesNow() {
+    const all = shared("workspaces.settings");
+    return all && typeof all === "object" ? Object.fromEntries(FILES_KEYS.map((k) => [k, fileSetting(all, k)])) : null;
+  }
+
+  // ~/.herdr/settings.jsonc into shared "workspaces.settings" when it differs (as ws-agents and
+  // ws-settings do), so a hand edit reaches every copy in seconds, not at ws-agents' next read.
+  // A read that another publisher overtook (Settings wrote meanwhile) is dropped, not published over it.
+  readSettings(cx) {
+    cx.spawn(async () => {
+      const before = JSON.stringify(shared("workspaces.settings") ?? null);
+      const text = await readTextFile(`${home()}/${SETTINGS_FILE}`).catch(() => null);
+      const next = parseSettings(text), now = JSON.stringify(shared("workspaces.settings") ?? null);
+      if (now === before && JSON.stringify(next) !== now) setShared("workspaces.settings", next);
+    });
+  }
+
+  // A value this copy keeps (localStorage "ws-files.<name>") with the setting it was picked under.
+  keep(name, value, under) {
+    localStorage.setItem(`ws-files.${name}`, value);
+    localStorage.setItem(`ws-files.${name}.under`, under);
+  }
+
+  // A kept value, while the setting is still the one it was picked under (null otherwise). One
+  // kept before the settings were there was picked under `before` (the old behaviour, the default).
+  kept(name, under, before) {
+    const v = localStorage.getItem(`ws-files.${name}`);
+    if (v == null) return null;
+    return (localStorage.getItem(`ws-files.${name}.under`) ?? before) === under ? v : null;
+  }
+
+  // Show ignored: this copy's eye, else the "show-ignored" setting.
+  ignoredNow() {
+    const set = this.fcfg["show-ignored"] === true;
+    const k = this.kept("ignored", String(set), "false");
+    return k != null ? k === "1" : set;
+  }
+
+  // What a Markdown or SVG file opens in: the mode last picked for its kind, else the "markdown" setting.
+  modeFor(pk) {
+    const set = this.fcfg.markdown;
+    const k = this.kept(`mode.${pk}`, set, "preview");
+    return ["source", "preview", "split"].includes(k) ? k : set;
+  }
+
+  // The "files" settings changed (or became known). A change of "show-ignored" or "markdown"
+  // starts this copy over from the new value (what it kept is written over); the open Markdown or
+  // SVG file takes the new mode unless it has unsaved changes. The first value seen isn't a
+  // change: what the copy kept under it stays. "default-app" needs only a redraw (Open in).
+  followSettings(next, cx) {
+    const was = this.fcfgKnown ? this.fcfg : null;
+    this.fcfg = next; this.fcfgKnown = true;
+    const ign = next["show-ignored"], md = next.markdown;
+    if (was && was["show-ignored"] !== ign) this.keep("ignored", ign ? "1" : "0", String(ign));
+    this.showIgnored = this.ignoredNow();
+    if (was && was.markdown !== md) {
+      for (const pk of ["markdown", "svg"]) this.keep(`mode.${pk}`, md, md);
+      const pk = this.file && this.code ? previewKind(this.file) : null;
+      if (pk && !this.truncated && !this.dirty) {
+        this.mode = this.modeFor(pk);
+        if (this.mode !== "source") this.livePreview(cx);
+      }
+    }
+    cx.notify();
+  }
+
+  // The quick timer: a file asked for from elsewhere (shared "workspaces.files.target"), and the
+  // debounced preview, search and "Copied" mark. Never from render.
+  fast(cx) {
+    const target = shared("workspaces.files.target") ?? null, now = Date.now();
+    if (target?.id !== this.targetSeen) {
+      this.targetSeen = target?.id;
+      const p = props() ?? {};
+      const me = { screen: Boolean(p.screen), space: p.screen ? this.place().space : null, tab: p.beside ? p.tab ?? null : null };
+      if (targetFor(target, me, now, this.targetsDone)) {
+        this.targetsDone.add(target.id);
+        setShared("workspaces.files.target", { ...target, taken: now });
+        this.wanted = { path: target.path, isDir: Boolean(target.isDir), line: target.line ?? null, col: target.col ?? null, on: target.on ?? null };
+        if (this.seen()) this.applyWanted(cx);
+        if (p.screen || p.beside) this.handle.focus();
+      }
+    }
+    if (this.editedAt && now - this.editedAt >= 250) { this.editedAt = 0; this.livePreview(cx); }
+    // Typing searches 300ms after the last key, from 2 characters (Enter searches anything).
+    if (this.searchAt && now - this.searchAt >= 300) {
+      this.searchAt = 0;
+      const q = this.finder.value().trim();
+      if (q.length >= 2 || !q) this.runSearch(cx);
+    }
+    if (this.copiedAt && now - this.copiedAt >= 1200) { this.copiedAt = 0; cx.notify(); }
+    // A new preview image loads after the frame that asked for it: draw again a moment later, twice.
+    if (this.assetAt) {
+      const age = now - this.assetAt;
+      // A fresh element each time: one drawn while its image was still loading may stay empty.
+      if (age >= 1200) { this.assetAt = 0; this.imgGen = (this.imgGen ?? 0) + 1; cx.notify(); }
+      else if (age >= 400 && !this.assetDrawn) { this.assetDrawn = true; this.imgGen = (this.imgGen ?? 0) + 1; cx.notify(); }
+    }
   }
 
   unwatch() {
@@ -151,12 +396,15 @@ export default class Files extends View {
 
   refresh(cx) {
     if (!this.seen()) return; // hidden: no listing, no watch
-    const { cwd, on } = this.place(), next = this.key();
+    const { cwd, on } = this.where(), next = this.key();
     if (next !== this.context?.key) {
+      if (this.dirty && this.context) return; // the draft holds the place (tick())
       if (this.context) this.saved.set(this.context.key, { folders: this.folders, file: this.file });
       const saved = this.saved.get(next);
       this.context = { key: next, cwd, on }; this.root = cwd; this.on = on; this.entries = new Map(); this.folders = new Set(saved?.folders);
-      this.pending = new Set(); this.marks = {}; this.show(null); this.unwatch(); this.error = null; this.limited = false;
+      this.pending = new Set(); this.marks = {}; this.ignored = new Set(); this.branch = null; this.git = false;
+      this.show(null); this.unwatch(); this.error = null; this.limited = false;
+      this.search = { query: "", results: [], count: 0, truncated: false, busy: false, error: null };
       this.loading = false;
       if (saved?.file) this.show(saved.file, cx);
     }
@@ -164,24 +412,31 @@ export default class Files extends View {
     const context = this.context;
     this.loading = true;
     this.limited = false;
+    if (this.file && !this.loadingFile) this.recheck(cx);
     cx.spawn(async cx => {
       try {
         for (const path of ["", ...this.folders]) {
           if (!this.current(context)) return;
           await this.loadFolder(path, context);
         }
-        const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on }).catch(() => null);
-        const marks = {};
+        const top = await exec("git", ["rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD"], { cwd, on }).catch(() => null);
+        const marks = {}, ignored = new Set();
+        let branch = null, git = false;
         if (top?.code === 0) {
+          const [dir, head] = top.stdout.trim().split("\n");
+          git = true; branch = head && head !== "HEAD" ? head : null;
           // Writes nothing under .git (index lock, fsmonitor cookie): the folder watch would refresh again.
           const status = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"], { cwd, on }).catch(() => null);
           if (status?.code === 0) for (const entry of status.stdout.split("\0").filter(Boolean).slice(0, TOTAL)) {
             const xy = entry.slice(0, 2);
-            marks[`${top.stdout.trim()}/${entry.slice(3)}`] = xy === "??" || xy.includes("A") ? "A" : xy.includes("U") ? "U" : xy.includes("D") ? "D" : "M";
+            marks[`${dir}/${entry.slice(3)}`] = xy === "??" || xy.includes("A") ? "A" : xy.includes("U") ? "U" : xy.includes("D") ? "D" : "M";
           }
+          // Ignored files, a whole ignored folder as one entry ("node_modules/").
+          const ign = await exec("git", ["--no-optional-locks", "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"], { cwd: dir, on }).catch(() => null);
+          if (ign?.code === 0) for (const p of ign.stdout.split("\0").filter(Boolean).slice(0, TOTAL)) ignored.add(`${dir}/${p.replace(/\/$/, "")}`);
         }
         if (!this.current(context)) return;
-        this.marks = marks; this.error = null; this.watch(cwd, cx);
+        this.marks = marks; this.ignored = ignored; this.branch = branch; this.git = git; this.error = null; this.watch(cwd, cx);
       } catch (e) { if (this.current(context)) this.error = String(e); }
       finally { if (this.context === context) this.loading = false; cx.notify(); }
     });
@@ -193,95 +448,902 @@ export default class Files extends View {
         this.folders.delete(folder);
         this.entries.delete(folder);
       }
+    } else this.expand(path, cx);
+    cx.notify();
+  }
+
+  expand(path, cx) {
+    this.folders.add(path);
+    if (this.entries.has(path) || this.pending.has(path)) return;
+    const context = this.context;
+    this.pending.add(path);
+    cx.spawn(async cx => {
+      try { await this.loadFolder(path, context); }
+      catch (e) { if (this.current(context)) this.error = String(e); }
+      finally { if (this.context === context) this.pending.delete(path); cx.notify(); }
+    });
+  }
+
+  // Opens the folders down to a path (its own too when it's a folder), so the tree shows it.
+  expandTo(rel, cx, self = false) {
+    const parts = rel.split("/").filter(Boolean);
+    const upto = self ? parts.length : parts.length - 1;
+    for (let i = 1; i <= upto; i++) this.expand(parts.slice(0, i).join("/"), cx);
+  }
+
+  // A file or folder asked for from elsewhere (a target, props.file): opened once this copy's in sight.
+  applyWanted(cx) {
+    const w = this.wanted;
+    if (!w || !this.seen()) return;
+    this.wanted = null;
+    if (sameFile({ root: this.root, file: this.file, on: this.on }, w)) { this.jumpTo(w, cx); return; }
+    if (this.dirty) { this.pendingSwitch = { target: w }; cx.notify(); return; }
+    this.openTarget(w, cx);
+  }
+
+  // A path inside the folder it follows opens there (a pin goes); else inside the pinned folder shown;
+  // else Files pins to the path's folder (a file's) or the path (a folder), with ↩ back.
+  openTarget(w, cx) {
+    const on = w.on ?? null;
+    if (!this.context) this.refresh(cx);
+    // The file open now: only the cursor moves (a reload would drop an unsaved draft).
+    if (sameFile({ root: this.root, file: this.file, on: this.on }, w)) { this.jumpTo(w, cx); return; }
+    const follow = this.place();
+    const inFollowed = follow.cwd && (follow.on ?? null) === on ? relFromRoot(follow.cwd, w.path) : null;
+    // A pin goes only when nothing is unsaved (refresh() keeps a draft's folder).
+    const unpin = inFollowed !== null && this.pin && !this.dirty;
+    if (unpin) { this.pin = null; this.refresh(cx); }
+    const rel = inFollowed !== null && !this.pin ? inFollowed : this.root && (this.on ?? null) === on ? relFromRoot(this.root, w.path) : null;
+    if (w.isDir) {
+      if (rel === null) { this.pin = { root: w.path, on }; this.refresh(cx); }
+      else { this.show(null); if (rel) this.expandTo(rel, cx, true); this.rail = "files"; this.reveal = rel; }
+      cx.notify();
+      return;
+    }
+    if (rel === null) {
+      this.pin = { root: dirName(w.path), on };
+      this.refresh(cx);
+      this.show(baseName(w.path), cx, { line: w.line, col: w.col });
     } else {
-      this.folders.add(path);
-      if (!this.entries.has(path) && !this.pending.has(path)) {
-        const context = this.context;
-        this.pending.add(path);
-        cx.spawn(async cx => {
-          try { await this.loadFolder(path, context); }
-          catch (e) { if (this.current(context)) this.error = String(e); }
-          finally { if (this.context === context) this.pending.delete(path); cx.notify(); }
-        });
-      }
+      this.expandTo(rel, cx);
+      this.reveal = rel;
+      this.show(rel, cx, { line: w.line, col: w.col });
     }
     cx.notify();
   }
 
-  show(path, cx) {
-    this.code?.release(); this.code = null; this.file = path; this.fileError = null;
+  // The open file asked for again (the tree, a search match, a Cmd-click, Changes): never reloaded, so
+  // an unsaved draft stays; with a line, Markdown and SVG go to Source and the cursor goes there.
+  jumpTo(w, cx) {
+    if (!this.code) { cx.notify(); return; }
+    if (w.line) {
+      if (previewKind(this.file) && !this.truncated && this.mode !== "source") this.mode = "source";
+      const off = offsetForLine(this.code.value(), w.line, w.col ?? 1);
+      this.code.set_selected_range({ start: off, end: off });
+    }
+    this.code.focus();
+    cx.notify();
+  }
+
+  // Back from a pinned folder to the one it follows.
+  unpin(cx) {
+    if (!this.pin) return;
+    if (this.dirty) { this.pendingSwitch = { unpin: true }; cx.notify(); return; }
+    this.pin = null;
+    this.refresh(cx);
+    cx.notify();
+  }
+
+  resetFile() {
+    this.code?.release(); this.code = null;
+    this.file = null; this.fk = null; this.fileError = null; this.fileGone = false; this.fileSize = null; this.loadingFile = false;
+    this.truncated = false; this.snapshot = null; this.dirty = false; this.conflict = false; this.saveError = null; this.saving = false;
+    this.mdText = ""; this.img = null; this.withOpen = false; this.apps = null; this.pendingSwitch = null; this.editedAt = 0;
+  }
+
+  // Opens a file (path under the root), or none. A file with unsaved edits asks first (pick()).
+  show(path, cx, opts = {}) {
+    const old = this.img;
+    this.resetFile();
+    if (old) this.dropAsset(old);
+    this.file = path;
     if (!path || !cx) return;
-    const context = this.context, root = this.root, on = this.on;
+    this.loadingFile = true;
+    this.fk = fileKind(path);
+    const context = this.context, root = this.root, on = this.on, abs = `${root}/${path}`;
+    const ext = extOf(path);
+    // Each load has its own number: a load overtaken by another (the same file shown again) does nothing.
+    const seq = this.loadSeq = (this.loadSeq ?? 0) + 1;
     cx.spawn(async cx => {
+      const mine = () => this.loadSeq === seq && this.file === path && this.context === context;
       try {
-        const text = await readTextFile(`${root}/${path}`, { on });
-        if (this.file !== path || !this.current(context)) return;
-        if (text === null) { this.fileError = "This file is no longer available"; return; }
-        if (text.includes("\0")) { this.fileError = "Binary file · no text preview"; return; }
-        const t = theme(), ext = path.includes(".") ? path.split(".").pop() : "txt";
-        this.code = EditorState.new({ language: LANG[ext] ?? ext, readonly: true,
-          value: text.length > 400000 ? text.slice(0, 400000) + "\n… (file truncated)" : text,
-          syntax: { keyword: t.ansi5, string: t.ansi2, comment: t.dim, function: t.ansi4, type: t.ansi3, number: t.ansi1, constant: t.ansi6 } });
-      } catch { if (this.file === path && this.current(context)) this.fileError = "Cannot preview this file (binary, too large, or unreadable)"; }
-      finally { cx.notify(); }
+        const size = await sizeOf(abs, on);
+        if (!mine()) return;
+        if (size === null) {
+          const probe = await readTextFile(abs, { on }).catch(() => undefined);
+          if (!mine()) return;
+          if (probe === null) { this.fileGone = true; return; }
+        }
+        this.fileSize = size;
+        const kind = this.fk;
+        if (kind === "binary") return;
+        if (kind === "image") {
+          if (!on && (size ?? 0) <= IMAGE_LIMIT) await this.makeAsset(abs, ext, mine);
+          return;
+        }
+        let text;
+        if ((size ?? 0) > API_LIMIT) {
+          // Over Herdr's 1 MiB read: the start of it, read-only.
+          const head = await exec("head", ["-c", String(DISPLAY_LIMIT), abs], { on }).catch(() => null);
+          if (!mine()) return;
+          if (head?.code !== 0) { this.fileError = "Cannot read this file"; return; }
+          text = head.stdout; this.truncated = true;
+        } else {
+          try { text = await readTextFile(abs, { on }); }
+          catch (e) {
+            if (!mine()) return;
+            if (/utf-?8|invalid data|stream did not contain/i.test(String(e))) { this.fk = "binary"; return; }
+            this.fileError = String(e?.message ?? e); return;
+          }
+          if (!mine()) return;
+          if (text === null) { this.fileGone = true; return; }
+        }
+        if (text.includes("\0")) { this.fk = "binary"; return; }
+        if (text.length > DISPLAY_LIMIT) { text = text.slice(0, DISPLAY_LIMIT); this.truncated = true; }
+        const editable = canEdit({ kind, truncated: this.truncated, remote: Boolean(on) });
+        this.snapshot = editable ? text : null;
+        const pk = previewKind(path);
+        if (pk) {
+          this.mode = opts.line ? "source" : this.modeFor(pk);
+          if (this.truncated) this.mode = "source";
+        }
+        const t = theme(), font = settings();
+        const code = EditorState.new({
+          language: languageOf(path), readonly: !editable, line_numbers: true, folding: true, soft_wrap: kind === "markdown",
+          value: this.truncated ? text + `\n… (truncated at ${formatSize(DISPLAY_LIMIT)})` : text,
+          font_family: font.font_family, font_size: font.font_size, syntax: SYNTAX(t),
+        });
+        if (!mine()) { code.release(); return; }
+        this.code = code;
+        code.on("change", (_e, cx) => { if (this.code === code) this.edited(cx); });
+        this.mdText = text; this.mdSeq++;
+        if (kind === "svg" && !on && (size ?? 0) <= IMAGE_LIMIT) {
+          await this.makeAsset(abs, ext, mine);
+          if (!mine()) return;
+          const dims = svgSize(text);
+          if (dims && this.img) { this.img.w = dims.w; this.img.h = dims.h; }
+        }
+        if (opts.line && this.code === code) {
+          const off = offsetForLine(text, opts.line, opts.col ?? 1);
+          this.code.set_selected_range({ start: off, end: off });
+          this.code.focus();
+        }
+      } catch (e) { if (mine()) this.fileError = String(e?.message ?? e); }
+      finally {
+        if (mine()) { this.loadingFile = false; if (!on && ext) this.discoverApps(ext, abs, cx); }
+        cx.notify();
+      }
     });
   }
 
-  rows(prefix, depth, out, t) {
-    if (out.length >= TOTAL || depth > 40) return out;
-    for (const entry of this.entries.get(prefix) ?? []) {
-      if (out.length >= TOTAL) break;
-      const path = prefix ? `${prefix}/${entry.name}` : entry.name, open = this.folders.has(path), mark = this.marks[`${this.root}/${path}`];
-      out.push(h_flex().id(`file-${path}`).h(28).flex_none().pl(8 + depth * 18).pr(8).gap(7).items_center().rounded(7).cursor_pointer().hover(s => s.bg(t.hover))
-        .on_click((_e, cx) => entry.dir ? this.toggle(path, cx) : this.show(path, cx))
-        .child(entry.dir ? svg(`mods/ws-files/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim) : div().w(12).flex_none())
-        .child(svg(`mods/ws-files/${entry.dir ? "folder" : "file"}.svg`).size(14).flex_none().text_color(t.muted))
-        .child(div().flex_1().min_w(0).truncate().child(entry.name))
-        .when(Boolean(mark), el => el.child(div().text_size(11).text_color(mark === "A" ? t.ansi2 : mark === "D" || mark === "U" ? t.ansi1 : t.blocked).child(mark))));
-      if (entry.dir && open) this.rows(path, depth + 1, out, t);
+  // A file picked in the tree, search or a Markdown link: with unsaved edits, asks first.
+  pick(path, cx, opts = {}) {
+    if (path === this.file && (this.code || this.loadingFile)) { this.jumpTo(opts, cx); return; }
+    if (this.dirty) { this.pendingSwitch = { path, opts }; cx.notify(); return; }
+    this.show(path, cx, opts);
+    cx.notify();
+  }
+
+  // The unsaved-switch strip's answers.
+  async settleSwitch(how, cx) {
+    const sw = this.pendingSwitch;
+    if (!sw) return;
+    if (how === "cancel") { this.pendingSwitch = null; cx.notify(); return; }
+    if (how === "save") { const ok = await this.save(cx); if (!ok) return; }
+    else this.discard(cx);
+    this.pendingSwitch = null;
+    if (sw.unpin) { this.pin = null; this.refresh(cx); }
+    else if (sw.target) this.openTarget(sw.target, cx);
+    else if (sw.close) this.show(null);
+    else this.show(sw.path, cx, sw.opts ?? {});
+    cx.notify();
+  }
+
+  // Typing: dirty or not, the preview a moment later, a stale save error gone.
+  edited(cx) {
+    if (!this.code || this.snapshot === null) return;
+    const dirty = this.code.value() !== this.snapshot;
+    if (dirty !== this.dirty) this.dirty = dirty;
+    if (this.saveError) this.saveError = null;
+    this.editedAt = Date.now();
+    cx.notify();
+  }
+
+  // The preview follows the draft (Split, Preview): Markdown's text, an SVG's own preview file.
+  livePreview(cx) {
+    if (!this.code) return;
+    const text = this.code.value();
+    if (this.fk === "markdown") { this.mdText = text; this.mdSeq++; cx.notify(); return; }
+    if (this.fk === "svg" && !this.on) {
+      const context = this.context, path = this.file, load = this.loadSeq;
+      // The newest draft wins: an earlier write finishing late is dropped.
+      const live = this.liveSeq = (this.liveSeq ?? 0) + 1;
+      cx.spawn(async cx => {
+        const seq = ++this.assetSeq, rel = `${ASSETS}/preview-${this.id}-${seq}.svg`;
+        try {
+          await fs.mkdir(`${appHome()}/${ASSETS}`, { recursive: true });
+          await fs.writeFile(`${appHome()}/${rel}`, text);
+        } catch { return; }
+        if (this.file !== path || this.context !== context || this.loadSeq !== load || this.liveSeq !== live) { this.dropAsset({ asset: rel }); return; }
+        const old = this.img, dims = svgSize(text);
+        this.img = { ...(old ?? {}), asset: rel, ...(dims ? { w: dims.w, h: dims.h } : {}) };
+        this.assetAt = Date.now(); this.assetDrawn = false;
+        if (old) this.dropAsset(old);
+        cx.notify();
+      });
+    }
+  }
+
+  // The image preview: a link to the file under appHome() (Herdr's assets follow links; Windows
+  // gets a copy), a new name each time so nothing cached shows. Its size from sips on macOS.
+  // mine(): this load is still the current one (show()).
+  async makeAsset(abs, ext, mine) {
+    const seq = ++this.assetSeq, rel = `${ASSETS}/preview-${this.id}-${seq}.${ext}`, dest = `${appHome()}/${rel}`;
+    try {
+      await fs.mkdir(`${appHome()}/${ASSETS}`, { recursive: true });
+      // Windows: a copy through PowerShell (the mod's fs reads only under home).
+      const r = window()?.platform === "windows"
+        ? await exec("powershell", ["-NoProfile", "-Command", "& { param($a, $b) Copy-Item -LiteralPath $a -Destination $b } '" + abs.replace(/['‘’‚‛]/g, "$&$&") + "' '" + dest.replace(/['‘’‚‛]/g, "$&$&") + "'"])
+        : await exec("ln", ["-sf", abs, dest]);
+      if (r.code !== 0) throw new Error(r.stderr);
+    } catch (e) { if (mine()) this.imgError = String(e?.message ?? e); return; }
+    if (!mine()) { this.dropAsset({ asset: rel }); return; }
+    if (this.img) this.dropAsset(this.img);
+    this.img = { asset: rel, w: null, h: null, fmt: ext.toUpperCase() };
+    this.assetAt = Date.now(); this.assetDrawn = false;
+    if (window()?.platform === "macos" && ext !== "svg") {
+      const r = await exec("sips", ["-g", "pixelWidth", "-g", "pixelHeight", abs]).catch(() => null);
+      const w = Number(/pixelWidth:\s*(\d+)/.exec(r?.stdout ?? "")?.[1]), h = Number(/pixelHeight:\s*(\d+)/.exec(r?.stdout ?? "")?.[1]);
+      if (this.img?.asset === rel && w && h) { this.img.w = w; this.img.h = h; }
+    }
+  }
+
+  // Herdr's fs follows a link to check where it writes, so a preview link (pointing outside the app
+  // home) is removed with unlink(1); Windows has copies, which fs removes.
+  async dropAsset(img = this.img) {
+    if (!img?.asset) return;
+    if (img === this.img) this.img = null;
+    const path = `${appHome()}/${img.asset}`;
+    if (window()?.platform === "windows") await fs.unlink(path).catch(() => {});
+    else await exec("unlink", [path]).catch(() => {});
+  }
+
+  // The open file again from disk (the folder watch, Refresh, the 10s timer): reloaded when nothing's
+  // unsaved; with a draft, a conflict (changed) or a draft kept for Save as new (deleted).
+  recheck(cx) {
+    const path = this.file, context = this.context;
+    if (!path || !this.code || this.truncated || this.saving) {
+      if (path && (this.fk === "image" || this.fk === "binary") && !this.loadingFile) {
+        cx.spawn(async cx => {
+          const size = await sizeOf(`${this.root}/${path}`, this.on);
+          if (this.file !== path || this.context !== context) return;
+          if (size === null && !this.fileGone) { this.fileGone = true; cx.notify(); }
+        });
+      }
+      return;
+    }
+    cx.spawn(async cx => {
+      const text = await readTextFile(`${this.root}/${path}`, { on: this.on }).catch(() => undefined);
+      if (this.file !== path || this.context !== context || text === undefined || this.saving) return;
+      if (text === null) {
+        if (!this.fileGone) { this.fileGone = true; cx.notify(); }
+        return;
+      }
+      if (this.fileGone) this.fileGone = false;
+      if (this.snapshot === null) {
+        // Read-only (another machine): follow the disk.
+        if (text !== this.code.value()) { this.code.set_value(text); this.mdText = text; this.mdSeq++; this.fileSize = utf8Bytes(text); cx.notify(); }
+        return;
+      }
+      if (text === this.snapshot) return;
+      if (!this.dirty) {
+        this.snapshot = text; this.code.set_value(text); this.mdText = text; this.mdSeq++; this.fileSize = utf8Bytes(text);
+        if (this.fk === "svg") this.livePreview(cx);
+        cx.notify();
+      } else if (!this.conflict) { this.conflict = true; cx.notify(); }
+    });
+  }
+
+  // Save: writeTextFile only replaces the file it was read as (the snapshot). force: write over
+  // what's on disk now (Overwrite); asNew: the file was deleted, write it again.
+  async save(cx, { force = false, asNew = false } = {}) {
+    if (!this.code || this.snapshot === null || this.saving || this.on) return false;
+    if (!this.dirty && !force && !asNew && !this.fileGone) return true;
+    const path = this.file, abs = `${this.root}/${path}`, text = this.code.value();
+    this.saving = true;
+    cx.notify();
+    try {
+      let expected = this.snapshot;
+      if (asNew || (this.fileGone && !force)) expected = null;
+      if (force) expected = await readTextFile(abs);
+      await writeTextFile(abs, text, expected);
+      if (this.file !== path) return true;
+      this.snapshot = text; this.dirty = this.code.value() !== text; this.conflict = false; this.saveError = null; this.fileGone = false;
+      this.fileSize = utf8Bytes(text);
+      return true;
+    } catch (e) {
+      const msg = String(e?.message ?? e);
+      if (this.file === path) {
+        if (/changed outside Herdr|changed while saving/i.test(msg)) this.conflict = true;
+        else this.saveError = msg.replace(/^`[^`]*`:\s*/, "").replace(/([^.])$/, "$1.");
+      }
+      return false;
+    } finally {
+      this.saving = false;
+      cx.notify();
+    }
+  }
+
+  discard(cx) {
+    this.pendingSwitch = null;
+    if (!this.code || this.snapshot === null) return;
+    if (this.fileGone) { this.dirty = false; this.code.set_value(this.snapshot); this.conflict = false; this.saveError = null; cx.notify(); return; }
+    this.code.set_value(this.snapshot);
+    this.dirty = false; this.conflict = false; this.saveError = null;
+    this.mdText = this.snapshot; this.mdSeq++;
+    if (this.fk === "svg") this.livePreview(cx);
+    cx.notify();
+  }
+
+  // Reload from disk: the draft goes, the disk's text comes.
+  reload(cx) {
+    const path = this.file;
+    cx.spawn(async cx => {
+      const text = await readTextFile(`${this.root}/${path}`, { on: this.on }).catch(() => undefined);
+      if (this.file !== path || text === undefined) return;
+      if (text === null) { this.fileGone = true; cx.notify(); return; }
+      this.snapshot = text; this.code?.set_value(text); this.dirty = false; this.conflict = false; this.saveError = null; this.fileGone = false;
+      this.mdText = text; this.mdSeq++; this.fileSize = utf8Bytes(text);
+      if (this.fk === "svg") this.livePreview(cx);
+      cx.notify();
+    });
+  }
+
+  setMode(mode, cx) {
+    const pk = this.file ? previewKind(this.file) : null;
+    if (!pk) return;
+    this.mode = mode;
+    this.keep(`mode.${pk}`, mode, this.fcfg.markdown);
+    if (mode !== "source") this.livePreview(cx);
+    cx.notify();
+  }
+
+  // Content search in the folder: rg (fixed strings, smart case), else grep; at most 200 matches.
+  // One search runs at a time: asked again meanwhile, the newest query runs when it ends. rg's lines
+  // are cut at 300 columns and the whole output at 201 lines in the shell, so a short query in a big
+  // repo (or a minified bundle) can't fill memory.
+  runSearch(cx) {
+    const query = this.finder.value().trim(), root = this.root, on = this.on, context = this.context;
+    if (!query || !root) { this.searchAgain = false; this.search = { query, results: [], count: 0, truncated: false, busy: false, error: null }; cx.notify(); return; }
+    if (this.searching) { this.searchAgain = true; return; }
+    this.searching = true; this.searchAgain = false;
+    this.search = { ...this.search, query, busy: true, error: null };
+    cx.notify();
+    const ci = query === query.toLowerCase() ? "-i" : "";
+    cx.spawn(async cx => {
+      let r;
+      try {
+        if (!on && window()?.platform === "windows") {
+          r = await exec("rg", ["--vimgrep", "--max-count", "50", "--max-filesize", "1M", "--max-columns", "300", "--max-columns-preview", "--color", "never", "--fixed-strings", "--smart-case", "--", query, root], { timeout: 20000 }).catch((e) => ({ code: 2, stderr: String(e), stdout: "" }));
+          r = { ...r, stdout: String(r.stdout ?? "").split("\n").slice(0, 201).join("\n") };
+        } else {
+          const script = 'if command -v rg >/dev/null 2>&1; then rg --vimgrep --max-count 50 --max-filesize 1M --max-columns 300 --max-columns-preview --color never --fixed-strings --smart-case -- "$1" "$2"; else grep -rnIF $3 --exclude-dir=.git --exclude-dir=node_modules -- "$1" "$2"; fi | head -n 201 | cut -c1-600';
+          r = await exec("sh", ["-c", script, "search", query, root, ci], { on, timeout: 20000 }).catch((e) => ({ code: 2, stderr: String(e), stdout: "" }));
+        }
+      } finally { this.searching = false; }
+      if (this.context === context && this.finder.value().trim() === query) {
+        const parsed = parseSearchOutput(r.stdout, root, 200);
+        this.search = { query, ...parsed, busy: false, error: !parsed.count && String(r.stderr ?? "").trim() ? String(r.stderr).trim().split("\n")[0] : null };
+      }
+      if (this.searchAgain) this.runSearch(cx);
+      cx.notify();
+    });
+  }
+
+  // Open with…: the editors installed (once a session) and, on macOS, the apps it offers for the file,
+  // kept a minute per extension so switching files is quick.
+  discoverApps(ext, abs, cx) {
+    const cached = this.appsCache.get(ext);
+    if (cached && Date.now() - cached.at < APPS_FRESH) { this.apps = cached.apps; this.systemApp = cached.system; return; }
+    const path = this.file;
+    cx.spawn(async cx => {
+      const platform = window()?.platform ?? "macos";
+      if (!this.catalogIds) {
+        const bins = EDITOR_CATALOG.map((e) => e.binary).join(" ");
+        const r = platform === "windows" ? null : await exec("sh", ["-c", `for b in ${bins}; do command -v "$b" >/dev/null 2>&1 && printf '%s\\n' "$b"; done; true`]).catch(() => null);
+        const found = new Set(String(r?.stdout ?? "").split("\n").filter(Boolean));
+        this.catalogIds = EDITOR_CATALOG.filter((e) => found.has(e.binary)).map((e) => e.id);
+      }
+      let macApps = [], system = null;
+      if (platform === "macos") {
+        const jxa = 'function run(argv) { ObjC.import("AppKit"); const ws = $.NSWorkspace.sharedWorkspace, fm = $.NSFileManager.defaultManager, url = $.NSURL.fileURLWithPath(argv[0]); const urls = ws.URLsForApplicationsToOpenURL(url), def = ws.URLForApplicationToOpenURL(url); const out = []; for (let i = 0; i < urls.count && i < 60; i++) { const u = urls.objectAtIndex(i), p = u.path.js; let b = null; try { const bb = $.NSBundle.bundleWithURL(u); b = bb && bb.bundleIdentifier ? bb.bundleIdentifier.js : null; } catch (e) {} out.push({ name: fm.displayNameAtPath(p).js, path: p, bundle: b || null }); } return JSON.stringify({ apps: out, system: def && def.path ? def.path.js : null }); }';
+        const r = await exec("osascript", ["-l", "JavaScript", "-e", jxa, abs], { timeout: 5000 }).catch(() => null);
+        try { const o = JSON.parse(r?.stdout || "{}"); macApps = o.apps ?? []; system = o.system ?? null; } catch { /* the editors alone */ }
+      }
+      const apps = mergeApps({ catalogInstalled: this.catalogIds, macApps, ext, platform });
+      this.appsCache.set(ext, { apps, system, at: Date.now() });
+      if (this.file === path) { this.apps = apps; this.systemApp = system; cx.notify(); }
+    });
+  }
+
+  // The app the Open in button names now (SYSTEM_APP until the list is known).
+  defaultApp() {
+    return pickDefaultApp(this.apps ?? [], this.sharedPrefs(), extOf(this.file ?? ""), this.fcfg["default-app"]);
+  }
+
+  // The Open with… memory as every copy sees it now (shared "workspaces.files.prefs"), else this copy's read.
+  sharedPrefs() {
+    const p = shared("workspaces.files.prefs");
+    return p && typeof p === "object" ? p : this.prefs;
+  }
+
+  // The cursor's line (1-based) in the editor, for editors that take one.
+  cursorLine() {
+    if (!this.code) return null;
+    const at = this.code.selected_range()?.start ?? 0, text = this.code.value();
+    let n = 1;
+    for (let i = 0; i < Math.min(at, text.length); i++) if (text.charCodeAt(i) === 10) n++;
+    return n > 1 ? n : null;
+  }
+
+  // explicit: picked from the Open in ▾ list (remembered for the extension); the button itself
+  // opens the app it names, which only becomes the last one used (filesfacts rememberApp).
+  openWith(app, cx, explicit = false) {
+    if (!this.file || this.on) return;
+    const abs = `${this.root}/${this.file}`, ext = extOf(this.file), platform = window()?.platform ?? "macos";
+    const { cmd, args } = launchCommand(app, abs, app.kind === "editor" ? this.cursorLine() : null, platform);
+    this.withOpen = false;
+    cx.spawn(async cx => {
+      const r = await exec(cmd, args, { timeout: 15000 }).catch((e) => ({ code: 1, stderr: String(e) }));
+      if (r.code !== 0) notify({ title: `Couldn't open ${baseName(abs)}`, body: String(r.stderr || "").trim().split("\n")[0] || `${cmd} failed`, level: "error" });
+      if (app.id === "reveal") return;
+      const had = this.sharedPrefs();
+      if (!explicit && had?.last === app.id) return; // nothing new to remember
+      this.prefs = rememberApp(had, ext, app.id, explicit);
+      setShared("workspaces.files.prefs", this.prefs);
+      cx.notify();
+      // The file is shared by every copy: read, merge, write only over what was read (a few tries).
+      for (let i = 0; i < 3; i++) {
+        const was = await readTextFile(PREFS_FILE()).catch(() => null);
+        const next = rememberApp(parsePrefs(was), ext, app.id, explicit);
+        try { await writeTextFile(PREFS_FILE(), JSON.stringify(next, null, 2) + "\n", was); this.prefs = next; setShared("workspaces.files.prefs", next); break; }
+        catch { /* changed under us: again */ }
+      }
+    });
+  }
+
+  copyPath(cx) {
+    if (!this.file) return;
+    cx.write_to_clipboard(`${this.root}/${this.file}`);
+    this.copiedAt = Date.now();
+    cx.notify();
+  }
+
+  // Back to the folder (the ← and the file-gone screen).
+  closeFile(cx) {
+    if (this.dirty) { this.pendingSwitch = { close: true }; cx.notify(); return; }
+    this.show(null);
+    cx.notify();
+  }
+
+  revealInTree(cx) {
+    if (!this.file) return;
+    this.rail = "files";
+    this.filter.set_value("");
+    this.expandTo(this.file, cx);
+    this.reveal = this.file;
+    cx.notify();
+  }
+
+  // A link in the Markdown preview: the web in the browser, a file here.
+  linkClicked(url, cx) {
+    const abs = `${this.root}/${this.file}`;
+    const r = resolveRelativeLink(abs, url);
+    if (r.external) { cx.open_url(r.external); return; }
+    if (!r.path) return;
+    const rel = relFromRoot(this.root, r.path);
+    if (rel === null) { if (this.dirty) { this.pendingSwitch = { target: { path: r.path, on: this.on, isDir: false } }; cx.notify(); return; } this.openTarget({ path: r.path, on: this.on, isDir: false }, cx); return; }
+    this.expandTo(rel, cx);
+    this.pick(rel, cx);
+  }
+
+  keyDown(e, cx) {
+    const m = e.modifiers ?? {}, cmd = m.platform || m.control;
+    if (cmd && !m.shift && !m.alt && e.key === "s") {
+      cx.stop_propagation();
+      if (this.dirty && !this.conflict) this.save(cx, { asNew: this.fileGone });
+      return;
+    }
+    if (cmd && m.shift && e.key === "v" && this.file && previewKind(this.file) && !this.truncated) {
+      cx.stop_propagation();
+      this.setMode(this.mode === "source" ? "preview" : "source", cx);
+      return;
+    }
+    if (e.key === "escape") {
+      if (this.withOpen) { this.withOpen = false; cx.stop_propagation(); cx.notify(); }
+      else if (this.pendingSwitch) { this.pendingSwitch = null; cx.stop_propagation(); cx.notify(); }
+    }
+  }
+
+  // Pieces ---------------------------------------------------------------
+
+  iconButton(t, id, icon, tip, onClick, opts = {}) {
+    return div().id(id).size(26).flex_none().flex().items_center().justify_center().rounded(6).cursor_pointer()
+      .text_color(opts.on ? t.foreground : t.muted).when(Boolean(opts.on), (s) => s.bg(t.selected)).hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .tooltip(tip).on_click((_e, cx) => onClick(cx))
+      .child(svg(`mods/ws-files/${icon}.svg`).size(14));
+  }
+
+  // kind: "solid" (the one primary), "outline", "quiet".
+  textButton(t, id, label, onClick, kind = "quiet", extra = null) {
+    return h_flex().id(id).h(26).px(10).gap(6).flex_none().items_center().rounded(6).cursor_pointer().text_size(12.5)
+      .when(kind === "solid", (s) => s.bg(t.solid).text_color(t.solid_foreground).hover((x) => x.opacity(0.9)))
+      .when(kind === "outline", (s) => s.border_1().border_color(t.border).text_color(t.foreground).hover((x) => x.bg(t.hover)))
+      .when(kind === "quiet", (s) => s.text_color(t.muted).hover((x) => x.bg(t.hover).text_color(t.foreground)))
+      .on_click((_e, cx) => onClick(cx))
+      .child(label)
+      .when(Boolean(extra), (s) => s.child(div().text_size(11).opacity(0.6).child(extra)));
+  }
+
+  // Open in <app> ▾: the remembered app, and the list.
+  openIn(t, id, kind, narrow) {
+    const app = this.defaultApp(), mac = window()?.platform === "macos";
+    const label = narrow ? app.label : `Open in ${app.label}`;
+    const solid = kind === "solid";
+    const fg = solid ? t.solid_foreground : t.foreground;
+    const half = (s) => s.h(26).flex().items_center().cursor_pointer().when(solid, (x) => x.bg(t.solid).hover((y) => y.opacity(0.9))).when(!solid, (x) => x.hover((y) => y.bg(t.hover)));
+    const trigger = h_flex().flex_none().rounded(6).overflow_hidden().text_size(12.5).text_color(fg).when(!solid, (x) => x.border_1().border_color(t.border))
+      .child(half(h_flex().id(`${id}-go`).px(10).gap(6)).tooltip(`Open ${this.file} in ${app.label}`)
+        .on_click((_e, cx) => this.openWith(app, cx))
+        .child(svg("mods/ws-files/external-link.svg").size(13)).child(label))
+      .child(half(div().id(`${id}-more`).w(22).justify_center().border_l(1).border_color(solid ? fade(t.solid_foreground, 0.25) : t.border)).tooltip("Open with…")
+        .on_click((_e, cx) => { this.withOpen = !this.withOpen; cx.notify(); })
+        .child(svg("mods/ws-files/chevron-down.svg").size(12)));
+    const row = (rid, icon, name, onClick, hint = "", checked = false) => h_flex().id(rid).h(28).px(8).gap(8).rounded(6).items_center().cursor_pointer().hover((s) => s.bg(t.hover))
+      .on_click((_e, cx) => onClick(cx))
+      .child(icon)
+      .child(div().flex_1().min_w(0).truncate().child(name))
+      .when(Boolean(hint), (s) => s.child(div().flex_none().text_size(11).text_color(t.dim).child(hint)))
+      .when(checked, (s) => s.child(svg("mods/ws-files/check.svg").size(13).flex_none().text_color(t.accent)));
+    const mark = (a) => div().size(16).flex_none().rounded(4).bg(t.raised).flex().items_center().justify_center().text_size(10).font_semibold().text_color(t.muted).child(a.label.slice(0, 1).toUpperCase());
+    const apps = (this.apps ?? []).slice(0, 12), ext = extOf(this.file);
+    const list = v_flex().id(`${id}-list`).w(260).p(5).mt(4).rounded(8).shadow_md().border_1().border_color(t.border).bg(t.popover).text_size(12.5).text_color(t.foreground)
+      .on_mouse_down_out((_e, cx) => { this.withOpen = false; cx.notify(); })
+      .child(div().px(8).pt(3).pb(5).text_size(11).text_color(t.dim).child(ext ? `Open .${ext} with${this.sharedPrefs().byExt?.[ext] ? " (remembered)" : ""}` : "Open with"))
+      .when(!this.apps, (s) => s.child(div().px(8).py(6).text_color(t.dim).child("Looking for apps…")))
+      .children(apps.map((a, i) => row(`${id}-app-${i}`, mark(a), a.label, (cx) => this.openWith(a, cx, true), a.path && a.path === this.systemApp ? "system" : "", a.id === app.id)))
+      .child(row(`${id}-app-system`, div().size(16).flex_none(), "Default app", (cx) => this.openWith(SYSTEM_APP, cx, true), "", app.id === "system"))
+      .child(div().h(1).my(4).bg(t.border))
+      .child(row(`${id}-reveal`, svg("mods/ws-files/folder.svg").size(14).flex_none().text_color(t.muted), mac ? "Reveal in Finder" : window()?.platform === "windows" ? "Show in Explorer" : "Show in folder", (cx) => this.openWith({ id: "reveal" }, cx)))
+      .child(row(`${id}-copy`, svg("mods/ws-files/copy.svg").size(14).flex_none().text_color(t.muted), "Copy path", (cx) => { this.withOpen = false; this.copyPath(cx); }));
+    return Popup.new(`${id}-popup`, trigger).anchor("top_right").when(this.withOpen, (el) => el.content(list));
+  }
+
+  // The rail: Files | Search.
+  railView(t, narrow) {
+    const tab = (key, icon, label) => h_flex().id(`ws-files-tab-${key}`).h(26).px(9).gap(6).items_center().rounded(6).cursor_pointer().text_size(12.5)
+      .text_color(this.rail === key ? t.foreground : t.muted).when(this.rail === key, (s) => s.bg(t.selected)).hover((s) => s.text_color(t.foreground))
+      .on_click((_e, cx) => { this.rail = key; if (key === "search") this.finder.focus(); cx.notify(); })
+      .child(svg(`mods/ws-files/${icon}.svg`).size(13)).child(label);
+    return v_flex().size_full().min_h(0).bg(t.chrome).when(!narrow, (s) => s.border_r(1).border_color(t.border))
+      .child(h_flex().h(38).flex_none().px(8).gap(4).items_center().border_b(1).border_color(t.border)
+        .child(tab("files", "folder", "Files")).child(tab("search", "search", "Search"))
+        .when(Boolean(props()?.file) && narrow, (s) => s.child(div().flex_1()).child(this.iconButton(t, "ws-files-x-rail", "x", "Close", () => closeOverlay(props().overlay)))))
+      .child(this.rail === "search" ? this.searchView(t) : this.treeView(t));
+  }
+
+  // Left out of the tree: ignored by git (outside git, dotfiles), unless Show ignored is on (always:
+  // whether it would be). Never the open file or a folder holding it.
+  hidden(path, entry, always = false) {
+    if (this.showIgnored && !always) return false;
+    if (this.file && (this.file === path || this.file.startsWith(`${path}/`))) return false;
+    if (this.git) {
+      let p = `${this.root}/${path}`;
+      for (;;) {
+        if (this.ignored.has(p)) return true;
+        const i = p.lastIndexOf("/");
+        if (i <= this.root.length) return false;
+        p = p.slice(0, i);
+      }
+    }
+    return entry.name.startsWith(".");
+  }
+
+  treeView(t) {
+    const query = this.filter.value();
+    // The entries without what's hidden (ignored by git; outside git, dotfiles), then the filter.
+    const visible = new Map();
+    for (const [dir, list] of this.entries) visible.set(dir, list.filter((e) => !this.hidden(dir ? `${dir}/${e.name}` : e.name, e)));
+    const rows = filterEntries(visible, this.folders, query, TOTAL);
+    const folder = baseName(this.root ?? "") || this.root || "";
+    const followed = this.pin ? baseName(this.place().cwd ?? "") : "";
+    const revealAt = this.reveal ? rows.findIndex((r) => r.path === this.reveal) : -1;
+    if (revealAt >= 0) { this.treeScroll.scroll_to_item(revealAt); this.reveal = null; }
+    return v_flex().flex_1().min_h(0)
+      .child(h_flex().h(32).flex_none().pl(12).pr(6).gap(6).items_center()
+        .when(Boolean(this.pin), (s) => s.child(this.iconButton(t, "ws-files-unpin", "undo", followed ? `Back to ${followed}` : "Back to the followed folder", (cx) => this.unpin(cx))))
+        .child(div().id("ws-files-root").flex_none().max_w(140).truncate().font_semibold().text_size(12.5).child(folder).tooltip(this.root ?? ""))
+        .when(Boolean(this.branch), (s) => s.child(h_flex().flex_1().min_w(0).gap(3).items_center().text_size(11.5).text_color(t.dim)
+          .child(svg("mods/ws-files/git-branch.svg").size(11).flex_none()).child(div().min_w(0).truncate().child(this.branch))))
+        .when(!this.branch, (s) => s.child(div().flex_1()))
+        .child(this.iconButton(t, "ws-files-ignored", this.showIgnored ? "eye" : "eye-off", this.git ? (this.showIgnored ? "Hide ignored files" : "Show ignored files") : (this.showIgnored ? "Hide hidden files" : "Show hidden files"),
+          (cx) => { this.showIgnored = !this.showIgnored; this.keep("ignored", this.showIgnored ? "1" : "0", String(this.fcfg["show-ignored"] === true)); cx.notify(); }, { on: this.showIgnored }))
+        .child(this.iconButton(t, "ws-files-refresh-tree", "refresh", "Refresh", (cx) => this.refresh(cx))))
+      .child(div().px(8).pb(6).flex_none()
+        .child(h_flex().id("ws-files-filter").h(28).px(8).gap(6).items_center().rounded(6).border_1().border_color(t.border).bg(t.background).cursor_text()
+          .on_key_down((e, cx) => { if (e.key === "escape" && this.filter.value()) { this.filter.set_value(""); cx.stop_propagation(); cx.notify(); } })
+          .child(svg("mods/ws-files/search.svg").size(12).flex_none().text_color(t.dim))
+          .child(div().flex_1().min_w(0).child(Input.new(this.filter).text_size(12.5)))
+          .when(Boolean(query), (s) => s.child(div().id("ws-files-filter-x").flex_none().cursor_pointer().text_color(t.dim).hover((x) => x.text_color(t.foreground))
+            .on_click((_e, cx) => { this.filter.set_value(""); cx.notify(); }).child(svg("mods/ws-files/x.svg").size(12))))))
+      .child(v_flex().id("ws-files-tree").flex_1().min_h(0).overflow_y_scrollbar().track_scroll(this.treeScroll).px(6).pb(6)
+        .children(rows.map((r) => this.treeRow(t, r)))
+        .when(Boolean(this.error) || !rows.length, (s) => s.child(div().p(8).text_size(12).text_color(t.dim)
+          .child(this.error || (query ? "No file names match" : this.loading && !this.entries.size ? "Loading files…" : this.root ? "This folder is empty" : "No folder"))))
+        .when(this.limited, (s) => s.child(div().p(8).text_size(11).text_color(t.dim).child("File list limited to 500 entries per folder and 5,000 total"))));
+  }
+
+  treeRow(t, r) {
+    const abs = `${this.root}/${r.path}`, mark = r.dir ? null : this.marks[abs], open = this.file === r.path;
+    const dim = this.showIgnored && this.hidden(r.path, { name: r.name }, true);
+    return h_flex().id(`file-${r.path}`).h(26).flex_none().pl(6 + r.depth * 14).pr(8).gap(6).items_center().rounded(6).cursor_pointer().text_size(12.5)
+      .when(open, (s) => s.bg(t.selected)).hover((s) => s.bg(t.hover))
+      .when(dim, (s) => s.text_color(t.dim))
+      .drag_paths([abs], { on: this.on ?? null })
+      .on_click((_e, cx) => (r.dir ? this.toggle(r.path, cx) : this.pick(r.path, cx)))
+      .child(r.dir ? svg(`mods/ws-files/chevron-${r.open ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim) : div().w(12).flex_none())
+      .child(svg(`mods/ws-files/${iconOf(r.name, r.dir)}.svg`).size(14).flex_none().text_color(t.muted))
+      .child(div().flex_1().min_w(0).truncate().child(r.name))
+      .when(open && this.dirty, (s) => s.child(div().size(6).flex_none().rounded(3).bg(t.accent)))
+      .when(Boolean(mark), (s) => s.child(div().flex_none().text_size(10.5).font_semibold().text_color(mark === "A" ? t.ansi2 : mark === "D" || mark === "U" ? t.ansi1 : t.blocked).child(mark)));
+  }
+
+  searchView(t) {
+    const s = this.search, q = s.query;
+    const hl = (text, id) => {
+      const lower = text.toLowerCase(), at = q ? lower.indexOf(q.toLowerCase()) : -1;
+      if (at < 0) return div().flex_1().min_w(0).truncate().child(text);
+      const from = Math.max(0, at - 24), pre = (from ? "…" : "") + text.slice(from, at);
+      return h_flex().id(id).flex_1().min_w(0).overflow_hidden().whitespace_nowrap()
+        .child(div().flex_none().child(pre))
+        .child(div().flex_none().px(2).rounded(3).bg(t.selection).text_color(t.foreground).child(text.slice(at, at + q.length)))
+        .child(div().flex_1().min_w(0).truncate().child(text.slice(at + q.length)));
+    };
+    const font = settings();
+    return v_flex().flex_1().min_h(0)
+      .child(div().p(8).flex_none()
+        .child(h_flex().id("ws-files-search").h(28).px(8).gap(6).items_center().rounded(6).border_1().border_color(t.accent).bg(t.background).cursor_text()
+          .on_key_down((e, cx) => { if (e.key === "escape" && this.finder.value()) { this.finder.set_value(""); this.search = { query: "", results: [], count: 0, truncated: false, busy: false, error: null }; cx.stop_propagation(); cx.notify(); } })
+          .child(svg("mods/ws-files/search.svg").size(12).flex_none().text_color(t.dim))
+          .child(div().flex_1().min_w(0).child(Input.new(this.finder).text_size(12.5)))
+          .when(s.count > 0, (x) => x.child(div().flex_none().text_size(11).text_color(t.dim).child(`${s.count}${s.truncated ? "+" : ""}`)))))
+      .child(v_flex().id("ws-files-results").flex_1().min_h(0).overflow_y_scrollbar().px(6).pb(8)
+        .children(s.results.flatMap((g, gi) => [
+          h_flex().id(`ws-files-hit-${gi}`).h(24).mt(gi ? 6 : 0).px(6).gap(6).items_center().text_size(12).font_semibold()
+            .child(svg(`mods/ws-files/${iconOf(g.path, false)}.svg`).size(13).flex_none().text_color(t.muted))
+            .child(div().flex_1().min_w(0).truncate().child(g.path))
+            .child(div().flex_none().text_size(11).text_color(t.dim).child(String(g.matches.length))),
+          ...g.matches.map((m, mi) => h_flex().id(`ws-files-hit-${gi}-${mi}`).h(22).pl(10).pr(6).gap(8).items_center().rounded(5).cursor_pointer()
+            .font_family(font.font_family).text_size(11.5).text_color(t.muted).hover((x) => x.bg(t.hover))
+            .when(this.file === g.path && this.jumped === `${g.path}:${m.line}`, (x) => x.bg(t.selected))
+            .on_click((_e, cx) => { this.jumped = `${g.path}:${m.line}`; this.expandTo(g.path, cx); this.pick(g.path, cx, { line: m.line, col: m.col }); })
+            .child(div().w(26).flex_none().text_right().text_color(t.dim).child(String(m.line)))
+            .child(hl(m.text.trim(), `ws-files-hl-${gi}-${mi}`))),
+        ]))
+        .when(!s.results.length, (x) => x.child(div().p(8).text_size(12).text_color(t.dim)
+          .child(s.busy ? "Searching…" : s.error ? s.error : q ? "No matches" : "Search the contents of this folder"))));
+  }
+
+  // The viewer's state: which screen it shows.
+  state() {
+    if (!this.file) return "empty";
+    if (this.fileGone && !this.dirty) return "gone";
+    if (this.loadingFile) return "loading";
+    if (this.fileError) return "error";
+    if (this.fk === "binary") return "binary";
+    if (this.fk === "image") return "image";
+    if (!this.code) return "loading";
+    return "text";
+  }
+
+  header(t, st, narrow) {
+    const p = props() ?? {}, { dir, base } = splitDirBase(this.file ?? "");
+    const editable = Boolean(this.code) && this.snapshot !== null;
+    const pk = this.file && st === "text" && !this.truncated ? previewKind(this.file) : null;
+    const pill = (label, color, dot = false) => h_flex().flex_none().h(18).px(6).gap(4).items_center().rounded(4).text_size(11).bg(fade(color, 0.14)).text_color(color)
+      .when(dot, (s) => s.child(div().size(6).rounded(3).bg(color))).child(label);
+    // A strip under the header holds the one primary action (Reload, Retry, Save as new, Save & switch).
+    const failed = this.conflict || Boolean(this.saveError) || (this.fileGone && this.dirty) || Boolean(this.pendingSwitch);
+    const seg = (mode, label) => div().id(`ws-files-mode-${mode}`).h(22).px(8).flex().items_center().rounded(5).cursor_pointer().text_size(12)
+      .text_color(this.mode === mode ? t.foreground : t.muted).when(this.mode === mode, (s) => s.bg(t.selected).font_medium()).hover((s) => s.text_color(t.foreground))
+      .on_click((_e, cx) => this.setMode(mode, cx)).child(label);
+    const copied = Boolean(this.copiedAt);
+    const copy = this.iconButton(t, "ws-files-copy", copied ? "check" : "copy", copied ? "Copied" : `Copy path`, (cx) => this.copyPath(cx));
+    const save = window()?.platform === "macos" ? "⌘S" : "Ctrl+S";
+    const actions = [];
+    if (this.pendingSwitch) { /* the strip under the bar holds the answers */ }
+    else if (st === "gone" || st === "binary" || st === "error") actions.push(copy);
+    else if (st === "loading" || st === "empty") { /* nothing yet */ }
+    else if (failed) actions.push(this.textButton(t, "ws-files-discard", "Discard", (cx) => this.discard(cx)));
+    else if (this.dirty) actions.push(this.textButton(t, "ws-files-discard", "Discard", (cx) => this.discard(cx)), this.textButton(t, "ws-files-save", this.saving ? "Saving…" : "Save", (cx) => this.save(cx, { asNew: this.fileGone }), "solid", narrow ? null : save));
+    else if (this.truncated || st === "image") {
+      actions.push(copy);
+      if (!narrow) actions.push(this.iconButton(t, "ws-files-refresh", "refresh", "Reload from disk", (cx) => this.show(this.file, cx)));
+      if (!this.on) actions.push(this.openIn(t, "ws-files-open", "solid", narrow));
+    } else {
+      actions.push(copy);
+      if (!narrow) actions.push(this.iconButton(t, "ws-files-reveal", "reveal", "Reveal in tree", (cx) => this.revealInTree(cx)), this.iconButton(t, "ws-files-refresh", "refresh", "Reload from disk", (cx) => this.recheck(cx)));
+      if (!this.on) actions.push(this.openIn(t, "ws-files-open", "outline", narrow));
+    }
+    const sized = !narrow && this.fileSize !== null && (st === "text" || st === "image");
+    const font = settings();
+    return h_flex().h(38).flex_none().pl(narrow ? 6 : 12).pr(8).gap(8).items_center().border_b(1).border_color(t.border)
+      .when(narrow && Boolean(this.file), (s) => s.child(this.iconButton(t, "ws-files-back", "arrow-left", "Back to the folder", (cx) => this.closeFile(cx))))
+      .child(h_flex().flex_1().min_w(0).items_center().gap(8)
+        .child(h_flex().id("ws-files-path").min_w(0).flex_shrink(1).font_family(font.font_family).text_size(12.5).tooltip(this.file ? `${this.root}/${this.file}` : "")
+          .child(div().flex_shrink(1).min_w(0).truncate().text_color(t.dim).child(dir))
+          .child(div().flex_none().text_color(t.foreground).font_medium().child(base)))
+        .when(this.dirty, (s) => s.child(pill("Unsaved", t.blocked, true)))
+        .when(!this.dirty && st === "text" && (this.truncated || Boolean(this.on)), (s) => s.child(pill("Read-only", t.muted))))
+      .when(Boolean(pk), (s) => s.child(h_flex().flex_none().p(2).gap(1).rounded(7).border_1().border_color(t.border)
+        .child(seg("source", "Source")).child(seg("preview", "Preview")).when(!narrow, (x) => x.child(seg("split", "Split")))))
+      .when(sized, (s) => s.child(div().flex_none().text_size(11.5).text_color(t.dim).child(formatSize(this.fileSize))))
+      .children(actions)
+      .when(Boolean(p.file) && !narrow, (s) => s.child(this.iconButton(t, "ws-files-x", "x", "Close", () => closeOverlay(p.overlay))));
+  }
+
+  // The strips under the header: a failed save, a file deleted under a draft, a switch with unsaved
+  // edits, a file cut short. One primary action each.
+  banners(t, narrow) {
+    const out = [];
+    // Narrow (beside a terminal): the buttons go under the words.
+    const strip = (id, icon, color, title, body, buttons) => {
+      const words = h_flex().flex_1().min_w(0).gap(10).items_center()
+        .child(svg(`mods/ws-files/${icon}.svg`).size(14).flex_none().text_color(color))
+        .child(v_flex().flex_1().min_w(0).gap(1).child(div().text_size(12.5).font_medium().child(title)).when(Boolean(body), (s) => s.child(div().text_size(11.5).text_color(t.muted).child(body))));
+      const box = narrow ? v_flex().gap(8).items_stretch() : h_flex().gap(10).items_center();
+      return box.id(id).flex_none().px(12).py(8).border_b(1).border_color(t.border).bg(fade(color, 0.08))
+        .child(words).child(h_flex().flex_none().gap(8).justify_end().children(buttons));
+    };
+    const name = baseName(this.file ?? "");
+    if (this.pendingSwitch) {
+      out.push(strip("ws-files-switch", "warn", t.blocked, `Unsaved changes in ${name}`, null, [
+        this.textButton(t, "ws-files-sw-cancel", "Cancel", (cx) => this.settleSwitch("cancel", cx)),
+        this.textButton(t, "ws-files-sw-discard", "Discard & switch", (cx) => this.settleSwitch("discard", cx), "outline"),
+        this.textButton(t, "ws-files-sw-save", "Save & switch", (cx) => this.settleSwitch("save", cx), "solid"),
+      ]));
+    }
+    if (this.fileGone && this.dirty) {
+      out.push(strip("ws-files-gone-draft", "warn", t.blocked, "This file was deleted on disk. Your draft is still here.", null, [
+        this.textButton(t, "ws-files-save-new", "Save as new", (cx) => this.save(cx, { asNew: true }), "solid"),
+      ]));
+    } else if (this.conflict) {
+      out.push(strip("ws-files-conflict", "warn", t.blocked, "File changed on disk while you were editing.", "Your unsaved changes are still in the editor below.", [
+        this.textButton(t, "ws-files-overwrite", "Overwrite", (cx) => this.save(cx, { force: true }), "outline"),
+        this.textButton(t, "ws-files-reload", "Reload from disk", (cx) => this.reload(cx), "solid"),
+      ]));
+    } else if (this.saveError) {
+      out.push(strip("ws-files-save-error", "warn", t.ansi1, `Couldn't save ${name}.`, `${this.saveError} Your changes are still in the editor.`, [
+        this.textButton(t, "ws-files-retry", "Retry save", (cx) => this.save(cx), "solid"),
+      ]));
+    }
+    if (this.truncated && this.code) {
+      out.push(h_flex().flex_none().h(30).px(12).gap(8).items_center().border_b(1).border_color(t.border).text_size(12).text_color(t.muted)
+        .child(svg("mods/ws-files/info.svg").size(13).flex_none())
+        .child(div().flex_1().min_w(0).truncate().child(`Only the first ${formatSize(DISPLAY_LIMIT)} is shown, so it can't be saved.`)));
     }
     return out;
   }
 
-  // Its first row: Herdr's title row (a card of its own), the view's header (full size),
-  // or one slim row under the pane's own header (a pane beside the terminals).
-  head(t) {
-    const p = props() ?? {};
-    const back = (w) => div().id("files-back").w(w).flex_none().cursor_pointer().text_color(t.muted).hover(s => s.text_color(t.foreground)).tooltip("Back to the folder").on_click((_e, cx) => { this.show(null); cx.notify(); }).child("←");
-    const folder = this.root?.split(/[\\/]/).pop() ?? "";
-    if (p.screen) {
-      return h_flex().h(48).flex_none().px(16).gap(10).items_center().border_b(1).border_color(t.border)
-        .when(Boolean(this.file), el => el.child(back(16)))
-        .child(svg("mods/ws-files/folder.svg").size(16).flex_none().text_color(t.muted))
-        .child(div().flex_none().font_semibold().child("Files"))
-        .child(div().flex_none().text_size(12).text_color(t.dim).child(folder))
-        .child(div().flex_1().min_w(0).truncate().text_right().text_size(12).text_color(t.dim).child(this.file ?? ""));
+  // A centered screen (empty, binary, gone, failed read).
+  centered(t, icon, title, body, buttons = []) {
+    return v_flex().flex_1().min_h(0).items_center().justify_center().gap(10).p(24)
+      .child(div().size(38).rounded(9).border_1().border_color(t.border).bg(t.surface).flex().items_center().justify_center().child(svg(`mods/ws-files/${icon}.svg`).size(16).text_color(t.muted)))
+      .child(div().text_size(14).font_semibold().child(title))
+      .child(div().max_w(420).text_size(12.5).text_color(t.muted).text_center().child(body))
+      .when(buttons.length > 0, (s) => s.child(h_flex().mt(4).gap(8).children(buttons)));
+  }
+
+  editorEl() {
+    const font = settings();
+    return Editor.new(this.code).font_family(font.font_family).text_size(font.font_size).flex_1().min_h(0).size_full();
+  }
+
+  mdPreview(t, wide) {
+    return v_flex().id("ws-files-md").flex_1().min_h(0).size_full().overflow_y_scrollbar()
+      .child(h_flex().w_full().justify_center()
+        .child(div().w_full().when(wide, (s) => s.max_w(720)).px(24).py(18).text_size(14)
+          .child(TextView.markdown(`ws-files-md-${this.mdSeq}`, this.mdText).selectable(true).scrollable(false)
+            .on_link_click((url, cx) => this.linkClicked(url, cx)))));
+  }
+
+  // An image fitted to the room it has (its own size when known, never larger).
+  imageEl(t, roomW, roomH, caption = true) {
+    const img = this.img;
+    if (!img) {
+      return this.centered(t, "image", this.on ? "Image on another machine" : (this.fileSize ?? 0) > IMAGE_LIMIT ? "Image too large to preview" : this.imgError ? "Can't preview this image" : "Loading image…",
+        this.on ? "Herdr previews images on this computer only." : (this.fileSize ?? 0) > IMAGE_LIMIT ? `${formatSize(this.fileSize)}: previews stop at ${formatSize(IMAGE_LIMIT)}.` : this.imgError ?? "");
     }
-    if (p.beside) {
-      return h_flex().h(30).flex_none().px(12).gap(8).items_center().border_b(1).border_color(t.border).text_size(11.5)
-        .when(Boolean(this.file), el => el.child(back(14)))
-        .child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(this.file ? `${folder}/${this.file}` : folder));
+    const { w, h } = fitImage(img.w, img.h, Math.max(80, roomW - 64), Math.max(80, roomH - (caption ? 80 : 40)));
+    return v_flex().flex_1().min_h(0).size_full().overflow_hidden().items_center().justify_center().gap(10).p(16)
+      .child(div().rounded(8).border_1().border_color(t.border).bg(t.surface).p(8)
+        .child(div().id(`ws-files-img-${this.imgGen ?? 0}`).child(image(img.asset).w(w).h(h))))
+      .when(caption && Boolean(img.w), (s) => s.child(div().text_size(11.5).text_color(t.dim).child(`${img.fmt} · ${img.w} × ${img.h}`)));
+  }
+
+  viewerBody(t, st, narrow, room) {
+    if (st === "empty") return this.centered(t, "folder", "Select a file", "Pick any file on the left to read, preview, or edit it, or Cmd-click a path in a terminal.");
+    if (st === "loading") {
+      return v_flex().flex_1().min_h(0).p(16).gap(10).children([0.7, 0.5, 0.85, 0.4, 0.6, 0.75].map((f, i) =>
+        div().h(10).w(Math.round(f * Math.min(560, room.w - 40))).rounded(4).bg(t.raised).loop("opacity", { from: 0.4, to: 1, period: 1200 + i * 60 })));
     }
-    return h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
-      .when(Boolean(this.file), el => el.child(back(20)))
-      .child(div().font_semibold().child("Files"))
-      .child(div().flex_1().min_w(0).truncate().text_right().text_size(12).text_color(t.dim).child(this.file ?? folder));
+    if (st === "gone") {
+      return this.centered(t, "warn", "This file is no longer on disk", `${this.file} was moved or deleted outside Herdr.`, [
+        this.textButton(t, "ws-files-gone-back", "Back to folder", (cx) => this.closeFile(cx), "solid"),
+        this.textButton(t, "ws-files-gone-refresh", "Refresh tree", (cx) => this.refresh(cx), "outline"),
+      ]);
+    }
+    if (st === "error") return this.centered(t, "warn", "Can't open this file", this.fileError);
+    if (st === "binary") {
+      const size = this.fileSize !== null ? ` · ${formatSize(this.fileSize)}` : "";
+      return this.centered(t, "file", "Binary file", `${typeName(this.file)}${size}. Herdr can't preview this format directly.`, this.on ? [] : [this.openIn(t, "ws-files-open-bin", "outline", false)]);
+    }
+    if (st === "image") return this.imageEl(t, room.w, room.h);
+    // Text: the editor, or Preview / Split for Markdown and SVG.
+    const pk = previewKind(this.file);
+    const mode = pk && !this.truncated ? (narrow && this.mode === "split" ? "preview" : this.mode ?? "preview") : "source";
+    const preview = (wide, w) => (pk === "svg" ? this.imageEl(t, w, room.h, false) : this.mdPreview(t, wide));
+    if (mode === "preview") return preview(true, room.w);
+    if (mode === "split") {
+      return h_resizable("ws-files-split").flex_1().min_h(0).size_full()
+        .child(resizable_panel().size(Math.round(room.w / 2)).size_range(200).child(div().size_full().border_r(1).border_color(t.border).child(this.editorEl())))
+        .child(resizable_panel().size_range(200).child(preview(false, room.w / 2)));
+    }
+    return this.editorEl();
+  }
+
+  viewer(t, narrow, room) {
+    const st = this.state();
+    return v_flex().size_full().min_h(0).min_w(0).bg(t.background)
+      .child(this.header(t, st, narrow))
+      .children(this.file ? this.banners(t, narrow) : [])
+      .child(this.viewerBody(t, st, narrow, room));
   }
 
   render(cx) {
     this.place(); // a focus change is remembered at once
-    const t = theme();
-    const font = this.code ? settings() : null;
-    // A card of its own only where nothing frames it (Herdr's panel); a pane's frame or the view's area is the card.
-    const card = !props()?.screen && !props()?.beside;
+    const t = theme(), p = props() ?? {};
+    // A card of its own only where nothing frames it (Herdr's panel); a pane's frame, the view's area or the dialog is the card.
+    const card = !p.screen && !p.beside && !p.file;
+    const width = this.size?.width ?? 0, height = this.size?.height ?? 600;
+    const narrow = width > 0 ? width < NARROW : Boolean(p.beside);
+    // The room the viewer has, in the units sizes are given in (the measured size is zoomed; .w() isn't yet).
+    const zoom = Number(settings().zoom) > 0 ? Number(settings().zoom) : 1;
+    const railW = this.railW ?? RAIL;
+    const room = { w: Math.max(200, (narrow ? width : width - railW * zoom) / zoom), h: Math.max(160, height / zoom - 38) };
+    const body = narrow
+      ? (this.file ? this.viewer(t, true, room) : this.railView(t, true))
+      : h_resizable("ws-files-main").size_full().on_resize((sizes, cx) => { this.railW = sizes[0]; cx.notify(); })
+        .child(resizable_panel().size(RAIL).size_range(180, 420).child(this.railView(t, false)))
+        .child(resizable_panel().child(this.viewer(t, false, room)));
     return v_flex().id("files").size_full().min_h(0).overflow_hidden().bg(t.background).text_color(t.foreground).text_size(13).track_focus(this.handle)
+      .on_size_change((size, cx) => {
+        if (size.width === this.size?.width && size.height === this.size?.height) return;
+        this.size = { width: size.width, height: size.height };
+        cx.notify();
+      })
+      .on_key_down((e, cx) => this.keyDown(e, cx))
       .when(card, el => el.rounded(10).border_1().border_color(t.border))
-      .child(this.head(t))
-      .when(!this.file, el => el.child(v_flex().id("files-tree").flex_1().min_h(0).overflow_y_scrollbar().p(6).children(this.rows("", 0, [], t))
-        .when(Boolean(this.error) || !this.entries.get("")?.length, el => el.child(div().p(8).text_size(12).text_color(t.dim).child(this.error || (this.loading ? "Loading files…" : this.root ? "No files" : "No folder"))))
-        .when(this.limited, el => el.child(div().p(8).text_size(11).text_color(t.dim).child("File list limited to 500 entries per folder and 5,000 total")))))
-      .when(Boolean(this.file), el => el.child(this.code
-        ? Editor.new(this.code).font_family(font.font_family).text_size(font.font_size).flex_1().min_h(0)
-        : div().p(12).text_color(t.dim).child(this.fileError || "Loading file…")));
+      .child(body);
   }
 }

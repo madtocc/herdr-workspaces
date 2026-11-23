@@ -45,6 +45,14 @@
 //                        closes; it does too when it's the one shown)
 //   workspaces.follow    tab id -> pane id: the terminal Changes and Files opened as panes in that tab follow
 //                        (ws-changes and ws-files write it)
+//   workspaces.files.open    [{ id, path, isDir, line?, col?, on?, space?, tab?, placement, at }]: a file or folder to
+//                        open in Files (ws-files' link.js on a Cmd-click in a terminal, Changes' Open in Files,
+//                        Settings' Herdr guide; a list like workspaces.view, each id done once: openFiles()).
+//                        Beside the terminal in its tab (that tab's Files pane if it has one), full size on
+//                        another machine's space, in a dialog when there's no space to open it in
+//   workspaces.files.target  { id, scope: "screen" | "tab" | "pane", space?, tab?, pane?, path, isDir, line, col, on, at }:
+//                        which Files copy opens it (ws-files takes it, marking it taken); one at a time
+//   workspaces.files.prefs   { byExt, last }: Files' Open with… memory (~/.herdr/files-prefs.json), so every copy follows a pick
 //   workspaces.beside.panes  pane id -> { ws, screen }: the views this block opened as panes (nothing else tells them
 //                        from a pane split in by hand; beside.js). Closed when the view's add-on is turned off;
 //                        an entry goes once its pane has been gone a while (followBeside())
@@ -369,6 +377,9 @@ export default class Workspaces extends View {
     // The tab bar's asks already there at start were for an earlier run: none is done again.
     this.viewSeen = drainAsks(shared("workspaces.view"), [], Date.now()).seen;
     { const q = shared("workspaces.view"); this.viewLast = Array.isArray(q) && q.length ? q[q.length - 1]?.id : null; }
+    // The same for the files asked for (workspaces.files.open).
+    this.filesSeen = drainAsks(shared("workspaces.files.open"), [], Date.now()).seen;
+    { const q = shared("workspaces.files.open"); this.filesLast = Array.isArray(q) && q.length ? q[q.length - 1]?.id : null; }
     this.runAsked = shared("workspaces.automation.run")?.at;
     this.scratchAsked = shared("workspaces.scratch")?.at;
     this.allowAsked = shared("workspaces.automation.allow")?.at;
@@ -1166,7 +1177,60 @@ export default class Workspaces extends View {
       // Shown now, not on the next draw or 500 ms tick (sync() only places and shows; it starts no task).
       if (views.run.length) this.sync();
     }
+    const files = shared("workspaces.files.open");
+    const lastFile = Array.isArray(files) && files.length ? files[files.length - 1]?.id : null;
+    if (lastFile !== this.filesLast) {
+      this.filesLast = lastFile;
+      const asks = drainAsks(files, this.filesSeen, Date.now());
+      this.filesSeen = asks.seen;
+      this.filesWaiting = [...(this.filesWaiting ?? []), ...asks.run.filter((a) => typeof a.path === "string" && a.path)];
+    }
+    // One at a time: the next once Files took the last target (or it's had 1.5s), so two asks close
+    // together both open (there's one target slot). None older than 15s.
+    if (this.filesWaiting?.length) {
+      const now = Date.now(), cur = shared("workspaces.files.target");
+      if (!cur || cur.taken || now - (cur.at ?? 0) > 1500) {
+        let a = this.filesWaiting.shift();
+        while (a && now - (a.at ?? 0) >= 15000) a = this.filesWaiting.shift();
+        if (a) { this.openFiles(a, cx); this.sync(); }
+      }
+    }
     if (this.besideWaiting?.length) this.nextBeside(cx);
+  }
+
+  // A file or folder asked for in Files (shared "workspaces.files.open"), published for the copy that
+  // opens it (shared "workspaces.files.target"). In the asker's space and tab while they're there, else
+  // the shown ones. Beside the terminal: that tab's Files pane when it has one (focused), else a new
+  // one split beside it. Full size on another machine's space (a mod pane can't join a tab there), when
+  // asked, or in a space with no tab. With no space at all (an empty workspace), in a dialog.
+  openFiles(ask, cx) {
+    const all = spaces(), covered = Boolean(shared("workspaces.covered"));
+    const space = (ask.space ? all.find((s) => s.id === ask.space) : null) ?? (covered ? null : all.find((s) => s.active) ?? null);
+    const at = Date.now(), asked = { id: ask.id, path: ask.path, isDir: Boolean(ask.isDir), line: ask.line ?? null, col: ask.col ?? null, at };
+    if (!space) {
+      if (ask.isDir) { notify({ title: "Files belongs to a space", body: "Start a space with + first.", level: "info" }); return; }
+      openOverlay({ mod: "ws-files", kind: "dialog", width: 960, height: 680, props: { file: ask.path, line: ask.line ?? null } });
+      return;
+    }
+    const active = shared("workspaces.active") ?? null;
+    const tab = (ask.tab ? (space.tabs ?? []).find((c) => c.id === ask.tab) : null) ?? (space.tabs ?? []).find((c) => c.active) ?? (space.tabs ?? [])[0] ?? null;
+    if (ask.placement === "full" || space.machine || !tab) {
+      const pins = shared("workspaces.screens.space") ?? {};
+      if (!(pins[space.id] ?? []).includes("files")) setShared("workspaces.screens.space", { ...pins, [space.id]: [...(pins[space.id] ?? []), "files"] });
+      if (!space.active) run("space.select", { id: space.id });
+      // An ask that says where (on: null is this computer, as Settings' guide is) keeps it; else the space's machine.
+      setShared("workspaces.files.target", { ...asked, scope: "screen", space: space.id, on: "on" in ask ? ask.on ?? null : space.machine ?? null });
+      setShared("workspaces.screen", { ws: active, space: space.id, screen: "files", at });
+      return;
+    }
+    const ps = panes(), open = openIn(shared(LEDGER) ?? {}, ps, tab.id, undefined, "files");
+    if (!space.active) run("space.select", { id: space.id });
+    if (!tab.active) run("tab.select", { id: tab.id });
+    // The tab is shown now, so openBeside() puts the pane there (it goes by the shown tab). The target is
+    // published only when a pane is focused or on its way: else no Files pane would take it, and one
+    // opened later in that tab would jump to it.
+    const placed = this.openBeside({ key: "files", ws: active, space: { ...space, tabs: (space.tabs ?? []).map((c) => ({ ...c, active: c.id === tab.id })) }, move: false }, cx);
+    if (placed) setShared("workspaces.files.target", { ...asked, scope: open ? "pane" : "tab", pane: open?.pane ?? null, tab: tab.id, on: null });
   }
 
   // A view asked for from the tab bar (shared "workspaces.view"): in the shown space and workspace.
@@ -1203,7 +1267,7 @@ export default class Workspaces extends View {
   // A view shown full size gives way, so the pane is seen; move: its pill closes too, once the pane is
   // there. Only in a space of this computer's (a mod pane can't join a tab on another machine) that has
   // a tab. One split per tab at a time: an ask while one is under way waits for it (nextBeside()), so
-  // the second view stacks under the first.
+  // the second view stacks under the first. Returns true when a pane is focused, split or waiting.
   openBeside({ key, ws, space, move = false }, cx) {
     const s = screenOf(key);
     // A key can still ask on another machine's space (the menu has no split icons there): say why not.
@@ -1212,7 +1276,7 @@ export default class Workspaces extends View {
     const tab = space.tabs.find((c) => c.active) ?? space.tabs[0];
     this.besideBusy ??= new Set();
     this.besideWaiting ??= [];
-    if (this.besideBusy.has(tab.id)) { this.besideWaiting.push({ key, ws, space: space.id, tab: tab.id, move, at: Date.now() }); return; }
+    if (this.besideBusy.has(tab.id)) { this.besideWaiting.push({ key, ws, space: space.id, tab: tab.id, move, at: Date.now() }); return true; }
     const ledger = shared(LEDGER) ?? {}, ps = panes();
     const open = openIn(ledger, ps, tab.id, s.space ? undefined : ws ?? null, key);
     if (open) {
@@ -1221,7 +1285,7 @@ export default class Workspaces extends View {
       const zoomed = ps.find((p) => p.tab === tab.id && p.zoomed && p.pane !== open.pane);
       if (zoomed) run("pane.zoom", { pane: zoomed.pane }); // on the zoomed pane, it unzooms
       run("pane.focus", { pane: open.pane });
-      return;
+      return true;
     }
     const at = splitAt(ledger, ps, tab.id);
     if (!at) return;
@@ -1247,6 +1311,7 @@ export default class Workspaces extends View {
       }
       this.besideBusy.delete(tab.id);
     });
+    return true;
   }
 
   // The beside asks that waited for their tab's split: each runs once its tab is free, while that tab is

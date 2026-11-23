@@ -23,6 +23,9 @@
 // 5. The commit box: Commit is greyed while the place shown is behind the one it now
 //    follows (up to one 400ms tick), and a typed message comes back when the new place
 //    is the same repo on the same machine.
+// 6. Open in Files: the selected file's row (not a deleted one) has a quiet icon that opens
+//    it in the Files view, beside this terminal (shared "workspaces.files.open", which the
+//    switcher's sidebar copy drains).
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list } from "gpui-base";
 import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, props, shared, setShared, checking, machines } from "herdr";
@@ -244,6 +247,16 @@ export default class Changes extends View {
     this.gutterChars = Math.max(4, String(Math.max(0, ...this.rows.map(row => row.number ?? 0))).length);
   }
 
+  // Asks the switcher to open a changed file in Files (shared "workspaces.files.open", a short list
+  // like "workspaces.view": the newest last, each id once, none older than 15s).
+  openInFiles(path) {
+    if (!this.root) return;
+    const loc = this.place(), now = Date.now(), queue = shared("workspaces.files.open");
+    const ask = { path: `${this.root}/${path}`, isDir: false, line: null, on: this.on ?? null, space: loc.space ?? null, tab: loc.tab ?? null, placement: "beside",
+      id: `${now}-changes-${Math.random().toString(36).slice(2, 8)}`, at: now };
+    setShared("workspaces.files.open", [...(Array.isArray(queue) ? queue : []).filter((a) => a && typeof a === "object" && now - (a.at ?? 0) < 15000), ask].slice(-64));
+  }
+
   pick(path, cx) {
     this.open = this.open === path ? null : path; this.setLines([]); this.note = null;
     this.closed = !this.open;
@@ -333,7 +346,11 @@ export default class Changes extends View {
         return h_flex().id(`change-${f.path}`).h(28).flex_none().px(8).gap(8).items_center().rounded(7).cursor_pointer().when(this.open === f.path, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.pick(f.path, cx))
           .child(div().w(14).text_size(11).text_color(f.status === "A" ? t.ansi2 : f.status === "D" ? t.ansi1 : f.status === "U" ? t.ansi1 : t.blocked).child(f.status))
           .child(h_flex().flex_1().min_w(0).child(div().text_color(t.dim).truncate().child(parts.length ? parts.join("/") + "/" : "")).child(div().max_w(260).min_w(0).truncate().child(name)))
-          .when(f.add > 0, (e) => e.child(div().text_size(11).text_color(t.ansi2).child(`+${f.add}`))).when(f.del > 0, (e) => e.child(div().text_size(11).text_color(t.ansi1).child(`−${f.del}`)));
+          .when(f.add > 0, (e) => e.child(div().text_size(11).text_color(t.ansi2).child(`+${f.add}`))).when(f.del > 0, (e) => e.child(div().text_size(11).text_color(t.ansi1).child(`−${f.del}`)))
+          .when(this.open === f.path && f.status !== "D", (e) => e.child(div().id(`change-files-${f.path}`).size(20).flex_none().flex().items_center().justify_center().rounded(5).text_color(t.muted)
+            .hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip("Open in Files")
+            .on_click((_e, cx) => { cx.stop_propagation(); this.openInFiles(f.path); })
+            .child(svg("mods/ws-files/external-link.svg").size(12))));
       })).when(!this.files.length, (e) => e.child(div().p(8).text_color(t.dim).child(this.error || (this.loading ? "Loading changes…" : this.root ? "No uncommitted changes" : "No folder")))))
         .child(Scrollbar.vertical("changes-list").absolute().inset_0()))
       .when(this.limited, el => el.child(div().px(12).py(4).text_size(11).text_color(t.dim).child("Showing the first 1,000 changed files")))

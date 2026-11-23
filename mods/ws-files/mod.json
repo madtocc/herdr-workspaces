@@ -1,5 +1,9 @@
 {
   "place": "none",
+  "focusable": true,
+  "link_handlers": [
+    { "kind": "file", "pattern": ".+" }
+  ],
   "cloned_from": {
     "name": "files",
     "version": "0.1.17"

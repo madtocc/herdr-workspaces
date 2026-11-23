@@ -41,8 +41,8 @@ cmp -s "$src/mods/ws-switcher/knobs.js" "$src/mods/ws-presets/knobs.js" || {
   exit 1
 }
 
-# Settings (Features, Experimental), the Agents list, the switcher's runners and the status bar read the package's settings (~/.herdr/settings.jsonc) by the same rules.
-for mod in ws-agents ws-switcher ws-status; do
+# Settings (Features, Files, Experimental), the Agents list, the switcher's runners, the status bar and Files read the package's settings (~/.herdr/settings.jsonc) by the same rules.
+for mod in ws-agents ws-switcher ws-status ws-files; do
   cmp -s "$src/mods/ws-settings/settingsfacts.js" "$src/mods/$mod/settingsfacts.js" || {
     echo "mods/ws-settings/settingsfacts.js and mods/$mod/settingsfacts.js differ: make them the same first" >&2
     exit 1

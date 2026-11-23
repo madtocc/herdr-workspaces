@@ -1,6 +1,9 @@
 {
   "id": "root",
   "toast": "ws-toast",
+  "link_handlers": [
+    "ws-files"
+  ],
   "cloned_from": {
     "name": "main",
     "version": "0.1.14"

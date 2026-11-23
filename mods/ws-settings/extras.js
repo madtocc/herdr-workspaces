@@ -1,4 +1,4 @@
-// The Workspaces package's own sections of ws-settings (Features, Agents and Experimental), drawn inside
+// The Workspaces package's own sections of ws-settings (Features, Agents, Files and Experimental), drawn inside
 // the Settings window that ws-switcher/settingsbuild.js builds from Herdr's (main.js here).
 // These are plain functions on that window's view, so they don't depend on Herdr's own methods;
 // their state lives on the view as `view.wsx`.
@@ -10,27 +10,35 @@
 //   many there are, from shared "workspaces.automations" (the switcher's runner publishes it).
 // - Agents: every switch the package has for agents, in one place:
 //   - STARTING AGENTS: Herdr guide for every agent (herdr-ws-agent --guide on/off, Edit / Write
-//     one for ~/.herdr/AGENTS.md) and Bring agents back after a restart (herdr-ws-resume --on/--off).
+//     one for ~/.herdr/AGENTS.md, which opens it in the Files view: shared "workspaces.files.open",
+//     the window closing first) and Bring agents back after a restart (herdr-ws-resume --on/--off).
 //   - IN THE + MENU: one row per installed agent (hidefacts.js: ~/.herdr/agent-menu.json,
 //     mirrored in shared "new-menu.hidden", knownAgents()).
 //   - WHILE HERDR IS CLOSED: Keep running (shared "workspaces.runner", set through
 //     "workspaces.runner.set").
+// - Files: Files' defaults, "files" in ~/.herdr/settings.jsonc (settingsfacts.js FILES_SETTINGS):
+//   VIEWING (Markdown & SVG open in, Default external app, Show ignored files) and OPENING FROM
+//   TERMINALS (Cmd-click a file path, Files to catch). Default external app's list (appChoices)
+//   is the editors installed and the apps macOS offers for a text file, found once a window
+//   while Files is shown; its popup is the window's `picking` ("wsx-files-app"), so a section
+//   change closes it as it closes the font lists.
 // - Experimental: the experiments in ~/.herdr/settings.jsonc (settingsfacts.js), each off until
 //   turned on, with what it does and why it's experimental.
-// A switch on Features or Experimental rewrites only its value in the file (comments kept) and
-// sets shared "workspaces.settings" so the mods that read it follow at once.
+// A switch or choice on Features, Files or Experimental rewrites only its value in the file
+// (comments kept) and sets shared "workspaces.settings" so the mods that read it follow at once.
 
 import { div, svg, image } from "gpui-kit";
-import { v_flex, h_flex } from "gpui-base";
-import { theme, shared, setShared, exec, home, appHome, readTextFile, writeTextFile, notify, window, checking, knownAgents } from "herdr";
+import { v_flex, h_flex, Popup } from "gpui-base";
+import { theme, shared, setShared, exec, home, appHome, readTextFile, writeTextFile, notify, checking, knownAgents, props, closeOverlay, window } from "herdr";
 import * as fs from "fs/promises";
-import { SETTINGS_FILE, EXPERIMENTS, FEATURES, parseSettings, withExperiment, withFeature, experimentOn, featureOn, automationCount, automationsLine } from "./settingsfacts.js";
+import { SETTINGS_FILE, EXPERIMENTS, FEATURES, FILES_SETTINGS, EDITOR_CATALOG, parseSettings, withExperiment, withFeature, withFileSetting, experimentOn, featureOn, fileSetting, appChoices, appLabel, automationCount, automationsLine } from "./settingsfacts.js";
 import { HIDDEN, hiddenFile, parseHidden, saveHidden, shownAgents, countLine, notInstalledLine } from "./hidefacts.js";
 
 // Our sections in the window's list, after Herdr's.
 export const PACKAGE_SECTIONS = [
   { id: "features", title: "Features", icon: "mods/ws-settings/features.svg" },
   { id: "agents", title: "Agents", icon: "mods/ws-settings/extras.svg" },
+  { id: "files", title: "Files", icon: "mods/ws-settings/files.svg" },
   { id: "experimental", title: "Experimental", icon: "mods/ws-settings/experimental.svg" },
 ];
 
@@ -52,12 +60,13 @@ const guideStarter = () => `${appHome()}/mods/ws-switcher/guide.md`;
 const tilde = (p) => (p.startsWith(`${home()}/`) ? `~${p.slice(home().length)}` : p);
 const errMsg = (e) => String(e?.message ?? e);
 
-// Opens a file in the first installed editor of EDITORS, else the system's text editor.
-const EDITORS = ["zed", "cursor", "code", "subl"];
-function openFile(path) {
-  if (window()?.platform === "windows") return exec("explorer", [path]).catch(() => {});
-  const editors = EDITORS.map((e) => `command -v ${e} >/dev/null 2>&1 && exec ${e} "$1";`).join(" ");
-  return exec("sh", ["-c", `${editors} command -v open >/dev/null 2>&1 && exec open -t "$1"; exec xdg-open "$1"`, "sh", path]).catch(() => {});
+// Opens a file in Herdr's Files view: the switcher's sidebar copy takes the ask (shared
+// "workspaces.files.open", a short list: the newest last, each id once, none older than 15s) and
+// opens it beside the shown terminal, or in a dialog when there's no space.
+function openInFiles(path) {
+  const now = Date.now(), queue = shared("workspaces.files.open");
+  const ask = { path, isDir: false, line: null, on: null, placement: "beside", id: `${now}-settings-${Math.random().toString(36).slice(2, 8)}`, at: now };
+  setShared("workspaces.files.open", [...(Array.isArray(queue) ? queue : []).filter((a) => a && typeof a === "object" && now - (a.at ?? 0) < 15000), ask].slice(-64));
 }
 
 // From the window's init: read the settings file, switches and installed agents once,
@@ -74,10 +83,17 @@ export function packageInit(view, cx) {
     gen: 0, // counts those writes (at their start and end), so a read from before one is dropped
     hiding: 0, // count of in-flight flipAgent saves
     loading: null, // active load() promise, to prevent overlapping polls
+    apps: null, // Default external app's makings: { catalogInstalled, macApps, system } (findApps)
+    appsLoading: false,
   };
   if (checking()) return;
   const refresh = (cx) => cx.spawn(async (cx) => {
-    if (await load(view.wsx)) cx.notify();
+    if (await load(view.wsx)) {
+      // A file that can't be read closes Default external app's list (its choices are greyed).
+      if (view.picking === APP_PICK && view.wsx.settings.error) view.picking = null;
+      cx.notify();
+    }
+    if (view.section === "files" && (await findApps(view.wsx))) cx.notify();
   });
   refresh(cx);
   cx.timer.every(3000, refresh);
@@ -166,6 +182,66 @@ function setSetting(x, edit, isOn, key, cx) {
   });
 }
 
+// One Files setting chosen: only its value changes in the file (withFileSetting, comments kept),
+// and shared "workspaces.settings" gets the whole parse, so open Files views and the Cmd-click
+// handler follow at once. The value the file already has isn't written again (the page's own
+// read can be 3s old, so that's checked on the file, not on the page).
+function setFileSetting(x, key, value, cx) {
+  if (x.busy || x.settings.error) return;
+  x.busy = true;
+  x.gen = (x.gen ?? 0) + 1;
+  cx.spawn(async (cx) => {
+    try {
+      const old = await readTextFile(file()).catch(() => null);
+      const was = parseSettings(old);
+      const next = was.error || fileSetting(was, key) !== value ? withFileSetting(old, key, value) : old;
+      if (next == null) {
+        throw new Error(was.error
+          ? `${tilde(file())} isn't valid JSONC; fix it in the file first`
+          : `${tilde(file())} isn't in a shape this can change safely (a "files" value that isn't a plain value, or written twice); change it in the file`);
+      }
+      if (next !== old) await writeTextFile(file(), next, old ?? undefined);
+      x.text = next;
+      x.settings = parseSettings(next);
+      if (JSON.stringify(x.settings) !== JSON.stringify(shared("workspaces.settings") ?? null)) setShared("workspaces.settings", x.settings);
+    } catch (e) {
+      notify({ title: "Couldn't change it", body: errMsg(e), level: "error" });
+    }
+    x.gen += 1;
+    x.busy = false;
+    cx.notify();
+  });
+}
+
+// Default external app's makings, once a window (true when found now): the editors installed
+// (their commands on PATH, as Files' Open in finds them) and, on macOS, the apps it offers for a
+// text file and the one it opens text with (a sample file under appHome()/data/ws-settings).
+async function findApps(x) {
+  if (x.apps || x.appsLoading) return false;
+  x.appsLoading = true;
+  try {
+    const platform = window()?.platform ?? "macos";
+    let catalogInstalled = [], macApps = [], system = null;
+    if (platform !== "windows") {
+      const bins = EDITOR_CATALOG.map((e) => e.binary).join(" ");
+      const r = await exec("sh", ["-c", `for b in ${bins}; do command -v "$b" >/dev/null 2>&1 && printf '%s\\n' "$b"; done; true`]).catch(() => null);
+      const found = new Set(String(r?.stdout ?? "").split("\n").filter(Boolean));
+      catalogInstalled = EDITOR_CATALOG.filter((e) => found.has(e.binary)).map((e) => e.id);
+    }
+    if (platform === "macos") {
+      const dir = `${appHome()}/data/ws-settings`;
+      await exec("sh", ["-c", 'mkdir -p "$1" && { [ -f "$1/sample.txt" ] || printf "text\\n" >"$1/sample.txt"; }', "sample", dir]).catch(() => null);
+      const jxa = 'function run(argv) { ObjC.import("AppKit"); const ws = $.NSWorkspace.sharedWorkspace, fm = $.NSFileManager.defaultManager, url = $.NSURL.fileURLWithPath(argv[0]); const urls = ws.URLsForApplicationsToOpenURL(url), def = ws.URLForApplicationToOpenURL(url); const out = []; for (let i = 0; i < urls.count && i < 60; i++) { const u = urls.objectAtIndex(i), p = u.path.js; let b = null; try { const bb = $.NSBundle.bundleWithURL(u); b = bb && bb.bundleIdentifier ? bb.bundleIdentifier.js : null; } catch (e) {} out.push({ name: fm.displayNameAtPath(p).js, path: p, bundle: b || null }); } return JSON.stringify({ apps: out, system: def && def.path ? def.path.js : null }); }';
+      const r = await exec("osascript", ["-l", "JavaScript", "-e", jxa, `${dir}/sample.txt`], { timeout: 5000 }).catch(() => null);
+      try { const o = JSON.parse(r?.stdout || "{}"); macApps = o.apps ?? []; system = o.system ?? null; } catch { /* the editors alone */ }
+    }
+    x.apps = { catalogInstalled, macApps, system };
+    return true;
+  } finally {
+    x.appsLoading = false;
+  }
+}
+
 // Give every agent the guide, or none: herdr-ws-agent --guide on / off.
 function flipGuide(x, cx) {
   const on = !(x.guide?.on ?? true);
@@ -179,7 +255,8 @@ function flipGuide(x, cx) {
   });
 }
 
-// Edit opens ~/.herdr/AGENTS.md; with none yet, it's first written from the starter (create-only).
+// Edit opens ~/.herdr/AGENTS.md in Files (the Settings window closes so it's seen); with none yet,
+// it's first written from the starter (create-only).
 function editGuide(x, cx) {
   cx.spawn(async (cx) => {
     const existing = await readTextFile(guideFile()).catch(() => null);
@@ -189,7 +266,8 @@ function editGuide(x, cx) {
       await load(x, true);
       cx.notify();
     }
-    openFile(guideFile());
+    openInFiles(guideFile());
+    if (props()?.overlay) closeOverlay(props().overlay);
   });
 }
 
@@ -254,6 +332,18 @@ function toggle(t, id, on, onClick, off = false) {
     .child(div().w(16).h(16).rounded(8).bg(on ? t.accent_foreground : t.muted));
 }
 
+// A choice of values, drawn as Herdr's Appearance picker (an unchosen one keeps a clear border, so
+// nothing moves when the choice does). off: greyed, no clicks. The chosen one isn't clickable.
+function segmented(t, id, values, now, onPick, off = false) {
+  return h_flex().p(2).gap(2).rounded(8).border_1().border_color(t.border).bg(t.background)
+    .when(off, (el) => el.opacity(0.4))
+    .children(values.map((v) => div().id(`${id}-${v.value}`).px(12).py(4).rounded(6).border_1().text_size(13)
+      .when(now === v.value, (el) => el.bg(t.raised).text_color(t.foreground).border_color(t.border))
+      .when(now !== v.value, (el) => el.border_color("#00000000").text_color(t.muted)
+        .when(!off, (e) => e.cursor_pointer().hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => onPick(v.value, cx))))
+      .child(v.label)));
+}
+
 function button(t, id, label, onClick, tip = "") {
   return div().id(id).px(12).py(5).rounded(7).border_1().border_color(t.border).bg(t.raised).cursor_pointer()
     .text_size(13).text_color(t.foreground).hover((s) => s.bg(t.hover))
@@ -266,7 +356,7 @@ function agentsPage(t, x) {
   const guideSize = g.bytes < 1024 ? `${g.bytes} bytes` : `${(g.bytes / 1024).toFixed(1)} KB`;
   const guideNote = !x.guide ? "" : !g.bytes ? "No guide yet" : g.on ? `On: ${guideSize}` : "Off: agents go without it";
   const guideBtn = !x.guide || g.bytes ? "Edit" : "Write one";
-  const guideTip = g.bytes ? `Open ${tilde(guideFile())}` : `Write ${tilde(guideFile())} from the starter, then open it`;
+  const guideTip = g.bytes ? `Open ${tilde(guideFile())} in Files` : `Write ${tilde(guideFile())} from the starter, then open it in Files`;
 
   const r = x.resume ?? { on: true, count: 0, ready: true };
   const resumeNote = !x.resume ? ""
@@ -372,9 +462,86 @@ function featuresPage(t, x) {
       }))));
 }
 
-// The page: the window's body shows it for our section ids ("features", "agents" and "experimental").
+const APP_PICK = "wsx-files-app"; // the window's `picking` while Default external app's list is open
+
+// Default external app: the app chosen (a trigger drawn as Herdr's font button) and, open, its
+// list under it: Automatic, then the apps (appChoices), the chosen one checked. Closes on a pick,
+// a press outside it, Escape (the window's), a section change and a file that can't be read.
+function appPicker(t, x, view, now, off) {
+  const open = view.picking === APP_PICK && !off;
+  const choices = appChoices({ ...(x.apps ?? {}), current: now });
+  const close = (cx) => { view.picking = null; view.handle?.focus(); cx.notify(); };
+  const trigger = h_flex().id("wsx-files-app").w(220).px(12).py(6).gap(8).items_center().rounded(7).border_1()
+    .border_color(open ? t.accent : t.border).bg(t.raised)
+    .when(off, (el) => el.opacity(0.4))
+    .when(!off, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => {
+      if (open) return close(cx);
+      view.picking = APP_PICK;
+      view.handle?.focus();
+      cx.notify();
+      cx.spawn(async (cx) => { if (await findApps(x)) cx.notify(); });
+    }))
+    .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(now == null ? t.muted : t.foreground).child(appLabel(choices, now)))
+    .child(svg("mods/ws-settings/chevron-down.svg").size(12).flex_none().text_color(t.dim));
+  const item = (id, label, tag) => {
+    const on = id === now;
+    return h_flex().id(`wsx-files-app-${id ?? "auto"}`).flex_none().h(30).px(9).gap(8).items_center().rounded(6).cursor_pointer()
+      .when(on, (el) => el.bg(t.hover)).hover((s) => s.bg(t.hover))
+      .on_click((_e, cx) => { close(cx); setFileSetting(x, "default-app", id, cx); })
+      .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(t.foreground).child(label))
+      .when(Boolean(tag), (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(tag)))
+      .child(div().w(12).flex_none().when(on, (el) => el.child(svg("frame/settings/check.svg").size(12).text_color(t.accent))));
+  };
+  // Rows and the line keep their height (flex_none), so a long list scrolls instead of squeezing.
+  const list = v_flex().id("wsx-files-app-list").w(260).max_h(280).overflow_y_scroll().p(5).rounded(9).border_1().border_color(t.border).bg(t.background)
+    .on_mouse_down_out((_e, cx) => close(cx))
+    .on_scroll_wheel((_e, cx) => cx.stop_propagation())
+    .child(item(null, "Automatic", "editor first"))
+    .child(div().flex_none().my(4).h(1).bg(t.border))
+    .children(choices.map((a) => item(a.id, a.label, a.tag)))
+    .when(!x.apps, (el) => el.child(div().px(9).py(6).text_size(12).text_color(t.dim).child("Looking for installed apps…")));
+  return Popup.new("wsx-files-app-pop", trigger).anchor("top_right").when(open, (el) => el.content(list));
+}
+
+// Files: Files' defaults in two groups, each row its control. Cmd-click Off says what happens and
+// greys Files to catch. A broken file: one note, every row and control greyed and drawn at the
+// defaults (what Files and the Cmd-click handler use until it's fixed).
+function filesPage(t, x, view) {
+  const broken = x.settings.error;
+  const val = (key) => fileSetting(x.settings, key);
+  const off = Boolean(broken) || x.busy;
+  const f = (key) => FILES_SETTINGS.find((s) => s.key === key);
+  const choiceRow = (key, greyed = false) => {
+    const s = f(key), now = val(key);
+    return row(t, `wsx-files-${key}`, s.title, s.what, key === "cmd-click" && now === "off" && !broken ? s.off : "",
+      segmented(t, `wsx-files-${key}-seg`, s.values, now, (v, cx) => setFileSetting(x, key, v, cx), off || greyed),
+      false, Boolean(broken) || greyed);
+  };
+  const ign = f("show-ignored"), app = f("default-app");
+  const clickOff = val("cmd-click") === "off";
+  return v_flex().w_full()
+    .child(div().pb(4).text_size(18).font_semibold().text_color(t.foreground).child("Files"))
+    // Two lines, so the path never breaks at one of its slashes.
+    .child(v_flex().pb(14).text_size(12.5).line_height("18px").text_color(t.dim)
+      .child(div().child("Defaults for the Files view and Cmd-clicked paths."))
+      .child(div().child(`Changes apply immediately and save to ${tilde(file())}.`)))
+    .when(Boolean(broken), (el) => el.child(div().mb(14).p(10).rounded(8).bg(t.blocked + "1f").text_size(12.5).line_height("18px").text_color(t.blocked)
+      .child(`${tilde(file())} isn't valid JSONC (${broken}). Defaults stay in effect until it's fixed.`)))
+    .child(heading(t, "Viewing"))
+    .child(choiceRow("markdown"))
+    .child(row(t, "wsx-files-default-app", app.title, app.what, "", appPicker(t, x, view, val("default-app"), off), false, Boolean(broken)))
+    .child(row(t, "wsx-files-show-ignored", ign.title, ign.what, "",
+      toggle(t, "wsx-files-show-ignored-switch", val("show-ignored"), (_e, cx) => setFileSetting(x, "show-ignored", !val("show-ignored"), cx), off),
+      false, Boolean(broken)))
+    .child(div().h(14))
+    .child(heading(t, "Opening from terminals"))
+    .child(choiceRow("cmd-click"))
+    .child(choiceRow("catch", clickOff));
+}
+
+// The page: the window's body shows it for our section ids ("features", "agents", "files" and "experimental").
 export function packagePage(view) {
   const t = theme();
-  const x = view.wsx ?? (view.wsx = { text: null, settings: parseSettings(null), resume: null, guide: null, known: [], hidden: [], busy: false, gen: 0, hiding: 0, loading: null });
-  return view.section === "features" ? featuresPage(t, x) : view.section === "experimental" ? experimentalPage(t, x) : agentsPage(t, x);
+  const x = view.wsx ?? (view.wsx = { text: null, settings: parseSettings(null), resume: null, guide: null, known: [], hidden: [], busy: false, gen: 0, hiding: 0, loading: null, apps: null, appsLoading: false });
+  return view.section === "features" ? featuresPage(t, x) : view.section === "files" ? filesPage(t, x, view) : view.section === "experimental" ? experimentalPage(t, x) : agentsPage(t, x);
 }

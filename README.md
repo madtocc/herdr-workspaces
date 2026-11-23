@@ -46,7 +46,11 @@ another workspace needs you or finished.
 The tab bar's Views button opens the space's Changes and Files and the
 workspace's Board, Notes, Worktrees and History, each full size in place of the
 terminals (a pill before the tabs brings it back) or beside them as a pane.
-Changes and Files follow the terminal you were using.
+Changes and Files follow the terminal you were using. Files edits text, code,
+Markdown and SVG in place (Save, never on its own), previews Markdown, SVG and
+images (Source | Preview | Split), searches the folder, and opens a file in the
+app you pick (Open in … ▾, remembered per extension). Cmd-click a path in a
+terminal or an agent's output and it opens in Files beside that terminal.
 
 ### A task board
 
@@ -215,11 +219,11 @@ own, where you can't watch it or type to it:
 None of them changes code. With the starter guide (see Install), Claude and
 Codex start one of these where they'd use their own subagent.
 
-### Settings: Features, Agents and Experimental
+### Settings: Features, Agents, Files and Experimental
 
 ![Settings on its Agents section](previews/settings.png)
 
-The sidebar's Settings opens Herdr's own Settings window with three sections of
+The sidebar's Settings opens Herdr's own Settings window with four sections of
 ours at the end, after Privacy:
 
 - **Features**: a switch for each of the package's add-ons (Board, Notes,
@@ -235,6 +239,11 @@ ours at the end, after Privacy:
   installed agents the tab bar's + menu lists; the menu's "Choose agents…" opens
   this page) and **While Herdr is closed** (Keep running for automations and
   board cards' pull requests).
+- **Files**: the Files view's defaults: what Markdown and SVG open in, the app
+  Open in starts with, whether ignored files show, where a Cmd-clicked path
+  opens (beside the terminal, full size, or off to leave it to macOS) and
+  whether Files takes every file or only text, images and folders. A change
+  applies at once, to every open Files.
 - **Experimental**: features that lean on things other programs don't promise to
   keep the same, each off until you turn it on and saying why it's experimental
   (the first: wiping Antigravity conversations from the Agents list's menu).
@@ -246,7 +255,7 @@ file whenever Herdr updates it. The macOS menu's Settings… still opens Herdr's
 plain window; to have Cmd+, open this one, set `"cmd-,"` in the `global`
 section of your `~/.config/herdr-app/keys.json` to `"mod.open:ws-settings"`
 (or to `ws-switcher.settings/features`, `ws-switcher.settings/agents` or
-`ws-switcher.settings/experimental` to open it on a section; `ws-switcher.settings/extras` opens Agents). Herdr then
+`ws-switcher.settings/files`, `ws-switcher.settings/experimental` to open it on a section; `ws-switcher.settings/extras` opens Agents). Herdr then
 leaves that file to you: new default shortcuts in its updates are added by hand.
 
 ### And when you're away
@@ -351,8 +360,10 @@ agent from the Agents list's right-click menu: that Claude Code or Pi
 conversation's transcript and the folders Claude keeps for it under
 `~/.claude/`. That menu also types into an agent with `hc send` (Send a message,
 Compact), presses Esc there with `hc keys` (Interrupt) and puts a terminal or
-session id on the clipboard (`pbcopy`, `wl-copy` or `xclip`). Settings > Features and
-Settings > Experimental write `~/.herdr/settings.jsonc`; the switcher, the background
+session id on the clipboard (`pbcopy`, `wl-copy` or `xclip`). Settings > Features,
+Settings > Files and Settings > Experimental write `~/.herdr/settings.jsonc` (the Files
+section asks macOS which apps open a text file, with `command -v` and `osascript`, about
+a sample file it writes once under `~/.config/herdr-app/data/ws-settings/`); the switcher, the background
 runner (every 2 seconds), the status bar and `herdr-ws-run` (with `node` when it's
 there) read it to know which add-ons are off, and the sidebar footer reads the shown
 layout's file (`layouts/<name>.json`, at start, on a layout switch and every 30
@@ -373,7 +384,16 @@ the terminals) and, through the launcher, Start and
 automations, your agents. Changes (`ws-changes`, a copy of Herdr's own) runs `git` reads (status, diff,
 branch) in the repo of the terminal it follows and, when you press Commit,
 `git add -A` and `git commit` there, as Herdr's Changes does; Files (`ws-files`)
-lists folders and reads files there, as Herdr's Files does. The Worktrees tab reads git in the workspace's repos and
+lists folders and reads files there, as Herdr's Files does, and also writes the
+file you save (on this computer only), searches with `rg` (else `grep`), runs
+`git` reads (branch, status, ignored files), `wc -c`, `head -c` and `sips` (an
+image's size), links images it previews under `~/.config/herdr-app/data/ws-files/`
+(`ln -sf`, `unlink`), asks macOS which apps open a file (`osascript`), looks
+for known editors with `command -v`, starts the app you pick (or `open -R` to
+reveal it), and remembers the pick in `~/.herdr/files-prefs.json`. It and its Cmd-click handler
+read their defaults from `~/.herdr/settings.jsonc`. A Cmd-click
+on a path in a terminal is checked with `sh` (on that terminal's machine) before
+Files takes it. The Worktrees tab reads git in the workspace's repos and
 their worktrees (`worktree list`, `for-each-ref`, `status`) and each repo's pull
 requests with `gh pr list`. Removing a worktree there (after a confirmation)
 deletes its folder with `git worktree remove`; the branch stays. History reads the
