@@ -7,9 +7,9 @@
 // be that less a row's height for each one, and with every row shown, that.
 
 // Every row, top to bottom; `feature`: its add-on's key in Settings > Features (the row
-// is shown while that's on). Presets, Settings and Add machine are always there.
+// is shown while that's on). Presets, Settings and Add machine are always there. History,
+// once the first row, opens from the tab bar's Views menu now.
 export const ROWS = [
-  { id: "history", feature: "history" },
   { id: "automations", feature: "automations" },
   { id: "presets" },
   { id: "settings" },

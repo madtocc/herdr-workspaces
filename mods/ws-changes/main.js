@@ -1,0 +1,351 @@
+// A copy of Herdr's `changes` mod, 0.1.17 (made with mod.clone), for the Changes view.
+// Changes from Herdr's, each kept small so the copy can be rebuilt on a newer Herdr:
+// 1. Where it looks (follow.js, copied in ws-files): as a pane beside the terminals
+//    (props { beside, tab }) it follows the last focused terminal of its own tab, not
+//    whichever pane has focus, so clicking into it doesn't switch it to the space's
+//    folder; full size (props { screen }) it follows the shown tab of the space it was
+//    opened in (shared "workspaces.screen".space, else the shown space). The terminal
+//    last focused in each tab is kept in shared "workspaces.follow", so a restart comes
+//    back to it; only a copy in sight writes it (follow.js' toRemember). Anything else
+//    (no props.tab, as panes opened before Views have): Herdr's rule.
+// 2. Hidden, it reads nothing: full size only while shared "workspaces.screen" says
+//    "changes" in the space shown; a pane (with props.tab) only while its tab is shown, no
+//    view covers the tabs and no terminal of the tab is zoomed. The folder watch is
+//    cancelled while hidden. The checks run on a 400ms timer, not from
+//    render (a task started while rendering may never run).
+// 3. The look: as a pane, no card of its own (Herdr's pane frame is the card) and no
+//    title row (the pane's header names it): one slim row with the repo, branch,
+//    +/- and file count. Full size, a header row like the other views' (icon,
+//    "Changes", repo · branch, totals at the right) and no card. Herdr's card stays
+//    for any other placement.
+// 4. Full size, it takes the keyboard when it comes into view, so keys don't land in a
+//    terminal nobody sees.
+// 5. The commit box: Commit is greyed while the place shown is behind the one it now
+//    follows (up to one 400ms tick), and a typed message comes back when the new place
+//    is the same repo on the same machine.
+import { View, div, svg } from "gpui-kit";
+import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list } from "gpui-base";
+import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, props, shared, setShared, checking, machines } from "herdr";
+import { locate, toRemember, placeKey } from "./follow.js";
+
+const base = (path) => String(path ?? "").replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "";
+// Reads write nothing under .git (no index refresh or lock, no fsmonitor cookie):
+// the folder watch would see it, and every refresh would start the next one.
+const READ = ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "diff.autoRefreshIndex=false"];
+const countLines = (text) => text ? text.split("\n").length - Number(text.endsWith("\n")) : 0;
+const wideGlyph = /[\p{Ideographic}\p{Emoji_Presentation}\p{Extended_Pictographic}\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\ufe10-\ufe19\ufe30-\ufe6f\uff01-\uff60\uffe0-\uffe6]/gu;
+
+// Keep room for spacing marks and give wide glyphs at least two columns.
+function displayColumns(text) {
+  let columns = text.length;
+  for (const glyph of text.match(wideGlyph) ?? []) {
+    if (glyph.length === 1) columns++;
+  }
+  return columns;
+}
+
+// The diff was laid out for 11px text: 20px rows, 7px characters.
+const rowHeight = size => Math.ceil(size * 1.8), charWidth = size => size * 0.64;
+
+// Text draws a tab as nothing: pad each to the next 4-column stop.
+const untab = (text) => text.replace(/[^\t]*\t/g, (s) => s.slice(0, -1).padEnd((s.length - 1) - (s.length - 1) % 4 + 4));
+
+// Numbers each diff line once, so a frame only draws the rows on screen.
+function diffRows(lines) {
+  let old = 0, next = 0;
+  return lines.map((line) => {
+    const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)/.exec(line);
+    if (match) { old = +match[1]; next = +match[2]; return { kind: "@", text: line }; }
+    const kind = line[0];
+    if (kind === "-") return { kind, number: old++, text: untab(line.slice(1)) || " " };
+    if (kind === "+") return { kind, number: next++, text: untab(line.slice(1)) || " " };
+    if (kind === " ") { old++; return { kind, number: next++, text: untab(line.slice(1)) || " " }; }
+    return { kind: "", text: line };
+  });
+}
+
+export default class Changes extends View {
+  init(_props, cx) {
+    this.files = []; this.rows = []; this.longest = 0; this.gutterChars = 4; this.message = ""; this.handle = cx.focus_handle();
+    this.input = InputState.new({ placeholder: "Commit message" });
+    this.input.on("change", (_e, cx) => {
+      const hadMessage = Boolean(this.message.trim());
+      this.message = this.input.value();
+      if (hadMessage !== Boolean(this.message.trim())) cx.notify();
+    });
+    this.input.on("submit", (_e, cx) => this.commit(cx));
+    this.input.on("focus", (_e, cx) => { this.typing = true; cx.notify(); });
+    this.input.on("blur", (_e, cx) => { this.typing = false; cx.notify(); });
+    this.shown = false;
+    this.refresh(cx);
+    cx.timer.every(10000, (cx) => this.refresh(cx));
+    if (!checking()) cx.timer.every(400, (cx) => this.tick(cx));
+  }
+
+  // Where it looks now (follow.js), remembering the terminal it follows when that terminal has
+  // the keyboard: shared "workspaces.follow" (tab -> pane), which Changes and Files share and
+  // Herdr keeps across restarts (a copy's localStorage wouldn't do: it's keyed by the props as
+  // given, and after a restart Herdr hands them back in another order).
+  // Render notes it (this.held) and the timer writes it down: never set shared state while rendering.
+  // Full size, the space it was opened in (shared "workspaces.screen".space) when that's said.
+  place() {
+    const p = props() ?? {}, held = this.held, all = panes();
+    const last = { ...(shared("workspaces.follow") ?? {}), ...(held ? { [held.tab]: held.pane } : {}) };
+    const view = p.screen ? { ...p, space: shared("workspaces.screen")?.space ?? null } : p;
+    const loc = locate(view, { spaces: spaces(), panes: all, focused: focused(), last });
+    if ((p.beside || p.screen) && loc.pane && loc.tab && all.find((x) => x.pane === loc.pane)?.focused) this.held = { tab: loc.tab, pane: loc.pane };
+    return loc;
+  }
+
+  // Only a copy in sight writes (follow.js' toRemember): a hidden one holds what it saw last time.
+  remember(seen) {
+    const next = toRemember({
+      held: this.held, seen, last: shared("workspaces.follow") ?? {},
+      tabs: spaces().flatMap((s) => (s.tabs ?? []).map((t) => t.id)),
+      ready: machines().filter((x) => x.name && x.layout === "ready").map((x) => x.name),
+    });
+    if (next) setShared("workspaces.follow", next);
+  }
+
+  key() { return placeKey(this.place()); }
+
+  // In sight: full size while it's the view shown, in the space it was opened in; a pane while its
+  // tab is shown, no view covers the tabs and no terminal of that tab is zoomed over it.
+  seen() {
+    const p = props() ?? {}, scr = shared("workspaces.screen") ?? null;
+    if (p.screen) return scr?.screen === "changes" && (!scr.space || scr.space === spaces().find((s) => s.active)?.id);
+    if (p.beside && p.tab) return !scr && focused()?.tab === p.tab && !panes().some((x) => x.tab === p.tab && x.zoomed && x.terminal);
+    return true;
+  }
+
+  // Comes into view: read again (full size, take the keyboard); out of view: stop watching.
+  tick(cx) {
+    const seen = this.seen();
+    if (!seen) this.held = null;
+    this.remember(seen);
+    if (!seen) { if (this.shown) { this.shown = false; this.unwatch(); } return; }
+    const back = !this.shown;
+    this.shown = true;
+    if (back && props()?.screen) this.handle.focus();
+    if (back || this.key() !== this.context?.key) this.refresh(cx);
+  }
+
+  unwatch() {
+    this.watched = null;
+    this.watching?.cancel?.();
+    this.watching = null;
+  }
+
+  watch(root, cx) {
+    if (this.on || this.watched === root) return;
+    this.watched = root;
+    cx.spawn(async (cx) => {
+      try {
+        while (this.watched === root) {
+          this.watching = watchFolder(root);
+          await this.watching;
+          if (this.watched === root) this.refresh(cx);
+        }
+      } catch { if (this.watched === root) this.watched = null; }
+    });
+  }
+
+  // One visit to a folder: results from an earlier visit to the same folder are stale too.
+  current(context) {
+    return this.context === context && this.key() === context.key;
+  }
+
+  refresh(cx) {
+    if (!this.seen()) return; // hidden: no git, no watch
+    const loc = this.place(), { cwd, on } = loc, next = placeKey(loc);
+    if (next !== this.context?.key) {
+      // A typed message waits for the new place's repo: the same repo on the same machine (a cd
+      // inside it, a terminal's folder unknown for a moment after a restart) gets it back.
+      const stash = this.message.trim() && this.root ? { message: this.message, root: this.root, on: this.on } : this.context?.stash ?? null;
+      this.context = { key: next, stash }; this.root = null; this.files = []; this.open = null;
+      this.setLines([]); this.message = ""; this.input.set_value(""); this.error = null; this.note = null; this.unwatch(); this.closed = false; this.limited = false;
+      this.loading = false;
+    }
+    // A load left behind in another folder (a slow git, a read that never ends) must not hold this one.
+    if (!cwd || this.loading || this.busy) return;
+    const context = this.context;
+    this.loading = true;
+    cx.spawn(async (cx) => {
+      try {
+        const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on });
+        if (!this.current(context)) return;
+        if (top.code !== 0) { this.root = null; this.files = []; this.setLines([]); this.open = null; this.error = "Not a git repository"; return; }
+        const root = top.stdout.trim(), git = (args) => exec("git", [...READ, ...args], { cwd: root, on });
+        const status = await git(["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"]);
+        if (status.code !== 0) throw new Error(status.stderr);
+        const head = await git(["rev-parse", "--verify", "HEAD"]);
+        const stats = {};
+        const results = head.code === 0 ? [await git(["diff", "HEAD", "--numstat", "-z", "--no-renames"])] : [await git(["diff", "--cached", "--numstat", "-z", "--no-renames"]), await git(["diff", "--numstat", "-z", "--no-renames"])];
+        for (const result of results) {
+          if (result.code !== 0) throw new Error(result.stderr);
+          for (const entry of result.stdout.split("\0")) {
+            const [a, d, ...parts] = entry.split("\t");
+            if (!parts.length) continue;
+            const path = parts.join("\t"), old = stats[path] ?? { add: 0, del: 0 };
+            stats[path] = { add: old.add + (Number(a) || 0), del: old.del + (Number(d) || 0), binary: a === "-" };
+          }
+        }
+        const files = [];
+        const entries = status.stdout.split("\0").filter(Boolean);
+        for (const entry of entries.slice(0, 1000)) {
+          const xy = entry.slice(0, 2), path = entry.slice(3), fresh = xy === "??";
+          const conflict = xy.includes("U") || xy === "AA" || xy === "DD";
+          const s = conflict ? "U" : xy.includes("D") ? "D" : fresh || xy.includes("A") ? "A" : "M";
+          const stat = stats[path] ?? { add: 0, del: 0 };
+          files.push({ path, status: s, fresh, ...stat });
+        }
+        if (!this.current(context)) return;
+        const stash = context.stash;
+        context.stash = null;
+        if (stash && stash.root === root && stash.on === on && !this.message.trim()) { this.message = stash.message; this.input.set_value(stash.message); }
+        this.root = root; this.on = on; this.hasHead = head.code === 0; this.files = files; this.limited = entries.length > 1000; this.error = null;
+        this.watch(root, cx);
+        if (this.open && !files.some((f) => f.path === this.open)) { this.open = null; this.setLines([]); }
+        // The first file's diff shows until you pick another.
+        if (!this.open && !this.closed && files.length) this.open = files[0].path;
+        if (this.open) {
+          try { await this.load(this.open, context); }
+          catch { if (this.current(context)) this.setLines(["Cannot preview this diff (too large or unreadable)"]); }
+        }
+      } catch (e) { if (this.current(context)) this.error = String(e); }
+      finally { if (this.context === context) this.loading = false; cx.notify(); }
+    });
+  }
+
+  async load(path, context) {
+    const file = this.files.find((f) => f.path === path), root = this.root, on = this.on;
+    if (!file) return;
+    let lines;
+    if (file.fresh || (!this.hasHead && file.status === "A")) {
+      const text = await readTextFile(`${root}/${path}`, { on }).catch(() => null);
+      if (text === null) lines = ["Cannot preview this file (binary, too large, or unreadable)"];
+      else if (text.includes("\0")) lines = ["Binary file · no text diff"];
+      else {
+        file.add = countLines(text);
+        lines = [`@@ -0,0 +1,${file.add} @@`, ...text.slice(0, 400000).replace(/\n$/, "").split("\n").slice(0, 1500).map(l => `+${l}`)];
+      }
+    } else {
+      const r = await exec("git", [...READ, "diff", ...(this.hasHead ? ["HEAD"] : []), "--no-ext-diff", "--no-textconv", "--no-color", "--", path], { cwd: root, on });
+      if (r.code !== 0) throw new Error(r.stderr);
+      const all = r.stdout.replace(/\n$/, "").split("\n"), first = all.findIndex((l) => l.startsWith("@@"));
+      lines = first < 0 ? [file.binary ? "Binary file changed" : "No text diff available"] : all.slice(first);
+    }
+    if (this.current(context) && this.open === path) this.setLines(lines.slice(0, 1500).map(line => line.length > 4000 ? line.slice(0, 4000) + "… (line truncated)" : line));
+  }
+
+  setLines(lines) {
+    this.rows = diffRows(lines);
+    this.longest = Math.max(0, ...this.rows.map(row => displayColumns(row.text)));
+    this.gutterChars = Math.max(4, String(Math.max(0, ...this.rows.map(row => row.number ?? 0))).length);
+  }
+
+  pick(path, cx) {
+    this.open = this.open === path ? null : path; this.setLines([]); this.note = null;
+    this.closed = !this.open;
+    const context = this.context;
+    if (this.open) cx.spawn(async (cx) => {
+      try { await this.load(path, context); }
+      catch (e) { if (this.current(context) && this.open === path) this.note = `Cannot preview this diff (too large or unreadable): ${e}`; }
+      cx.notify();
+    });
+    cx.notify();
+  }
+
+  commit(cx) {
+    if (!this.message.trim() || !this.root || this.busy || this.loading || this.context?.key !== this.key()) return;
+    const root = this.root, on = this.on, context = this.context, message = this.message.trim();
+    this.busy = true; this.note = null;
+    cx.spawn(async (cx) => {
+      try {
+        for (const args of [["add", "-A"], ["commit", "-m", message]]) {
+          const r = await exec("git", args, { cwd: root, on });
+          if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim());
+        }
+        if (this.current(context)) { this.message = ""; this.input.set_value(""); }
+      } catch (e) { if (this.current(context)) this.note = `Commit failed: ${e}`; }
+      finally { this.busy = false; this.refresh(cx); cx.notify(); }
+    });
+    cx.notify();
+  }
+
+  gutter(size) { return Math.ceil(this.gutterChars * charWidth(size)) + 2; }
+
+  diffRow({ kind, number, text }, t, size) {
+    const height = rowHeight(size);
+    if (kind === "@") return div().w_full().px(12).h(height).flex_none().truncate().bg(t.raised).text_color(t.dim).child(text);
+    return h_flex().w_full().h(height).flex_none().gap(10).when(kind === "+", (e) => e.bg(t.ansi2 + "18")).when(kind === "-", (e) => e.bg(t.ansi1 + "18"))
+      .child(div().w(this.gutter(size)).flex_none().text_right().text_color(t.dim).child(number === undefined ? "" : String(number)))
+      .child(div().flex_1().min_w(0).truncate().child(text));
+  }
+
+  // Its first row: Herdr's title row (a card of its own), the view's header (full size),
+  // or one slim row under the pane's own header (a pane beside the terminals).
+  head(t, add, del) {
+    const p = props() ?? {};
+    if (!p.screen && !p.beside) {
+      return h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
+        .child(div().font_semibold().child("Changes"))
+        .child(div().px(5).py(1).rounded(4).border_1().border_color(t.border).text_size(10).text_color(t.muted).child(`${this.files.length} files`))
+        .child(div().flex_1()).child(div().text_size(11).text_color(t.ansi2).child(`+${add}`)).child(div().text_size(11).text_color(t.ansi1).child(`−${del}`));
+    }
+    // Where it looks: the repo (else the folder) and the followed terminal's branch.
+    const loc = this.place();
+    const branch = loc.pane ? panes().find((x) => x.pane === loc.pane)?.branch : null;
+    const where = [base(this.root ?? loc.cwd), this.root ? branch : null].filter(Boolean).join(" · ");
+    const totals = this.files.length
+      ? [div().flex_none().text_color(t.ansi2).child(`+${add}`), div().flex_none().text_color(t.ansi1).child(`−${del}`),
+        div().flex_none().text_color(t.dim).child(`· ${this.files.length} ${this.files.length === 1 ? "file" : "files"}${this.limited ? "+" : ""}`)]
+      : [];
+    if (p.screen) {
+      return h_flex().h(48).flex_none().px(16).gap(10).items_center().border_b(1).border_color(t.border)
+        .child(svg("mods/ws-changes/changes.svg").size(16).flex_none().text_color(t.muted))
+        .child(div().flex_none().font_semibold().child("Changes"))
+        .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(where))
+        .child(h_flex().flex_none().gap(6).text_size(12).children(totals));
+    }
+    return h_flex().h(30).flex_none().px(12).gap(8).items_center().border_b(1).border_color(t.border).text_size(11.5)
+      .child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(where))
+      .child(h_flex().flex_none().gap(6).children(totals));
+  }
+
+  render(cx) {
+    this.place(); // a focus change is remembered at once
+    const t = theme(), size = settings().font_size, add = this.files.reduce((n, f) => n + f.add, 0), del = this.files.reduce((n, f) => n + f.del, 0);
+    // Not while what's shown is a place behind (the timer hasn't read the new one yet): it would do nothing.
+    const enabled = Boolean(this.message.trim() && this.root && !this.busy && !this.loading && this.context?.key === this.key());
+    // A card of its own only where nothing frames it (Herdr's panel); a pane's frame or the view's area is the card.
+    const card = !props()?.screen && !props()?.beside;
+    return v_flex().id("changes").size_full().min_h(0).overflow_hidden().bg(t.background).text_color(t.foreground).text_size(13).track_focus(this.handle)
+      .when(card, (e) => e.rounded(10).border_1().border_color(t.border))
+      .on_key_down((e, cx) => {
+        if (e.key === "escape" && this.typing) { this.typing = false; this.handle.focus(); cx.stop_propagation(); cx.notify(); }
+      })
+      .child(this.head(t, add, del))
+      // overflow_y_scrollbar() wraps the list, so its flex sizing never reached the panel's layout.
+      .child(div().flex_1().min_h(44).max_h(this.files.length * 28 + 12).relative().border_b(1).border_color(t.border)
+        .child(v_flex().id("changes-list").absolute().inset_0().overflow_y_scroll().p(6).children(this.files.map((f) => {
+        const parts = f.path.split("/"), name = parts.pop();
+        return h_flex().id(`change-${f.path}`).h(28).flex_none().px(8).gap(8).items_center().rounded(7).cursor_pointer().when(this.open === f.path, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.pick(f.path, cx))
+          .child(div().w(14).text_size(11).text_color(f.status === "A" ? t.ansi2 : f.status === "D" ? t.ansi1 : f.status === "U" ? t.ansi1 : t.blocked).child(f.status))
+          .child(h_flex().flex_1().min_w(0).child(div().text_color(t.dim).truncate().child(parts.length ? parts.join("/") + "/" : "")).child(div().max_w(260).min_w(0).truncate().child(name)))
+          .when(f.add > 0, (e) => e.child(div().text_size(11).text_color(t.ansi2).child(`+${f.add}`))).when(f.del > 0, (e) => e.child(div().text_size(11).text_color(t.ansi1).child(`−${f.del}`)));
+      })).when(!this.files.length, (e) => e.child(div().p(8).text_color(t.dim).child(this.error || (this.loading ? "Loading changes…" : this.root ? "No uncommitted changes" : "No folder")))))
+        .child(Scrollbar.vertical("changes-list").absolute().inset_0()))
+      .when(this.limited, el => el.child(div().px(12).py(4).text_size(11).text_color(t.dim).child("Showing the first 1,000 changed files")))
+      .child(div().flex_1().min_h(0).relative().font_family(settings().font_family ?? "JetBrains Mono").text_size(size)
+        .child(div().id("changes-diff-x").size_full().overflow_x_scrollbar()
+          .child(div().w_full().min_w(Math.max(300, this.longest * charWidth(size) + this.gutter(size) + 20)).h_full().child(v_virtual_list("changes-diff", this.rows.length, rowHeight(size), (i) => String(i),
+            (range) => this.rows.slice(range.start, range.end).map((row) => this.diffRow(row, t, size))).size_full())))
+        .child(Scrollbar.vertical("changes-diff").viewport_from_layout().absolute().inset_0())
+        .when(!this.open && this.files.length > 0, (e) => e.child(div().absolute().top(6).px(12).text_size(11).text_color(t.dim).child("Select a file to view its changes"))))
+      .when(Boolean(this.note), (e) => e.child(div().px(10).pb(8).text_size(11).text_color(t.ansi1).child(this.note)))
+      .child(h_flex().flex_none().p(10).gap(8).border_t(1).border_color(t.border)
+        .child(div().id("commit-message").flex_1().min_w(0).h(32).px(10).flex().items_center().rounded(8).border_1().border_color(this.typing ? t.accent : t.border).cursor_text().on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.input).h_full().text_size(12).text_color(t.foreground)))
+        .child(div().id("commit").h(32).px(14).flex().items_center().rounded(8).bg(enabled ? t.solid : t.raised).text_color(enabled ? t.solid_foreground : t.dim).text_size(12).when(enabled, (e) => e.cursor_pointer()).on_click((_e, cx) => this.commit(cx)).child(this.busy ? "Committing…" : "Commit")));
+  }
+}

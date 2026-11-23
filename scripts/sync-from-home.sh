@@ -55,10 +55,16 @@ cmp -s "$src/mods/ws-agents/menufacts.js" "$src/mods/ws-history/menufacts.js" ||
   exit 1
 }
 
+# Changes and Files follow the same terminal, by the same rules.
+cmp -s "$src/mods/ws-changes/follow.js" "$src/mods/ws-files/follow.js" || {
+  echo "mods/ws-changes/follow.js and mods/ws-files/follow.js differ: make them the same first" >&2
+  exit 1
+}
+
 mkdir -p "$dst/layouts"
 cp "$src/layouts/workspaces.json" "$dst/layouts/workspaces.json"
 
-for mod in ws-switcher ws-spaces ws-agents ws-board ws-worktrees ws-history ws-notes ws-presets ws-chrome ws-automations ws-tabs ws-new-menu ws-toast ws-status ws-settings; do
+for mod in ws-switcher ws-spaces ws-agents ws-board ws-worktrees ws-history ws-notes ws-presets ws-chrome ws-automations ws-tabs ws-new-menu ws-toast ws-status ws-settings ws-changes ws-files; do
   rm -rf "$dst/mods/$mod"
   mkdir -p "$dst/mods/$mod"
   (cd "$src/mods/$mod" && find . -type f ! -name jsconfig.json ! -name gpui-kit.d.ts ! -name '.*' ! -name '*.error') |

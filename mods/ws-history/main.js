@@ -8,7 +8,9 @@
 // + menu's "Resume a conversation…" and the command `ws-switcher.history` show it in
 // place of the tabs, from any space. With no workspace chosen (All spaces) it opens
 // as a dialog (props { dialog: true }) over everything; in a tab or pane of its own
-// (props { workspace }) it keeps to that workspace.
+// (props { workspace }) it keeps to that workspace. A pane beside the terminals (props
+// { beside: true, workspace }) has no title row (Herdr's pane header names it), its
+// controls in one slim row; with workspace null it lists every conversation.
 //
 // What it reads: scan.js (Node) reads each agent's own store and prints the list;
 // nothing is copied or changed there. What it runs: that script, and on Resume the
@@ -67,6 +69,9 @@ const RESUMED = "workspaces.history.resumed";
 const PAGE = 120; // rows drawn at first, and more with each "Show more"
 const SPANS = [90, 365, 3650]; // days back: the first read, then each "Look further back"
 const STALE = 20e3; // ms after which the screen, shown again, reads again
+// A pane beside the terminals narrower than this keeps search in its slim row and folds the
+// other filters (scope, agents, folder gone, Refresh) into one strip that scrolls sideways.
+const PANE_NARROW = 560;
 const FRESH = 45e3; // ms between reads while it stays shown
 // Shared "workspaces.history.act": { from, key, action, at }: the right-click menu (a popup
 // of its own, whose tasks end when it closes) asks the History it was opened from to
@@ -242,7 +247,10 @@ export default class History extends View {
     this.dialog = Boolean(props()?.dialog);
     // The layout's screen follows the shown workspace; a tab or a dialog keeps what it was opened with.
     this.follow = Boolean(props()?.screen);
-    this.workspace = (this.follow ? null : props()?.workspace) ?? shared("workspaces.active") ?? null;
+    // A pane beside the terminals: Herdr's pane header names it, so no title row of its own.
+    this.beside = !this.follow && !this.dialog && Boolean(props()?.beside);
+    // A pane opened with no workspace (All spaces) lists every conversation.
+    this.workspace = this.beside ? props()?.workspace ?? null : (this.follow ? null : props()?.workspace) ?? shared("workspaces.active") ?? null;
     this.scope = this.workspace ? "ws" : "all";
     this.provider = null; // one agent's conversations, or null for every agent's
     this.gone = false; // also show the ones whose folder is gone
@@ -275,7 +283,9 @@ export default class History extends View {
     this.runQuery.on("change", (_e, cx) => { this.max = PAGE; cx.notify(); });
     this.runQuery.on("submit", (_e, cx) => { if (this.runQuery.value().trim()) { const first = this.runsView().shown[0]; if (first) this.runAct(first.r, first.st, cx); } });
     if (checking()) return;
-    if (!this.follow) { this.load(cx); this.query.focus(); }
+    // A tab or dialog takes the keyboard for its search; a pane beside the terminals only when
+    // it's the focused pane (just opened), not when its tab comes back after a start.
+    if (!this.follow) { this.load(cx); if (!props()?.beside || panes().find((p) => p.focused)?.mod === "ws-history") this.query.focus(); }
     // Looked at on a timer, not in render: a task started while rendering never gets to run.
     cx.timer.every(this.follow ? 400 : 500, (cx) => {
       const scr = this.follow ? shared("workspaces.screen") ?? null : null;
@@ -437,7 +447,8 @@ export default class History extends View {
   // Back to the terminals: the screen gives way, the dialog closes.
   leave() {
     if (this.dialog) return closeOverlay(props().overlay);
-    if (shared("workspaces.screen")) setShared("workspaces.screen", null);
+    // Only the layout's screen gives way; a tab or a pane is already among the terminals.
+    if (this.follow && shared("workspaces.screen")) setShared("workspaces.screen", null);
   }
 
   // A row's own action: to the terminal it's open in, else resume it.
@@ -528,27 +539,47 @@ export default class History extends View {
       .child(side("mode-conv", "Conversations", !autos, "conversations", "Your agents' conversations, with Resume"))
       .child(side("mode-runs", "Automations", autos, "automations", "What the automations ran: each run's state, Go to while its tab is open, Resume once it's closed"));
     const counted = autos ? plural(rv.all.length, "run") : this.loaded ? `${plural(here.length, "conversation")}${since}` : "Reading…";
-    const header = h_flex().h(48).flex_none().px(16).gap(10).items_center().border_b(1).border_color(t.border)
+    // Which conversations (the workspace's or every one), and Refresh: in the header, or in a
+    // narrow pane's filter strip.
+    const scopes = () => (def ? [
+      chip("scope-ws", !everywhere, (cx) => this.rescope("ws", cx), [def.name], `What ran in ${def.name}'s folders and worktrees`),
+      chip("scope-all", everywhere, (cx) => this.rescope("all", cx), ["Everywhere"], "Every conversation on this computer, whatever folder it ran in"),
+    ] : []);
+    const refresh = () => button("hist-refresh", "Refresh", (cx) => this.load(cx), { tip: "Read the conversations again" });
+    const narrowPane = this.beside && !(this.width >= PANE_NARROW);
+    const searchBox = (input) => h_flex().w(tight ? 150 : 240).h(28).px(9).gap(7).flex_none().items_center().rounded(7).border_1().border_color(t.input).bg(t.background)
+      .when(narrowPane, (el) => el.w_auto().flex_1().min_w(90))
+      .child(svg("mods/workspace-chrome/search.svg").size(12).flex_none().text_color(t.dim))
+      .child(Input.new(input).flex_1().min_w(0).text_size(12).text_color(t.foreground));
+    // A pane beside the terminals: one slim row (Herdr's pane header names it). Narrow, search
+    // takes the room the scope chips and Refresh had; they go to the filter strip below.
+    const slim = () => h_flex().min_h(36).flex_none().px(10).py(4).gap(8).items_center().border_b(1).border_color(t.border)
+      .child(modes)
+      .when(!narrowPane && (!tight || (!autos && !this.loaded)), (el) => el.child(div().min_w(0).truncate().text_size(12).text_color(t.dim).child(counted)))
+      .when(this.reading && this.loaded, (el) => el.child(svg("mods/workspace-chrome/spinner.svg").size(13).flex_none().text_color(t.dim).spin(900)))
+      .when(!narrowPane, (el) => el.child(div().flex_1()).children(scopes()).child(refresh()))
+      .when(narrowPane, (el) => el.child(searchBox(autos ? this.runQuery : this.query)));
+    // Tight (a pane beside the terminals), the header wraps rather than lose its chips and Refresh.
+    const header = this.beside ? slim() : h_flex().h(48).flex_none().px(16).gap(10).items_center().border_b(1).border_color(t.border)
+      .when(tight, (el) => el.h_auto().min_h(48).py(9).flex_wrap())
       .child(def && !everywhere ? mark(def, t, 20) : svg("mods/ws-history/history.svg").size(16).flex_none().text_color(t.muted))
       .child(div().font_semibold().child(def && !everywhere ? `${def.name} history` : "History"))
       .child(modes)
       .when(!tight || (!autos && !this.loaded), (el) => el.child(div().text_size(12).text_color(t.dim).child(counted)))
       .when(this.reading && this.loaded, (el) => el.child(svg("mods/workspace-chrome/spinner.svg").size(13).text_color(t.dim).spin(900)))
       .child(div().flex_1())
-      .when(Boolean(def), (el) => el
-        .child(chip("scope-ws", !everywhere, (cx) => this.rescope("ws", cx), [def.name], `What ran in ${def.name}'s folders and worktrees`))
-        .child(chip("scope-all", everywhere, (cx) => this.rescope("all", cx), ["Everywhere"], "Every conversation on this computer, whatever folder it ran in")))
-      .child(button("hist-refresh", "Refresh", (cx) => this.load(cx), { tip: "Read the conversations again" }));
-    const searchBox = (input) => h_flex().w(tight ? 150 : 240).h(28).px(9).gap(7).flex_none().items_center().rounded(7).border_1().border_color(t.input).bg(t.background)
-      .child(svg("mods/workspace-chrome/search.svg").size(12).flex_none().text_color(t.dim))
-      .child(Input.new(input).flex_1().min_w(0).text_size(12).text_color(t.foreground));
+      .children(this.beside ? [] : scopes())
+      .when(!this.beside, (el) => el.child(refresh()));
 
     if (autos) {
       const filters = h_flex().h(44).flex_none().px(16).gap(10).items_center()
-        .child(h_flex().flex_1().min_w(0).h_full().gap(6).items_center()
+        .when(narrowPane, (el) => el.h(40).px(10))
+        .child(h_flex().id("runs-chips").flex_1().min_w(0).h_full().gap(6).items_center().when(narrowPane, (el) => el.overflow_x_scrollbar())
+          .when(narrowPane, (el) => el.children(scopes()))
           .child(chip("runs-quiet", this.hideQuiet, () => { this.hideQuiet = !this.hideQuiet; }, ["Hide quiet runs", ...(this.hideQuiet && rv.quiet ? [count(rv.quiet)] : [])],
-            "Runs that never started: a check that printed nothing (or the same as before) or failed, a missed schedule, a run skipped while the last one was still working")))
-        .child(searchBox(this.runQuery));
+            "Runs that never started: a check that printed nothing (or the same as before) or failed, a missed schedule, a run skipped while the last one was still working"))
+          .when(narrowPane, (el) => el.child(refresh())))
+        .when(!narrowPane, (el) => el.child(searchBox(this.runQuery)));
       const live = liveOf(this.rows.filter((s) => !s.readonly), liveTerms(), shared(RESUMED) ?? {});
       const kids = [];
       let day = null;
@@ -582,14 +613,17 @@ export default class History extends View {
     const providers = Object.keys(PROVIDERS).filter((k) => searched.some((s) => s.provider === k));
     // The chips scroll sideways when there isn't room; the search box stays in view.
     const filters = h_flex().h(44).flex_none().px(16).gap(10).items_center()
+      .when(narrowPane, (el) => el.h(40).px(10))
       .child(h_flex().id("hist-chips").flex_1().min_w(0).h_full().gap(6).items_center().overflow_x_scrollbar()
+        .when(narrowPane, (el) => el.children(scopes()))
         .child(chip("p-all", !this.provider, () => { this.provider = null; }, ["All", count(searched.length)]))
         .children(providers.map((k) => chip(`p-${k}`, this.provider === k, () => { this.provider = this.provider === k ? null : k; },
           [this.icon(k, t, 13), this.agent(k)?.name ?? PROVIDERS[k].name, count(searched.filter((s) => s.provider === k).length)])))
         .when(hidden > 0 || this.gone, (el) => el.child(chip("gone", this.gone, () => { this.gone = !this.gone; },
           [this.gone ? "Hide folder gone" : "Folder gone", ...(this.gone ? [] : [count(hidden)])],
-          "Conversations whose folder isn't there any more (a removed worktree, a deleted scratch folder). They can be read about here but not resumed."))))
-      .child(searchBox(this.query));
+          "Conversations whose folder isn't there any more (a removed worktree, a deleted scratch folder). They can be read about here but not resumed.")))
+        .when(narrowPane, (el) => el.child(refresh())))
+      .when(!narrowPane, (el) => el.child(searchBox(this.query)));
 
     const kids = [];
     let day = null, drawn = 0;

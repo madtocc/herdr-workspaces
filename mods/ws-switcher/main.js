@@ -19,22 +19,35 @@
 //   workspaces.create    a time: the menu asks this block to make a workspace
 //   workspaces.scratch   { at, name? }: the New scratch space dialog asks this block for a scratch space (scratch.js)
 //   workspaces.scratch.folders  the Scratch workspace's folders, newest first, for the menu and ws-spaces
-//   workspaces.worktrees { id, at }: the menu asks this block to show a workspace's
-//                        Worktrees screen (ws-worktrees), as workspaces.board does the board
-//   workspaces.history   { id, at }: the sidebar's History row and the + menu ask this block to show a
-//                        workspace's History screen (ws-history); with no id (All spaces), as a dialog
+//   workspaces.board, workspaces.worktrees, workspaces.notes  { id, at }: ask this block to show that workspace's
+//                        Board, Worktrees or Notes full size (nothing in the package sets them now; kept for scripts)
+//   workspaces.history   { id, at }: the same for History; with no id, History for All spaces
 // Not this block's: ws-history's own, between its copies (its right-click menu and Wipe dialog are copies of their own).
 //   workspaces.history.act    { from, key, action, terminal, at }: the menu asks the History it was opened from to resume or go to a row
 //   workspaces.history.wiped  { keys, at }: what History's Wipe took; every History reads again
-//   workspaces.notes     { id, at }: the + menu asks this block to show a workspace's Notes screen (ws-notes)
 //   workspaces.board.start  { owner, file, worktree, over, at }: ws-board's Start with… dialog asks the board
 //                        copy that opened it (owner) to start a card with another agent, folder or first message
-//   workspaces.screens   workspace id -> its open screens ("board", "worktrees", "history", "notes"): the pills
-//                        ws-tabs draws before the tabs of every space of that workspace
-//   workspaces.screen    { ws, screen, at } or null: the screen shown in place of the tabs.
-//                        Anyone sets it (ws-tabs' pills; null from ws-spaces and ws-agents
-//                        when a space or agent is clicked); this block shows it (coverWork())
+//   Views (ws-tabs' Views menu): Changes and Files belong to a space, Board, Notes, Worktrees and History
+//   to a workspace. Each opens full size (the layout's block `screen-<view>`, in place of the terminals,
+//   with a pill in the tab bar) or beside the shown tab's terminals as a pane.
+//   workspaces.screens   workspace id -> its views open full size ("board", "worktrees", "history", "notes"), in
+//                        the order opened: the pills ws-tabs draws before the tabs of every space of it ("*": All
+//                        spaces, where History opens)
+//   workspaces.screens.space  space id -> its views open full size ("changes", "files"): pills in that space only
+//   workspaces.screen    { ws, space?, screen, at } or null: the view shown in place of the tabs (space: a space's
+//                        view's space). Anyone sets it (ws-tabs' pills; null from ws-spaces and ws-agents when a
+//                        space or agent is clicked); this block shows it (coverWork())
 //   workspaces.covered   true while the shown space isn't the shown workspace's (it has none)
+//   workspaces.view      [{ id, key, beside, toggle, move, at }]: the tab bar (its Views menu, keys, Beside button, a
+//                        pill's right-click) asks this block to open a view in the shown space and workspace (openView();
+//                        a short list, each id done once: beside.js drainAsks, ws-tabs' views.js pushAsk):
+//                        full size (toggle: back to the terminals when it's the one shown) or beside (move: its pill
+//                        closes; it does too when it's the one shown)
+//   workspaces.follow    tab id -> pane id: the terminal Changes and Files opened as panes in that tab follow
+//                        (ws-changes and ws-files write it)
+//   workspaces.beside.panes  pane id -> { ws, screen }: the views this block opened as panes (nothing else tells them
+//                        from a pane split in by hand; beside.js). Closed when the view's add-on is turned off;
+//                        an entry goes once its pane has been gone a while (followBeside())
 //   workspaces.order     { order, folded, scratchFolded }: the menu's order and folded groups (arrange.js, ~/.herdr/workspaces/.order.json)
 //   workspaces.arrange   { order?, folded?, scratchFolded?, groups?: { id: group or null }, at }: the menu asks this block to
 //                        save a drag, a fold or a workspace's group (applyArrange())
@@ -92,21 +105,33 @@ import { dir, expand, tilde, under, base, subdirs, loadDefs, loadOrder, orderFil
 import { arrange, move as moveRow, groupOf, groupName, renamed, withGroup, orderText } from "./arrange.js";
 import { buildSettings, hash, SOURCE as SETTINGS_SOURCE, TARGET as SETTINGS_TARGET } from "./settingsbuild.js";
 import { SETTINGS_FILE, parseSettings } from "./settingsfacts.js";
+import { openIn, splitAt, follow as followLedger, wantsClose, trusted, drainAsks } from "./beside.js";
 import { Features, flips, FOLLOWED } from "./featuregate.js";
 
 // "Edit" opens the workspace's folder in the first of these that's installed,
 // else with the system's opener (Finder, the file manager, Explorer).
 const EDITORS = ["zed", "cursor", "code", "subl"];
 const SETTLE = 1500; // ms a new space's first terminal takes to report its folder
-// A workspace's screens: they belong to the workspace, not to a space. The layout
-// holds each once, as the block `screen-<key>` in the `screens` column of `center`.
-const SCREENS = { board: { mod: "ws-board", name: "Board" }, worktrees: { mod: "ws-worktrees", name: "Worktrees" }, history: { mod: "ws-history", name: "History" }, notes: { mod: "ws-notes", name: "Notes" } };
+// The views: a workspace's (Board, Worktrees, History, Notes) and a space's (Changes, Files: space).
+// The layout holds each once, as the block `screen-<key>` in the `screens` column of `center`.
+// (ws-tabs' views.js has the same six for the tab bar and its menu.)
+const SCREENS = {
+  board: { mod: "ws-board", name: "Board" }, worktrees: { mod: "ws-worktrees", name: "Worktrees" },
+  history: { mod: "ws-history", name: "History" }, notes: { mod: "ws-notes", name: "Notes" },
+  changes: { mod: "ws-changes", name: "Changes", space: true }, files: { mod: "ws-files", name: "Files", space: true },
+};
+// The pills of All spaces (History, with no workspace chosen) in "workspaces.screens" (views.js: ALL).
+const ALL = "*";
+// A view by its key, or null: only SCREENS' own keys ("constructor" in a command's text isn't one).
+const screenOf = (key) => (typeof key === "string" && Object.hasOwn(SCREENS, key) ? SCREENS[key] : null);
 const PALETTE = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
 // The spaces list's avatar colors, so a workspace mark matches.
 const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b7cf6", ansi2: "#3fae6a", ansi1: "#d9649a" };
 const URGENT = { blocked: 2, done: 1 };
 // Settings > Features, for what's drawn and opened (the runners go by this.features).
 const featureOn = (key) => shared("workspaces.settings")?.features?.[key] !== false;
+// The views opened as panes (beside.js).
+const LEDGER = "workspaces.beside.panes";
 
 
 function find(node, id) {
@@ -341,6 +366,9 @@ export default class Workspaces extends View {
     this.treesAsked = shared("workspaces.worktrees")?.at;
     this.historyAsked = shared("workspaces.history")?.at;
     this.notesAsked = shared("workspaces.notes")?.at;
+    // The tab bar's asks already there at start were for an earlier run: none is done again.
+    this.viewSeen = drainAsks(shared("workspaces.view"), [], Date.now()).seen;
+    { const q = shared("workspaces.view"); this.viewLast = Array.isArray(q) && q.length ? q[q.length - 1]?.id : null; }
     this.runAsked = shared("workspaces.automation.run")?.at;
     this.scratchAsked = shared("workspaces.scratch")?.at;
     this.allowAsked = shared("workspaces.automation.allow")?.at;
@@ -369,8 +397,9 @@ export default class Workspaces extends View {
     // space's name, and "ws-switcher.scratch-new/<name>" makes one at once (a script; a blank
     // name is "Scratch <time>"); the scratch toast's Keep is "ws-switcher.scratch-keep/<folder>";
     // a toast about one automation is "ws-switcher.automation/<workspace>/<name>" (automations.js: openAt);
-    // "ws-switcher.board", "ws-switcher.worktrees", "ws-switcher.history" and "ws-switcher.notes" (bind
-    // them to keys) show the shown workspace's screen, and go back to the tabs when it's the one shown;
+    // "ws-switcher.board", "ws-switcher.worktrees", "ws-switcher.history" and "ws-switcher.notes" show the
+    // shown workspace's view full size, and go back to the tabs when it's the one shown (the tab bar's
+    // "ws-tabs.view/<view>" does the same for all six, and is the one to bind: it works with the sidebar hidden);
     // "ws-switcher.show/<screen>/<workspace>" only shows it (a toast's action: Notes' Move to the board);
     // "ws-switcher.settings" opens or closes our Settings window (ws-settings) and
     // "ws-switcher.settings/<section>" opens it on that section (features, agents, experimental, look, machines, …; extras is an alias for agents).
@@ -380,7 +409,7 @@ export default class Workspaces extends View {
         try {
           if (c === "scratch-new") askScratch();
           else if (c.startsWith("scratch-new/")) await this.scratch.create(c.slice("scratch-new/".length));
-          else if (SCREENS[c]) this.toggleScreen(c, cx);
+          else if (screenOf(c) && !screenOf(c).space) this.toggleScreen(c, cx);
           else if (c.startsWith("scratch-keep/")) await this.scratch.keep(c);
           else if (c.startsWith("automation/")) this.openAutomation(c);
           else if (c.startsWith("show/")) this.showScreen(c, cx);
@@ -434,7 +463,8 @@ export default class Workspaces extends View {
     // Placing and following also run here: Herdr doesn't draw while its window is
     // in the background, and a new space waits SETTLE for its folder.
     // Board off: no pull request follow-through or GitHub board item status (no gh, no messages).
-    cx.timer.every(500, (cx) => { this.sync(); this.requests(cx); this.followFeatures(); if (this.mine()) { this.runner.tick(cx); if (this.features.on("board")) { this.prs.tick(cx); this.gh.tick(cx); } } this.scratch.tick(cx); if (spaces().some((s) => !this.known.has(s.id))) cx.notify(); });
+    cx.timer.every(100, (cx) => this.drainViews(cx));
+    cx.timer.every(500, (cx) => { this.sync(); this.requests(cx); this.followFeatures(); this.followBeside(cx); if (this.mine()) { this.runner.tick(cx); if (this.features.on("board")) { this.prs.tick(cx); this.gh.tick(cx); } } this.scratch.tick(cx); if (spaces().some((s) => !this.known.has(s.id))) cx.notify(); });
   }
 
   reload(cx) {
@@ -689,6 +719,10 @@ export default class Workspaces extends View {
     if (machines().every((m) => m.layout === "ready")) {
       const live = new Set(sp.map((s) => s.id));
       for (const id of Object.keys(assigned)) if (!live.has(id)) { delete assigned[id]; changed = true; }
+      // And their Changes and Files pills.
+      const pills = shared("workspaces.screens.space") ?? {};
+      const gone = Object.keys(pills).filter((id) => !live.has(id));
+      if (gone.length && sp.length) setShared("workspaces.screens.space", Object.fromEntries(Object.entries(pills).filter(([id]) => live.has(id))));
     }
     if (changed) setShared("workspaces.assigned", assigned);
 
@@ -735,13 +769,16 @@ export default class Workspaces extends View {
   screen(active, view, now) {
     const scr = shared("workspaces.screen") ?? null;
     if (!scr) { this.screenKey = null; return null; }
-    if (!this.loaded) return SCREENS[scr.screen] && featureOn(scr.screen) ? scr.screen : null;
-    const open = (shared("workspaces.screens") ?? {})[scr.ws] ?? [];
-    const key = `${scr.ws}/${scr.screen}/${scr.at}`;
+    if (!this.loaded) return screenOf(scr.screen) && featureOn(scr.screen) ? scr.screen : null;
+    // A space's view belongs to its space (its pills there), a workspace's to the workspace.
+    const space = screenOf(scr.screen)?.space;
+    const open = space ? (shared("workspaces.screens.space") ?? {})[scr.space] ?? [] : (shared("workspaces.screens") ?? {})[scr.ws ?? ALL] ?? [];
+    const key = `${scr.ws}/${scr.space}/${scr.screen}/${scr.at}`;
     // Just shown (or Herdr just started): where the view is now is where it stays.
     if (this.screenKey !== key || now - (scr.at ?? 0) < 800) { this.screenKey = key; this.screenView = view; }
     // Its feature turned off (Settings > Features): the tabs again; its pin stays for when it's back.
-    if (!SCREENS[scr.screen] || !featureOn(scr.screen) || scr.ws !== active || !open.includes(scr.screen) || view !== this.screenView) {
+    if (!screenOf(scr.screen) || !featureOn(scr.screen) || (scr.ws ?? null) !== active || !open.includes(scr.screen) || view !== this.screenView
+      || (space && (!scr.space || !view.startsWith(`${scr.space}/`)))) {
       setShared("workspaces.screen", null);
       this.screenKey = null;
       return null;
@@ -764,25 +801,31 @@ export default class Workspaces extends View {
     const want = screen ? "screens" : on ? "empty" : "work";
     if (center.active === want) return;
     run("layout.select", { stack: "center", child: want });
-    // Back from a screen, which had taken the keyboard: to the pane that had it before.
+    // Back from a view shown full size, which had taken the keyboard: to the pane that had it before.
     const pane = center.active === "screens" && want === "work" ? focused()?.pane : null;
     if (pane) run("pane.focus", { pane });
   }
 
-  // The empty block: the shown workspace has no spaces. A quiet line, and New space
-  // as the Spaces + does it (Scratch: the dialog that names a new scratch space).
+  // The empty block: the shown workspace has no spaces. What still opens (the workspace's views,
+  // from the tab bar's Views), and that + starts a space. With an older layout, which has no tab bar
+  // over this block, a New space button does it here (as the Spaces + does; Scratch: names one first).
   empty(t) {
     const ws = (shared("workspaces.defs") ?? []).find((d) => d.id === shared("workspaces.active")) ?? null;
     const make = () => {
       if (ws?.scratch) askScratch();
       else run("space.new", ws?.root ? { folder: ws.root } : {});
     };
-    return v_flex().size_full().items_center().justify_center().gap(10).text_size(12.8).text_color(t.dim)
-      .when(Boolean(ws), (el) => el.child(div().child(`No spaces in ${ws.name}`))
-        .child(div().id("empty-new").px(10).py(5).rounded(7).cursor_pointer().text_color(t.muted)
+    const bar = !find(layout(), "screens-tabs"); // one tab bar over everything, with + and Views
+    const views = ["board", "notes", "worktrees", "history"].filter((k) => featureOn(k) && !(k === "worktrees" && ws?.scratch)).map((k) => SCREENS[k].name);
+    const list = views.length <= 1 ? views[0] ?? "" : `${views.slice(0, -1).join(", ")} and ${views[views.length - 1]}`;
+    return v_flex().size_full().items_center().justify_center().gap(4).px(24).text_size(12.8).text_color(t.muted)
+      .when(Boolean(ws), (el) => el.child(div().font_medium().text_size(14).text_color(t.foreground).child(`${ws.name} has no spaces yet`))
+        .when(Boolean(list) && bar, (el) => el.child(div().text_center().child(`${list} still ${views.length === 1 ? "opens" : "open"} from Views.`)))
+        .when(bar, (el) => el.child(div().text_center().child(`Start a ${ws.scratch ? "scratch space" : "space"} with + to work beside an agent.`)))
+        .when(!bar, (el) => el.child(div().id("empty-new").mt(8).px(10).py(5).rounded(7).cursor_pointer().text_color(t.muted)
           .border(1).border_color(t.border).hover((s) => s.bg(t.hover).text_color(t.foreground))
           .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-          .on_click(make).child(ws?.scratch ? "New scratch space…" : "New space")));
+          .on_click(make).child(ws?.scratch ? "New scratch space…" : "New space"))));
   }
 
   async create() {
@@ -995,8 +1038,9 @@ export default class Workspaces extends View {
     if (props()?.empty) return this.empty(t);
     if (props()?.popup) return this.menu(t);
     if (props()?.dialog) return this.dialog(t);
+    // Only placing here; the asks wait for the timer (requests()): a task started from render runs to
+    // its first await and never goes on.
     this.sync();
-    this.requests(cx);
     const defs = shared("workspaces.defs") ?? [];
     const active = defs.find((d) => d.id === shared("workspaces.active")) ?? null;
     const assigned = shared("workspaces.assigned") ?? {};
@@ -1007,8 +1051,6 @@ export default class Workspaces extends View {
     const dot = (id) => div().id(id).size(6).flex_none().rounded_full().bg(t[elsewhere])
       .tooltip(elsewhere === "blocked" ? "An agent needs you in another workspace" : "An agent finished in another workspace");
     const open = () => openOverlay({ mod: "ws-switcher", kind: "popup", width: 288, height: 600, props: { popup: true } });
-    // The board's and the notes' buttons, while they're on in Settings > Features.
-    const boardOn = Boolean(active) && featureOn("board"), notesOn = Boolean(active) && featureOn("notes");
     if (narrow()) {
       return h_flex().size_full().bg(t.chrome).items_center().justify_center()
         .child(h_flex().id("ws-rail").relative().size(32).rounded(6).items_center().justify_center().cursor_pointer()
@@ -1023,20 +1065,13 @@ export default class Workspaces extends View {
         .child(div().flex_1().min_w(0).truncate().font_medium().text_color(t.foreground).child(active?.name ?? "All spaces"))
         .when(Boolean(elsewhere), (el) => el.child(dot("ws-dot")))
         .child(div().flex_none().text_size(11.5).text_color(t.dim).child(String(count)))
-        .child(svg("mods/workspace-chrome/chevron-down.svg").size(11).flex_none().text_color(t.dim)))
-      .when(boardOn, (el) => el.child(div().id("ws-board").size(28).ml(2).flex_none().flex().items_center().justify_center()
-        .rounded(7).text_color(t.muted).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
-        .tooltip(`${active.name} board`).on_click((_e, cx) => this.openScreen(active.id, "board", cx))
-        .child(svg("mods/ws-board/board.svg").size(15))))
-      .when(notesOn, (el) => el.child(div().id("ws-notes").size(28).when(!boardOn, (d) => d.ml(2)).flex_none().flex().items_center().justify_center()
-        .rounded(7).text_color(t.muted).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
-        .tooltip(`${active.name} notes`).on_click((_e, cx) => this.openScreen(active.id, "notes", cx))
-        .child(svg("mods/ws-notes/notes.svg").size(15))));
+        .child(svg("mods/workspace-chrome/chevron-down.svg").size(11).flex_none().text_color(t.dim)));
   }
 
   // What the menu and dialogs ask this sidebar copy to do (their own tasks end when
-  // they close). From render and the 500ms timer: Herdr doesn't draw while in the
-  // background. A start asked for more than 15s ago is dropped, never run late.
+  // they close). From the 500ms timer only, never from render: several of them start tasks
+  // (cx.spawn), and one started from render stops at its first await. A start asked for more
+  // than 15s ago is dropped, never run late.
   requests(cx) {
     const ask = shared("workspaces.create") ?? null;
     if (ask !== this.asked) {
@@ -1112,7 +1147,167 @@ export default class Workspaces extends View {
       this.notesAsked = notesAsk?.at;
       if (notesAsk?.id && Date.now() - notesAsk.at < 15000) this.openScreen(notesAsk.id, "notes", cx);
     }
+    // The tab bar's asks (workspaces.view) have a faster timer of their own: drainViews().
     this.takeTabs();
+  }
+
+  // The tab bar's asks: a list, each done once, in order (beside.js drainAsks). On a 100 ms timer of its
+  // own (a click on Views or a key shouldn't wait for the 500 ms one); with nothing new it only compares
+  // the list's newest id with the one seen last. Never from render (a task started there stops at its
+  // first await). Also the beside asks waiting for their tab's split (nextBeside()).
+  drainViews(cx) {
+    const queue = shared("workspaces.view");
+    const last = Array.isArray(queue) && queue.length ? queue[queue.length - 1]?.id : null;
+    if (last !== this.viewLast) {
+      this.viewLast = last;
+      const views = drainAsks(queue, this.viewSeen, Date.now(), (k) => Boolean(screenOf(k)));
+      this.viewSeen = views.seen;
+      for (const a of views.run) this.openView(a, cx);
+      // Shown now, not on the next draw or 500 ms tick (sync() only places and shows; it starts no task).
+      if (views.run.length) this.sync();
+    }
+    if (this.besideWaiting?.length) this.nextBeside(cx);
+  }
+
+  // A view asked for from the tab bar (shared "workspaces.view"): in the shown space and workspace.
+  // Full size: shown in place of the tabs with a pill (toggle: back to the tabs when it's the one
+  // shown). Beside: as a pane in the shown tab; when it's the one shown full size, that's a move
+  // (its pill closes), as it is when asked to (move: the Beside button, a pill's Move beside).
+  // A workspace's view needs a workspace (History doesn't: All spaces); a space's view, a space.
+  openView(ask, cx) {
+    const key = ask.key, v = screenOf(key);
+    if (!v || !featureOn(key)) return;
+    const active = shared("workspaces.active") ?? null, scr = shared("workspaces.screen") ?? null;
+    const space = shared("workspaces.covered") ? null : spaces().find((p) => p.active) ?? null;
+    if (v.space && !space) {
+      notify({ title: `${v.name} belongs to a space`, body: "Start a space with + first.", level: "info" });
+      return;
+    }
+    if (!v.space && !active && key !== "history") {
+      notify({ title: `${v.name} belongs to a workspace`, body: "Choose a workspace in the switcher first.", level: "info" });
+      return;
+    }
+    const shown = Boolean(scr) && scr.screen === key && (v.space ? scr.space === space.id : (scr.ws ?? null) === active);
+    if (ask.beside) return this.openBeside({ key, ws: active, space, move: Boolean(ask.move) || shown }, cx);
+    if (ask.toggle && shown) { setShared("workspaces.screen", null); return; }
+    if (!v.space) return key === "history" ? this.openHistory(active, cx) : this.openScreen(active, key, cx);
+    // A space's view: an older layout has no block for it, so it opens beside.
+    if (!find(layout(), "screens-body")?.children?.some((c) => c.id === `screen-${key}`)) return this.openBeside({ key, ws: active, space }, cx);
+    const all = shared("workspaces.screens.space") ?? {};
+    if (!(all[space.id] ?? []).includes(key)) setShared("workspaces.screens.space", { ...all, [space.id]: [...(all[space.id] ?? []), key] });
+    setShared("workspaces.screen", { ws: active, space: space.id, screen: key, at: Date.now() });
+  }
+
+  // A view as a pane in the shown tab, beside its terminals (beside.js says where). One already a pane
+  // in this tab is shown instead of a second (another tab's doesn't count, and the tab doesn't change).
+  // A view shown full size gives way, so the pane is seen; move: its pill closes too, once the pane is
+  // there. Only in a space of this computer's (a mod pane can't join a tab on another machine) that has
+  // a tab. One split per tab at a time: an ask while one is under way waits for it (nextBeside()), so
+  // the second view stacks under the first.
+  openBeside({ key, ws, space, move = false }, cx) {
+    const s = screenOf(key);
+    // A key can still ask on another machine's space (the menu has no split icons there): say why not.
+    if (s && space?.machine) notify({ title: `${s.name} can't open beside a terminal on another machine`, body: "Open it full size from Views instead.", level: "info" });
+    if (!s || !space || space.machine || !(space.tabs ?? []).length || shared("workspaces.covered")) return;
+    const tab = space.tabs.find((c) => c.active) ?? space.tabs[0];
+    this.besideBusy ??= new Set();
+    this.besideWaiting ??= [];
+    if (this.besideBusy.has(tab.id)) { this.besideWaiting.push({ key, ws, space: space.id, tab: tab.id, move, at: Date.now() }); return; }
+    const ledger = shared(LEDGER) ?? {}, ps = panes();
+    const open = openIn(ledger, ps, tab.id, s.space ? undefined : ws ?? null, key);
+    if (open) {
+      if (move) this.unpinView(key, ws, space);
+      if (shared("workspaces.screen")) setShared("workspaces.screen", null);
+      const zoomed = ps.find((p) => p.tab === tab.id && p.zoomed && p.pane !== open.pane);
+      if (zoomed) run("pane.zoom", { pane: zoomed.pane }); // on the zoomed pane, it unzooms
+      run("pane.focus", { pane: open.pane });
+      return;
+    }
+    const at = splitAt(ledger, ps, tab.id);
+    if (!at) return;
+    if (shared("workspaces.screen")) setShared("workspaces.screen", null);
+    this.besideBusy.add(tab.id);
+    // A zoomed tab shows only its zoomed pane: unzoomed, the new one is seen beside it.
+    if (at.zoomed) run("pane.zoom", { pane: at.zoomed });
+    cx.spawn(async () => {
+      try {
+        // run() answers nothing in a mod, so the split goes through herdr-app, which prints the new pane.
+        // Keys in alphabetical order: Herdr hands a pane its props back sorted after a restart, and a
+        // copy's localStorage goes by its props as given.
+        const paneProps = { beside: true, tab: tab.id, view: key, workspace: ws ?? null };
+        const r = await exec("herdr-app", ["do", "pane.split", JSON.stringify({ direction: at.direction, pane: at.pane, mod: s.mod, props: paneProps })]);
+        const pane = JSON.parse(r.stdout || "{}").pane;
+        if (!pane) throw new Error(String(r.stderr ?? "").trim() || "Herdr made no pane");
+        setShared(LEDGER, { ...(shared(LEDGER) ?? {}), [pane]: { ws: ws ?? null, screen: key } });
+        run("pane.rename", { pane, name: s.name });
+        // Moved: the pill closes now the pane is there (a failed split leaves the pill).
+        if (move) this.unpinView(key, ws, space);
+      } catch (e) {
+        notify({ title: `Couldn't open ${s.name} beside the terminals`, body: String(e?.message ?? e), level: "error" });
+      }
+      this.besideBusy.delete(tab.id);
+    });
+  }
+
+  // The beside asks that waited for their tab's split: each runs once its tab is free, while that tab is
+  // still the shown one (else it's dropped: the person has moved on), at most 15s late.
+  nextBeside(cx) {
+    if (!this.besideWaiting?.length) return;
+    const now = Date.now(), waiting = this.besideWaiting;
+    this.besideWaiting = [];
+    for (const w of waiting) {
+      if (now - w.at > 15000) continue;
+      if (this.besideBusy?.has(w.tab)) { this.besideWaiting.push(w); continue; }
+      const space = shared("workspaces.covered") ? null : spaces().find((p) => p.active && p.id === w.space);
+      if (!space || (space.tabs ?? []).find((c) => c.active)?.id !== w.tab) continue;
+      this.openBeside({ key: w.key, ws: w.ws, space, move: w.move }, cx);
+    }
+  }
+
+  // A view's pill closed (its view moved into a pane).
+  unpinView(key, ws, space) {
+    if (screenOf(key)?.space) {
+      const all = shared("workspaces.screens.space") ?? {};
+      if ((all[space.id] ?? []).includes(key)) setShared("workspaces.screens.space", { ...all, [space.id]: all[space.id].filter((k) => k !== key) });
+    } else {
+      const all = shared("workspaces.screens") ?? {}, at = ws ?? ALL;
+      if ((all[at] ?? []).includes(key)) setShared("workspaces.screens", { ...all, [at]: all[at].filter((k) => k !== key) });
+    }
+  }
+
+  // The views opened as panes: closed in every space when the view's add-on is turned off
+  // (Settings > Features, or the file); turning it on again reopens nothing. Only on a sure "off": before closing, the file is read here, and a missing,
+  // unreadable or broken one closes nothing (shared state says "off" for those too). A pane that's
+  // its space's last stays open and leaves the list: this never closes a space. An entry goes
+  // when its pane is gone, once this computer's layout is read and it has stayed missing a while
+  // (beside.js), never because the panes aren't known yet.
+  followBeside(cx) {
+    const ledger = shared(LEDGER) ?? {};
+    if (!Object.keys(ledger).length) return;
+    const ps = panes();
+    const here = machines().find((m) => m.name == null);
+    const ready = ps.length > 0 && (!here || here.layout === "ready");
+    let sure = null;
+    if (wantsClose(ledger, ps, shared("workspaces.settings"))) {
+      const read = this.besideRead;
+      if (read && Date.now() - read.at < 3000) sure = read.settings;
+      else if (!this.besideReading) {
+        this.besideReading = true;
+        cx.spawn(async () => {
+          const text = await readTextFile(`${home()}/${SETTINGS_FILE}`).catch(() => null);
+          this.besideRead = { settings: trusted(text, text == null ? null : parseSettings(text)), at: Date.now() };
+          this.besideReading = false;
+        });
+      }
+    }
+    const r = followLedger({
+      ledger, panes: ps, spaces: spaces(), sure, ready, now: Date.now(),
+      missing: this.besideMissing ?? {}, closing: this.besideClosing ?? {},
+    });
+    this.besideMissing = r.missing;
+    this.besideClosing = r.closing;
+    if (r.ledger) setShared(LEDGER, r.ledger);
+    for (const pane of r.close) run("pane.close", { pane });
   }
 
   // The menu's drag, fold or group change: shown at once, then written to .order.json
@@ -1161,9 +1356,11 @@ export default class Workspaces extends View {
     const assigned = shared("workspaces.assigned") ?? {}, defs = shared("workspaces.defs") ?? [];
     const ps = panes();
     this.taken ??= new Set();
+    // Views opened as panes stay where they are, even left alone in their tab.
+    const beside = shared(LEDGER) ?? {};
     for (const p of ps) {
-      const key = Object.keys(SCREENS).find((k) => SCREENS[k].mod === p.mod);
-      if (!key || !featureOn(key) || p.terminal || this.taken.has(p.pane)) continue;
+      const key = Object.keys(SCREENS).find((k) => SCREENS[k].mod === p.mod && !SCREENS[k].space);
+      if (!key || !featureOn(key) || p.terminal || this.taken.has(p.pane) || beside[p.pane]) continue;
       const space = spaces().find((s) => (s.tabs ?? []).some((c) => c.id === p.tab));
       const ws = space && !space.machine ? assigned[space.id] : null;
       if (!ws || !defs.some((d) => d.id === ws) || space.tabs.length < 2 || ps.filter((x) => x.tab === p.tab).length !== 1) continue;
@@ -1175,32 +1372,31 @@ export default class Workspaces extends View {
     }
   }
 
-  // The key's way in: the shown workspace's screen, and back to the tabs from it.
-  // Off in Settings > Features: nothing (no toast), here and in openScreen() and openHistory().
+  // The key's way in ("ws-switcher.board" and the like): the shown workspace's view, and back to the
+  // tabs from it. Off in Settings > Features: nothing (no toast), here and in openScreen() and openHistory().
   toggleScreen(key, cx) {
-    if (!featureOn(key)) return;
-    const ws = shared("workspaces.active") ?? null, scr = shared("workspaces.screen") ?? null;
-    if (!ws) {
-      if (key === "history") this.openHistory(null, cx);
-      if (key === "notes") notify({ title: "Notes belong to a workspace", body: "Choose a workspace in the switcher first.", level: "info" });
-      return;
-    }
-    if (scr?.ws === ws && scr.screen === key) setShared("workspaces.screen", null);
-    else this.openScreen(ws, key, cx);
+    this.openView({ key, toggle: true }, cx);
   }
 
-  // History is the one screen that also works with no workspace chosen (All spaces):
-  // the pills belong to a workspace, so there it's a dialog over everything.
+  // History is the one workspace view that also works with no workspace chosen (All spaces): full
+  // size, every conversation, its pill kept under "*". An older layout with no block for it: a dialog.
   openHistory(id, cx) {
     if (!featureOn("history")) return;
-    if (id && (shared("workspaces.defs") ?? []).some((d) => d.id === id)) return this.openScreen(id, "history", cx);
-    openOverlay({ mod: "ws-history", kind: "dialog", width: 980, height: 700, props: { dialog: true } });
+    // A workspace's (one not known, or not known yet: nothing, as openScreen does; never All spaces).
+    if (id) return this.openScreen(id, "history", cx);
+    if (!find(layout(), "screens-body")?.children?.some((c) => c.id === "screen-history")) {
+      openOverlay({ mod: "ws-history", kind: "dialog", width: 980, height: 700, props: { dialog: true } });
+      return;
+    }
+    if (shared("workspaces.active")) choose(null);
+    this.pin(ALL, "history");
+    setShared("workspaces.screen", { ws: null, screen: "history", at: Date.now() });
   }
 
   // "show/<screen>/<workspace>": that workspace's screen, never back to the tabs.
   showScreen(c, cx) {
     const [, key, ws] = c.split("/");
-    if (!SCREENS[key] || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(String(ws ?? ""))) return;
+    if (!screenOf(key) || screenOf(key).space || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(String(ws ?? ""))) return;
     if ((shared("workspaces.defs") ?? []).some((d) => d.id === ws)) this.openScreen(ws, key, cx);
   }
 
@@ -1214,7 +1410,8 @@ export default class Workspaces extends View {
   // copy of the layout, which has no place for screens, it's a tab in one space.
   openScreen(id, key, cx) {
     if (!featureOn(key)) return;
-    if (!find(layout(), "screens-body")?.children?.some((c) => c.id === `screen-${key}`)) return this.openBoard(id, cx, SCREENS[key]);
+    if (!screenOf(key)) return;
+    if (!find(layout(), "screens-body")?.children?.some((c) => c.id === `screen-${key}`)) return this.openBoard(id, cx, screenOf(key));
     if (!(shared("workspaces.defs") ?? []).some((d) => d.id === id)) return;
     this.pin(id, key);
     if (shared("workspaces.active") !== id) choose(id);
@@ -1448,19 +1645,7 @@ export default class Workspaces extends View {
 
     // The actions before the folders: a workspace can have many folders.
     items.push(line());
-    // The board and the notes have their own buttons beside the switcher, except on the narrow rail.
-    // Each only while it's on in Settings > Features.
-    if (active && narrow()) {
-      // The board opens from the sidebar copy: a popup's tasks end when it closes.
-      if (featureOn("board")) items.push(row("ws-board-open", svg("mods/ws-board/board.svg").size(14).flex_none().text_color(t.muted), `Open ${active.name} board`, div(),
-        () => setShared("workspaces.board", { id: active.id, at: Date.now() })));
-      if (featureOn("notes")) items.push(row("ws-notes-open", svg("mods/ws-notes/notes.svg").size(14).flex_none().text_color(t.muted), `Open ${active.name} notes`, div(),
-        () => setShared("workspaces.notes", { id: active.id, at: Date.now() })));
-    }
-    if (active && !active.error && !active.scratch && featureOn("worktrees")) {
-      items.push(row("ws-trees-open", icon("git-branch"), `Open ${active.name} worktrees`, div(),
-        () => setShared("workspaces.worktrees", { id: active.id, at: Date.now() }), { tip: "Every worktree of its repos: what's finished, set up and clean up" }));
-    }
+    // The workspace's views (Board, Notes, Worktrees, History) open from the tab bar's Views menu.
     if (shown && defs.length) {
       items.push(row("ws-move", icon("layers"), `Move “${shown.name}” to…`, hint("›"),
         (cx) => { this.moving = true; cx.notify(); }, { keep: true }));

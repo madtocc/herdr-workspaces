@@ -1,11 +1,10 @@
 // ws-chrome: Herdr's `workspace-chrome` (0.1.14) for the sidebar footer, with
-// "History", "Automations" and "Agent presets" rows above Settings. The last two
-// open the ws-automations and ws-presets screens for the shown workspace; History
-// asks the switcher (shared "workspaces.history") for the workspace's History
-// screen (ws-history). Settings opens our copy of Herdr's Settings window (ws-settings,
+// "Automations" and "Agent presets" rows above Settings. They open the ws-automations
+// and ws-presets screens for the shown workspace. (History was a row here; it opens from
+// the tab bar's Views menu now, ws-tabs.) Settings opens our copy of Herdr's Settings window (ws-settings,
 // with the package's Features, Agents and Experimental sections) instead of app.settings. The brand row still
 // uses Herdr's own workspace-chrome.
-// History and Automations are left out while their add-on is off in Settings > Features
+// Automations is left out while its add-on is off in Settings > Features
 // (shared "workspaces.settings"), and the footer's block (`sidebar-footer`) is then asked
 // to be the height the layout file gives it less 28 px a hidden row (footer.js,
 // fitFooter()), so none leaves a hole; with every row shown, the file's height. The file
@@ -97,8 +96,6 @@ export default class WorkspaceChrome extends View {
       this.fitFooter(ROWS.length - shown.length);
       return v_flex().size_full().bg(t.chrome).border_t(1).border_color(t.border).px(8).pt(4).pb(8).text_size(13)
         .when(collapsed, el => el.px(0).items_center())
-        .when(shown.includes("history"), el => el.child(row("history", "mods/ws-history/history.svg", "History", false,
-          () => setShared("workspaces.history", { id: shared("workspaces.active") ?? null, at: Date.now() }))))
         .when(shown.includes("automations"), el => el.child(row("automations", "mods/ws-automations/automations.svg", "Automations", false, () => openOverlay({
           mod: "ws-automations", kind: "dialog", width: 940, height: 680, props: { workspace: shared("workspaces.active") ?? null } }))))
         .child(row("presets", "presets", "Agent presets", false, () => openOverlay({

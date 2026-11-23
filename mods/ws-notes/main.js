@@ -7,7 +7,10 @@
 // that follows the workspace shown in the switcher, and the switcher's Notes button
 // (beside the board's), the + menu's "Notes" and the command `ws-switcher.notes` show
 // it in place of the tabs, from any space. In a tab or pane of its own (props
-// { workspace }) it keeps to that workspace.
+// { workspace }) it keeps to that workspace. A pane beside the terminals (props
+// { beside: true, workspace }) has no title row (Herdr's pane header names it), its
+// search and New note in one slim row. Narrow, any copy shows its list or one note
+// ("← Notes" goes back to the list), never both.
 //
 // Notes start nothing themselves: work goes through the board. Move to the board
 // writes a card from the note (the board's writer: nextId, withFields, copied from
@@ -34,6 +37,8 @@ const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b
 const COLUMNS = ["backlog", "todo", "doing", "review", "done"]; // the board's default columns
 // Whether an add-on is on in Settings > Features (nothing known yet counts as on).
 const featureOn = (key) => shared("workspaces.settings")?.features?.[key] !== false;
+// Below this width (a pane beside the terminals) it shows the list or one note, not both.
+const NARROW = 640;
 const QUIET = 700; // ms after the last key before a note is saved
 // Moves a file to the Trash ($1), or into $2 where there's no Trash command (under a
 // name with the time in front, so an earlier note of the same name isn't replaced). Prints where.
@@ -151,8 +156,11 @@ export default class Notes extends View {
     this.handle = cx.focus_handle();
     // The layout's screen follows the shown workspace; a tab keeps the one it was opened with.
     this.follow = Boolean(props()?.screen);
+    // A pane beside the terminals: Herdr's pane header names it, so no title row of its own.
+    this.beside = !this.follow && Boolean(props()?.beside);
     this.workspace = (this.follow ? null : props()?.workspace) ?? shared("workspaces.active") ?? null;
     this.showing = !this.follow;
+    this.page = "note"; // narrow: the list or the open note
     this.editor = TextareaState.new({ value: "", placeholder: featureOn("board") ? "Write a rough idea here. Move it to the board when it's ready to be work." : "Write a rough idea here." });
     this.editor.set_soft_wrap(true);
     this.editor.on("change", (_e, cx) => { if (this.quiet) return; this.st.typed(); this.confirming = false; this.error = null; cx.notify(); });
@@ -278,13 +286,14 @@ export default class Notes extends View {
   }
 
   select(name, cx) {
-    if (this.st.open?.name === name) return;
+    if (this.st.open?.name === name) { if (this.page !== "note") { this.page = "note"; this.editor.focus(); cx.notify(); } return; }
     this.leave(cx, () => {
       const n = this.st.notes.find((x) => x.name === name);
       if (!n) return;
       this.st.openNote(n);
       this.keep("open", n.name);
       this.confirming = false;
+      this.page = "note";
       this.editor.focus();
     });
   }
@@ -293,6 +302,7 @@ export default class Notes extends View {
     this.leave(cx, () => {
       this.st.draft();
       this.confirming = false;
+      this.page = "note";
       this.editor.focus();
     });
   }
@@ -395,7 +405,10 @@ export default class Notes extends View {
     const def = defOf(this.workspace);
     const st = this.st;
     const shell = v_flex().id("notes").size_full().min_h(0).bg(t.canvas).text_size(13).text_color(t.foreground)
+      .on_size_change((size, cx) => { if (size.width !== this.width) { this.width = size.width; cx.notify(); } })
       .when(this.follow, (el) => el.track_focus(this.handle));
+    // Narrow (a pane beside the terminals): the header wraps, and it shows the list or the note.
+    const narrow = this.width > 0 && this.width < NARROW;
     // Between two workspaces (the timer is a moment behind): nothing of the last one.
     if (this.follow && (shared("workspaces.active") ?? null) !== this.workspace) return shell;
     if (!def) {
@@ -414,25 +427,38 @@ export default class Notes extends View {
       .child(text);
 
     const shown = this.shownNotes();
-    const header = h_flex().h(48).flex_none().px(16).gap(10).items_center().border_b(1).border_color(t.border)
+    const search = () => h_flex().w(220).h(28).px(9).gap(7).flex_none().items_center().rounded(7).border_1().border_color(t.input).bg(t.background)
+      .when(this.beside && narrow, (el) => el.w_auto().flex_1().min_w(90))
+      .child(svg("mods/workspace-chrome/search.svg").size(12).flex_none().text_color(t.dim))
+      .child(Input.new(this.query).flex_1().min_w(0).text_size(12).text_color(t.foreground));
+    const newButton = () => button("note-new", "New note", (cx) => this.newNote(cx), { solid: true, icon: "mods/workspace-chrome/plus.svg" });
+    // A pane beside the terminals: one slim row (the pane's header names it). Narrow, it shows
+    // over the list only; the open note has its own bar with "← Notes".
+    const slim = () => h_flex().min_h(36).flex_none().px(10).py(4).gap(8).items_center().border_b(1).border_color(t.border)
+      .when(!narrow, (el) => el.child(div().min_w(0).truncate().text_size(12).text_color(t.dim).child(st.loaded ? plural(st.notes.length, "note") : "Reading…")).child(div().flex_1()))
+      .child(search()).child(newButton());
+    const header = this.beside ? (narrow && this.page === "note" ? null : slim()) : h_flex().h(48).flex_none().px(16).gap(10).items_center().border_b(1).border_color(t.border)
+      .when(narrow, (el) => el.h_auto().min_h(48).py(9).flex_wrap())
       .child(mark(def, t, 20))
       .child(div().flex_none().font_semibold().child(`${def.name} notes`))
       .child(div().text_size(12).text_color(t.dim).child(st.loaded ? plural(st.notes.length, "note") : "Reading…"))
       .child(div().flex_1())
-      .child(h_flex().w(220).h(28).px(9).gap(7).flex_none().items_center().rounded(7).border_1().border_color(t.input).bg(t.background)
-        .child(svg("mods/workspace-chrome/search.svg").size(12).flex_none().text_color(t.dim))
-        .child(Input.new(this.query).flex_1().min_w(0).text_size(12).text_color(t.foreground)))
-      .child(button("note-new", "New note", (cx) => this.newNote(cx), { solid: true, icon: "mods/workspace-chrome/plus.svg" }));
+      // Narrow, search only over the list it filters (the note page has none).
+      .when(!(narrow && this.page === "note"), (el) => el.child(search()))
+      .child(newButton());
 
     // The list: newest edited first. A note being written that has no file yet shows at the top.
     const rows = [];
     if (st.open && !st.open.file && !this.query.value().trim()) rows.push(this.row(null, true, t, now));
     for (const n of shown) rows.push(this.row(n, st.open?.file === n.file, t, now));
     if (st.loaded && !shown.length && this.query.value().trim()) rows.push(div().p(12).text_size(12).text_color(t.dim).child("No notes like that."));
-    const list = v_flex().id("notes-list").w(290).flex_none().min_h(0).border_r(1).border_color(t.border).overflow_y_scrollbar().p(8).gap(2).children(rows);
+    const list = () => v_flex().id("notes-list").flex_none().min_h(0).border_color(t.border).overflow_y_scrollbar().p(8).gap(2).children(rows)
+      .when(!narrow, (el) => el.w(290).border_r(1)).when(narrow, (el) => el.flex_1());
 
-    return shell.child(header)
-      .child(h_flex().flex_1().min_h(0).items_stretch().child(list).child(this.editorPane(def, t, button)));
+    // Narrow: the list, or the open note with "← Notes" back to it.
+    const body = !narrow ? h_flex().flex_1().min_h(0).items_stretch().child(list()).child(this.editorPane(def, t, button))
+      : this.page === "list" ? list() : this.editorPane(def, t, button, true);
+    return shell.when(Boolean(header), (el) => el.child(header)).child(body);
   }
 
   // A row: title, a line of what follows, and how long ago.
@@ -448,7 +474,7 @@ export default class Notes extends View {
   }
 
   // The open note: its bar (where it's kept, saved, actions), then the text.
-  editorPane(def, t, button) {
+  editorPane(def, t, button, narrow = false) {
     const st = this.st;
     const open = st.open;
     const has = Boolean(this.editor.value().trim());
@@ -466,7 +492,10 @@ export default class Notes extends View {
           { solid: has, off: !has, tip: has ? `Make it a card in ${label(first)} and take it out of Notes` : "Write something first", icon: "mods/ws-board/board.svg" })] : []),
         ...(open?.file || has ? [button("note-delete", "Delete", (cx) => this.remove(cx), { tip: open?.file ? "Move it to the Trash" : "Throw away this new note", icon: "mods/ws-notes/trash.svg" })] : []),
       ];
-    const bar = h_flex().h(48).flex_none().px(16).gap(8).items_center().border_b(1).border_color(t.border)
+    const bar = h_flex().h(narrow ? 36 : 48).flex_none().px(narrow ? 10 : 16).gap(8).items_center().border_b(1).border_color(t.border)
+      .when(narrow, (el) => el.child(div().id("note-back").flex_none().text_size(12).text_color(t.muted).cursor_pointer()
+        .hover((s) => s.text_color(t.foreground)).tooltip("Back to the list of notes")
+        .on_click((_e, cx) => { this.page = "list"; this.confirming = false; cx.notify(); }).child("← Notes")))
       .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(where))
       .when(Boolean(state), (el) => el.child(div().flex_none().text_size(11.5).text_color(t.dim).child(state)))
       .children(actions);
@@ -485,7 +514,7 @@ export default class Notes extends View {
       .child(bar)
       .when(Boolean(problem), (el) => el.child(problem))
       .when(Boolean(clash), (el) => el.child(clash))
-      .child(div().flex_1().min_h(0).p(16).child(Textarea.new(this.editor).size_full().p(14).rounded(8).border_1().border_color(t.border)
+      .child(div().flex_1().min_h(0).p(narrow ? 8 : 16).child(Textarea.new(this.editor).size_full().p(14).rounded(8).border_1().border_color(t.border)
         .bg(t.background).text_size(13.5).text_color(t.foreground)));
   }
 }

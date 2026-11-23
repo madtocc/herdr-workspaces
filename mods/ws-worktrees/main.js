@@ -2,7 +2,9 @@
 // screen: the layout holds one copy (props { screen: true }) that shows the worktrees
 // of the workspace shown in the switcher and follows it, and the switcher menu's
 // "Open … worktrees" shows it in place of the tabs, from any space. In a tab or pane
-// of its own (props { workspace }) it keeps to that workspace.
+// of its own (props { workspace }) it keeps to that workspace. A pane beside the
+// terminals (props { beside: true, workspace }) has no title row (Herdr's pane header
+// names it), its controls in one slim row.
 //
 // Which ones: git's own list (`git worktree list`) for each repo under the
 // workspace's root or among its folders, so a worktree shows wherever it was
@@ -130,6 +132,7 @@ function mark(def, t, size) {
 }
 
 const STALE = 60e3; // ms after which the screen, shown again, reads the worktrees again
+const ROW_MIN = 560; // a worktree row's least width in a narrow tab or pane: it scrolls sideways
 
 export default class Worktrees extends View {
   init(_props, cx) {
@@ -137,6 +140,8 @@ export default class Worktrees extends View {
     if (props()?.dialog) return this.initDialog(cx);
     // The layout's screen follows the shown workspace; a tab keeps the one it was made with.
     this.follow = Boolean(props()?.screen);
+    // A pane beside the terminals: Herdr's pane header names it, so no title row of its own.
+    this.beside = !this.follow && Boolean(props()?.beside);
     this.workspace = (this.follow ? null : props()?.workspace) ?? shared("workspaces.active") ?? null;
     this.turn = 0;
     this.readAt = Date.now();
@@ -405,10 +410,16 @@ export default class Worktrees extends View {
         .child(text).child(div().text_color(t.dim).child(String(n)));
     };
 
+    // A tab or a pane beside the terminals can be narrow: the header and the filters wrap rather
+    // than lose their buttons, and the rows keep their width and scroll sideways.
+    const narrow = (least) => (el) => el.h_auto().min_h(least).py(9).flex_wrap();
+    // A pane beside the terminals: one slim row (the pane's header names it), wrapping rather than
+    // losing a button.
     const header = h_flex().h(48).flex_none().px(16).gap(10).items_center().border_b(1).border_color(t.border)
-      .child(mark(def, t, 20))
-      .child(div().font_semibold().child(`${def.name} worktrees`))
-      .child(div().text_size(12).text_color(t.dim).child(this.loaded ? `${all.length} in ${plural(this.repos.filter((r) => r.trees.length).length, "repo")}` : "Reading…"))
+      .when(!this.follow, narrow(48))
+      .when(this.beside, (el) => el.min_h(36).px(10).py(4).gap(8))
+      .when(!this.beside, (el) => el.child(mark(def, t, 20)).child(div().font_semibold().child(`${def.name} worktrees`)))
+      .child(div().min_w(0).truncate().text_size(12).text_color(t.dim).child(this.loaded ? `${all.length} in ${plural(this.repos.filter((r) => r.trees.length).length, "repo")}` : "Reading…"))
       .when(this.reading && this.loaded, (el) => el.child(svg("mods/workspace-chrome/spinner.svg").size(13).text_color(t.dim).spin(900)))
       .child(div().flex_1())
       .child(button("wt-refresh", "Refresh", (cx) => this.load(cx), { tip: "Read git and GitHub again" }))
@@ -419,7 +430,7 @@ export default class Worktrees extends View {
       .when(!picked.length && done.length > 0, (el) => el.child(button("wt-clean", `Remove ${done.length} finished…`, () => this.remove(done, live),
         { solid: true, tip: "Merged, nothing uncommitted, and nothing open or running in them" })));
 
-    const filters = h_flex().h(44).flex_none().px(16).gap(6).items_center().children(FILTERS.map(chip))
+    const filters = h_flex().h(44).flex_none().px(16).gap(6).items_center().when(!this.follow, narrow(44)).when(this.beside, (el) => el.px(10).py(6)).children(FILTERS.map(chip))
       .child(div().flex_1())
       .when(shown.length > 0, (el) => el.child(div().id("wt-pick-all").h(26).px(8).flex().flex_none().items_center().rounded(7).text_size(12)
         .text_color(t.muted).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
@@ -441,11 +452,12 @@ export default class Worktrees extends View {
     }
     if (this.loaded && !this.repos.length) kids.push(div().p(16).text_color(t.dim).child(`No git repository in ${tilde(def.root)} or its folders.`));
     else if (this.loaded && this.filter !== "all" && !shown.length) kids.push(div().p(16).text_color(t.dim).child("None like that."));
-    const body = v_flex().id("wt-list").flex_1().min_h(0).overflow_y_scrollbar().px(10).pb(16).children(kids);
+    const body = v_flex().id("wt-list").flex_1().min_h(0).when(this.follow, (el) => el.overflow_y_scrollbar()).when(!this.follow, (el) => el.overflow_scrollbar()).px(10).pb(16).children(kids);
     const noGh = this.repos.some((r) => r.trees.length && r.prs === null);
     return shell.child(header).child(filters).child(body)
       .when(noGh, (el) => el.child(div().h(28).flex_none().px(16).flex().items_center().border_t(1).border_color(t.border).text_size(11.5).text_color(t.dim)
-        .child("Pull requests couldn't be read for some repos (gh missing, signed out, or no GitHub remote), so nothing there counts as finished.")));
+        .when(!this.follow, (el) => el.h_auto().min_h(28).py(6))
+        .child(div().flex_1().min_w(0).child("Pull requests couldn't be read for some repos (gh missing, signed out, or no GitHub remote), so nothing there counts as finished."))));
   }
 
   repoHead(r, count, t, button) {
@@ -494,6 +506,7 @@ export default class Worktrees extends View {
       .tooltip(tip).on_click((_e, cx) => action(cx)).child(text);
     const ticked = this.selected.has(x.path);
     return h_flex().id(`wt-${x.path}`).h(38).px(6).gap(8).items_center().flex_none().rounded(7).hover((s) => s.bg(t.hover))
+      .when(!this.follow, (el) => el.min_w(ROW_MIN))
       .when(ticked, (el) => el.bg(t.selected))
       .child(h_flex().id(`pick-${x.path}`).w(26).h(38).flex_none().items_center().justify_center().cursor_pointer()
         .tooltip("Tick it to remove several together. Shift-click ticks every row from the last one you ticked.")

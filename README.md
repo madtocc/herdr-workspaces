@@ -21,6 +21,10 @@ another workspace needs you or finished.
 
 - **New space**: a click on the Spaces + makes one in the workspace's root. Hold
   it (or right-click) to name the space and choose its folder.
+- **Views**: the tab bar's Views button opens the space's Changes and Files and
+  the workspace's Board, Notes, Worktrees and History, each full size in place
+  of the terminals (a pill before the tabs brings it back) or beside them as a
+  pane. Changes and Files follow the terminal you were using.
 - **Scratch**, always last in the switcher, holds throwaway spaces for ideas that
   belong to no project. You name each one as you make it, and it gets a fresh
   folder carrying that name, tidied away when you're done unless you keep it.
@@ -46,7 +50,8 @@ another workspace needs you or finished.
 Each workspace has a board, as columns or as a list. A task is one markdown
 file, so agents can read and write them too. The board belongs to the workspace,
 not to one space: once opened, it's a pill before the tabs of every space of the
-workspace, and it opens even when the workspace has no spaces.
+workspace, and it opens even when the workspace has no spaces. Open it from the
+tab bar's Views, full size or beside your terminals.
 
 - **Start** on a card starts an agent on its task, in the repo or in a fresh git
   worktree, with the preset you pick. The card then shows that agent's live
@@ -82,7 +87,7 @@ with its own status columns, or as a list with a section per status.
 
 ![The Worktrees tab](previews/worktrees.png)
 
-"Open … worktrees" in the switcher menu lists every git worktree of the
+Worktrees in the tab bar's Views lists every git worktree of the
 workspace's repos, wherever it was made. Like the board it belongs to the
 workspace: a pill in the tab bar of each of its spaces.
 
@@ -98,7 +103,7 @@ workspace: a pill in the tab bar of each of its spaces.
 
 ![The History screen](previews/history.png)
 
-**History** in the sidebar footer (or "Resume a conversation…" in the + menu)
+**History** in the tab bar's Views
 lists the conversations your agents saved, newest first, whichever agent it
 was: Claude Code, Codex, Pi, Grok, OpenCode and Antigravity. Like the board it belongs to
 the workspace: a pill in the tab bar of each of its spaces.
@@ -122,7 +127,7 @@ the workspace: a pill in the tab bar of each of its spaces.
 
 ![The Notes screen](previews/notes.png)
 
-The **notes** button beside the board button (or "Notes" in the + menu) keeps a
+**Notes** in the tab bar's Views keeps a
 workspace's rough ideas, the ones you don't want to start yet. A note is just
 writing: its first line is its title, and it's saved as you type, one markdown
 file each in the workspace's `notes/` folder. Like the board it's a pill in the
@@ -252,7 +257,7 @@ leaves that file to you: new default shortcuts in its updates are added by hand.
 Ask your agent to add this layout (Herdr's own guide, `~/.config/herdr-app/AGENTS.md`,
 says how), or by hand:
 
-1. Copy `layouts/workspaces.json` to `~/.config/herdr-app/layouts/` and the fifteen
+1. Copy `layouts/workspaces.json` to `~/.config/herdr-app/layouts/` and the seventeen
    folders in `mods/` to `~/.config/herdr-app/mods/` (rename them if a name is taken).
 2. For agent instructions from the + menu, put the launcher on your `PATH` and
    point `programs.json` at it. `herdr-ws-run` starts automations from other
@@ -286,8 +291,8 @@ says how), or by hand:
    ```
 4. Switch to it: `herdr-app do layout.switch '{"name":"workspaces"}'`
    (`ctrl-shift-l` cycles back).
-5. Open the switcher and pick **New workspace from a folder…**. The board button
-   beside the switcher opens the workspace's board.
+5. Open the switcher and pick **New workspace from a folder…**. Views, at the
+   right of the tab bar, opens the workspace's board.
 6. To start from the examples, copy them where Herdr reads them:
    - presets for every workspace: `examples/presets/*.md` to
      `~/.config/herdr-core/templates/` (where `hc run <name>` finds them too);
@@ -357,8 +362,12 @@ Antigravity runs or has it open; the Agents list runs `ps` once per Antigravity
 agent's process to tell which conversation it holds. The board's Worktree runs
 `git worktree add` on a new `task/…` branch; otherwise your repos aren't
 touched. It runs `sh` (editor, Trash, symlinked folders), `herdr-app do` (the
-board's and automations' new tabs) and, through the launcher, Start and
-automations, your agents. The Worktrees tab reads git in the workspace's repos and
+board's and automations' new tabs, and `pane.split` for a view opened beside
+the terminals) and, through the launcher, Start and
+automations, your agents. Changes (`ws-changes`, a copy of Herdr's own) runs `git` reads (status, diff,
+branch) in the repo of the terminal it follows and, when you press Commit,
+`git add -A` and `git commit` there, as Herdr's Changes does; Files (`ws-files`)
+lists folders and reads files there, as Herdr's Files does. The Worktrees tab reads git in the workspace's repos and
 their worktrees (`worktree list`, `for-each-ref`, `status`) and each repo's pull
 requests with `gh pr list`. Removing a worktree there (after a confirmation)
 deletes its folder with `git worktree remove`; the branch stays. History reads the
@@ -456,7 +465,7 @@ than 0.1.0's notes, so read them all). To hear about new versions, watch the
 repo on GitHub for releases (Watch → Custom → Releases).
 
 - **You copied the files as they are:** copy `layouts/workspaces.json` and the
-  fifteen folders in `mods/` again, and do what the new versions' notes say
+  seventeen folders in `mods/` again, and do what the new versions' notes say
   (a new script to link, say). Your workspaces, tasks, presets and automations
   live elsewhere and aren't touched.
 - **You or your agent changed them:** tell your agent "apply what's in this

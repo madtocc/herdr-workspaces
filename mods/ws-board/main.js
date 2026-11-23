@@ -2,7 +2,9 @@
 // the layout holds one copy (props { screen: true }) that shows the board of the
 // workspace shown in the switcher and follows it, and the switcher's board button
 // shows it in place of the tabs, from any space. In a tab or pane of its own
-// (props { workspace }) it keeps to that workspace.
+// (props { workspace }) it keeps to that workspace. A pane beside the terminals (props
+// { beside: true, workspace }) has no title row (Herdr's pane header names it), its
+// controls in one slim row, and opens as List while narrow unless Board was picked there.
 //
 // A task is a markdown file, ~/.herdr/workspaces/<workspace>/tasks/<ID>.md:
 // front matter between --- lines (id, title, status, folder, priority, created,
@@ -53,6 +55,11 @@ import {
 
 const COLUMNS = ["backlog", "todo", "doing", "review", "done"];
 const PRIORITY = { high: 3, medium: 2, low: 1 };
+// The list's rows' least width in a narrow tab or pane (id, title, priority, folder, agent).
+const LIST_MIN = 600;
+// A pane beside the terminals narrower than this opens as List (unless Board was picked
+// there). Under LIST_MIN its list rows take two lines instead of scrolling sideways.
+const PANE_BOARD = 720;
 const PALETTE = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
 const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b7cf6", ansi2: "#3fae6a", ansi1: "#d9649a" };
 const STATUS_WORD = { working: "working", blocked: "needs you", done: "finished", idle: "idle" };
@@ -352,6 +359,8 @@ export default class Board extends View {
     if (props()?.dialog) return this.initDialog(cx);
     // The layout's screen follows the shown workspace; a tab keeps the one it was made with.
     this.follow = Boolean(props()?.screen);
+    // A pane beside the terminals: Herdr's pane header names it, so it has no title row of its own.
+    this.beside = !this.follow && Boolean(props()?.beside);
     this.workspace = (this.follow ? null : props()?.workspace) ?? shared("workspaces.active") ?? null;
     this.reset();
     this.initGithub(cx);
@@ -393,6 +402,13 @@ export default class Board extends View {
     });
   }
 
+  // Board or List: what was picked here, else List in a narrow pane beside the terminals
+  // (its width unknown yet counts as narrow), else Board.
+  shownView(github = false) {
+    const picked = github ? this.gh.view : this.view;
+    return picked ?? (this.beside && !(this.width >= PANE_BOARD) ? "list" : "board");
+  }
+
   // A board's own state, as it opens.
   reset() {
     this.tasks = [];
@@ -403,7 +419,8 @@ export default class Board extends View {
     this.dropped = 0;
     // Remembered: which view, and the list's folded sections
     // (null until changed: the last column, done, starts folded).
-    this.view = this.pref("view") === "list" ? "list" : "board";
+    // Board or List as picked here; null until picked (shownView() decides).
+    this.view = ["list", "board"].includes(this.pref("view")) ? this.pref("view") : null;
     const folded = this.pref("folded");
     this.folded = folded ? new Set(JSON.parse(folded)) : null;
     // Tasks (this board) or GitHub (the workspace's GitHub project board).
@@ -517,6 +534,7 @@ export default class Board extends View {
     if (props()?.dialog) return this.dialog(t);
     const def = defOf(this.workspace);
     const shell = v_flex().id("board").size_full().min_h(0).bg(t.canvas).text_size(13).text_color(t.foreground)
+      .on_size_change((size, cx) => { if (size.width !== this.width) { this.width = size.width; cx.notify(); } })
       .when(this.follow, (el) => el.track_focus(this.handle));
     // Between two workspaces (retarget() is a moment behind): nothing of the last one.
     if (this.follow && (shared("workspaces.active") ?? null) !== this.workspace) return shell;
@@ -530,7 +548,30 @@ export default class Board extends View {
     const open = this.tasks.filter((x) => columnOf(x) !== b.columns[b.columns.length - 1]).length;
 
     const github = this.source === "github";
+    // A tab or a pane beside the terminals can be narrow: its header wraps rather than lose its buttons.
+    // A pane beside the terminals: one slim row of controls (Herdr's header names it); narrow,
+    // without the counts and with New task as its + alone. It wraps rather than lose a button.
+    const slim = this.beside, tiny = slim && !(this.width >= PANE_BOARD);
+    if (slim) {
+      const header = h_flex().min_h(36).flex_none().px(10).py(4).gap(8).items_center().flex_wrap().border_b(1).border_color(t.border)
+        .child(this.sourceToggle(t))
+        .when(!tiny, (el) => el.child(div().min_w(0).truncate().text_size(12).text_color(t.dim)
+          .child(github ? (this.gh.board && this.ghRef(def) ? `${this.gh.board.title} on GitHub` : "") : `${open} open · ${this.tasks.length - open} done`)))
+        .child(div().flex_1())
+        .children(github ? this.ghTools(def, t) : [
+          this.viewToggle(t),
+          h_flex().id("board-new").h(26).px(tiny ? 0 : 10).when(tiny, (el) => el.w(26).justify_center()).gap(6).flex_none().items_center().rounded(7).cursor_pointer()
+            .bg(t.solid).text_color(t.solid_foreground).text_size(12).font_medium().hover((s) => s.opacity(0.88))
+            .when(tiny, (el) => el.tooltip("New task"))
+            .on_click(() => this.openTask(null, b.columns[0]))
+            .child(svg("mods/workspace-chrome/plus.svg").size(13)).when(!tiny, (el) => el.child("New task")),
+        ]);
+      if (github) return shell.child(header).child(this.github(def, b, t));
+      if (this.shownView() === "list") return shell.child(header).child(this.list(b, t, ag, tm, columnOf));
+      return this.columns(shell, header, b, def, t, ag, tm, columnOf);
+    }
     const header = h_flex().h(48).flex_none().px(16).gap(10).items_center().border_b(1).border_color(t.border)
+      .when(!this.follow, (el) => el.h_auto().min_h(48).py(9).flex_wrap())
       .child(mark(def, t, 20))
       .child(div().flex_none().font_semibold().child(`${def.name} board`))
       .child(this.sourceToggle(t))
@@ -546,17 +587,23 @@ export default class Board extends View {
       ]);
 
     if (github) return shell.child(header).child(this.github(def, b, t));
-    if (this.view === "list") return shell.child(header).child(this.list(b, t, ag, tm, columnOf));
+    if (this.shownView() === "list") return shell.child(header).child(this.list(b, t, ag, tm, columnOf));
+    return this.columns(shell, header, b, def, t, ag, tm, columnOf);
+  }
+
+  // The board view: a column per status.
+  columns(shell, header, b, def, t, ag, tm, columnOf) {
     const columns = b.columns.map((col) => this.column(col, this.tasks.filter((x) => columnOf(x) === col), def, b, t, ag, tm));
     return shell
       .on_mouse_up("left", (_e, cx) => { if (this.drag) { this.drag = null; this.over = null; cx.notify(); } })
       .child(header)
-      .child(h_flex().id("board-columns").flex_1().min_h(0).items_stretch().p(12).gap(10).children(columns));
+      .child(h_flex().id("board-columns").flex_1().min_h(0).items_stretch().p(12).gap(10).children(columns)
+        .when(!this.follow, (el) => el.overflow_x_scrollbar()));
   }
 
   // Board | List, as two segments: for the tasks, or (github) for the GitHub view, each remembered apart.
   viewToggle(t, github = false) {
-    const now = github ? this.gh.view : this.view;
+    const now = this.shownView(github);
     const segment = (view, text, icon) => h_flex().id(`${github ? "gh-" : ""}view-${view}`).h(26).px(10).gap(6).items_center().rounded(6).cursor_pointer()
       .text_size(12).when(now === view, (el) => el.bg(t.selected).text_color(t.foreground))
       .when(now !== view, (el) => el.text_color(t.muted).hover((s) => s.text_color(t.foreground)))
@@ -586,6 +633,7 @@ export default class Board extends View {
       const tasks = this.tasks.filter((x) => columnOf(x) === col);
       const shut = folded.has(col);
       const head = h_flex().id(`sec-${col}`).h(34).flex_none().pl(14).pr(8).gap(8).items_center().cursor_pointer()
+        .when(!this.follow && !this.compact(), (el) => el.min_w(LIST_MIN))
         .bg(t.chrome).border_b(1).border_color(t.border).hover((s) => s.bg(t.hover))
         .on_click((_e, cx) => fold(col, cx))
         .child(svg(`mods/workspace-chrome/chevron-${shut ? "right" : "down"}.svg`).size(11).flex_none().text_color(t.dim))
@@ -599,16 +647,35 @@ export default class Board extends View {
           .child(svg("mods/workspace-chrome/plus.svg").size(13)));
       return [head, ...(shut ? [] : tasks.map((task) => this.row(task, col === last, b, t, ag, tm)))];
     });
-    return v_flex().id("board-list").flex_1().min_h(0).overflow_y_scrollbar().children(rows)
+    // Narrow (a tab or a pane beside the terminals), the rows keep their width and the list scrolls sideways too.
+    return v_flex().id("board-list").flex_1().min_h(0).when(this.follow, (el) => el.overflow_y_scrollbar()).when(!this.follow, (el) => el.overflow_scrollbar()).children(rows)
       .when(!this.tasks.length && this.loaded, (el) => el.child(div().px(16).py(12).text_size(12).text_color(t.dim).child("No tasks yet. New task adds one.")));
   }
 
+  // A narrow pane beside the terminals: list rows of two lines (id and title, then the agent
+  // or Start), without the priority and folder columns, so nothing scrolls sideways.
+  compact() { return this.beside && !(this.width >= LIST_MIN); }
+
   row(task, last, b, t, ag, tm) {
+    const compact = this.compact();
     const pr = task.priority && PRIORITY[task.priority] ? task.priority : null;
     const prColor = pr === "high" ? t.blocked : pr === "medium" ? t.working : t.dim;
     const pull = this.prChip(task, t, true);
     const hub = this.ghChip(task, t);
+    if (compact) {
+      const area = this.agentArea(task, last, b, t, ag, tm, true);
+      return v_flex().id(`row-${task.id}`).flex_none().pl(14).pr(10).py(7).gap(5)
+        .border_b(1).border_color(t.border).cursor_pointer().hover((s) => s.bg(t.hover))
+        .on_click(() => this.openTask(task))
+        .child(h_flex().gap(10).items_center()
+          .child(div().flex_none().text_size(11.5).text_color(t.dim).child(task.id))
+          .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(t.foreground).child(task.title))
+          .when(Boolean(hub), (el) => el.child(hub))
+          .when(Boolean(pull), (el) => el.child(pull)))
+        .when(Boolean(area), (el) => el.child(h_flex().justify_end().child(area)));
+    }
     return h_flex().id(`row-${task.id}`).h(40).flex_none().pl(36).pr(12).gap(12).items_center()
+      .when(!this.follow, (el) => el.min_w(LIST_MIN))
       .border_b(1).border_color(t.border).cursor_pointer().hover((s) => s.bg(t.hover))
       .on_click(() => this.openTask(task))
       .child(div().w(64).flex_none().text_size(11.5).text_color(t.dim).child(task.id))
@@ -624,7 +691,8 @@ export default class Board extends View {
 
   column(col, tasks, def, b, t, ag, tm) {
     const dropping = this.drag?.moved && this.over === col && this.drag.from !== col;
-    return v_flex().id(`col-${col}`).flex_1().min_w(0).min_h(0).rounded(10).bg(t.chrome).border_1()
+    // Narrow (a tab or a pane beside the terminals), the columns keep a card's width and scroll sideways.
+    return v_flex().id(`col-${col}`).flex_1().min_w(this.follow ? 0 : 200).min_h(0).rounded(10).bg(t.chrome).border_1()
       .border_color(dropping ? t.accent : t.border)
       .on_mouse_move((_e, cx) => {
         if (!this.drag || this.over === col) return;
@@ -750,7 +818,7 @@ export default class Board extends View {
     this.gh = {
       board: null, link: null, at: 0, tried: 0, drawn: 0, loading: false, opening: false, error: null,
       who: ["all", "mine", "none"].includes(who) ? who : "all", repo: this.pref("gh.repo") ?? "", folds,
-      view: this.pref("gh.view") === "list" ? "list" : "board",
+      view: ["list", "board"].includes(this.pref("gh.view")) ? this.pref("gh.view") : null,
       order: ORDERS.some(([o]) => o === this.pref("gh.order")) ? this.pref("gh.order") : "board",
       taking: {}, all: {}, folders: null, foldersKey: null,
       found: null, finding: false, linking: false, linkError: null, relink: false, pending: null, pendingAt: 0,
@@ -1068,7 +1136,7 @@ export default class Board extends View {
     return v_flex().flex_1().min_h(0)
       .child(bar)
       .when(Boolean(g.error), (el) => el.child(div().px(16).py(6).flex_none().text_size(11.5).text_color(t.blocked).child(`Couldn't read it again: ${g.error} Showing what was read ${ago(g.at, Date.now())}.`)))
-      .child(g.view === "list"
+      .child(this.shownView(true) === "list"
         ? this.ghList(cols, b, t, me)
         : h_flex().id("gh-columns").flex_1().min_h(0).items_stretch().p(12).gap(10).overflow_x_scrollbar().children(cols.map((c) => this.ghColumn(c, b, t, me))));
   }
