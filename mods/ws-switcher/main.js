@@ -57,12 +57,19 @@
 //   workspaces.runner      { on, running }: the background runner, for the screens
 //   workspaces.runner.set  { on, at }: a screen asks to turn it on or off
 // Not this block's: the package's own settings, ~/.herdr/settings.jsonc, as ws-agents
-// reads it (and Settings' Experimental section, ws-settings, sets it when you change one; settingsfacts.js).
-//   workspaces.settings    { experimental: { <key>: true|false } }
+// reads it (and our Settings window, ws-settings, sets it when you change one; settingsfacts.js).
+//   workspaces.settings    { experimental: { <key>: true|false }, features: { <key>: true|false } }
+//                        Settings > Features: an add-on that's off is hidden here and does nothing.
+//                        Board, Notes, Worktrees, History off: no button, no menu row, and nothing
+//                        opens it (the commands, the asks above, a Board tab taken in); shown now,
+//                        the tabs come back. workspaces.screens keeps its pin for when it's on again.
+//                        Board off also stops prs.js and ghboard.js; Automations off, the runs
+//                        (automations.js), and the toasts' ways into the Automations screen. The
+//                        runners here read the file first (featuregate.js) and follow this for flips.
 //   workspaces.settings.section  { id, at } or null: the section our Settings window (ws-settings) opens on,
 //                        for a moment after "ws-switcher.settings/<section>" asks (mod.open passes no props); the
 //                        window clears it as it opens
-// This block writes ws-settings' main.js: Herdr's Settings window with Agents and Experimental
+// This block writes ws-settings' main.js: Herdr's Settings window with Features, Agents and Experimental
 // sections (settingsbuild.js), rebuilt when Herdr's own file changes (settingsCopy()).
 //
 // A space joins a workspace once and stays: when its first terminal is under the
@@ -84,6 +91,8 @@ import { Scratch, isScratch, scratchDef, scratchLabel } from "./scratch.js";
 import { dir, expand, tilde, under, base, subdirs, loadDefs, loadOrder, orderFile, templatesDir, loadPresetDir, presetsFor, presetLaunch, withTask, notesOnly } from "./defs.js";
 import { arrange, move as moveRow, groupOf, groupName, renamed, withGroup, orderText } from "./arrange.js";
 import { buildSettings, hash, SOURCE as SETTINGS_SOURCE, TARGET as SETTINGS_TARGET } from "./settingsbuild.js";
+import { SETTINGS_FILE, parseSettings } from "./settingsfacts.js";
+import { Features, flips, FOLLOWED } from "./featuregate.js";
 
 // "Edit" opens the workspace's folder in the first of these that's installed,
 // else with the system's opener (Finder, the file manager, Explorer).
@@ -96,6 +105,8 @@ const PALETTE = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
 // The spaces list's avatar colors, so a workspace mark matches.
 const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b7cf6", ansi2: "#3fae6a", ansi1: "#d9649a" };
 const URGENT = { blocked: 2, done: 1 };
+// Settings > Features, for what's drawn and opened (the runners go by this.features).
+const featureOn = (key) => shared("workspaces.settings")?.features?.[key] !== false;
 
 
 function find(node, id) {
@@ -274,7 +285,7 @@ ${folders.map((f) => `    ${JSON.stringify(f)},`).join("\n")}
 `;
 }
 
-// Our Settings window (ws-settings: Herdr's, with Agents and Experimental), as a dialog 880 wide
+// Our Settings window (ws-settings: Herdr's, with Features, Agents and Experimental), as a dialog 880 wide
 // (its mod.json), which mod.open toggles. Asking for a section opens it there: mod.open passes
 // no props, so the section goes through shared state and the window clears it as it opens.
 // Still there a moment later: the window was open and mod.open closed it, so open it again.
@@ -336,8 +347,12 @@ export default class Workspaces extends View {
     this.setAsked = shared("workspaces.runner.set")?.at;
     this.arrangeAsked = shared("workspaces.arrange")?.at;
     // A space the runner makes for its runs joins that workspace at once.
+    // Settings > Features for the runners here: the file's answer before their first tick,
+    // then shared state's flips (followFeatures()).
+    this.features = new Features();
     this.hooks = {
       presetsFor, presetLaunch, withTask,
+      featureOn: (key) => this.features.on(key),
       claim: (space, ws) => {
         this.known.add(space);
         setShared("workspaces.assigned", { ...(shared("workspaces.assigned") ?? {}), [space]: ws });
@@ -358,7 +373,7 @@ export default class Workspaces extends View {
     // them to keys) show the shown workspace's screen, and go back to the tabs when it's the one shown;
     // "ws-switcher.show/<screen>/<workspace>" only shows it (a toast's action: Notes' Move to the board);
     // "ws-switcher.settings" opens or closes our Settings window (ws-settings) and
-    // "ws-switcher.settings/<section>" opens it on that section (agents, experimental, look, machines, …; extras is an alias for agents).
+    // "ws-switcher.settings/<section>" opens it on that section (features, agents, experimental, look, machines, …; extras is an alias for agents).
     cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
@@ -378,6 +393,12 @@ export default class Workspaces extends View {
     this.bg = { known: false, owner: false, rev: null, tries: 0, tried: 0, failed: false };
     try { this.adopted = new Set(JSON.parse(localStorage.getItem("adopted") ?? "[]")); } catch { this.adopted = new Set(); }
     this.reload(cx);
+    cx.spawn(async (cx) => {
+      const text = await readTextFile(`${home()}/${SETTINGS_FILE}`).catch(() => null);
+      this.features.fromFile(parseSettings(text), shared("workspaces.settings"));
+      this.followFeatures();
+      if (this.mine()) this.reload(cx); // the runners load once the answer is known
+    });
     this.background(cx);
     cx.timer.every(2000, (cx) => this.background(cx));
     // Herdr rewrites its Settings window at every start: our copy follows (and every few minutes).
@@ -412,7 +433,8 @@ export default class Workspaces extends View {
     });
     // Placing and following also run here: Herdr doesn't draw while its window is
     // in the background, and a new space waits SETTLE for its folder.
-    cx.timer.every(500, (cx) => { this.sync(); this.requests(cx); if (this.mine()) { this.runner.tick(cx); this.prs.tick(cx); this.gh.tick(cx); } this.scratch.tick(cx); if (spaces().some((s) => !this.known.has(s.id))) cx.notify(); });
+    // Board off: no pull request follow-through or GitHub board item status (no gh, no messages).
+    cx.timer.every(500, (cx) => { this.sync(); this.requests(cx); this.followFeatures(); if (this.mine()) { this.runner.tick(cx); if (this.features.on("board")) { this.prs.tick(cx); this.gh.tick(cx); } } this.scratch.tick(cx); if (spaces().some((s) => !this.known.has(s.id))) cx.notify(); });
   }
 
   reload(cx) {
@@ -449,8 +471,8 @@ export default class Workspaces extends View {
     });
   }
 
-  // ws-settings' main.js: Herdr's Settings window (frame/settings/main.js) with Agents and
-  // Experimental, built by settingsbuild.js. Rebuilt only when Herdr's file changed since the last
+  // ws-settings' main.js: Herdr's Settings window (frame/settings/main.js) with Features,
+  // Agents and Experimental, built by settingsbuild.js. Rebuilt only when Herdr's file changed since the last
   // look and written only when the text differs, so writing it (which reloads ws-settings)
   // never loops. Not before ws-settings is installed (its extras.js is there), and never
   // during a check (appHome() is then the person's own Herdr home).
@@ -468,7 +490,7 @@ export default class Workspaces extends View {
           if (old !== r.text) {
             await writeTextFile(target, r.text, old ?? undefined);
             if (!r.ok) notify({ title: "Settings shows only the package's sections for now", level: "warning",
-              body: "Herdr's Settings changed in a way the package's copy can't follow yet: until the package is updated, the footer's Settings has only Agents and Experimental and a button to Herdr's own." });
+              body: "Herdr's Settings changed in a way the package's copy can't follow yet: until the package is updated, the footer's Settings has only the package's own sections and a button to Herdr's own." });
           }
           this.settingsSeen = seen;
         }
@@ -477,8 +499,19 @@ export default class Workspaces extends View {
     });
   }
 
-  // This copy runs the automations and follows the pull requests itself.
-  mine() { return this.bg.known && !this.bg.owner; }
+  // This copy runs the automations and follows the pull requests itself (once it knows
+  // what Settings > Features says).
+  mine() { return this.bg.known && !this.bg.owner && this.features.known; }
+
+  // Settings > Features' flips, from shared state; one line in Herdr's log for each.
+  followFeatures() {
+    if (!this.features.known) return;
+    const before = this.featuresSaid ?? null;
+    this.features.follow(shared("workspaces.settings"));
+    const now = Object.fromEntries(Object.keys(FOLLOWED).map((k) => [k, this.features.on(k)]));
+    for (const f of flips(before, now)) console.log(`ws-switcher: ${FOLLOWED[f.key][f.on ? "on" : "off"]}`);
+    this.featuresSaid = now;
+  }
 
   // Every 2s: who runs them, and, when it's the background runner, what it has for the window.
   background(cx) {
@@ -554,7 +587,7 @@ export default class Workspaces extends View {
       title: `${list.length} updates from your automations`,
       body: `${list.slice(-6).map((n) => n.title).join("; ")}${list.length > 6 ? "; and earlier ones" : ""}.`,
       level: list.some((n) => n.level === "error" || n.level === "warning") ? "warning" : "info",
-      action: { name: "mod.open", args: { name: "ws-automations" } },
+      ...(featureOn("automations") ? { action: { name: "mod.open", args: { name: "ws-automations" } } } : {}),
     });
   }
 
@@ -564,6 +597,7 @@ export default class Workspaces extends View {
   // only looked up among what's loaded. One that's gone since: the screen for its workspace,
   // or as the footer opens it.
   openAutomation(c) {
+    if (!featureOn("automations")) return; // off in Settings > Features: its screen isn't there
     const [, ws, name] = c.split("/");
     const defs = (shared("workspaces.defs") ?? []).filter((d) => !d.error);
     const active = shared("workspaces.active") ?? null;
@@ -701,12 +735,13 @@ export default class Workspaces extends View {
   screen(active, view, now) {
     const scr = shared("workspaces.screen") ?? null;
     if (!scr) { this.screenKey = null; return null; }
-    if (!this.loaded) return SCREENS[scr.screen] ? scr.screen : null;
+    if (!this.loaded) return SCREENS[scr.screen] && featureOn(scr.screen) ? scr.screen : null;
     const open = (shared("workspaces.screens") ?? {})[scr.ws] ?? [];
     const key = `${scr.ws}/${scr.screen}/${scr.at}`;
     // Just shown (or Herdr just started): where the view is now is where it stays.
     if (this.screenKey !== key || now - (scr.at ?? 0) < 800) { this.screenKey = key; this.screenView = view; }
-    if (!SCREENS[scr.screen] || scr.ws !== active || !open.includes(scr.screen) || view !== this.screenView) {
+    // Its feature turned off (Settings > Features): the tabs again; its pin stays for when it's back.
+    if (!SCREENS[scr.screen] || !featureOn(scr.screen) || scr.ws !== active || !open.includes(scr.screen) || view !== this.screenView) {
       setShared("workspaces.screen", null);
       this.screenKey = null;
       return null;
@@ -972,6 +1007,8 @@ export default class Workspaces extends View {
     const dot = (id) => div().id(id).size(6).flex_none().rounded_full().bg(t[elsewhere])
       .tooltip(elsewhere === "blocked" ? "An agent needs you in another workspace" : "An agent finished in another workspace");
     const open = () => openOverlay({ mod: "ws-switcher", kind: "popup", width: 288, height: 600, props: { popup: true } });
+    // The board's and the notes' buttons, while they're on in Settings > Features.
+    const boardOn = Boolean(active) && featureOn("board"), notesOn = Boolean(active) && featureOn("notes");
     if (narrow()) {
       return h_flex().size_full().bg(t.chrome).items_center().justify_center()
         .child(h_flex().id("ws-rail").relative().size(32).rounded(6).items_center().justify_center().cursor_pointer()
@@ -987,11 +1024,11 @@ export default class Workspaces extends View {
         .when(Boolean(elsewhere), (el) => el.child(dot("ws-dot")))
         .child(div().flex_none().text_size(11.5).text_color(t.dim).child(String(count)))
         .child(svg("mods/workspace-chrome/chevron-down.svg").size(11).flex_none().text_color(t.dim)))
-      .when(Boolean(active), (el) => el.child(div().id("ws-board").size(28).ml(2).flex_none().flex().items_center().justify_center()
+      .when(boardOn, (el) => el.child(div().id("ws-board").size(28).ml(2).flex_none().flex().items_center().justify_center()
         .rounded(7).text_color(t.muted).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
         .tooltip(`${active.name} board`).on_click((_e, cx) => this.openScreen(active.id, "board", cx))
         .child(svg("mods/ws-board/board.svg").size(15))))
-      .when(Boolean(active), (el) => el.child(div().id("ws-notes").size(28).flex_none().flex().items_center().justify_center()
+      .when(notesOn, (el) => el.child(div().id("ws-notes").size(28).when(!boardOn, (d) => d.ml(2)).flex_none().flex().items_center().justify_center()
         .rounded(7).text_color(t.muted).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
         .tooltip(`${active.name} notes`).on_click((_e, cx) => this.openScreen(active.id, "notes", cx))
         .child(svg("mods/ws-notes/notes.svg").size(15))));
@@ -1126,7 +1163,7 @@ export default class Workspaces extends View {
     this.taken ??= new Set();
     for (const p of ps) {
       const key = Object.keys(SCREENS).find((k) => SCREENS[k].mod === p.mod);
-      if (!key || p.terminal || this.taken.has(p.pane)) continue;
+      if (!key || !featureOn(key) || p.terminal || this.taken.has(p.pane)) continue;
       const space = spaces().find((s) => (s.tabs ?? []).some((c) => c.id === p.tab));
       const ws = space && !space.machine ? assigned[space.id] : null;
       if (!ws || !defs.some((d) => d.id === ws) || space.tabs.length < 2 || ps.filter((x) => x.tab === p.tab).length !== 1) continue;
@@ -1139,7 +1176,9 @@ export default class Workspaces extends View {
   }
 
   // The key's way in: the shown workspace's screen, and back to the tabs from it.
+  // Off in Settings > Features: nothing (no toast), here and in openScreen() and openHistory().
   toggleScreen(key, cx) {
+    if (!featureOn(key)) return;
     const ws = shared("workspaces.active") ?? null, scr = shared("workspaces.screen") ?? null;
     if (!ws) {
       if (key === "history") this.openHistory(null, cx);
@@ -1153,6 +1192,7 @@ export default class Workspaces extends View {
   // History is the one screen that also works with no workspace chosen (All spaces):
   // the pills belong to a workspace, so there it's a dialog over everything.
   openHistory(id, cx) {
+    if (!featureOn("history")) return;
     if (id && (shared("workspaces.defs") ?? []).some((d) => d.id === id)) return this.openScreen(id, "history", cx);
     openOverlay({ mod: "ws-history", kind: "dialog", width: 980, height: 700, props: { dialog: true } });
   }
@@ -1173,6 +1213,7 @@ export default class Workspaces extends View {
   // tabs, and pins it in the tab bar of every space of the workspace. With an older
   // copy of the layout, which has no place for screens, it's a tab in one space.
   openScreen(id, key, cx) {
+    if (!featureOn(key)) return;
     if (!find(layout(), "screens-body")?.children?.some((c) => c.id === `screen-${key}`)) return this.openBoard(id, cx, SCREENS[key]);
     if (!(shared("workspaces.defs") ?? []).some((d) => d.id === id)) return;
     this.pin(id, key);
@@ -1408,14 +1449,15 @@ export default class Workspaces extends View {
     // The actions before the folders: a workspace can have many folders.
     items.push(line());
     // The board and the notes have their own buttons beside the switcher, except on the narrow rail.
+    // Each only while it's on in Settings > Features.
     if (active && narrow()) {
       // The board opens from the sidebar copy: a popup's tasks end when it closes.
-      items.push(row("ws-board-open", svg("mods/ws-board/board.svg").size(14).flex_none().text_color(t.muted), `Open ${active.name} board`, div(),
+      if (featureOn("board")) items.push(row("ws-board-open", svg("mods/ws-board/board.svg").size(14).flex_none().text_color(t.muted), `Open ${active.name} board`, div(),
         () => setShared("workspaces.board", { id: active.id, at: Date.now() })));
-      items.push(row("ws-notes-open", svg("mods/ws-notes/notes.svg").size(14).flex_none().text_color(t.muted), `Open ${active.name} notes`, div(),
+      if (featureOn("notes")) items.push(row("ws-notes-open", svg("mods/ws-notes/notes.svg").size(14).flex_none().text_color(t.muted), `Open ${active.name} notes`, div(),
         () => setShared("workspaces.notes", { id: active.id, at: Date.now() })));
     }
-    if (active && !active.error && !active.scratch) {
+    if (active && !active.error && !active.scratch && featureOn("worktrees")) {
       items.push(row("ws-trees-open", icon("git-branch"), `Open ${active.name} worktrees`, div(),
         () => setShared("workspaces.worktrees", { id: active.id, at: Date.now() }), { tip: "Every worktree of its repos: what's finished, set up and clean up" }));
     }

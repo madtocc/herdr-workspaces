@@ -12,7 +12,9 @@
 // Notes start nothing themselves: work goes through the board. Move to the board
 // writes a card from the note (the board's writer: nextId, withFields, copied from
 // ws-board) in the board's first column, then moves the note to the Trash, so the idea
-// waits in one place. Delete moves a note to the Trash.
+// waits in one place. Delete moves a note to the Trash. While the Board add-on is off in
+// Settings > Features (shared "workspaces.settings"), Move to the board isn't offered (the
+// button and moveToBoard() itself), and the empty note's hint doesn't name the board.
 //
 // People and agents change the same files: a note that changes on disk while open
 // is shown as it is now, unless you've typed since (then yours stays, nothing is
@@ -30,6 +32,8 @@ import { NoteState } from "./notestate.js";
 const PALETTE = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
 const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b7cf6", ansi2: "#3fae6a", ansi1: "#d9649a" };
 const COLUMNS = ["backlog", "todo", "doing", "review", "done"]; // the board's default columns
+// Whether an add-on is on in Settings > Features (nothing known yet counts as on).
+const featureOn = (key) => shared("workspaces.settings")?.features?.[key] !== false;
 const QUIET = 700; // ms after the last key before a note is saved
 // Moves a file to the Trash ($1), or into $2 where there's no Trash command (under a
 // name with the time in front, so an earlier note of the same name isn't replaced). Prints where.
@@ -149,7 +153,7 @@ export default class Notes extends View {
     this.follow = Boolean(props()?.screen);
     this.workspace = (this.follow ? null : props()?.workspace) ?? shared("workspaces.active") ?? null;
     this.showing = !this.follow;
-    this.editor = TextareaState.new({ value: "", placeholder: "Write a rough idea here. Move it to the board when it's ready to be work." });
+    this.editor = TextareaState.new({ value: "", placeholder: featureOn("board") ? "Write a rough idea here. Move it to the board when it's ready to be work." : "Write a rough idea here." });
     this.editor.set_soft_wrap(true);
     this.editor.on("change", (_e, cx) => { if (this.quiet) return; this.st.typed(); this.confirming = false; this.error = null; cx.notify(); });
     this.st = new NoteState(io, { get: () => this.editor.value(), set: (text) => this.setEditor(text) });
@@ -303,7 +307,7 @@ export default class Notes extends View {
   // goes to the Trash. Nothing is trashed unless the card was written.
   moveToBoard(cx) {
     const def = defOf(this.workspace);
-    if (!def || this.busy || !this.editor.value().trim()) return;
+    if (!def || this.busy || !this.editor.value().trim() || !featureOn("board")) return;
     this.busy = "move";
     this.error = null;
     cx.notify();
@@ -458,8 +462,8 @@ export default class Notes extends View {
         button("note-delete-yes", "Move to Trash", (cx) => this.remove(cx), { tone: "blocked" }),
       ]
       : [
-        button("note-move", this.busy === "move" ? "Moving…" : "Move to the board", (cx) => this.moveToBoard(cx),
-          { solid: has, off: !has, tip: has ? `Make it a card in ${label(first)} and take it out of Notes` : "Write something first", icon: "mods/ws-board/board.svg" }),
+        ...(featureOn("board") ? [button("note-move", this.busy === "move" ? "Moving…" : "Move to the board", (cx) => this.moveToBoard(cx),
+          { solid: has, off: !has, tip: has ? `Make it a card in ${label(first)} and take it out of Notes` : "Write something first", icon: "mods/ws-board/board.svg" })] : []),
         ...(open?.file || has ? [button("note-delete", "Delete", (cx) => this.remove(cx), { tip: open?.file ? "Move it to the Trash" : "Throw away this new note", icon: "mods/ws-notes/trash.svg" })] : []),
       ];
     const bar = h_flex().h(48).flex_none().px(16).gap(8).items_center().border_b(1).border_color(t.border)

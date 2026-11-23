@@ -5,6 +5,11 @@
 // Claude Code's own /usage (else its newest status line, readStatusLines()) and
 // Antigravity's from its own /usage, each asked every 10 minutes (readUsage()).
 // Another agent's plan is a new entry there with a parser in usagefacts.js.
+// While Plan usage is off in Settings > Features nothing is asked or read (no /usage, no
+// status lines, the panel's Refresh ignored) and the bar shows no usage: the bar's copy
+// reads ~/.herdr/settings.jsonc itself before its first ask (settingsfacts.js), then
+// follows shared "workspaces.settings" (followUsage()); turned on again, it asks at once.
+// What was read stays in workspaces.usage.
 //
 // Shared: workspaces.usage   { <plan>: { rows, at, from, tried } }: what the bar's copy
 //                            read, for the panel (rows: usagefacts.js)
@@ -14,7 +19,8 @@ import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { spaces, agents, theme, run, window, keys, exec, home, shared, setShared, props, openOverlay, checking } from "herdr";
 import * as fs from "fs/promises";
-import { claudeReportRows, agyReportRows, claudeStatusRows, topRow, resetsText, agoText } from "./usagefacts.js";
+import { claudeReportRows, agyReportRows, claudeStatusRows, topRow, resetsText, agoText, followFeature } from "./usagefacts.js";
+import { SETTINGS_FILE, parseSettings, featureOn } from "./settingsfacts.js";
 
 // The plans the bar shows, in its order: how to ask each agent for its usage without
 // a model turn, and what its sources are called. Claude's runs with no hooks, no MCP
@@ -84,6 +90,8 @@ const meter = (t, w, width, height) => div().w(width).h(height).flex_none().roun
 const pctText = (w) => `${Math.round(w.pct)}%`;
 // This copy is the panel: opened as an overlay (the bar's click, or mod.open).
 const isPanel = () => Boolean(props()?.panel || props()?.overlay);
+// Plan usage's switch in shared "workspaces.settings" (undefined while nothing is there).
+const usageShared = () => shared("workspaces.settings")?.features?.usage;
 
 export default class WorkspaceStatus extends View {
   init(_props, cx) {
@@ -91,14 +99,37 @@ export default class WorkspaceStatus extends View {
     this.data = { ...(shared("workspaces.usage") ?? {}) };
     this.asked = shared("workspaces.usage.ask")?.at ?? 0;
     this.away = {}; // plan -> when its agent last said it isn't signed in
-    cx.spawn(async () => { await this.readStatusLines(); await this.readUsage(); });
+    // Plan usage on or off (null until the settings file is read), and the shared switch last seen.
+    this.usageOn = null;
+    this.heard = undefined;
+    cx.spawn(async (cx) => {
+      const text = await fs.readFile(`${home()}/${SETTINGS_FILE}`, "utf8").catch(() => null);
+      this.heard = usageShared();
+      this.usageOn = featureOn(parseSettings(text), "usage");
+      cx.notify();
+      await this.readStatusLines();
+      await this.readUsage();
+    });
     cx.timer.every(USAGE_EVERY, (cx) => cx.spawn(async () => this.readUsage()));
     cx.timer.every(STATUS_EVERY, (cx) => cx.spawn(async () => this.readStatusLines()));
     // The panel's Refresh.
     cx.timer.every(1000, (cx) => {
+      this.followUsage(cx);
       const at = shared("workspaces.usage.ask")?.at ?? 0;
       if (at > this.asked) { this.asked = at; cx.spawn(async () => this.readUsage(true)); }
     });
+  }
+
+  // Plan usage turned on or off since (shared "workspaces.settings"): on again, it asks at once.
+  followUsage(cx) {
+    if (this.usageOn === null) return;
+    const now = usageShared();
+    const next = followFeature(this.usageOn, this.heard, now);
+    this.heard = now;
+    if (next === this.usageOn) return;
+    this.usageOn = next;
+    cx.notify();
+    if (next) cx.spawn(async () => { await this.readStatusLines(); await this.readUsage(); });
   }
 
   publish(key, value) {
@@ -110,7 +141,7 @@ export default class WorkspaceStatus extends View {
   // Every plan's rows from its agent's /usage, all at once. A failed ask keeps the last
   // rows; no such agent, or no plan (an API key), shows nothing for it.
   async readUsage(refresh = false) {
-    if (this.usageBusy) return;
+    if (this.usageBusy || this.usageOn !== true) return;
     this.usageBusy = true;
     try {
       await Promise.all(PLANS.map(async (p) => {
@@ -131,7 +162,7 @@ export default class WorkspaceStatus extends View {
   // Until Claude's /usage has answered (or when it can't): the 5-hour window and the
   // week from the newest Claude status line.
   async readStatusLines() {
-    if (this.data.claude?.from === "usage") return;
+    if (this.usageOn !== true || this.data.claude?.from === "usage") return;
     const saved = [];
     for (const core of await fs.readdir(statusDir()).catch(() => [])) {
       const dir = `${statusDir()}/${core}`;
@@ -181,6 +212,10 @@ export default class WorkspaceStatus extends View {
   // numbers came from; Refresh at the top asks every plan again.
   panel() {
     const t = theme();
+    // Turned off while it's open: nothing to show or ask.
+    if (!featureOn(shared("workspaces.settings"), "usage")) {
+      return v_flex().w_full().px(14).py(12).text_size(12).text_color(t.dim).child("Plan usage is off in Settings > Features.");
+    }
     const plans = this.plans();
     const asked = shared("workspaces.usage.ask")?.at ?? 0;
     const reading = plans.some((p) => asked > (p.data.tried ?? 0)) && Date.now() - asked < 90000;
@@ -213,7 +248,7 @@ export default class WorkspaceStatus extends View {
     const space = spaces().find(s => s.active);
     const list = agents();
     const needs = list.filter(a => a.status === "blocked").length;
-    const plans = this.plans();
+    const plans = followFeature(this.usageOn, this.heard, usageShared()) ? this.plans() : [];
     const label = (icon, text) => h_flex().gap(6).items_center().child(svg(`mods/workspace-chrome/${icon}.svg`).size(13)).child(text);
     return h_flex().size_full().px(14).gap(16).items_center().bg(t.chrome).border_t(1).border_color(t.border).text_size(11.8).text_color(t.muted)
       .child(label(space?.machine ? "server" : "monitor", space?.machine ?? "This computer"))

@@ -1,5 +1,5 @@
-// ws-settings' main.js, built from Herdr's own Settings window so the package's Agents and
-// Experimental pages can be sections of it. Herdr's window is its bundled mod frame-settings
+// ws-settings' main.js, built from Herdr's own Settings window so the package's Features, Agents
+// and Experimental pages can be sections of it. Herdr's window is its bundled mod frame-settings
 // (frame/settings/main.js under the app home), rewritten at every start, with a fixed list of
 // sections; a mod can't add one. So ws-settings is a copy of it with a few small patches,
 // rebuilt by the switcher's sidebar copy whenever Herdr's file changes (main.js: settingsCopy()),
@@ -11,7 +11,7 @@
 
 export const SOURCE = "frame/settings/main.js"; // under the app home: Herdr's Settings window
 export const TARGET = "mods/ws-settings/main.js"; // under the app home: ours
-export const EXTRAS = "./extras.js"; // the Agents and Experimental pages, beside ws-settings' main.js
+export const EXTRAS = "./extras.js"; // the Features, Agents and Experimental pages, beside ws-settings' main.js
 
 // FNV-1a over the text: which source a copy was built from (not for security).
 export function hash(text) {
@@ -30,7 +30,7 @@ const count = (text, piece) => text.split(piece).length - 1;
 
 function header(meta, from, note) {
   return `// GENERATED: don't edit. ws-settings is Herdr's Settings window (its bundled mod frame-settings,
-// ${SOURCE}) with the Workspaces package's Agents and Experimental sections (extras.js).
+// ${SOURCE}) with the Workspaces package's Features, Agents and Experimental sections (extras.js).
 // Written by the ws-switcher mod (settingsbuild.js) from Herdr ${meta.version || "(unknown version)"}'s file, ${from}.
 // ${note}
 `;
@@ -50,7 +50,7 @@ function patch(source) {
   if (count(s, icon) !== 1) return fail("its icon helper I() isn't the one this copy knows");
   s = s.replace(icon, "const I = (name) => (name.includes(\"/\") ? name : `frame/settings/${name}.svg`);");
 
-  // 2. The sections: Herdr's list, then Agents and Experimental.
+  // 2. The sections: Herdr's list, then ours (extras.js PACKAGE_SECTIONS: Features, Agents, Experimental).
   const start = "const SECTIONS = [";
   if (count(s, start) !== 1) return fail("its list of sections (SECTIONS) isn't where this copy looks");
   const at = s.indexOf(start);
@@ -89,7 +89,7 @@ function patch(source) {
   return { ok: true, text: `import { packagePage, packageInit, askedSection, PACKAGE_SECTIONS } from "${EXTRAS}";\n${s}` };
 }
 
-// The window when Herdr's can't be followed: our two sections with a left list, and a way to Herdr's own Settings.
+// The window when Herdr's can't be followed: our sections with a left list, and a way to Herdr's own Settings.
 function fallback() {
   return `import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar } from "gpui-base";
@@ -144,6 +144,6 @@ export function buildSettings(source, meta = {}) {
   }
   const from = `source ${hash(source)}`;
   const r = patch(source);
-  if (r.ok) return { ok: true, why: null, text: header(meta, from, "Patches: icons by full path, Agents and Experimental after Herdr's sections, a section asked through shared state, their pages, their init.") + r.text };
+  if (r.ok) return { ok: true, why: null, text: header(meta, from, "Patches: icons by full path, Features, Agents and Experimental after Herdr's sections, a section asked through shared state, their pages, their init.") + r.text };
   return { ok: false, why: r.why, text: header(meta, from, `Fallback: ${r.why}.`) + fallback() };
 }

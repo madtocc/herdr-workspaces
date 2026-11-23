@@ -14,6 +14,9 @@
 //   notes/*.json      toasts for the window, shown now or when Herdr next opens
 //   automations.json, prs.json, github.json   what they remember (see Store)
 // Requests come as files in ~/.herdr/workspaces/.inbox (automations.js).
+// Settings > Features (~/.herdr/settings.jsonc, read here every 2s: this process has no
+// shared state of the window's): Board off, no pull request or GitHub board item follow-through;
+// Automations off, no runs (automations.js). Each change is one line in the log.
 //
 // A run starts as a core terminal with Herdr's labels, which is how Herdr adopts
 // a terminal it didn't start: herdr.space is the workspace's Automations space
@@ -30,6 +33,8 @@ import { Runner, globalDir } from "../automations.js";
 import { PrWatcher } from "../prs.js";
 import { GhWatcher } from "../ghboard.js";
 import { dir, loadDefs, templatesDir, loadPresetDir, presetsFor, presetLaunch, withTask, notesOnly } from "../defs.js";
+import { SETTINGS_FILE, parseSettings } from "../settingsfacts.js";
+import { Features, flips, FOLLOWED } from "../featuregate.js";
 
 const SPACE = "Automations";
 const BEAT = 10000;
@@ -53,6 +58,18 @@ function agentArgv(cmd) {
 }
 
 let runner = null;
+
+// Settings > Features: the file as it is now, and a line in the log when Board or
+// Automations goes off or comes back (once per change; at the start, the ones that are off).
+const features = new Features();
+let featuresSaid = null;
+async function readFeatures() {
+  const parsed = parseSettings(await readTextFile(`${home()}/${SETTINGS_FILE}`));
+  features.fromFile(parsed, null);
+  const now = Object.fromEntries(Object.keys(FOLLOWED).map((k) => [k, features.on(k)]));
+  for (const f of flips(featuresSaid, now)) log(FOLLOWED[f.key][f.on ? "on" : "off"]);
+  featuresSaid = now;
+}
 
 // A run's tab: a terminal labelled into the workspace's Automations space.
 async function open(ws, name, folder, argv, task) {
@@ -152,7 +169,8 @@ async function main() {
   if (!(await alone())) { log("another runner is running: leaving it to it"); process.exit(0); }
   if (((await readTextFile(`${runnerDir()}/switch`)) ?? "").trim() !== "on") { log("it's off (herdr-ws-runner --on turns it on)"); process.exit(0); }
   await refresh(true).catch((e) => log("herdr-core:", said(e)));
-  runner = new Runner({ presetsFor, presetLaunch, withTask, claim() {}, open, tidy, close, windowOpen, away: "while Herdr's runner wasn't running" });
+  await readFeatures();
+  runner = new Runner({ presetsFor, presetLaunch, withTask, claim() {}, open, tidy, close, windowOpen, away: "while Herdr's runner wasn't running", featureOn: (k) => features.on(k) });
   prs = new PrWatcher();
   gh = new GhWatcher();
   dirty = true;
@@ -191,11 +209,12 @@ async function main() {
     if (busy) return;
     busy = true;
     try { await refresh(); } catch {} // herdr-core is away: the schedules still tick
-    try { runner.tick(cx); prs.tick(cx); gh.tick(cx); } catch (e) { log("tick failed:", said(e)); }
+    try { runner.tick(cx); if (features.on("board")) { prs.tick(cx); gh.tick(cx); } } catch (e) { log("tick failed:", said(e)); }
     busy = false;
     if (dirty || noted) beat().catch(() => {});
   }, 500);
   setInterval(() => beat().catch((e) => log("alive:", said(e))), BEAT);
+  setInterval(() => readFeatures().catch((e) => log("settings:", said(e))), 2000);
   const code = await codeNow().catch(() => null);
   setInterval(async () => {
     const now = await codeNow().catch(() => code);

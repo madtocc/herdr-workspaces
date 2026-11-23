@@ -10,7 +10,11 @@
 // Also: a second line on an agent's row with its model, how full its context is and
 // how often it was compacted, the rest on hover (readStats(), statLine(): stats.js
 // reads them from the agent's own records). The plans' usage is in the status bar
-// (ws-status).
+// (ws-status). While Agent numbers is off in Settings > Features (settingsfacts.js, shared
+// "workspaces.settings": numbersOn()) a row has its name and status only, at its one-line
+// height, and nothing reads the records on a timer; the right-click menu still needs its
+// conversation (Fork, Copy session id, Wipe), so a right-click reads that one agent's
+// records first (menuAt()). Turned on again, the numbers come at the next read.
 // Also: History's own right-click Wipe hands an Antigravity conversation that's open in no
 // terminal to the Wipe dialog here (props wipe with no address: nothing to close first).
 // Also: a right-click on an agent's row (a sub-agent's too, and on the rail) opens its
@@ -29,7 +33,7 @@ import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, exec, hc, appHome, home, notify, checking, readTextFile } from "herdr";
 import { tokens } from "./statfacts.js";
 import { kindOf as menuKind, menuItems, menuHeight, closeAsks, forkArgv, wipeTargets, agyDir } from "./menufacts.js";
-import { SETTINGS_FILE, parseSettings, experimentOn } from "./settingsfacts.js";
+import { SETTINGS_FILE, parseSettings, experimentOn, featureOn } from "./settingsfacts.js";
 
 // The workspace ws-switcher shows, null for every space.
 const workspace = () => (shared("workspaces.defs") ?? []).find((d) => d.id === shared("workspaces.active")) ?? null;
@@ -121,6 +125,8 @@ const kindOf = (a) => KINDS[a.app] ?? KINDS[a.program?.key] ?? null;
 // Read again this often while one of them works, and this often anyway.
 const STATS_WORKING = 5000;
 const STATS_IDLE = 60000;
+// Whether Agent numbers is on in Settings > Features (nothing known yet counts as on).
+const numbersOn = () => featureOn(shared("workspaces.settings"), "numbers");
 
 // Node, as History finds it: the app's PATH, else where the person's shell finds it
 // (found with `node --version`, so a script itself never runs twice to find it).
@@ -266,16 +272,19 @@ export default class Agents extends View {
     this.statsFor = "";
     this.pids = new Map();
     if (checking()) return;
-    cx.spawn(async (cx) => this.readStats(cx));
-    // The package's settings (an edit in the file shows within a minute; Settings > Agents and Experimental set them
-    // at once), and an Antigravity wipe left to finish.
-    cx.spawn(async () => this.readSettings());
+    // The package's settings (an edit in the file shows within a minute; Settings sets them
+    // at once), and an Antigravity wipe left to finish. The numbers wait for the settings:
+    // while they're off, nothing is read for them.
+    cx.spawn(async (cx) => {
+      await this.readSettings();
+      if (numbersOn()) await this.readStats(cx);
+    });
     cx.timer.every(60000, (cx) => {
       cx.spawn(async () => this.readSettings());
       cx.spawn(async () => this.agyPending());
     });
     cx.timer.every(STATS_WORKING, (cx) => {
-      if (this.statsBusy) return;
+      if (this.statsBusy || !numbersOn()) return;
       const list = this.statAgents();
       const key = list.map((a) => a.address).join(" ");
       const wait = list.some((a) => a.status === "working") ? STATS_WORKING : STATS_IDLE;
@@ -317,13 +326,20 @@ export default class Agents extends View {
     return agents().filter((a) => !a.address.includes("/") && kindOf(a));
   }
 
-  // Reads every agent's numbers (stats.js).
+  // Reads every agent's numbers (stats.js), or only `only`'s (a list of agents: the
+  // right-click's read, which waits for a read already going instead of being skipped).
   // Redraws only when something changed.
-  async readStats(cx) {
-    if (this.statsBusy) return;
+  async readStats(cx, only = null) {
+    if (this.statsBusy) {
+      if (!only) return;
+      await this.statsDone;
+      return this.readStats(cx, only);
+    }
     this.statsBusy = true;
+    let done;
+    this.statsDone = new Promise((resolve) => { done = resolve; });
     try {
-      const list = this.statAgents();
+      const list = only ?? this.statAgents();
       this.statsFor = list.map((a) => a.address).join(" ");
       const args = [`${appHome()}/mods/ws-agents/stats.js`];
       for (const a of list) {
@@ -340,7 +356,8 @@ export default class Agents extends View {
         }
         args.push("--t", `${a.address}=${kind}${p?.pid ? `:${p.pid}` : ""}`);
       }
-      for (const k of this.pids.keys()) if (!list.some((a) => a.address === k)) this.pids.delete(k);
+      // Agents gone are forgotten (not on a one-agent read: the others are still there).
+      if (!only) for (const k of this.pids.keys()) if (!list.some((a) => a.address === k)) this.pids.delete(k);
       const r = await node(args);
       if (r.code !== 0 || r.stdout === this.statsRaw) return;
       let data = null;
@@ -351,6 +368,7 @@ export default class Agents extends View {
     } finally {
       this.statsBusy = false;
       this.statsAt = Date.now();
+      done();
     }
   }
 
@@ -464,6 +482,17 @@ export default class Agents extends View {
       session: s.session ?? null, file: s.file ?? null, cwd: s.cwd ?? pane?.cwd ?? a.cwd ?? null, cmd: s.cmd ?? null,
       agyWipe: experimentOn(shared("workspaces.settings"), "antigravity-wipe"), agyFresh: s.fresh === true, pid: this.pids?.get(a.address)?.pid ?? null,
     };
+  }
+
+  // A right-click's menu. While the numbers are off nothing keeps this.stats current,
+  // so that agent's records are read first (its conversation, for Fork, Copy session id, Wipe).
+  menuAt(cx, a, name, status, top) {
+    const one = numbersOn() ? [] : this.statAgents().filter((x) => x.address === a.address);
+    if (!one.length) return this.openMenu(this.menuFacts(a, name, status, top));
+    cx.spawn(async (cx) => {
+      await this.readStats(cx, one);
+      this.openMenu(this.menuFacts(a, name, status, top));
+    });
   }
 
   openMenu(f) {
@@ -875,7 +904,7 @@ export default class Agents extends View {
       .on_click((e) => this.open(k, root, e))
       .on_mouse_down("right", (_e, cx) => {
         cx.stop_propagation();
-        this.openMenu(this.menuFacts(this.agentsBy?.get(k.address) ?? k, k.name || k.template || k.program?.name || k.address, st, false));
+        this.menuAt(cx, this.agentsBy?.get(k.address) ?? k, k.name || k.template || k.program?.name || k.address, st, false);
       })
       .children(s.lines.map(l => div().self_start().mt(-4).w(9).h(17).mr(4).flex_none()
         .when(Boolean(l), el => el.border_l(1.5).border_color(t.input))
@@ -998,7 +1027,7 @@ export default class Agents extends View {
           .gap(4)
           .hover((s) => s.bg(t.hover))
           .on_click(() => { showTabs(); run("pane.focus", { pane: a.pane }); })
-          .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openMenu(this.menuFacts(a, label(a) || a.space_name, a.status, true)); })
+          .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.menuAt(cx, a, label(a) || a.space_name, a.status, true); })
           .child(div().flex_1().min_w(0).whitespace_nowrap().text_right().text_color(t.muted).child(String(i + 1)))
           .child(h_flex().w(14).flex_none().items_center().justify_center().child(this.status(t, a, true)));
       }
@@ -1026,7 +1055,7 @@ export default class Agents extends View {
       // Without a space header above (priority, pinned) the row names its space.
       const full = byPriority || isPinned;
       const name = full ? a.space_name || label(a) : more ?? (/^\d+$/.test(label(a)) ? a.program?.name || label(a) : label(a));
-      const stat = this.stats[a.address];
+      const stat = numbersOn() ? this.stats[a.address] : null;
       const nameLine = h_flex().min_w(0).gap(5).items_center()
         .child(div().min_w(0).max_w(full && more ? 120 : 200).truncate().text_color(idle ? t.muted : t.foreground).child(name))
         .when(full && Boolean(more), el => el.child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(`· ${more}`)));
@@ -1047,7 +1076,7 @@ export default class Agents extends View {
           cx.notify();
         })
         .on_click(() => { showTabs(); run("pane.focus", { pane: a.pane }); })
-        .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openMenu(this.menuFacts(a, full && more ? `${name} · ${more}` : name, a.status, true)); })
+        .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.menuAt(cx, a, full && more ? `${name} · ${more}` : name, a.status, true); })
         .when(Boolean(pic), el => el.child(div().id(`agent-fold-${a.address}`)
           .when(subs.length > 0, el => el.on_click((_e, cx) => {
             cx.stop_propagation();

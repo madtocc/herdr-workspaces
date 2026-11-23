@@ -61,6 +61,11 @@
 // GitHub automations ask GitHub with `gh api` every POLL, one call per repo.
 // What it remembers (when each last ran, when it last ticked, the runs) is in
 // ~/.herdr/runner/automations.json, the same file whichever of the two runs.
+// Settings > Features' Automations (h.featureOn("automations")): off, nothing starts (fire()
+// and launch() refuse; a manual start is noted as skipped), nothing that would set one off is
+// gathered, checks don't run and GitHub isn't asked; a run already going finishes and closes
+// as usual. On again it carries on from then (gate()): no catch-up, an `every` one waits its
+// interval, GitHub's first look only notes what's there (featuregate.js).
 
 import { spaces, agents, terminals, focused, run, shared, setShared, home, readTextFile, writeTextFile, watchFolder, exec, notify, knownAgents } from "herdr";
 import * as fs from "fs/promises";
@@ -68,6 +73,7 @@ import { parseWhen, describe, due, nextAt, shortTime } from "./when.js";
 import { withKnobs } from "./knobs.js";
 import { runCheck } from "./check.js";
 import { closeStep, helpersOf, lookingAt, providerOf } from "./runfacts.js";
+import { OFF_NOTE, everyNext } from "./featuregate.js";
 
 const SPACE = "Automations";
 const MISSED = 12 * 3600e3; // a schedule missed (Herdr closed, the Mac asleep) runs once if it was due this recently
@@ -352,7 +358,8 @@ const taskText = (t) => [`${t.id}: ${t.title}`, t.body, `The task file is ${tild
 const fill = (text, vars) => text.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (all, k) => (vars[k] ?? all));
 
 export class Runner {
-  // h: { presetsFor(workspace), presetLaunch(preset, task), withTask(argv, task), claim(space, workspace) }
+  // h: { presetsFor(workspace), presetLaunch(preset, task), withTask(argv, task), claim(space, workspace),
+  //      featureOn(key): Settings > Features (missing: all on) }
   // The background runner also gives open(...), tidy(...) and close(run), its own ways to
   // start and close a run's tab without the window, away, what it calls the time it wasn't
   // running, and windowOpen(), whether Herdr's window is open (Herdr toasts for itself then).
@@ -385,6 +392,31 @@ export class Runner {
     this.store = new Store(STORE);
     this.restored = false;
     this.allowAsked = shared("workspaces.automation.allow")?.at;
+    this.autoOn = undefined;    // Automations in Settings > Features, at the last look (gate())
+    this.ghRebase = null;       // on again: the repos whose next GitHub look only notes what's there
+  }
+
+  automationsOn() { return this.h.featureOn ? this.h.featureOn("automations") !== false : true; }
+  // Automations turned off or on (or found so at the first load): off, what waits to start
+  // is dropped; on again after off (here, or in state.off since before a restart), it
+  // carries on from now. { on, back }: back is true when it just came back on.
+  gate(now) {
+    const on = this.automationsOn();
+    if (on === this.autoOn) return { on, back: false };
+    const was = this.autoOn ?? (this.state.off ? false : undefined);
+    this.autoOn = on;
+    const back = on && was === false;
+    if (!on) { this.pending = []; this.files = {}; }
+    if (back) {
+      this.state.resumed = now;
+      this.ghRebase = "all";
+      this.ghPolled = 0;
+      this.files = {};
+      this.minute = Math.floor(now / 60e3);
+    }
+    if (Boolean(this.state.off) !== !on) { this.state.off = !on; this.save(); }
+    else if (back) this.save();
+    return { on, back };
   }
 
   save() { if (this.restored) this.store.write(this.state); }
@@ -593,7 +625,9 @@ export class Runner {
       this.state.runs = this.state.runs.filter((r) => there.has(r.ws));
       for (const map of [this.state.last, this.state.base, this.state.allowed, this.state.asked]) for (const k of Object.keys(map)) if (!k.startsWith("*/") && !there.has(k.split("/")[0])) delete map[k];
     }
-    if (!this.loaded) { this.loaded = true; this.catchUp(this.state.seen || now, now, this.h.away ?? "while Herdr was closed"); }
+    const gate = this.gate(now);
+    // Off, or just back on: what came due meanwhile doesn't run late.
+    if (!this.loaded) { this.loaded = true; if (gate.on && !gate.back) this.catchUp(this.state.seen || now, now, this.h.away ?? "while Herdr was closed"); }
     this.save();
     this.watchFiles(cx);
     this.publish();
@@ -642,7 +676,7 @@ export class Runner {
     if (!a.enabled || a.error) return null;
     if (a.trigger.kind === "every") {
       const k = `${ws}/${a.name}`;
-      return (this.state.last[k] ?? this.state.base[k] ?? now) + a.trigger.ms;
+      return everyNext(this.state.last[k] ?? this.state.base[k] ?? now, a.trigger.ms, this.state.resumed);
     }
     return nextAt(a.trigger, now);
   }
@@ -705,7 +739,10 @@ export class Runner {
     if (!this.loaded) return;
     this.approvals();
     const now = Date.now();
-    this.ask(now);
+    // Automations off: the minutes still pass (so nothing is caught up later) and runs going
+    // finish, but nothing starts and nothing is asked.
+    const { on } = this.gate(now);
+    if (on) this.ask(now);
     for (const p of this.pending.splice(0)) {
       const a = this.find(p.ws, p.name);
       if (a) this.fire(cx, p.ws, a, p.why);
@@ -713,16 +750,16 @@ export class Runner {
     const minute = Math.floor(now / 60e3);
     if (minute !== this.minute) {
       // Minutes skipped since the last tick (the Mac slept): their schedules run late, once.
-      if (this.minute !== undefined && minute > this.minute + 1) this.catchUp((this.minute + 1) * 60e3, now, "while the Mac was asleep");
+      if (on && this.minute !== undefined && minute > this.minute + 1) this.catchUp((this.minute + 1) * 60e3, now, "while the Mac was asleep");
       this.minute = minute;
       const at = new Date(minute * 60e3);
-      this.each((ws, a) => { if (due(a.trigger, at)) this.fire(cx, ws, a, `The ${shortTime(at.getTime(), now)} schedule`); });
+      if (on) this.each((ws, a) => { if (due(a.trigger, at)) this.fire(cx, ws, a, `The ${shortTime(at.getTime(), now)} schedule`); });
       for (const [k, t] of this.recent) if (now - t > GAP) this.recent.delete(k);
       this.state.seen = now;
       this.save();
       this.publish();
     }
-    this.each((ws, a) => { if (a.trigger.kind === "every" && now >= this.next(ws, a, now)) this.fire(cx, ws, a, a.summary); });
+    if (on) this.each((ws, a) => { if (a.trigger.kind === "every" && now >= this.next(ws, a, now)) this.fire(cx, ws, a, a.summary); });
     this.watchAgents(cx);
     this.stalled(now);
     this.finished(cx, now);
@@ -730,7 +767,7 @@ export class Runner {
       if (now - f.at >= QUIET) { delete this.files[k]; this.filesFire(cx, f); }
     }
     if (now - this.polled >= 2000) { this.polled = now; this.inbox(cx); }
-    if (now - this.ghPolled >= POLL) { this.ghPolled = now; this.github(cx); }
+    if (on && now - this.ghPolled >= POLL) { this.ghPolled = now; this.github(cx); }
   }
 
   // What the switcher's folder watch saw change under ~/.herdr/workspaces.
@@ -745,8 +782,13 @@ export class Runner {
 
   // Starts an automation. how: { manual } (Run now, herdr-ws-run: even when it's
   // off or its last run is working), { key } (one run per task or agent).
+  // Automations off: nothing starts; a manual start is noted as skipped.
   fire(cx, ws, a, why, vars = {}, how = {}) {
     const k = `${ws}/${a.name}`, key = how.key ? `${k}#${how.key}` : k, now = Date.now();
+    if (!this.automationsOn()) {
+      if (how.manual) this.log({ ws, name: a.name, at: now, why, status: "skipped", note: OFF_NOTE });
+      return;
+    }
     if (!how.manual) {
       if (this.starting.has(key)) return;
       if (now - ((how.key ? this.recent.get(key) : this.state.last[k]) ?? 0) < GAP) return;
@@ -801,6 +843,8 @@ export class Runner {
   // place: where it runs when the automation names no folder (a github one's repo), else the root.
   // manual: started by hand or from outside, so it starts whatever its check says.
   async launch(ws, a, why, vars, at, place, manual) {
+    // Turned off while it waited its turn: it doesn't start (nor its check).
+    if (!this.automationsOn()) { this.log({ ws, name: a.name, at, why, status: "skipped", note: OFF_NOTE }); return; }
     const def = this.def(ws);
     if (!def) throw new Error("Its workspace is gone.");
     const b = boardOf(def);
@@ -1043,7 +1087,7 @@ export class Runner {
   filesSeen(folder, paths) {
     // Watched paths can come back as the real path (macOS's /tmp is /private/tmp): test them whole.
     const kept = paths.filter((p) => !IGNORED.test(p));
-    if (!kept.length) return;
+    if (!kept.length || this.autoOn === false) return; // changes made while Automations is off don't count
     const now = Date.now();
     this.each((ws, a) => {
       if (a.trigger.kind !== "files" || folderPath(this.def(ws), a.trigger.folder) !== folder) return;
@@ -1082,6 +1126,8 @@ export class Runner {
         watch.get(r.repo).push({ ws, a, folder: r.folder });
       }
     });
+    // Back on after off: this look only notes the newest number, as a first look does.
+    if (this.ghRebase === "all") this.ghRebase = new Set(watch.keys());
     if (!watch.size) return;
     this.ghBusy = true;
     cx.spawn(async (cx) => {
@@ -1101,7 +1147,8 @@ export class Runner {
             continue;
           }
           delete this.ghWarn[repo];
-          const seen = this.state.github[repo];
+          const seen = this.ghRebase?.has(repo) ? undefined : this.state.github[repo];
+          this.ghRebase?.delete(repo);
           this.state.github[repo] = Math.max(seen ?? 0, ...items.map((it) => it.number ?? 0));
           if (seen === undefined) continue;
           const fresh = items.filter((it) => it.number > seen).sort((x, y) => x.number - y.number).slice(-MAX_NEW);

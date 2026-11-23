@@ -1,8 +1,13 @@
-// The Workspaces package's own sections of ws-settings (Agents and Experimental), drawn inside
+// The Workspaces package's own sections of ws-settings (Features, Agents and Experimental), drawn inside
 // the Settings window that ws-switcher/settingsbuild.js builds from Herdr's (main.js here).
 // These are plain functions on that window's view, so they don't depend on Herdr's own methods;
 // their state lives on the view as `view.wsx`.
 //
+// - Features: which of the package's add-ons are on (settingsfacts.js FEATURES: Board, Notes,
+//   Worktrees, History, Automations, Plan usage, Agent numbers), each on unless "features" in
+//   ~/.herdr/settings.jsonc says false. Off hides it everywhere and stops its background work
+//   (the mods follow shared "workspaces.settings"); nothing is deleted. Automations shows how
+//   many there are, from shared "workspaces.automations" (the switcher's runner publishes it).
 // - Agents: every switch the package has for agents, in one place:
 //   - STARTING AGENTS: Herdr guide for every agent (herdr-ws-agent --guide on/off, Edit / Write
 //     one for ~/.herdr/AGENTS.md) and Bring agents back after a restart (herdr-ws-resume --on/--off).
@@ -11,19 +16,20 @@
 //   - WHILE HERDR IS CLOSED: Keep running (shared "workspaces.runner", set through
 //     "workspaces.runner.set").
 // - Experimental: the experiments in ~/.herdr/settings.jsonc (settingsfacts.js), each off until
-//   turned on, with what it does and why it's experimental. A switch rewrites only its value in
-//   the file (comments kept) and sets shared "workspaces.settings" so the mods that read it
-//   (ws-agents) follow at once.
+//   turned on, with what it does and why it's experimental.
+// A switch on Features or Experimental rewrites only its value in the file (comments kept) and
+// sets shared "workspaces.settings" so the mods that read it follow at once.
 
 import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { theme, shared, setShared, exec, home, appHome, readTextFile, writeTextFile, notify, window, checking, knownAgents } from "herdr";
 import * as fs from "fs/promises";
-import { SETTINGS_FILE, EXPERIMENTS, parseSettings, withExperiment, experimentOn } from "./settingsfacts.js";
+import { SETTINGS_FILE, EXPERIMENTS, FEATURES, parseSettings, withExperiment, withFeature, experimentOn, featureOn, automationCount, automationsLine } from "./settingsfacts.js";
 import { HIDDEN, hiddenFile, parseHidden, saveHidden, shownAgents, countLine, notInstalledLine } from "./hidefacts.js";
 
 // Our sections in the window's list, after Herdr's.
 export const PACKAGE_SECTIONS = [
+  { id: "features", title: "Features", icon: "mods/ws-settings/features.svg" },
   { id: "agents", title: "Agents", icon: "mods/ws-settings/extras.svg" },
   { id: "experimental", title: "Experimental", icon: "mods/ws-settings/experimental.svg" },
 ];
@@ -64,7 +70,8 @@ export function packageInit(view, cx) {
     guide: null, // { on, bytes }
     known: shared("new-menu.agents")?.[""] ?? [],
     hidden: shared(HIDDEN) ?? [],
-    busy: false, // an experiment write is in flight
+    busy: false, // a Features or Experimental write is in flight
+    gen: 0, // counts those writes (at their start and end), so a read from before one is dropped
     hiding: 0, // count of in-flight flipAgent saves
     loading: null, // active load() promise, to prevent overlapping polls
   };
@@ -81,7 +88,7 @@ export function packageInit(view, cx) {
 }
 
 // Reads the package files on disk. Guards against overlapping polls (when wait is false),
-// in-flight experiment writes (x.busy), and in-flight + menu saves (x.hiding).
+// in-flight Features or Experimental writes (x.busy), and in-flight + menu saves (x.hiding).
 async function load(x, wait = false) {
   if (x.loading) {
     if (!wait) return false;
@@ -89,10 +96,16 @@ async function load(x, wait = false) {
   }
   const p = (async () => {
     if (!x.busy) {
+      // A write that started and finished during this read changed gen: the text read is from
+      // before it, so it mustn't go back into the page or shared state.
+      const gen = x.gen;
       const text = await readTextFile(file()).catch(() => null);
-      if (!x.busy) {
+      if (!x.busy && x.gen === gen) {
         x.text = text;
         x.settings = parseSettings(text);
+        // A hand edit of the file reaches the mods that follow it while this window is open
+        // (ws-agents reads the file into shared state too, but only every minute).
+        if (JSON.stringify(x.settings) !== JSON.stringify(shared("workspaces.settings") ?? null)) setShared("workspaces.settings", x.settings);
       }
     }
     const sw = async (path) => ((await readTextFile(path).catch(() => null)) ?? "").trim() !== "off";
@@ -122,22 +135,32 @@ async function load(x, wait = false) {
   }
 }
 
-// One experiment on or off: only its value changes in the file.
-function setExperiment(x, key, on, cx) {
+// One experiment or add-on flipped: only its value changes in the file. edit is withExperiment
+// or withFeature, isOn experimentOn or featureOn. The new value is the opposite of what the file
+// says now (not the page's last read, up to 3 seconds old). What's set in shared state is the
+// whole parse (experiments and features both), so neither page's change hides the other's.
+function setSetting(x, edit, isOn, key, cx) {
   if (x.busy) return;
   x.busy = true;
+  x.gen = (x.gen ?? 0) + 1;
   cx.spawn(async (cx) => {
     try {
       const old = await readTextFile(file()).catch(() => null);
-      const next = withExperiment(old, key, on);
-      if (next == null) throw new Error(`${tilde(file())} isn't valid JSONC; fix it in the file first`);
-      await writeTextFile(file(), next, old ?? undefined);
+      const was = parseSettings(old);
+      const next = edit(old, key, !isOn(was, key));
+      if (next == null) {
+        throw new Error(was.error
+          ? `${tilde(file())} isn't valid JSONC; fix it in the file first`
+          : `${tilde(file())} isn't in a shape this switch can change safely (a setting that isn't true or false, or written twice); change it in the file`);
+      }
+      if (next !== old) await writeTextFile(file(), next, old ?? undefined);
       x.text = next;
       x.settings = parseSettings(next);
       setShared("workspaces.settings", x.settings);
     } catch (e) {
       notify({ title: "Couldn't change it", body: errMsg(e), level: "error" });
     }
+    x.gen += 1;
     x.busy = false;
     cx.notify();
   });
@@ -213,10 +236,11 @@ function heading(t, text) {
   return div().pt(6).pb(8).text_size(12).font_semibold().text_color(t.dim).child(text.toUpperCase());
 }
 
-function row(t, id, title, about, extra, control, warn = false) {
+// quiet: the title in the muted colour (an add-on that's off).
+function row(t, id, title, about, extra, control, warn = false, quiet = false) {
   return h_flex().id(id).w_full().gap(16).py(12).items_center().border_b(1).border_color(t.border)
     .child(v_flex().flex_1().min_w(0).gap(3)
-      .child(div().text_size(14).text_color(t.foreground).child(title))
+      .child(div().text_size(14).text_color(quiet ? t.muted : t.foreground).child(title))
       .when(Boolean(about), (el) => el.child(div().text_size(12.5).line_height("18px").text_color(t.dim).child(about)))
       .when(Boolean(extra), (el) => el.child(div().text_size(12).line_height("17px").text_color(warn ? t.blocked : t.muted).child(extra))))
     .child(div().flex_none().child(control));
@@ -314,13 +338,43 @@ function experimentalPage(t, x) {
     .children(EXPERIMENTS.map((e) => {
       const on = experimentOn(x.settings, e.key);
       return row(t, `wsx-x-${e.key}`, e.title, e.what, `Why it's experimental: ${e.why.charAt(0).toLowerCase()}${e.why.slice(1)}`,
-        toggle(t, `wsx-x-${e.key}-switch`, on, (_e, cx) => setExperiment(x, e.key, !on, cx), Boolean(broken) || x.busy));
+        toggle(t, `wsx-x-${e.key}-switch`, on, (_e, cx) => setSetting(x, withExperiment, experimentOn, e.key, cx), Boolean(broken) || x.busy));
     }));
 }
 
-// The page: the window's body shows it for our section ids ("agents" and "experimental").
+// Features: the add-ons in their groups, a switch each. A row that's off says what's gone and
+// what stays; Automations says how many there are while on. A broken file: one note, every
+// switch greyed and drawn on (everything acts as on until it's fixed).
+function featuresPage(t, x) {
+  const broken = x.settings.error;
+  const autos = automationCount(shared("workspaces.automations"));
+  const groups = [];
+  for (const f of FEATURES) {
+    const g = groups.find((y) => y.name === f.group);
+    if (g) g.list.push(f);
+    else groups.push({ name: f.group, list: [f] });
+  }
+  return v_flex().w_full()
+    .child(div().pb(4).text_size(18).font_semibold().text_color(t.foreground).child("Features"))
+    .child(div().pb(18).text_size(12.5).line_height("18px").text_color(t.dim)
+      .child("Turn off what you don't use. Off hides it everywhere and stops its background work; nothing is deleted, so on brings it back as it was."))
+    .when(Boolean(broken), (el) => el.child(div().mb(14).p(10).rounded(8).bg(t.blocked + "1f").text_size(12.5).line_height("18px").text_color(t.blocked)
+      .child(`${tilde(file())} isn't valid JSONC (${broken}). Everything stays on until it's fixed.`)))
+    .children(groups.map((g, i) => v_flex().w_full()
+      .when(i > 0, (el) => el.child(div().h(22)))
+      .child(heading(t, g.name))
+      .children(g.list.map((f) => {
+        const on = featureOn(x.settings, f.key);
+        const extra = broken ? "" : f.key === "automations" ? automationsLine(autos, on) : on ? "" : f.off;
+        return row(t, `wsx-f-${f.key}`, f.title, f.what, extra,
+          toggle(t, `wsx-f-${f.key}-switch`, on, (_e, cx) => setSetting(x, withFeature, featureOn, f.key, cx), Boolean(broken) || x.busy),
+          false, !on);
+      }))));
+}
+
+// The page: the window's body shows it for our section ids ("features", "agents" and "experimental").
 export function packagePage(view) {
   const t = theme();
-  const x = view.wsx ?? (view.wsx = { text: null, settings: parseSettings(null), resume: null, guide: null, known: [], hidden: [], busy: false, hiding: 0, loading: null });
-  return view.section === "experimental" ? experimentalPage(t, x) : agentsPage(t, x);
+  const x = view.wsx ?? (view.wsx = { text: null, settings: parseSettings(null), resume: null, guide: null, known: [], hidden: [], busy: false, gen: 0, hiding: 0, loading: null });
+  return view.section === "features" ? featuresPage(t, x) : view.section === "experimental" ? experimentalPage(t, x) : agentsPage(t, x);
 }

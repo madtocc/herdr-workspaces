@@ -41,11 +41,13 @@ cmp -s "$src/mods/ws-switcher/knobs.js" "$src/mods/ws-presets/knobs.js" || {
   exit 1
 }
 
-# Settings' Experimental section and the Agents list read the package's settings (~/.herdr/settings.jsonc) by the same rules.
-cmp -s "$src/mods/ws-settings/settingsfacts.js" "$src/mods/ws-agents/settingsfacts.js" || {
-  echo "mods/ws-settings/settingsfacts.js and mods/ws-agents/settingsfacts.js differ: make them the same first" >&2
-  exit 1
-}
+# Settings (Features, Experimental), the Agents list, the switcher's runners and the status bar read the package's settings (~/.herdr/settings.jsonc) by the same rules.
+for mod in ws-agents ws-switcher ws-status; do
+  cmp -s "$src/mods/ws-settings/settingsfacts.js" "$src/mods/$mod/settingsfacts.js" || {
+    echo "mods/ws-settings/settingsfacts.js and mods/$mod/settingsfacts.js differ: make them the same first" >&2
+    exit 1
+  }
+done
 
 # History's Wipe moves the same files to the Trash as the Agents list's (wipeTargets()) and draws its menu the same size.
 cmp -s "$src/mods/ws-agents/menufacts.js" "$src/mods/ws-history/menufacts.js" || {

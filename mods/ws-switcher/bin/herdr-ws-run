@@ -20,6 +20,12 @@
 # closed runs when it opens, if that's within an hour. <workspace> is the folder
 # name in ~/.herdr/workspaces; --add and --off find it from the current folder,
 # the way herdr-ws-agent does, unless given --workspace. Times are this computer's.
+#
+# While Automations is off in Herdr's Settings > Features (~/.herdr/settings.jsonc,
+# "features": { "automations": false }), nothing runs: a start is refused (exit 3),
+# and --add, --on and --list say that what they show or keep waits until it's on.
+# Without Node it can't read that file as Herdr does, so it only says they may be off
+# and goes on (Herdr then refuses the start and notes it as skipped).
 set -eu
 
 dir=$HOME/.herdr/workspaces
@@ -35,6 +41,44 @@ usage="usage: herdr-ws-run <workspace> <automation> [text... | -]
        herdr-ws-run --help"
 
 die() { echo "herdr-ws-run: $*" >&2; exit 1; }
+
+# This script's folder, through the link in ~/.local/bin: the mod's settingsfacts.js is beside it.
+self=$0
+while [ -L "$self" ]; do
+  t=$(readlink "$self")
+  case $t in /*) self=$t ;; *) self=$(dirname "$self")/$t ;; esac
+done
+mod=$(cd "$(dirname "$self")/.." 2>/dev/null && pwd)
+settings=$HOME/.herdr/settings.jsonc
+
+# Automations is off in Settings > Features, read as Herdr reads it (settingsfacts.js, with
+# Node): a file that isn't JSONC counts as all on. Without Node it never says off, since a
+# broken file or a /* comment */ could fool a plain look: when that look finds
+# "automations": false, it sets maybe_off, and the callers say they may be off.
+automations_off() {
+  maybe_off=
+  [ -f "$settings" ] || return 1
+  if command -v node >/dev/null 2>&1 && [ -f "$mod/settingsfacts.js" ]; then
+    node --input-type=module -e '
+      const { parseSettings, featureOn } = await import(process.argv[1]);
+      const { readFileSync } = await import("node:fs");
+      process.exit(featureOn(parseSettings(readFileSync(process.argv[2], "utf8")), "automations") ? 1 : 0);
+    ' "file://$mod/settingsfacts.js" "$settings" 2>/dev/null
+    return
+  fi
+  if sed -e 's,^[[:space:]]*//.*,,' -e 's,[[:space:]]//.*,,' "$settings" | tr -d ' \t\r\n' | grep -q '"features":{[^}]*"automations":false'; then
+    maybe_off=1
+  fi
+  return 1
+}
+off_words="Automations are off in Herdr's Settings > Features"
+maybe_words="Automations may be off in Herdr's Settings > Features (without Node, herdr-ws-run can't read ~/.herdr/settings.jsonc as Herdr does)"
+# What that means for what was just asked ($1), when they're off or may be.
+off_note() {
+  if automations_off; then echo "$off_words: $1" >&2
+  elif [ -n "$maybe_off" ]; then echo "$maybe_words. If they are, $1" >&2
+  fi
+}
 
 help() {
   cat <<'EOF'
@@ -112,6 +156,11 @@ Have an agent do something later, from a folder in the workspace:
 Times are this computer's clock. Herdr must be open, or its background runner on
 (herdr-ws-runner --on): a run missed while neither ran or the Mac slept starts
 when it can, if that's within 12 hours.
+
+While Automations is off in Herdr's Settings > Features, none of them run, not
+even a start from here (it's refused): what you add is kept and runs once
+they're on again. What came due while they were off doesn't run late. Without
+Node it can only say they may be off, and asks anyway.
 EOF
 }
 
@@ -276,6 +325,7 @@ if [ "${1:-}" = --list ]; then
     found=1
   done
   [ -n "$found" ] || echo "No automations yet: add one with --add, or in Herdr's Automations screen."
+  off_note "none of these run until they're on again."
   exit 0
 fi
 
@@ -385,6 +435,7 @@ $usage" ;;
     else
       echo "Turned on \"$name\" in $where ($cur)."
     fi
+    off_note "it won't run until they're on again."
     exit 0
   fi
 
@@ -492,8 +543,14 @@ The check needs the person's OK before it runs: Herdr asks them with a toast now
   echo "File: $file"
   if [ -n "$glob" ]; then echo "To cancel: herdr-ws-run --off $name --global"
   else echo "To cancel: herdr-ws-run --off $name --workspace $wsid"; fi
-  herdr-app status >/dev/null 2>&1 || [ "$(cat "$HOME/.herdr/runner/switch" 2>/dev/null)" = on ] ||
-    echo "Herdr isn't open: it has to be open then (a run missed while it's closed starts when it opens, within 12 hours)." >&2
+  if automations_off; then
+    echo "$off_words: it's kept, and doesn't run until they're on again (a time that passes meanwhile doesn't run late). Tell the person." >&2
+  elif [ -n "$maybe_off" ]; then
+    echo "$maybe_words. If they are, it's kept, and doesn't run until they're on again. Tell the person." >&2
+  else
+    herdr-app status >/dev/null 2>&1 || [ "$(cat "$HOME/.herdr/runner/switch" 2>/dev/null)" = on ] ||
+      echo "Herdr isn't open: it has to be open then (a run missed while it's closed starts when it opens, within 12 hours)." >&2
+  fi
   exit 0
 fi
 
@@ -508,6 +565,13 @@ esac
   exit 1
 }
 if [ $# -eq 1 ] && [ "$1" = - ]; then text=$(cat); else text=$*; fi
+
+# Off in Settings > Features: nothing starts, so nothing is asked (it wouldn't run later either).
+if automations_off; then
+  echo "herdr-ws-run: $off_words, so $name didn't start and won't start later. Turn them on there (or take \"automations\": false out of ~/.herdr/settings.jsonc), then run this again." >&2
+  exit 3
+fi
+[ -z "$maybe_off" ] || echo "herdr-ws-run: $maybe_words. If they are, Herdr won't start $name and notes it as skipped; asking anyway." >&2
 
 # Written aside, then moved in, so Herdr never reads half a call.
 mkdir -p "$dir/.inbox"

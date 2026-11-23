@@ -204,13 +204,20 @@ own, where you can't watch it or type to it:
 None of them changes code. With the starter guide (see Install), Claude and
 Codex start one of these where they'd use their own subagent.
 
-### Settings: Agents and Experimental
+### Settings: Features, Agents and Experimental
 
 ![Settings on its Agents section](previews/settings.png)
 
-The sidebar's Settings opens Herdr's own Settings window with two sections of
+The sidebar's Settings opens Herdr's own Settings window with three sections of
 ours at the end, after Privacy:
 
+- **Features**: a switch for each of the package's add-ons (Board, Notes,
+  Worktrees, History, Automations, the status bar's plan usage and the agent
+  rows' numbers), all on to start with and one setting for every workspace. Off
+  hides it everywhere and stops its background work (no automation runs, no
+  pull request is followed, no usage is asked); nothing is deleted, so on brings
+  it back as it was. Each row says what it adds, and while off what's gone and
+  what stays.
 - **Agents**: every switch the package has for agents, in one place: **Starting
   agents** (the Herdr guide for every agent, with Edit / Write one, and bringing
   Claude and Antigravity agents back after a restart), **In the + menu** (which
@@ -227,8 +234,8 @@ Herdr's sections are Herdr's: the package rebuilds its copy from Herdr's own
 file whenever Herdr updates it. The macOS menu's Settings… still opens Herdr's
 plain window; to have Cmd+, open this one, set `"cmd-,"` in the `global`
 section of your `~/.config/herdr-app/keys.json` to `"mod.open:ws-settings"`
-(or to `ws-switcher.settings/agents` or `ws-switcher.settings/experimental` to
-open it on a section; `ws-switcher.settings/extras` opens Agents). Herdr then
+(or to `ws-switcher.settings/features`, `ws-switcher.settings/agents` or
+`ws-switcher.settings/experimental` to open it on a section; `ws-switcher.settings/extras` opens Agents). Herdr then
 leaves that file to you: new default shortcuts in its updates are added by hand.
 
 ### And when you're away
@@ -333,8 +340,13 @@ agent from the Agents list's right-click menu: that Claude Code or Pi
 conversation's transcript and the folders Claude keeps for it under
 `~/.claude/`. That menu also types into an agent with `hc send` (Send a message,
 Compact), presses Esc there with `hc keys` (Interrupt) and puts a terminal or
-session id on the clipboard (`pbcopy`, `wl-copy` or `xclip`). Settings > Experimental
-writes `~/.herdr/settings.jsonc`, and the switcher reads Herdr's own Settings
+session id on the clipboard (`pbcopy`, `wl-copy` or `xclip`). Settings > Features and
+Settings > Experimental write `~/.herdr/settings.jsonc`; the switcher, the background
+runner (every 2 seconds), the status bar and `herdr-ws-run` (with `node` when it's
+there) read it to know which add-ons are off, and the sidebar footer reads the shown
+layout's file (`layouts/<name>.json`, at start, on a layout switch and every 30
+seconds) and sizes its own block with `layout.resize` (Herdr keeps that in
+`layouts/.state/`). The switcher reads Herdr's own Settings
 window (`frame/settings/main.js` in Herdr's folder) to write its copy,
 `mods/ws-settings/main.js`. With its experiment turned on, wiping an Antigravity
 agent also edits Antigravity's own index files and prompt history in

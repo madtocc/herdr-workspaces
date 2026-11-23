@@ -114,3 +114,14 @@ export function agoText(ms, now = Date.now()) {
   const h = Math.round(m / 60);
   return h < 24 ? `${h}h ago` : `${Math.round(h / 24)}d ago`;
 }
+
+// Whether an add-on is on, for a copy that read ~/.herdr/settings.jsonc itself at start
+// and follows shared "workspaces.settings" after: `was`, what it took last (null until
+// the file is read); `heard`, the shared value it saw last; `now`, the shared value now
+// (true, false, or undefined while nothing is there). A shared value it hasn't seen is a
+// change (a switch flipped in Settings, or ws-agents read the file again), so it wins;
+// otherwise what it took stands.
+export function followFeature(was, heard, now) {
+  if (now !== undefined && now !== heard) return now !== false;
+  return was ?? now !== false;
+}

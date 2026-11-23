@@ -6,7 +6,9 @@
 // - Presets are left out for a space on another machine: the launcher is local.
 // - Under the agents and presets, "Resume a conversation…" shows the workspace's History
 //   screen (ws-history), through ws-switcher's shared "workspaces.history", and "Notes" its
-//   Notes screen (ws-notes; shared "workspaces.notes"), when a workspace is shown.
+//   Notes screen (ws-notes; shared "workspaces.notes"), when a workspace is shown. Each is
+//   left out while its add-on (History, Notes) is off in Settings > Features (shared
+//   "workspaces.settings"), and the menu is that much shorter.
 // - Up to 721 px tall instead of 491; ws-tabs lets it take 85% of the window.
 // - Only installed agents, less the ones hidden from this menu (~/.herdr/agent-menu.json,
 //   mirrored in shared "new-menu.hidden"; hidefacts.js). A right-click on an agent's
@@ -18,6 +20,9 @@ import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex, Popup } from "gpui-base";
 import { theme, spaces, panes, knownAgents, run, openOverlay, closeOverlay, props, window, keys, shared, setShared, home, readTextFile, writeTextFile, notify } from "herdr";
 import { HIDDEN, hiddenFile, parseHidden, saveHidden, shownAgents, keyTarget } from "./hidefacts.js";
+
+// Whether an add-on is on in Settings > Features (nothing known yet counts as on).
+const featureOn = (key) => shared("workspaces.settings")?.features?.[key] !== false;
 
 // The last agents each machine reported, shown at once while knownAgents() checks again.
 const KNOWN = "new-menu.agents";
@@ -143,7 +148,8 @@ export default class NewMenu extends View {
       return a.tint ? svg(a.icon).size(14).text_color(t.foreground) : image(a.icon).size(14);
     };
     const keyed = (i) => (i < 9 ? String(i + 1) : "");
-    return v_flex().min_h(0).w_full().h(Math.min(721, 198 + (ws ? 31 : 0) + (Math.max(1, installed.length) + (installed.length ? 1 : 0)) * 31 + (presets.length ? 34 + presets.length * 31 : 0)))
+    const history = featureOn("history"), notes = Boolean(ws) && featureOn("notes");
+    return v_flex().min_h(0).w_full().h(Math.min(721, 167 + (history ? 31 : 0) + (notes ? 31 : 0) + (Math.max(1, installed.length) + (installed.length ? 1 : 0)) * 31 + (presets.length ? 34 + presets.length * 31 : 0)))
       .bg(t.popover).p(5).text_size(12.8)
       .id("new-menu").track_focus(this.handle)
       .on_key_down((e, cx) => {
@@ -169,10 +175,10 @@ export default class NewMenu extends View {
           .child(div().px(9).pt(10).pb(4).flex_none().text_size(11).text_color(t.dim).child("Agent presets"))
           .children(presets.map((p, i) => this.row(`preset-${p.name}`, iconOf(p), p.name, () => startPreset(p), keyed(installed.length + i), true,
             [p.description, p.scope === "workspace" ? `Only in ${ws?.name ?? "this workspace"}` : "Every workspace"].filter(Boolean).join("\n"))))))
-      .child(this.row("history", svg("mods/ws-history/history.svg").size(14).text_color(t.foreground), "Resume a conversation…",
+      .when(history, el => el.child(this.row("history", svg("mods/ws-history/history.svg").size(14).text_color(t.foreground), "Resume a conversation…",
         () => setShared("workspaces.history", { id: ws?.id ?? null, at: Date.now() }), "", !space?.machine,
-        "Past conversations of every agent, here or everywhere: pick one to continue it"))
-      .when(Boolean(ws), el => el.child(this.row("notes", svg("mods/ws-notes/notes.svg").size(14).text_color(t.foreground), "Notes",
+        "Past conversations of every agent, here or everywhere: pick one to continue it")))
+      .when(notes, el => el.child(this.row("notes", svg("mods/ws-notes/notes.svg").size(14).text_color(t.foreground), "Notes",
         () => setShared("workspaces.notes", { id: ws.id, at: Date.now() }), "", true,
         `${ws.name}'s notes: rough ideas to start a session from later`)))
       .child(div().h(1).mx(4).my(5).bg(t.border))

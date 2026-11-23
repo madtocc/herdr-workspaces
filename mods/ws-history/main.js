@@ -29,7 +29,9 @@
 //
 // A Claude, Pi or Antigravity conversation that was compacted shows the compacted icon
 // and how often on its row; opened, it lists when (newest first), how, and how big the
-// context was before and after, and what's in the context at the end.
+// context was before and after, and what's in the context at the end. Neither shows while
+// Agent numbers is off in Settings > Features (shared "workspaces.settings"), and a run
+// has no way into the automation while Automations is off.
 //
 // Who started whom (treefacts.js): a conversation another agent started (an hc helper)
 // or an agent's own sub-agent isn't listed on its own: under its parent's row a quiet line
@@ -134,6 +136,8 @@ const message = (e) => String(e?.message ?? e);
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 // What the switcher takes as a workspace or automation name in a command (automations.js: openAt).
 const PLAIN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+// Whether an add-on is on in Settings > Features (nothing known yet counts as on).
+const featureOn = (key) => shared("workspaces.settings")?.features?.[key] !== false;
 
 // The folders a workspace's conversations ran in: its root and folders (and where
 // symlinks lead), and the Herdr worktrees of its repos.
@@ -666,7 +670,7 @@ export default class History extends View {
         .child(div().size(6).rounded_full().bg(status ? (t[status] ?? t.idle) : t.idle)).child("open")))
       .when(Boolean(s.gone && !at), (el) => el.child(tag("folder gone", t.dim, `${tilde(s.cwd)} isn't there any more, so it can't be resumed there`)))
       .when(Boolean(s.model) && !tight, (el) => el.child(div().flex_none().max_w(150).truncate().text_size(11.5).text_color(t.dim).child(modelLabel(s.model))))
-      .when(s.compactions > 0 && !tight, (el) => el.child(h_flex().id(`hc-${key}`).flex_none().gap(3).items_center().text_size(11.5).text_color(t.dim)
+      .when(s.compactions > 0 && !tight && featureOn("numbers"), (el) => el.child(h_flex().id(`hc-${key}`).flex_none().gap(3).items_center().text_size(11.5).text_color(t.dim)
         .tooltip(compactionsTip(s.compactions, s.compacted?.[s.compacted.length - 1]))
         .child(svg("mods/ws-history/compacted.svg").size(11).text_color(t.dim)).child(String(s.compactions))))
       .child(div().w(30).flex_none().text_size(11.5).text_color(t.dim).child(ago(s.updated, now)))
@@ -742,7 +746,7 @@ export default class History extends View {
         .when(!st.open && !at && Boolean(s) && !s.gone && this.starting === key, (el) => el.child(div().text_size(11.5).text_color(t.dim).child("Starting…")))
         .when(!st.open && !at && Boolean(s) && !s.gone && this.starting !== key, (el) => el.child(act(`rre-${r.id}`, "Resume", (cx) => this.resume(s, cx),
           r.conv ? "Continue its conversation in a new tab, in the folder it ran in" : "Continue the conversation that ran in its folder then, in a new tab", true)))
-        .when(!tight, (el) => el.child(act(`rau-${r.id}`, "Automation", () => this.openAutomation(r), `Open ${r.name} in Automations`))));
+        .when(!tight && featureOn("automations"), (el) => el.child(act(`rau-${r.id}`, "Automation", () => this.openAutomation(r), `Open ${r.name} in Automations`))));
     if (!folds) return fill(shell);
     return shell.child(fill(h_flex().h(38).gap(10).items_center()))
       .child(this.foldLine(`rf-${r.id}`, key, under, this.unfolded.has(key), 25, t, "Show the conversations its run started"));
@@ -765,8 +769,8 @@ export default class History extends View {
       .when(Boolean(s.last), (el) => el.child(line("Last asked", s.last)))
       .child(line("Folder", `${tilde(s.cwd)}${s.branch ? `  (${s.branch})` : ""}${s.gone ? "  ·  gone" : ""}`))
       .child(line("When", span(s.started, s.updated)))
-      .when(s.context != null, (el) => el.child(line("Context", `${tokens(s.context)} tokens at the end`)))
-      .when(s.compactions > 0, (el) => el.child(h_flex().gap(10).items_start()
+      .when(s.context != null && featureOn("numbers"), (el) => el.child(line("Context", `${tokens(s.context)} tokens at the end`)))
+      .when(s.compactions > 0 && featureOn("numbers"), (el) => el.child(h_flex().gap(10).items_start()
         .child(div().w(84).flex_none().text_color(t.dim).child("Compacted"))
         .child(v_flex().flex_1().min_w(0).gap(3).text_color(t.muted)
           .children([...(s.compacted ?? [])].reverse().slice(0, 5).map((c) => div().child(compactionText(c))))

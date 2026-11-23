@@ -10,7 +10,10 @@
 //   the tabs, and the Files and Changes buttons are left out (no panel beside a screen);
 // - the side panel never leaves the terminals less than the layout's `main` block asks
 //   (its `min`, 400 px; fit.js): a width set in a bigger window is narrowed to what this
-//   one has, and grows back when the room does.
+//   one has, and grows back when the room does;
+// - a screen whose add-on is off in Settings > Features (shared "workspaces.settings",
+//   ws-agents reads ~/.herdr/settings.jsonc into it) has no pill, in both copies of the bar;
+//   it stays in "workspaces.screens", so turning it on brings the pill back.
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
@@ -18,13 +21,16 @@ import { spaces, panes, run, openOverlay, theme, window, shared, setShared, prop
 import { fit } from "./fit.js";
 
 // The workspace's screens a tab bar can pin: key -> its pill. The layout holds each
-// as the block `screen-<key>`.
+// as the block `screen-<key>`; each key is also its add-on's key in Settings > Features.
 const SCREENS = {
   board: { name: "Board", icon: "mods/ws-board/board.svg" },
   worktrees: { name: "Worktrees", icon: "mods/workspace-chrome/git-branch.svg" },
   history: { name: "History", icon: "mods/ws-history/history.svg" },
   notes: { name: "Notes", icon: "mods/ws-notes/notes.svg" },
 };
+
+// Whether an add-on is on in Settings > Features (nothing known yet counts as on).
+const featureOn = (key) => shared("workspaces.settings")?.features?.[key] !== false;
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -99,7 +105,7 @@ export default class Tabs extends View {
     const over = Boolean(props()?.screens);
     const ws = shared("workspaces.active") ?? null;
     const scr = shared("workspaces.screen") ?? null;
-    const pinned = ws ? ((shared("workspaces.screens") ?? {})[ws] ?? []).filter(k => SCREENS[k] && find(root, `screen-${k}`)) : [];
+    const pinned = ws ? ((shared("workspaces.screens") ?? {})[ws] ?? []).filter(k => SCREENS[k] && featureOn(k) && find(root, `screen-${k}`)) : [];
     // While the workspace has no space of its own, Herdr still shows another's: not its tabs.
     const foreign = over && Boolean(shared("workspaces.covered"));
     const space = foreign ? null : spaces().find(p => p.active);
