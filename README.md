@@ -71,7 +71,7 @@ needs you and blue for unread updates only.
   start).
 - **One click goes there**: the agent, the run's tab or the run in History, the
   card on its board, the automation. An update is read once clicked; Mark all
-  read, × and Clear read tidy the rest, and updates go after 7 days.
+  read and Clear read tidy the rest, and updates go after 7 days.
 - **It remembers** across restarts, the background runner's news from while
   Herdr was closed included.
 

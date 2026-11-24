@@ -4,8 +4,8 @@
 //
 // A row is one click to its thing: an agent, a run's tab (or the run in History once its tab
 // closed), the card on its board, the automation. A click on a Needs you row goes there and leaves
-// it; on an update it also marks it read. Hover × dismisses an update; Mark all read and Clear read
-// (N) do the same for many. ↑ ↓ move, Enter opens, Esc closes. With items in more than one workspace
+// it; on an update it also marks it read. Mark all read marks every update read and Clear read (N)
+// takes the read ones away. ↑ ↓ move, Enter opens, Esc closes. With items in more than one workspace
 // (and one shown), All workspaces | <shown> chips filter the list.
 //
 // It only reads and asks: the log (~/.herdr/notifications.json, as the switcher's sidebar copy
@@ -38,7 +38,7 @@ export default class Notifications extends View {
     this.handle.focus();
     this.scroll = ScrollHandle.new();
     this.sel = null;      // the row the keyboard is on (an id)
-    this.hover = null;    // the row under the pointer (its × shows)
+    this.hover = null;    // the row under the pointer (highlighted)
     this.scope = "all";   // or "current": the shown workspace's
     // What was clicked here, shown at once (the switcher writes the log a moment later).
     this.read = new Set();
@@ -67,19 +67,12 @@ export default class Notifications extends View {
   shut() { closeOverlay(props()?.overlay); }
 
   // A row's click (or Enter): to its thing; an update is read from now on. A row whose thing is gone
-  // and has no other way in does nothing (its × or Clear read takes it away).
+  // and has no other way in does nothing (Mark all read, then Clear read, takes it away).
   activate(it, cx) {
     if (!it || (it.gone && !it.fallbackLabel) || !it.target) return;
     if (it.group === "updates") this.read.add(it.id);
     ask("open", { item: it.id, target: it.target, pinned: Boolean(it.pinned), group: it.group });
     this.shut();
-  }
-
-  dismiss(it, cx) {
-    this.dismissed.add(it.id);
-    if (this.sel === it.id) this.sel = null;
-    ask("dismiss", { item: it.id });
-    cx.notify();
   }
 
   render() {
@@ -181,13 +174,7 @@ export default class Notifications extends View {
         .child(v_flex().flex_1().min_w(0)
           .child(h_flex().h(18).flex_none().gap(8).items_center()
             .child(div().flex_1().min_w(0).truncate().text_size(12.8).text_color(read || it.gone ? t.muted : t.foreground).when(!read && !it.gone, (el) => el.font_medium()).child(it.title))
-            .child(hovered && !it.pinned
-              ? h_flex().id(`n-x-${i}`).size(20).flex_none().rounded(5).bg(t.raised).items_center().justify_center().text_color(t.muted).cursor_pointer()
-                .hover((s) => s.bg(t.selected).text_color(t.foreground)).tooltip("Dismiss")
-                .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-                .on_click((_e, cx) => { cx.stop_propagation(); this.dismiss(it, cx); })
-                .child(svg("mods/pane/close.svg").size(11))
-              : div().flex_none().text_size(11).text_color(t.dim).child(ago(it.at, now))))
+            .child(div().flex_none().text_size(11).text_color(t.dim).child(ago(it.at, now))))
           .when(Boolean(detail), (el) => el.child(detail))
           .child(h_flex().h(16).mt(3).flex_none().min_w(0).gap(5).items_center().text_size(11).text_color(t.dim)
             .when(!filtered && Boolean(it.wsName), (el) => el.child(markOf(it.wsName, it.wsColor, 12)))
