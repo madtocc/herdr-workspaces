@@ -304,6 +304,76 @@ export function shownModels(models, typed, current, max = 12) {
   return { shown, more: q ? Math.max(0, hits.length - max) : models.length - shown.length };
 }
 
+// --- The model box: type part of a name, pick from what the agent listed ---
+
+// Up to this many models show as chips; a longer list (Pi and OpenCode list a hundred or
+// more) gets the box that suggests as you type.
+export const SHORT_LIST = 12;
+
+// A provider/model id as its two parts (the provider is what comes before the first "/";
+// Nvidia's model names have slashes of their own). No "/": no provider.
+export function splitModel(id) {
+  const i = String(id).indexOf("/");
+  return i > 0 ? { provider: id.slice(0, i), name: id.slice(i + 1) } : { provider: "", name: String(id) };
+}
+
+// The providers of provider/model ids, in list order, with how many models each has.
+// Empty when the ids have no providers.
+export function providersOf(models) {
+  const counts = new Map();
+  for (const id of models) {
+    const { provider } = splitModel(id);
+    if (provider) counts.set(provider, (counts.get(provider) ?? 0) + 1);
+  }
+  return [...counts].map(([provider, count]) => ({ provider, count }));
+}
+
+// What the box lists for what's typed. Returns { rows, words, matches }:
+// - nothing typed: a row per provider ({ kind: "provider", provider, count }), or the
+//   models themselves when they have no providers;
+// - typed: the models with every word (split on spaces and "/") somewhere in their id, the
+//   ones whose name starts with the first word first, then list order. "grok-cli/…" with a
+//   provider's exact name keeps to that provider and matches the rest against the name;
+// - no match: one row to use what was typed as it is ({ kind: "typed", text }), since the
+//   agents take names they don't list.
+// A model row is { kind: "model", id, provider, name }; words are what to mark in the names.
+export function typeahead(models, typed) {
+  const q = String(typed ?? "").trim().toLowerCase();
+  const all = models.map((id) => ({ kind: "model", id, ...splitModel(id) }));
+  const providers = providersOf(models);
+  if (!q) return providers.length
+    ? { rows: providers.map((p) => ({ kind: "provider", ...p })), words: [], matches: 0 }
+    : { rows: all, words: [], matches: all.length };
+  let pool = all, hay = (m) => m.id.toLowerCase(), rest = q;
+  const slash = q.indexOf("/");
+  if (slash > 0 && providers.some((p) => p.provider.toLowerCase() === q.slice(0, slash))) {
+    pool = all.filter((m) => m.provider.toLowerCase() === q.slice(0, slash));
+    hay = (m) => m.name.toLowerCase();
+    rest = q.slice(slash + 1);
+  }
+  const words = rest.split(/[\s/]+/).filter(Boolean);
+  const hits = pool.filter((m) => words.every((w) => hay(m).includes(w)));
+  const starts = (m) => Boolean(words[0]) && m.name.toLowerCase().startsWith(words[0]);
+  const rows = [...hits.filter(starts), ...hits.filter((m) => !starts(m))];
+  if (!rows.length) return { rows: [{ kind: "typed", text: String(typed).trim() }], words, matches: 0 };
+  return { rows, words, matches: rows.length };
+}
+
+// A name in pieces, the parts that match a typed word marked: [{ text, on }].
+export function markSegments(text, words) {
+  const s = String(text), low = s.toLowerCase(), on = new Array(s.length).fill(false);
+  for (const w of words ?? []) {
+    if (!w) continue;
+    for (let i = low.indexOf(w); i >= 0; i = low.indexOf(w, i + w.length)) for (let k = i; k < i + w.length; k++) on[k] = true;
+  }
+  const out = [];
+  for (let i = 0; i < s.length; i++) {
+    if (out.length && out[out.length - 1].on === on[i]) out[out.length - 1].text += s[i];
+    else out.push({ text: s[i], on: on[i] });
+  }
+  return out;
+}
+
 // For the automation drafter: each agent's models and effort levels, in words, from the
 // table and what the agents listed (`listed`: program -> models). Long lists are cut.
 export function knobsText(listed = {}, max = 30) {

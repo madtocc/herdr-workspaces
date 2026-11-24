@@ -36,10 +36,10 @@
 // A shell run's Log opens History on it (through the bell's "open" ask, which the switcher drains).
 
 import { View, div, svg } from "gpui-kit";
-import { h_flex, v_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
+import { h_flex, v_flex, InputState, Input, TextareaState, Textarea, Popup, ScrollHandle } from "gpui-base";
 import { theme, shared, setShared, props, closeOverlay, home, appHome, readTextFile, writeTextFile, exec, notify, agents, terminals, run, knownAgents } from "herdr";
 import { parseWhen, describe, nextAt, shortTime } from "./when.js";
-import { KNOBS, words, programOf, knobsIn, configModels, listable, keptModels, listModels, shownModels, knobsText } from "./knobs.js";
+import { KNOBS, words, programOf, knobsIn, configModels, listable, keptModels, listModels, shownModels, knobsText, SHORT_LIST, typeahead, markSegments } from "./knobs.js";
 import { runCheck, runShellScript, checkEnv } from "./check.js";
 import { splitFront, fieldValue, withFrontFields, normCheck, normScript, parseDuration, formatDuration, effectiveTimeout, effectiveNotify, SHELLS } from "./autofacts.js";
 import { DRAFTER_NAMES, DRAFT_MODEL, DRAFT_TIMEOUT, SCHEMA, GUIDE, buildDraftCommand, parseDraftOutput, pickDrafters } from "./drafter.js";
@@ -253,13 +253,27 @@ export default class Automations extends View {
       this.modelIn.set_value("");
       cx.notify();
     });
+    // The model box for a long list (more than SHORT_LIST): what's typed lists the matches
+    // under it; findHi is the highlighted row (arrows move it, Enter picks it). findModels is
+    // the list the editor last drew, so the keys pick from what's on screen.
+    this.findIn = InputState.new({ value: "", placeholder: "Type part of a model's name" });
+    this.findHi = 0;
+    this.findModels = [];
+    this.findScroll = ScrollHandle.new();
+    this.findIn.on("change", (_e, cx) => { this.findHi = 0; this.findScroll.scroll_to_item(0); cx.notify(); });
+    this.findIn.on("submit", (_e, cx) => { this.findSubmit(); cx.notify(); });
     for (const input of [this.askIn, this.changeIn]) input.on("submit", (e, cx) => { if (!e.shift) this.draft(cx); });
     // The editor follows the fields as you type; the one being typed in has the accent border.
     this.focusedIn = null;
-    for (const input of [this.nameIn, this.descIn, this.whenIn, this.checkIn, this.bodyIn, this.askIn, this.changeIn, this.modelIn, this.textIn]) {
+    for (const input of [this.nameIn, this.descIn, this.whenIn, this.checkIn, this.bodyIn, this.askIn, this.changeIn, this.modelIn, this.textIn, this.findIn]) {
       input.on("change", (_e, cx) => cx.notify());
       input.on("focus", (_e, cx) => { this.focusedIn = input; cx.notify(); });
-      input.on("blur", (_e, cx) => { if (this.focusedIn === input) this.focusedIn = null; cx.notify(); });
+      input.on("blur", (_e, cx) => {
+        if (this.focusedIn === input) this.focusedIn = null;
+        // The model box closes empty: what was half typed isn't a choice.
+        if (input === this.findIn) this.findSet("");
+        cx.notify();
+      });
     }
     this.sel = null;  // { scope: "workspace" | "global", name, isNew }
     this.snap = null; // what was loaded: { text, file, name, description, when, agent, model, effort, folder, check, card, enabled, off, offHere, body }
@@ -918,6 +932,100 @@ export default class Automations extends View {
   }
 
 
+  // A row picked in the model box: a provider narrows the box to its models; a model, or
+  // what was typed (when it's a model-like word), is set and the box closes.
+  findPick(r) {
+    if (r.kind === "provider") return this.findSet(`${r.provider}/`);
+    const model = r.kind === "model" ? r.id : r.text;
+    if (MODEL_WORD.test(model)) this.choice.model = model;
+    this.findSet("");
+    this.findIn.blur();
+  }
+  // The model box's text set from here (set_value fires no change): the cursor at its
+  // end and the highlight back on the first row.
+  findSet(text) {
+    this.findIn.set_value(text);
+    this.findIn.set_selected_range({ start: text.length, end: text.length });
+    this.findHi = 0;
+    this.findScroll.scroll_to_item(0);
+  }
+  // Enter in the model box: the highlighted row.
+  findSubmit() {
+    const { rows } = typeahead(this.findModels, this.findIn.value());
+    const r = rows[Math.min(this.findHi, rows.length - 1)];
+    if (r) this.findPick(r);
+  }
+  // Keys while the model box is open: arrows move the highlight, Tab fills in the
+  // highlighted name, Escape closes it (and the dialog stays). Enter is the box's submit.
+  findKey(e, cx) {
+    if (this.focusedIn !== this.findIn) return;
+    const { rows } = typeahead(this.findModels, this.findIn.value());
+    const r = rows[Math.min(this.findHi, rows.length - 1)];
+    if (e.key === "down" || e.key === "up") {
+      this.findHi = Math.max(0, Math.min(rows.length - 1, Math.min(this.findHi, rows.length - 1) + (e.key === "down" ? 1 : -1)));
+      this.findScroll.scroll_to_item(this.findHi);
+    } else if (e.key === "tab" && r && r.kind !== "typed") {
+      this.findSet(r.kind === "provider" ? `${r.provider}/` : r.id);
+    } else if (e.key === "escape") {
+      this.findSet("");
+      this.findIn.blur();
+    } else return;
+    cx.stop_propagation();
+    cx.notify();
+  }
+  // The model box (knobs.js typeahead): the model set shows in it, lit like a chosen chip,
+  // with × back to Default. Clicking it or typing opens the list under it: the providers
+  // while nothing is typed, then the models with every word typed, the provider on the
+  // right; one row to use what was typed when nothing matches. `who` names the agent.
+  modelFind(t, id, models, model, who, clear) {
+    const open = this.focusedIn === this.findIn;
+    const typed = this.findIn.value();
+    const { rows, words: marks, matches } = typeahead(models, typed);
+    const hi = Math.min(this.findHi, rows.length - 1);
+    const W = 360;
+    const box = h_flex().id(`${id}-find`).w(W).h(26).relative()
+      .on_key_down((e, cx) => this.findKey(e, cx))
+      .child(Input.new(this.findIn).w_full().h(26).px(10).rounded(13).border_1().border_color(open ? t.accent : t.input).bg(t.background)
+        .text_size(12).text_color(t.foreground))
+      // Set and closed: the model over the box; a click opens it (the box takes the keyboard).
+      // (The theme's selected color lets what's under it show, so it sits on the box's own.)
+      .when(!open && Boolean(model), (el) => el.child(div().id(`${id}-find-set`).absolute().inset_0().rounded(13).bg(t.background).cursor_text()
+        .on_click((_e, cx) => { this.findIn.focus(); cx.notify(); })
+        .child(h_flex().size_full().px(10).gap(6).items_center().rounded(13).border_1().border_color(t.accent).bg(t.selected)
+          .text_size(12).text_color(t.foreground)
+          .child(div().flex_1().min_w(0).truncate().child(model))
+          .child(div().id(`${id}-find-clear`).size(18).flex_none().flex().items_center().justify_center().rounded(9).text_color(t.dim).cursor_pointer()
+            .hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip("Back to Default")
+            .on_click((_e, cx) => { cx.stop_propagation(); clear(); cx.notify(); }).child("×")))));
+    const row = (r, i) => h_flex().id(`${id}-find-${i}`).h(28).flex_none().px(8).gap(10).items_center().rounded(6).cursor_pointer()
+      .when(i === hi, (el) => el.bg(t.hover))
+      .text_size(12).text_color(i === hi || r.kind !== "model" ? t.foreground : t.muted)
+      .hover((s) => s.bg(t.hover))
+      .on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); this.findPick(r); cx.notify(); })
+      .when(r.kind === "provider", (el) => el
+        .child(div().flex_1().min_w(0).truncate().child(`${r.provider}/`))
+        .child(div().flex_none().text_size(11.5).text_color(t.dim).child(`${r.count} models`)))
+      .when(r.kind === "typed", (el) => el
+        .child(div().flex_1().min_w(0).truncate().child(`Use “${r.text}” as typed`))
+        .child(div().flex_none().text_size(11.5).text_color(t.dim).child(`not in ${who}'s list`)))
+      .when(r.kind === "model", (el) => el
+        .child(div().w(12).flex_none().text_size(11).text_color(t.accent).child(r.id === model ? "✓" : ""))
+        .child(h_flex().flex_1().min_w(0).overflow_hidden()
+          .children(markSegments(r.name, marks).map((g) => div().flex_none().when(g.on, (d) => d.text_color(t.foreground).font_semibold()).child(g.text))))
+        .when(Boolean(r.provider), (d) => d.child(div().flex_none().text_size(11.5).text_color(t.dim).child(r.provider))));
+    const providers = rows.filter((r) => r.kind === "provider").length;
+    const count = !typed.trim() ? (providers ? `${models.length} models from ${providers} providers` : `${models.length} models`)
+      : matches ? `${matches} match${matches === 1 ? "" : "es"}` : "No match";
+    const list = v_flex().id(`${id}-find-list`).w(W).mt(6).rounded(8).shadow_md().border_1().border_color(t.input).bg(t.popover).text_color(t.foreground)
+      .on_scroll_wheel((_e, cx) => cx.stop_propagation())
+      .child(v_flex().id(`${id}-find-rows`).max_h(8 * 28 + 8).overflow_y_scrollbar().track_scroll(this.findScroll).p(4)
+        .children(rows.map(row)))
+      .child(h_flex().h(24).flex_none().px(10).gap(12).items_center().border_t(1).border_color(t.border).text_size(11).text_color(t.dim)
+        .child(div().flex_1().child(count))
+        .child(div().flex_none().child("↑↓ move   ↵ pick   esc close")));
+    return Popup.new(`${id}-find-popup`, box).when(open, (el) => el.content(list));
+  }
+
   render() {
     const t = theme();
     const def = this.def();
@@ -1128,6 +1236,7 @@ export default class Automations extends View {
       if (programOf(commandOf(def, name).argv) !== programOf(commandOf(def, c.agent).argv)) { c.model = ""; c.effort = ""; }
       c.agent = name;
       this.modelIn.set_value("");
+      this.findSet("");
     };
     const folders = global ? [] : folderChoices(def);
     const boardAgent = boardAgentOf(def);
@@ -1138,6 +1247,7 @@ export default class Automations extends View {
     const own = knobsIn(cmd.argv);
     const models = knobs ? [...new Set([...knobs.models, ...(program === "codex" ? this.codexModels : []), ...(this.listed[program] ?? []), ...(own.model ? [own.model] : []), ...(c.model ? [c.model] : [])])] : [];
     const { shown: shownList, more: moreModels } = shownModels(models, this.modelIn.value(), c.model || own.model);
+    this.findModels = models;
     const model = c.model || own.model, effort = knobs?.effort ? c.effort || own.effort : null;
     const who = `${c.agent || (global ? "each board's agent" : boardAgent)}${cmd.preset && program && program !== cmd.name ? ` (${program})` : ""}`;
     const knobText = [model && `on ${model}`, effort && `${effort} effort`].filter(Boolean).join(", ");
@@ -1349,11 +1459,15 @@ export default class Automations extends View {
           ...(c.agent && !presets.some((p) => p.name === c.agent) && !agentChoices.some((a) => a.key === c.agent) ? [pick("a-ag-other", c.agent, true, () => {})] : [])))
         .when(Boolean(knobs), (el) => el
           .child(label_(cmd.preset ? `Model: Default is what ${cmd.name} sets` : "Model"))
-          .child(h_flex().gap(6).flex_wrap().items_center()
+          // A long list: Default, then the box that suggests as you type.
+          .when(models.length > SHORT_LIST, (el) => el.child(h_flex().gap(6).items_center()
+            .child(pick("a-model-default", own.model ? `Default (${own.model})` : "Default", !c.model, () => { c.model = ""; }))
+            .child(this.modelFind(t, "a", models, c.model || null, program, () => { c.model = ""; }))))
+          .when(models.length <= SHORT_LIST, (el) => el.child(h_flex().gap(6).flex_wrap().items_center()
             .child(pick("a-model-default", own.model ? `Default (${own.model})` : program === "codex" && this.codexModels[0] ? `Default (${this.codexModels[0]})` : "Default", !c.model, () => { c.model = ""; }))
             .children(shownList.map((m) => pick(`a-model-${m}`, m, c.model === m, () => { c.model = m; this.modelIn.set_value(""); })))
-            .child(div().w(190).child(Input.new(this.modelIn).h(26).px(8).rounded(13).border_1().border_color(this.focusedIn === this.modelIn ? t.accent : t.input).bg(t.background).text_size(11.5).text_color(t.foreground))))
-          .when(moreModels > 0, (el) => el.child(div().pt(6).text_size(11.5).text_color(t.dim)
+            .child(div().w(190).child(Input.new(this.modelIn).h(26).px(8).rounded(13).border_1().border_color(this.focusedIn === this.modelIn ? t.accent : t.input).bg(t.background).text_size(11.5).text_color(t.foreground)))))
+          .when(models.length <= SHORT_LIST && moreModels > 0, (el) => el.child(div().pt(6).text_size(11.5).text_color(t.dim)
             .child(this.modelIn.value().trim() ? `${moreModels} more like that: type more of the name.` : `${program} lists ${models.length} models: type part of a name to find one.`)))
           .when(Boolean(knobs.effort), (el) => el
             .child(label_("Effort"))
