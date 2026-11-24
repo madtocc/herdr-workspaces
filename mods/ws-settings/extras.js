@@ -1,4 +1,4 @@
-// The Workspaces package's own sections of ws-settings (Features, Agents, Files and Experimental), drawn inside
+// The Workspaces package's own sections of ws-settings (Features, Agents, Automations, Files and Experimental), drawn inside
 // the Settings window that ws-switcher/settingsbuild.js builds from Herdr's (main.js here).
 // These are plain functions on that window's view, so they don't depend on Herdr's own methods;
 // their state lives on the view as `view.wsx`.
@@ -14,8 +14,12 @@
 //     the window closing first) and Bring agents back after a restart (herdr-ws-resume --on/--off).
 //   - IN THE + MENU: one row per installed agent (hidefacts.js: ~/.herdr/agent-menu.json,
 //     mirrored in shared "new-menu.hidden", knownAgents()).
-//   - WHILE HERDR IS CLOSED: Keep running (shared "workspaces.runner", set through
-//     "workspaces.runner.set").
+// - Automations: how automations run, all in one place:
+//   - WHILE HERDR IS CLOSED: Keep running and Start at login (shared "workspaces.runner", set
+//     through "workspaces.runner.set" { on } / { login }: the switcher runs herdr-ws-runner).
+//   - LIMITS & QUIET HOURS and AUTHORING: "automations" in ~/.herdr/settings.jsonc
+//     (settingsfacts.js AUTOMATIONS_SETTINGS: max-parallel, quiet-hours, drafter). Custom quiet
+//     hours are two HH:MM boxes (view.wsx.quietFrom / quietTo, made in packageInit) and Save.
 // - Files: Files' defaults, "files" in ~/.herdr/settings.jsonc (settingsfacts.js FILES_SETTINGS):
 //   VIEWING (Markdown & SVG open in, Default external app, Show ignored files) and OPENING FROM
 //   TERMINALS (Cmd-click a file path, Files to catch). Default external app's list (appChoices)
@@ -28,16 +32,17 @@
 // (comments kept) and sets shared "workspaces.settings" so the mods that read it follow at once.
 
 import { div, svg, image } from "gpui-kit";
-import { v_flex, h_flex, Popup } from "gpui-base";
+import { v_flex, h_flex, Popup, InputState, Input } from "gpui-base";
 import { theme, shared, setShared, exec, home, appHome, readTextFile, writeTextFile, notify, checking, knownAgents, props, closeOverlay, window } from "herdr";
 import * as fs from "fs/promises";
-import { SETTINGS_FILE, EXPERIMENTS, FEATURES, FILES_SETTINGS, EDITOR_CATALOG, parseSettings, withExperiment, withFeature, withFileSetting, experimentOn, featureOn, fileSetting, appChoices, appLabel, automationCount, automationsLine } from "./settingsfacts.js";
+import { SETTINGS_FILE, EXPERIMENTS, FEATURES, FILES_SETTINGS, EDITOR_CATALOG, AUTOMATIONS_SETTINGS, parseSettings, withExperiment, withFeature, withFileSetting, withAutomationSetting, experimentOn, featureOn, fileSetting, automationSetting, appChoices, appLabel, automationCount, automationsLine } from "./settingsfacts.js";
 import { HIDDEN, hiddenFile, parseHidden, saveHidden, shownAgents, countLine, notInstalledLine } from "./hidefacts.js";
 
 // Our sections in the window's list, after Herdr's.
 export const PACKAGE_SECTIONS = [
   { id: "features", title: "Features", icon: "mods/ws-settings/features.svg" },
   { id: "agents", title: "Agents", icon: "mods/ws-settings/extras.svg" },
+  { id: "automations", title: "Automations", icon: "mods/ws-settings/automations.svg" },
   { id: "files", title: "Files", icon: "mods/ws-settings/files.svg" },
   { id: "experimental", title: "Experimental", icon: "mods/ws-settings/experimental.svg" },
 ];
@@ -85,7 +90,15 @@ export function packageInit(view, cx) {
     loading: null, // active load() promise, to prevent overlapping polls
     apps: null, // Default external app's makings: { catalogInstalled, macApps, system } (findApps)
     appsLoading: false,
+    // Quiet hours' Custom: its two times, and whether Custom is picked while the file has none of its own.
+    quietFrom: InputState.new({ value: "", placeholder: "22:00" }),
+    quietTo: InputState.new({ value: "", placeholder: "08:00" }),
+    quietCustom: false,
   };
+  for (const input of [view.wsx.quietFrom, view.wsx.quietTo]) {
+    input.on("change", (_e, cx) => cx.notify());
+    input.on("submit", (_e, cx) => saveQuiet(view.wsx, cx));
+  }
   if (checking()) return;
   const refresh = (cx) => cx.spawn(async (cx) => {
     if (await load(view.wsx)) {
@@ -211,6 +224,49 @@ function setFileSetting(x, key, value, cx) {
     x.busy = false;
     cx.notify();
   });
+}
+
+// One Automations setting chosen: only its value changes in the file (withAutomationSetting,
+// comments kept), and shared "workspaces.settings" gets the whole parse, so the runner, the
+// Automations screen's drafter and the background runner follow it.
+function setAutomationSetting(x, key, value, cx) {
+  if (x.busy || x.settings.error) return;
+  x.busy = true;
+  x.gen = (x.gen ?? 0) + 1;
+  cx.spawn(async (cx) => {
+    try {
+      const old = await readTextFile(file()).catch(() => null);
+      const was = parseSettings(old);
+      const next = was.error || automationSetting(was, key) !== value ? withAutomationSetting(old, key, value) : old;
+      if (next == null) {
+        throw new Error(was.error
+          ? `${tilde(file())} isn't valid JSONC; fix it in the file first`
+          : `${tilde(file())} isn't in a shape this can change safely (an "automations" value that isn't a plain value, or written twice); change it in the file`);
+      }
+      if (next !== old) await writeTextFile(file(), next, old ?? undefined);
+      x.text = next;
+      x.settings = parseSettings(next);
+      if (JSON.stringify(x.settings) !== JSON.stringify(shared("workspaces.settings") ?? null)) setShared("workspaces.settings", x.settings);
+    } catch (e) {
+      notify({ title: "Couldn't change it", body: errMsg(e), level: "error" });
+    }
+    x.gen += 1;
+    x.busy = false;
+    cx.notify();
+  });
+}
+
+const HHMM = /^([01]?\d|2[0-3]):([0-5]\d)$/;
+const twoDigits = (v) => { const m = HHMM.exec(String(v ?? "").trim()); return m ? `${m[1].padStart(2, "0")}:${m[2]}` : null; };
+// Custom quiet hours, from the two boxes: saved when both are times and they differ.
+function saveQuiet(x, cx) {
+  const from = twoDigits(x.quietFrom?.value()), to = twoDigits(x.quietTo?.value());
+  if (!from || !to || from === to) {
+    notify({ title: "Quiet hours need two different times", body: "Write them as HH:MM, like 22:00 and 08:00.", level: "warning" });
+    return;
+  }
+  x.quietCustom = false;
+  setAutomationSetting(x, "quiet-hours", `${from}-${to}`, cx);
 }
 
 // Default external app's makings, once a window (true when found now): the editors installed
@@ -372,10 +428,6 @@ function agentsPage(t, x) {
     ? svg("mods/workspace-chrome/terminal.svg").size(16).flex_none().text_color(t.muted)
     : (a.tint ? svg(a.icon).text_color(t.foreground) : image(a.icon)).size(16).flex_none().rounded(3);
 
-  const runner = shared("workspaces.runner") ?? { on: false, running: false };
-  const runnerNote = !runner.on ? "Off: they run while Herdr is open"
-    : runner.running ? "On: running in the background" : "On, but not running yet";
-
   return v_flex().w_full()
     .child(heading(t, "Starting agents"))
     .child(row(t, "wsx-s-guide", "Herdr guide for every agent",
@@ -407,14 +459,82 @@ function agentsPage(t, x) {
     }))
     .when(Boolean(missing), (el) => el.child(div().pt(10).text_size(12).line_height("17px").text_color(t.dim).child(missing)))
     .child(div().pt(missing ? 6 : 10).text_size(12).line_height("17px").text_color(t.dim)
-      .child("Hidden agents are only left out of the + menu. Presets and automations can still start them."))
-    .child(div().h(22))
+      .child("Hidden agents are only left out of the + menu. Presets and automations can still start them."));
+}
+
+// Automations: the background runner (Keep running, Start at login), then the limits and quiet
+// hours and the drafter from "automations" in the settings file. A broken file: one note, those
+// three greyed at their defaults (what the runner uses until it's fixed); the runner's switches
+// still work, since they don't live in the file.
+function automationsPage(t, x) {
+  const broken = x.settings.error;
+  const off = Boolean(broken) || x.busy;
+  const runner = shared("workspaces.runner") ?? { on: false, running: false };
+  const runnerNote = !runner.on ? "Off: they run while Herdr is open"
+    : !runner.running ? "On, but not running yet"
+    : runner.via === "launchd" ? `On: running via launchd${runner.pid ? ` (pid ${runner.pid})` : ""}`
+    : `On: running in herdr-core${runner.pid ? ` (pid ${runner.pid})` : ""}`;
+  const mac = (window()?.platform ?? "macos") === "macos";
+  const loginNote = !mac ? "macOS only. On Linux, herdr-ws-runner --login on prints a systemd user unit to set up."
+    : runner.login ? `On: ${tilde(runner.plist || `${home()}/Library/LaunchAgents/dev.herdr.ws-runner.plist`)}` : "";
+  const s = (key) => AUTOMATIONS_SETTINGS.find((a) => a.key === key);
+  const val = (key) => automationSetting(x.settings, key);
+  const quiet = val("quiet-hours");
+  const quietNow = x.quietCustom ? "custom" : quiet == null ? "off" : quiet === "22:00-08:00" ? "22:00-08:00" : "custom";
+  const pickQuiet = (v, cx) => {
+    if (v === "custom") {
+      // Custom: the boxes, filled with what's there (or the usual night), and Save.
+      const [a, b] = String(quiet ?? "22:00-08:00").split("-");
+      x.quietFrom?.set_value(a ?? ""); x.quietTo?.set_value(b ?? "");
+      x.quietCustom = true;
+      cx.notify();
+      return;
+    }
+    x.quietCustom = false;
+    setAutomationSetting(x, "quiet-hours", v === "off" ? null : v, cx);
+  };
+  const time = (state) => div().w(64).child(Input.new(state).h(28).px(8).rounded(7).border_1().border_color(t.border).bg(t.background)
+    .text_size(13).text_color(t.foreground).font_family("JetBrains Mono"));
+  const quietRow = row(t, "wsx-au-quiet", "Quiet hours for desktop sound",
+    "Mute background desktop notification sounds overnight while Herdr is closed. Everything still shows in the bell and History.",
+    quietNow === "custom" && !x.quietCustom && quiet ? `Now: ${quiet.replace("-", " – ")}` : "",
+    v_flex().gap(8).items_end()
+      .child(segmented(t, "wsx-au-quiet-seg", [{ value: "off", label: "Off" }, { value: "22:00-08:00", label: "22:00 – 08:00" }, { value: "custom", label: "Custom" }], quietNow, pickQuiet, off))
+      .when(quietNow === "custom" && !off && Boolean(x.quietFrom), (el) => el.child(h_flex().gap(6).items_center()
+        .child(time(x.quietFrom)).child(div().text_size(13).text_color(t.dim).child("–")).child(time(x.quietTo))
+        .child(button(t, "wsx-au-quiet-save", "Save", (_e, cx) => saveQuiet(x, cx), "Save these quiet hours")))),
+    false, Boolean(broken));
+  const drafters = [{ value: "auto", label: "Auto" }, { value: "claude", label: "Claude" }, { value: "codex", label: "Codex" }, { value: "agy", label: "Antigravity" }, { value: "pi", label: "Pi" }];
+  return v_flex().w_full()
+    .child(div().pb(4).text_size(18).font_semibold().text_color(t.foreground).child("Automations"))
+    .child(div().pb(14).text_size(12.5).line_height("18px").text_color(t.dim)
+      .child(`Background runner, limits, quiet hours and drafter defaults. Saves to ${tilde(file())}.`))
+    .when(Boolean(broken), (el) => el.child(div().mb(14).p(10).rounded(8).bg(t.blocked + "1f").text_size(12.5).line_height("18px").text_color(t.blocked)
+      .child(`${tilde(file())} isn't valid JSONC (${broken}). Defaults stay in effect until it's fixed.`)))
     .child(heading(t, "While Herdr is closed"))
     .child(row(t, "wsx-s-runner", "Keep running",
-      "Automations and board cards' pull requests are followed by a background process herdr-core keeps going. Off, Herdr runs them itself while it's open.",
+      "Automations and board cards' pull requests keep running in a background process after you close Herdr. Turning it off turns off Start at login too.",
       runnerNote,
       toggle(t, "wsx-s-runner-switch", runner.on, () => setShared("workspaces.runner.set", { on: !runner.on, at: Date.now() })),
-      Boolean(runner.on && !runner.running)));
+      Boolean(runner.on && !runner.running)))
+    .child(row(t, "wsx-au-login", "Start at login",
+      "Install a macOS LaunchAgent so automations run after a reboot without opening Herdr. Shell scripts run without starting herdr-core.",
+      loginNote,
+      toggle(t, "wsx-au-login-switch", Boolean(runner.login), () => setShared("workspaces.runner.set", { login: !runner.login, at: Date.now() }), !mac),
+      false, !mac))
+    .child(div().h(14))
+    .child(heading(t, "Limits & quiet hours"))
+    .child(row(t, "wsx-au-parallel", s("max-parallel").title,
+      "When a global schedule fires in several workspaces at once, extra runs queue instead of starting all at once.", "",
+      segmented(t, "wsx-au-parallel-seg", s("max-parallel").values, val("max-parallel"), (v, cx) => setAutomationSetting(x, "max-parallel", v, cx), off),
+      false, Boolean(broken)))
+    .child(quietRow)
+    .child(div().h(14))
+    .child(heading(t, "Authoring"))
+    .child(row(t, "wsx-au-drafter", "Drafter",
+      "Which installed CLI turns your words into an automation when you click Draft it or Change it. Auto tries Claude, Codex, Antigravity, then Pi.", "",
+      segmented(t, "wsx-au-drafter-seg", drafters, val("drafter"), (v, cx) => setAutomationSetting(x, "drafter", v, cx), off),
+      false, Boolean(broken)));
 }
 
 function experimentalPage(t, x) {
@@ -539,9 +659,9 @@ function filesPage(t, x, view) {
     .child(choiceRow("catch", clickOff));
 }
 
-// The page: the window's body shows it for our section ids ("features", "agents", "files" and "experimental").
+// The page: the window's body shows it for our section ids ("features", "agents", "automations", "files" and "experimental").
 export function packagePage(view) {
   const t = theme();
-  const x = view.wsx ?? (view.wsx = { text: null, settings: parseSettings(null), resume: null, guide: null, known: [], hidden: [], busy: false, gen: 0, hiding: 0, loading: null, apps: null, appsLoading: false });
-  return view.section === "features" ? featuresPage(t, x) : view.section === "files" ? filesPage(t, x, view) : view.section === "experimental" ? experimentalPage(t, x) : agentsPage(t, x);
+  const x = view.wsx ?? (view.wsx = { text: null, settings: parseSettings(null), resume: null, guide: null, known: [], hidden: [], busy: false, gen: 0, hiding: 0, loading: null, apps: null, appsLoading: false, quietFrom: null, quietTo: null });
+  return view.section === "features" ? featuresPage(t, x) : view.section === "automations" ? automationsPage(t, x) : view.section === "files" ? filesPage(t, x, view) : view.section === "experimental" ? experimentalPage(t, x) : agentsPage(t, x);
 }

@@ -13,12 +13,20 @@
 //   github api pr opened                   a pull request (or `issue`) is opened on GitHub, in a
 //   github owner/name issue opened by others label:bug   workspace folder's repo or owner/name
 //   github * issue opened                  … in any of the workspace's folders that has a GitHub remote
+//   github api pr review-requested         your review is asked for on a pull request
+//   github api pr merged [by others] [label:x]   a pull request is merged
+//   github api ci failed                   a workflow run fails on the repo's default branch
+//   github api pr labeled:bug              a pull request (or `issue`) gets that label, even long after it opened
+//   startup | wake                         Herdr (or its background runner) starts; the computer wakes from sleep
+//   automation done nightly | after nightly       another automation here finishes (`failed`: fails)
 //   link                                   only Run now and herdr-ws-run start it
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const DAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
 const UNITS = { s: 1e3, sec: 1e3, secs: 1e3, second: 1e3, seconds: 1e3, m: 60e3, min: 60e3, mins: 60e3, minute: 60e3, minutes: 60e3, h: 3600e3, hr: 3600e3, hrs: 3600e3, hour: 3600e3, hours: 3600e3, d: 86400e3, day: 86400e3, days: 86400e3 };
-const HELP = 'Try "every 30m", "weekdays 09:00", "once 2026-11-12 06:00", "0 9 * * 1-5", "task enters review", "agent done", "files inbox", "github api pr opened" or "link".';
+const HELP = 'Try "every 30m", "weekdays 09:00", "once 2026-11-12 06:00", "0 9 * * 1-5", "task enters review", "agent done", "files inbox", "github api pr opened", "startup", "automation done nightly" or "link".';
+// An automation's name, as a chaining line gives it.
+const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 const pad = (n) => String(n).padStart(2, "0");
 const hhmm = ([h, m]) => `${pad(h)}:${pad(m)}`;
@@ -68,11 +76,22 @@ function cronField(text, lo, hi) {
   return [...out].sort((x, y) => x - y);
 }
 
-// The parsed line: { kind: "every" | "at" | "cron" | "once" | "board" | "agent" | "files" | "github" | "link" | "error", ... }.
+// The parsed line: { kind: "every" | "at" | "cron" | "once" | "board" | "agent" | "files" | "github"
+// | "lifecycle" | "chain" | "link" | "error", ... }.
 export function parseWhen(line) {
   const raw = String(line ?? "").trim();
   const s = raw.toLowerCase().replace(/\s+/g, " ");
   if (!s || s === "link" || s === "manual" || s === "never") return { kind: "link" };
+  // When Herdr (or its background runner) starts, or the computer wakes.
+  if (/^(?:on |at |when herdr )?(?:startup|start|starts)$/.test(s) && s !== "start") return { kind: "lifecycle", event: "startup" };
+  if (/^(?:on )?wake(?: from sleep| up)?$/.test(s)) return { kind: "lifecycle", event: "wake" };
+  // Another automation in the workspace finishes or fails: "automation done <name>", "after <name> fails".
+  let c = /^automation (done|finishes|finished|failed|fails) (\S+)$/i.exec(raw.replace(/\s+/g, " "));
+  if (!c) { const a = /^after (\S+)( fails| failed)?$/i.exec(raw.replace(/\s+/g, " ")); if (a) c = [a[0], a[2] ? "failed" : "done", a[1]]; }
+  if (c) {
+    if (!NAME.test(c[2])) return { kind: "error", error: `"${c[2]}" isn't an automation's name: letters, digits, ".", "-" and "_".` };
+    return { kind: "chain", on: /^fail/i.test(c[1]) ? "failed" : "done", target: c[2] };
+  }
   // once YYYY-MM-DD [at] time: one minute on this computer's clock.
   let m = /^once\b(.*)$/.exec(s);
   if (m) {
@@ -96,14 +115,31 @@ export function parseWhen(line) {
   }
   m = /^files? (.+)$/i.exec(raw);
   if (m) return { kind: "files", folder: m[1].trim() };
-  // github <repo> pr|issue [opened] [by others] [label:<name>]
+  // github <repo> pr|issue [opened] [by others] [label:<name>], pr review-requested, pr merged,
+  // ci failed, pr|issue labeled:<name>.
   m = /^github\s+(\S+)(?:\s+(.*))?$/i.exec(raw);
   if (m) {
-    const rest = (m[2] ?? "").trim();
+    const rest = (m[2] ?? "").trim().replace(/\s+/g, " ");
+    const repo = m[1];
+    if (/^(ci|workflows?|checks?|actions?) (failed|fails|failing)$/i.test(rest)) return { kind: "github", repo, what: "ci", event: "failed", others: false, label: null };
     const what = /^(prs?|pull requests?|pulls?)\b/i.test(rest) ? "pr" : /^issues?\b/i.test(rest) ? "issue" : null;
-    if (!what) return { kind: "error", error: `After the repo comes "pr opened" or "issue opened": "github ${m[1]} pr opened".` };
-    const label = /\blabel:("[^"]+"|\S+)/i.exec(rest)?.[1].replace(/^"|"$/g, "") ?? null;
-    return { kind: "github", repo: m[1], what, others: /\bby others\b/i.test(rest), label };
+    if (!what) return { kind: "error", error: `After the repo comes "pr opened", "issue opened", "pr review-requested", "pr merged", "pr labeled:<name>" or "ci failed": "github ${repo} pr opened".` };
+    const tail = rest.replace(/^(prs?|pull requests?|pulls?|issues?)\b\s*/i, "");
+    const others = /\bby others\b/i.test(tail);
+    const label = /\blabel:("[^"]+"|\S+)/i.exec(tail)?.[1].replace(/^"|"$/g, "") ?? null;
+    if (/^review[- ]requested\b/i.test(tail)) {
+      if (what !== "pr") return { kind: "error", error: `A review is asked for on a pull request: "github ${repo} pr review-requested".` };
+      return { kind: "github", repo, what, event: "review-requested", others: false, label: null };
+    }
+    if (/^merged\b/i.test(tail)) {
+      if (what !== "pr") return { kind: "error", error: `Only a pull request is merged: "github ${repo} pr merged".` };
+      return { kind: "github", repo, what, event: "merged", others, label };
+    }
+    // "labeled by others" names no label: "by" is the start of "by others" (or "by me").
+    const lab = /^label(?:l)?ed by (others|me)\b/i.test(tail) ? null : /^label(?:l)?ed(?::| )("[^"]+"|\S+)/i.exec(tail);
+    if (lab) return { kind: "github", repo, what, event: "labeled", others, label: lab[1].replace(/^"|"$/g, "") };
+    if (/^label(?:l)?ed\b/i.test(tail)) return { kind: "error", error: `Say which label: "github ${repo} ${what} labeled:bug".` };
+    return { kind: "github", repo, what, event: "opened", others, label };
   }
   const parts = s.split(" ");
   if (parts.length === 5 && parts.every((p) => /^[\d*,/-]+$/.test(p))) {
@@ -186,7 +222,18 @@ export function describe(w) {
     case "board": return `When a task enters ${label(w.column)}`;
     case "agent": return `When an agent ${w.status === "done" ? "finishes" : "needs you"}${w.name ? ` (tabs named ${w.name})` : ""}`;
     case "files": return `When files change in ${w.folder}`;
-    case "github": return `When ${w.what === "pr" ? "a pull request" : "an issue"} is opened in ${w.repo === "*" ? "any repo here" : w.repo}${w.others ? " by someone else" : ""}${w.label ? ` with the label ${w.label}` : ""}`;
+    case "github": {
+      const where = w.repo === "*" ? "any repo here" : w.repo;
+      const item = w.what === "pr" ? "a pull request" : "an issue";
+      const by = w.others ? " by someone else" : "";
+      if (w.event === "review-requested") return `When your review is asked for on a pull request in ${where}`;
+      if (w.event === "merged") return `When a pull request${w.others ? " by someone else" : ""} is merged in ${where}${w.label ? ` with the label ${w.label}` : ""}`;
+      if (w.event === "failed") return `When a workflow fails on the default branch of ${where}`;
+      if (w.event === "labeled") return `When ${item} in ${where}${by} gets the label ${w.label}`;
+      return `When ${item} is opened in ${where}${by}${w.label ? ` with the label ${w.label}` : ""}`;
+    }
+    case "lifecycle": return w.event === "wake" ? "When the computer wakes from sleep" : "When Herdr starts";
+    case "chain": return `When ${w.target} ${w.on === "failed" ? "fails" : "finishes"}`;
     case "link": return "Only when started by hand or called from outside";
     default: return w.error ?? HELP;
   }

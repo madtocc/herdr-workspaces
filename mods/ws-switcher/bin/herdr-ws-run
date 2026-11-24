@@ -1,8 +1,9 @@
 #!/bin/sh
 # Workspace automations from outside Herdr: start one now (a script, a git hook,
-# Raycast, Shortcuts), add one (once at a time, or repeating), turn one off, or
-# list them. Agents started in a workspace through herdr-ws-agent are told about
-# --add, so "tomorrow at 6, check X" becomes an automation.
+# Raycast, Shortcuts), add one (once at a time, or repeating; an agent's task or,
+# with --shell, a script that runs without an agent), turn one off, or list them.
+# Agents started in a workspace through herdr-ws-agent are told about --add, so
+# "tomorrow at 6, check X" becomes an automation.
 #
 #   herdr-ws-run <workspace> <automation> [text...]   start it now; the text fills {{text}}
 #   herdr-ws-run <workspace> <automation> -           the text from stdin
@@ -35,6 +36,8 @@ templates=${XDG_CONFIG_HOME:-$HOME/.config}/herdr-core/templates
 tab=$(printf '\t')
 usage="usage: herdr-ws-run <workspace> <automation> [text... | -]
        herdr-ws-run --add (--at TIME | --when LINE) [--name NAME] [--agent NAME] [--model M] [--effort E] [--folder DIR] [--check CMD] [--card] [--keep] [--workspace ID | --global] prompt... | -
+       herdr-ws-run --add (--at TIME | --when LINE) --shell [bash|zsh|sh] [--terminal] [--name NAME] [--folder DIR] [--check CMD] [--keep] [--workspace ID | --global] script... | -
+         (either: [--timeout DUR] [--notify problems|results|all|none] [--missed run|skip|always] [--dedupe changed|always])
        herdr-ws-run --off <automation> [--workspace ID | --global]
        herdr-ws-run --on <automation> [--at TIME] [--workspace ID | --global]
        herdr-ws-run --list
@@ -84,6 +87,7 @@ help() {
   cat <<'EOF'
 herdr-ws-run: Herdr workspace automations. An automation starts an agent with a
 prompt, in a new tab of the workspace's "Automations" space, while Herdr is open.
+With --shell it runs a script instead, with no agent and no tab.
 
 Have an agent do something later, from a folder in the workspace:
 
@@ -101,7 +105,13 @@ Have an agent do something later, from a folder in the workspace:
                   "weekdays 09:00", "mon,wed 8:30", "0 9 * * 1-5" (cron),
                   "task enters review", "agent done", "files inbox",
                   "github api pr opened", "github * issue opened" (any repo
-                  of the workspace)
+                  of the workspace), "github api pr review-requested",
+                  "github api pr merged", "github api ci failed",
+                  "github api issue labeled:bug" (a label added later too),
+                  "startup" (when Herdr or its runner starts), "wake" (the
+                  Mac wakes), "automation done NAME" / "automation failed
+                  NAME" (after another one here; it gets what that one said
+                  as {{output}} and $HERDR_OUTPUT)
   --name NAME     letters, digits, - and _ (needed with --when)
   --agent NAME    a preset (herdr-ws-agent --presets lists them) or a program;
                   default: the workspace board's agent, else claude
@@ -114,7 +124,7 @@ Have an agent do something later, from a folder in the workspace:
                   minimal to max; pi off to max; agy low to max; opencode,
                   grok and gemini take none
   --folder DIR    where it runs; default: the current folder
-  --check CMD     one line of shell that Herdr runs first, in the folder, each
+  --check CMD     shell that Herdr runs first, in the folder, each
                   time: the agent starts only if it prints something, and gets
                   what it printed as {{check}} (added at the end of the prompt
                   unless the prompt uses {{check}}). Prints nothing: no agent
@@ -127,6 +137,8 @@ Have an agent do something later, from a folder in the workspace:
                   What set it off is in $HERDR_NUMBER, $HERDR_TITLE,
                   $HERDR_TASK_ID, $HERDR_FILES and so on; {{…}} isn't filled
                   in inside it. Try it in the folder first: sh -c 'CMD'
+                  It may be several lines. To start on what it prints
+                  even when that's the same as last time, add --dedupe always.
                   The person has to allow a check you add before it runs:
                   Herdr asks them with a toast as soon as it's added, and
                   the automation doesn't start until they do. Tell them.
@@ -136,6 +148,24 @@ Have an agent do something later, from a folder in the workspace:
                   the agent is done, and History lists the run. Give it when
                   the agent asks the person questions or the run is a
                   conversation: ending a turn with a question looks finished
+  --shell [SH]    no agent: the prompt is a script, run with bash (or zsh,
+                  sh) in the folder, unseen; what it prints goes to History.
+                  Use it when a plain command does the whole job. The run's
+                  fill-ins are $HERDR_EVENT, $HERDR_CHECK, $HERDR_OUTPUT and
+                  so on ({{…}} isn't filled in inside it). The person has to
+                  allow the script before it runs, as a check. Tell them.
+  --terminal      (with --shell) run it in a tab of the Automations space
+  --timeout DUR   stop a run that goes on longer: 30s, 2m, 15m, 1h or none
+                  (default: 2m for a script, none for an agent)
+  --notify LEVEL  what it tells the person: problems (only when it fails or
+                  times out), results (and when it finishes with something to
+                  say), all (and when it starts) or none. Default: problems
+                  for a script, results for an agent
+  --missed POLICY a time missed while Herdr was closed or the Mac slept: run
+                  (once, if it was within 12 hours: the default), skip (never
+                  late) or always (once, however late)
+  --dedupe POLICY changed (the default: on a repeating time, a check that
+                  prints the same as last time starts nothing) or always
   --workspace ID  default: the workspace holding the current folder
   --global        for every workspace, not this one: it runs in each, in that
                   workspace's root (or --folder, from the root), unless the
@@ -144,6 +174,7 @@ Have an agent do something later, from a folder in the workspace:
   prompt          the agent's whole task, or - to read it from stdin. The agent
                   starts fresh, without this conversation: say everything it
                   needs (what to check, where, what to do, how to report).
+                  With --shell: the script, or - to read it from stdin.
 
   herdr-ws-run --off NAME       turn one off (the file stays); one that's for
                                 every workspace goes off in this one only,
@@ -289,6 +320,12 @@ resolve() {
 
 # A front matter value in double quotes, on one line.
 q() { printf '"%s"' "$(printf '%s' "$1" | tr '\r\n' '  ' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"; }
+# Key $1 with the lines of $2 as a YAML block ("check: |-", each line two spaces in; a first line
+# that starts with a space says its indent, "|2-"), as autofacts.js reads and writes it.
+block() {
+  case $2 in [\ \	]*) echo "$1: |2-" ;; *) echo "$1: |-" ;; esac
+  printf '%s\n' "$2" | awk '{ if ($0 ~ /[^ \t]/) print "  " $0; else print "" }'
+}
 
 # The global automation file $1 with workspace $2 in its off: line ($3 = add) or out of it.
 set_here() {
@@ -333,16 +370,24 @@ if [ "${1:-}" = --add ] || [ "${1:-}" = --off ] || [ "${1:-}" = --on ]; then
   mode=${1#--}
   shift
   at= when= name= agent= model= effort= folder= card= keep= wsid= desc= auto= check= glob=
+  shell= terminal= timeout= notify= missed= dedupe=
   while [ $# -gt 0 ]; do
     case $1 in
-      --at|--when|--name|--agent|--model|--effort|--folder|--workspace|--description|--check)
+      --at|--when|--name|--agent|--model|--effort|--folder|--workspace|--description|--check|--timeout|--notify|--missed|--dedupe)
         [ $# -ge 2 ] || die "$1 needs a value"
         case $1 in
           --at) at=$2 ;; --when) when=$2 ;; --name) name=$2 ;; --agent) agent=$2 ;;
           --model) model=$2 ;; --effort) effort=$2 ;;
           --folder) folder=$2 ;; --workspace) wsid=$2 ;; --description) desc=$2 ;; --check) check=$2 ;;
+          --timeout) timeout=$2 ;; --notify) notify=$2 ;; --missed) missed=$2 ;; --dedupe) dedupe=$2 ;;
         esac
         shift 2 ;;
+      --shell)
+        shell=bash
+        case ${2:-} in bash|zsh|sh) shell=$2; shift ;; esac
+        shift ;;
+      --shell=*) shell=${1#--shell=}; shift ;;
+      --terminal) terminal=1; shift ;;
       --card) card=1; shift ;;
       --keep) keep=1; shift ;;
       --global) glob=1; shift ;;
@@ -439,12 +484,31 @@ $usage" ;;
     exit 0
   fi
 
-  case $check in *"
-"*) die "a check is one line: put a longer one in a script and name that" ;; esac
+  if [ -n "$shell" ]; then
+    case $shell in bash|zsh|sh) ;; *) die "--shell is bash, zsh or sh, not \"$shell\"" ;; esac
+    [ -z "$agent$model$effort" ] || die "a --shell automation runs its script without an agent: leave out --agent, --model and --effort"
+    [ -z "$card" ] || die "a --shell automation has no agent to give a card to: leave out --card"
+  else
+    [ -z "$terminal" ] || die "--terminal is for a --shell automation (a script shown in a tab)"
+  fi
+  case $timeout in
+    ""|none|off|0) ;;
+    *) printf '%s' "$timeout" | grep -Eq '^([0-9]+ *(s|sec|secs|seconds?|m|min|mins|minutes?|h|hr|hrs|hours?) *)+$' ||
+         die "--timeout is a length of time: 30s, 2m, 15m, 1h or none" ;;
+  esac
+  case $notify in ""|problems|results|all|none) ;; *) die "--notify is problems, results, all or none" ;; esac
+  case $missed in ""|run|skip|always) ;; *) die "--missed is run, skip or always" ;; esac
+  case $dedupe in ""|changed|always) ;; *) die "--dedupe is changed or always" ;; esac
+  # A check over several lines: no blank lines at its ends, no carriage returns.
+  check=$(printf '%s\n' "$check" | tr -d '\r' | awk 'NF { last = NR } { line[NR] = $0 } END { for (i = 1; i <= last; i++) if (started || line[i] ~ /[^ \t]/) { started = 1; print line[i] } }')
   [ -n "$at$when" ] || die "say when: --at TIME (once) or --when LINE (repeating); --help has examples"
   [ -z "$at" ] || [ -z "$when" ] || die "give --at or --when, not both"
   if [ $# -eq 1 ] && [ "$1" = - ]; then prompt=$(cat); else prompt=$*; fi
-  [ -n "$(printf '%s' "$prompt" | tr -d ' \t\r\n')" ] || die "what should the agent do? Give the prompt last, or - to read it from stdin"
+  if [ -n "$shell" ]; then
+    [ -n "$(printf '%s' "$prompt" | tr -d ' \t\r\n')" ] || die "what should the script do? Give it last, or - to read it from stdin"
+  else
+    [ -n "$(printf '%s' "$prompt" | tr -d ' \t\r\n')" ] || die "what should the agent do? Give the prompt last, or - to read it from stdin"
+  fi
 
   if [ -n "$at" ]; then
     set +e
@@ -515,7 +579,21 @@ $usage" ;;
     [ -z "$model" ] || echo "model: $model"
     [ -z "$effort" ] || echo "effort: $effort"
     [ -z "$rel" ] || echo "folder: $(q "$rel")"
-    [ -z "$check" ] || echo "check: $(q "$check")"
+    if [ -n "$shell" ]; then
+      echo "run: shell"
+      echo "shell: $shell"
+      [ -z "$terminal" ] || echo "terminal: true"
+    fi
+    [ -z "$timeout" ] || echo "timeout: $timeout"
+    [ -z "$notify" ] || echo "notify: $notify"
+    [ -z "$missed" ] || echo "missed: $missed"
+    [ -z "$dedupe" ] || echo "dedupe: $dedupe"
+    case $check in
+      "") ;;
+      *"
+"*) block check "$check" ;;
+      *) echo "check: $(q "$check")" ;;
+    esac
     [ -z "$card" ] || echo "card: true"
     [ -z "$keep" ] || echo "keep: true"
     echo ---
@@ -531,15 +609,26 @@ $usage" ;;
   fi
   knobs=$model
   [ -z "$effort" ] || knobs="${knobs:+$knobs, }$effort effort"
-  if [ -n "$glob" ]; then
+  if [ -n "$shell" ]; then
+    seen="unseen (what it prints goes to History)"
+    [ -z "$terminal" ] || seen="in a tab of the workspace's Automations space"
+    if [ -n "$glob" ]; then echo "In each workspace it runs its $shell script in ${rel:-the root}, $seen, with no agent. A workspace's own automation called \"$name\" replaces it there."
+    else echo "It runs its $shell script in ${rel:-the workspace root}, $seen, with no agent."; fi
+  elif [ -n "$glob" ]; then
     who=$agent
     [ -n "$who" ] || who="that board's agent"
     echo "In each workspace it starts $who${knobs:+ ($knobs)} in ${rel:-the root}, in a tab of the workspace's Automations space. A workspace's own automation called \"$name\" replaces it there."
   else
     echo "It starts ${agent:-the default agent}${knobs:+ ($knobs)} in ${rel:-the workspace root}, in a tab of the workspace's Automations space."
   fi
-  [ -z "$check" ] || echo "Each time, Herdr first runs its check there ($check): the agent starts only if that prints something.
-The check needs the person's OK before it runs: Herdr asks them with a toast now, and Automations has Allow this check. Until then this automation doesn't start. Tell them."
+  what="the agent starts"
+  [ -z "$shell" ] || what="the script runs"
+  [ -z "$check" ] || echo "Each time, Herdr first runs its check there: $what only if that prints something."
+  if [ -n "$shell" ]; then
+    echo "The script needs the person's OK before it runs: Herdr asks them with a toast now, and Automations has Allow this script${check:+ (and Allow this check)}. Until then this automation doesn't start. Tell them."
+  elif [ -n "$check" ]; then
+    echo "The check needs the person's OK before it runs: Herdr asks them with a toast now, and Automations has Allow this check. Until then this automation doesn't start. Tell them."
+  fi
   echo "File: $file"
   if [ -n "$glob" ]; then echo "To cancel: herdr-ws-run --off $name --global"
   else echo "To cancel: herdr-ws-run --off $name --workspace $wsid"; fi

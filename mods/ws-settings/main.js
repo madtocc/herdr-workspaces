@@ -1,6 +1,6 @@
 // GENERATED: don't edit. ws-settings is Herdr's Settings window (its bundled mod frame-settings,
 // frame/settings/main.js) with the Workspaces package's Features, Agents and Experimental sections (extras.js).
-// Written by the ws-switcher mod (settingsbuild.js) from Herdr 0.1.17's file, source a8e6091a.
+// Written by the ws-switcher mod (settingsbuild.js) from Herdr 0.1.18's file, source 06934205.
 // Patches: icons by full path, Features, Agents and Experimental after Herdr's sections, a section asked through shared state, their pages, their init.
 import { packagePage, packageInit, askedSection, PACKAGE_SECTIONS } from "./extras.js";
 // App-owned settings mod. Writes changes immediately; no Save step.
@@ -550,7 +550,7 @@ export default class Settings extends View {
         this.row(
           t,
           "Terminal font weight",
-          own("font_weight", s.font_weight, 500) ? "This layout sets its own; yours shows in the others." : "Bold text stays at 700.",
+          own("font_weight", s.font_weight, 500) ? "This layout sets its own; yours shows in the others." : `Bold text is ${s.font_weight_bold ?? 700} (font_weight_bold in settings.json).`,
           this.stepper(t, "st-font_weight", `${s.font_weight}`, (_e, cx) => step("font_weight", s.font_weight, -100, 100, 900, cx), (_e, cx) => step("font_weight", s.font_weight, 100, 100, 900, cx)),
         ),
       )

@@ -8,7 +8,7 @@
 // app's layout document (the spaces and tabs by name). Which workspace a space
 // is in is the switcher's `workspaces.assigned`, read from the app's shared.json.
 
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import net from "node:net";
 import * as nfs from "node:fs/promises";
 import { watch, readFileSync, statSync } from "node:fs";
@@ -17,6 +17,7 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { inQuietHours } from "../autofacts.js";
 
 export const home = () => os.homedir();
 export const appHome = () => process.env.HERDR_APP_HOME || `${home()}/.config/herdr-app`;
@@ -33,15 +34,58 @@ export const hex = (n) => randomBytes(Math.ceil(n / 2)).toString("hex").slice(0,
 
 // --- programs and files ---
 
+// As the app's exec: { code, stdout, stderr } once it ends, rejected when it can't start, prints over
+// MAX_BUFFER or takes over its timeout. Each call is a process group of its own, so on a timeout the
+// whole group ends (TERM, then KILL KILL_GRACE later): what a script started (a `sleep`, a test
+// runner's workers) doesn't run on. A timeout's error has `timedOut: true` and what was printed until
+// then (`stdout`, `stderr`), as does one for too much output (`tooMuch: true`), so neither is lost.
+const MAX_BUFFER = 64 * 1024 * 1024;
+const KILL_GRACE = 2000;
 export function exec(command, args = [], options = {}) {
   return new Promise((resolve, reject) => {
     const timeout = Math.min(options.timeout ?? 30000, 600000);
-    execFile(command, args, { cwd: options.cwd, timeout, maxBuffer: 64 * 1024 * 1024, encoding: "utf8" }, (error, stdout, stderr) => {
-      if (!error) return resolve({ code: 0, stdout, stderr });
-      if (error.killed) return reject(new Error(`${command} took longer than ${Math.round(timeout / 1000)}s`));
-      if (typeof error.code === "number") return resolve({ code: error.code, stdout: stdout ?? "", stderr: stderr ?? "" });
-      reject(new Error(error.code === "ENOENT" ? `${command} not found` : String(error.message)));
+    let child;
+    try { child = spawn(command, args, { cwd: options.cwd, detached: true, stdio: ["ignore", "pipe", "pipe"] }); }
+    catch (e) { reject(new Error(String(e?.message ?? e))); return; }
+    const out = [], err = [];
+    let size = 0, timedOut = false, tooMuch = false, settled = false, timer = null, grace = null;
+    const text = (list) => Buffer.concat(list).toString("utf8");
+    const stopGroup = () => {
+      try { process.kill(-child.pid, "SIGTERM"); } catch {}
+      grace = setTimeout(() => { try { process.kill(-child.pid, "SIGKILL"); } catch {} finish(null, "SIGKILL"); }, KILL_GRACE);
+    };
+    const finish = (code, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      const stdout = text(out), stderr = text(err);
+      if (timedOut || tooMuch) {
+        const e = new Error(timedOut ? `${command} took longer than ${Math.round(timeout / 1000)}s` : `${command} printed over ${MAX_BUFFER / 1048576} MB`);
+        Object.assign(e, { timedOut, tooMuch, code: null, stdout, stderr });
+        // The group's last ones are sent KILL once its grace is up, whatever happens here.
+        reject(e);
+        return;
+      }
+      clearTimeout(grace);
+      if (typeof code === "number") resolve({ code, stdout, stderr });
+      else reject(Object.assign(new Error(`${command} was stopped (${signal ?? "signal"})`), { code: null, stdout, stderr }));
+    };
+    const take = (list) => (chunk) => {
+      if (tooMuch || timedOut) return;
+      if (size + chunk.length > MAX_BUFFER) { tooMuch = true; stopGroup(); return; }
+      size += chunk.length;
+      list.push(chunk);
+    };
+    child.stdout.on("data", take(out));
+    child.stderr.on("data", take(err));
+    child.on("error", (e) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(new Error(e?.code === "ENOENT" ? `${command} not found` : String(e?.message ?? e)));
     });
+    child.on("close", (code, signal) => finish(code, signal));
+    timer = setTimeout(() => { timedOut = true; stopGroup(); }, timeout);
   });
 }
 
@@ -57,7 +101,8 @@ export async function writeTextFile(file, text, expected) {
   if (expected !== undefined && (await readTextFile(file)) !== expected) throw new Error(`${file} changed`);
   await nfs.mkdir(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.${hex(6)}.tmp`;
-  await nfs.writeFile(tmp, text);
+  // A shell run's log is yours only from the start: a script may print a token.
+  await nfs.writeFile(tmp, text, file.startsWith(`${runnerDir()}/logs/`) ? { mode: 0o600 } : undefined);
   await nfs.rename(tmp, file);
   return null;
 }
@@ -139,11 +184,16 @@ export function notify(note) {
   })().catch((e) => console.error("note:", e?.message ?? e));
 }
 
-// The same words and the same click as the toast, with the system's sound: Herdr isn't there to play its own.
+// Settings > Automations' quiet hours ("22:00-08:00", or null), as runner/main.js last read them.
+let quietHours = null;
+export const setQuietHours = (value) => { quietHours = value ?? null; };
+
+// The same words and the same click as the toast, with the system's sound: Herdr isn't there to play
+// its own. In the quiet hours, without a sound.
 async function desktop(file, note) {
   try { await nfs.access(file); } catch { return; } // the window took it
   if (!note?.title) return;
-  const args = ["--sound"];
+  const args = inQuietHours(quietHours) ? [] : ["--sound"];
   const place = note.action?.args?.terminal ?? note.action?.args?.id;
   if (place) args.push("--group", String(place));
   if (note.action?.name) args.push("--do", String(note.action.name), JSON.stringify(note.action.args ?? {}));
@@ -153,6 +203,45 @@ async function desktop(file, note) {
 }
 
 // --- herdr-core: one `hc connect` kept open, asked every second ---
+// Only while herdr-core is running: `hc` starts it when it isn't, and a core started at login
+// would bring back the agents it resumes. So a runner with only scripts and checks to run
+// (started by launchd at login, say) leaves it asleep until an agent run starts it (`hc run`).
+
+// Where herdr-core listens, as hc finds it (herdr-core's paths.rs): HC_SOCKET, else the config's
+// `socket`, else $XDG_RUNTIME_DIR/herdr-core/<session>.sock, else beside its state:
+// ~/.local/state/herdr-core/<session>/<session>.sock. The session is HC_SESSION, else "default".
+export function coreSocketPath() {
+  if (process.env.HC_SOCKET) return process.env.HC_SOCKET;
+  const session = (process.env.HC_SESSION || "default").trim() || "default";
+  try {
+    const conf = readFileSync(`${process.env.XDG_CONFIG_HOME || `${home()}/.config`}/herdr-core/config.toml`, "utf8");
+    const m = /^\s*socket\s*=\s*["']([^"']+)["']/m.exec(conf);
+    if (m) return m[1];
+  } catch {}
+  const runtime = process.env.XDG_RUNTIME_DIR || (() => { try { const d = `/run/user/${process.getuid()}`; return statSync(d).isDirectory() ? d : null; } catch { return null; } })();
+  if (runtime) return `${runtime}/herdr-core/${session}.sock`;
+  return `${process.env.XDG_STATE_HOME || `${home()}/.local/state`}/herdr-core/${session}/${session}.sock`;
+}
+
+// herdr-core answers on its socket (a socket file left by one that stopped doesn't).
+let coreSeen = { at: 0, up: false };
+async function coreUp() {
+  if (Date.now() - coreSeen.at < 3000) return coreSeen.up;
+  const at = coreSocketPath();
+  let up = false;
+  try { statSync(at); up = await knock(at); } catch {}
+  coreSeen = { at: Date.now(), up };
+  return up;
+}
+function knock(at) {
+  return new Promise((resolve) => {
+    const s = net.connect(at);
+    const done = (v) => { clearTimeout(t); s.destroy(); resolve(v); };
+    const t = setTimeout(() => done(false), 1000);
+    s.on("connect", () => done(true));
+    s.on("error", () => done(false));
+  });
+}
 
 const core = { child: null, next: 1, calls: new Map(), terminals: [], doc: { spaces: [] }, docAt: 0, view: null, open: false, viewAt: 0 };
 
@@ -194,6 +283,8 @@ export function call(method, params = {}) {
 // whether the window is open and what it shows.
 export async function refresh(docNow = false) {
   if (Date.now() - core.viewAt > 3000) { core.viewAt = Date.now(); await look(); }
+  // No herdr-core: no terminals and no spaces, and nothing that would start it.
+  if (!core.child && !(await coreUp())) { core.terminals = []; core.doc = { spaces: [] }; return; }
   const r = await call("terminal.list", {});
   core.terminals = r?.terminals ?? [];
   if (docNow || Date.now() - core.docAt > 5000) {

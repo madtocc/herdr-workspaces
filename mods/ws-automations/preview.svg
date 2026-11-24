@@ -102,9 +102,9 @@
   <circle cx="171.5" cy="245" r="3.5" fill="#57ab5a"/>
   <text x="184" y="242" fill="#e8e9eb" font-size="13">issue-to-pr</text><text x="184" y="258" fill="#7d8089" font-size="11">When an issue is opened in…</text>
   <rect x="372" y="237" width="28" height="16" rx="8" fill="#8ab4f8"/><circle cx="392" cy="245" r="5.5" fill="#17181b"/>
-  <circle cx="171.5" cy="291" r="3.5" fill="#57ab5a"/>
-  <text x="184" y="288" fill="#e8e9eb" font-size="13">morning-review</text><text x="184" y="304" fill="#7d8089" font-size="11">Weekdays at 09:00</text>
-  <text x="364" y="295" fill="#7d8089" font-size="11" text-anchor="end">09:00</text>
+  <g transform="translate(165 284.5) scale(0.5417)" fill="none" stroke="#57ab5a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19h8"/><path d="m4 17 6-6-6-6"/></g>
+  <text x="184" y="288" fill="#e8e9eb" font-size="13">fetch-repos</text><text x="184" y="304" fill="#7d8089" font-size="11">Weekdays at 08:55</text>
+  <text x="364" y="295" fill="#7d8089" font-size="11" text-anchor="end">08:55</text>
   <rect x="372" y="283" width="28" height="16" rx="8" fill="#8ab4f8"/><circle cx="392" cy="291" r="5.5" fill="#17181b"/>
   <circle cx="171.5" cy="337" r="3.5" fill="#7d8089"/>
   <text x="184" y="334" fill="#e8e9eb" font-size="13">weekly-dependencies</text><text x="184" y="350" fill="#7d8089" font-size="11">Mondays at 09:30</text>
@@ -125,10 +125,10 @@
   <rect x="1060.08" y="115" width="41.92" height="24" rx="12" fill="none" stroke="#2f3137"/><text x="1071.08" y="131.32" fill="#a5a8ae" font-size="12">Off</text>
   <rect x="1018.4" y="115" width="35.68" height="24" rx="12" fill="#26272c" stroke="#8ab4f8"/><text x="1029.4" y="131.32" fill="#e8e9eb" font-size="12">On</text>
   <rect x="1019.75" y="152" width="82.25" height="34" rx="6" fill="none" stroke="#2f3137"/><text x="1033.75" y="173.5" fill="#a5a8ae" font-size="12.5">Change it</text>
-  <rect x="446" y="152" width="563.75" height="34" rx="7" fill="#17181b" stroke="#2f3137"/><text x="458" y="173.5" fill="#7d8089" font-size="12.5">Change it in words: make it hourly, only on Mondays, use opus…</text>
+  <rect x="446" y="152" width="563.75" height="34" rx="7" fill="#17181b" stroke="#2f3137"/><text x="458" y="173.5" fill="#7d8089" font-size="12.5">Change it in words: make it hourly, only on Mondays, use opus, run it as a script…</text>
   <text x="446" y="214" fill="#7d8089" font-size="11.5">What it does</text>
   <text x="446" y="238" fill="#e8e9eb" font-size="13">When a pull request is opened in any repo here by someone else · looks every 2 minutes</text>
-  <text x="446" y="259" fill="#a5a8ae" font-size="12">Starts reviewer (claude) on sonnet, in its repo's folder.</text>
+  <text x="446" y="259" fill="#a5a8ae" font-size="12">Starts reviewer (claude) on sonnet, in its repo's folder · notifies on results.</text>
   <text x="446" y="289" fill="#7d8089" font-size="11.5">Prompt: the agent's task</text>
   <rect x="446" y="301" width="656" height="150" rx="7" fill="#17181b" stroke="#2f3137"/>
   <text x="458" y="325" fill="#e8e9eb" font-size="13">A pull request was just opened:</text>
@@ -139,7 +139,7 @@
   <text x="458" y="425" fill="#e8e9eb" font-size="13">does, run the tests, and write what you would change. Don't push.</text>
   <text x="446" y="471" fill="#7d8089" font-size="11.5">Fill-ins: {{pr}} (number, title, author, link and description), {{number}} {{title}} {{url}} {{author}} {{repo}}</text>
   <rect x="446" y="493" width="656" height="1" rx="0" fill="#303237"/>
-  <g transform="translate(446 508) scale(0.5417)" fill="none" stroke="#a5a8ae" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6" /></g><text x="466" y="519" fill="#e8e9eb" font-size="12.5" font-weight="500">Details</text><text x="522" y="519" fill="#7d8089" font-size="11.5">when, agent, model, folder, check</text>
+  <g transform="translate(446 508) scale(0.5417)" fill="none" stroke="#a5a8ae" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6" /></g><text x="466" y="519" fill="#e8e9eb" font-size="12.5" font-weight="500">Details</text><text x="522" y="519" fill="#7d8089" font-size="11.5">runs as, when, agent, model, folder, check, timeout, notifications</text>
   <text x="446" y="553" fill="#7d8089" font-size="11.5">Recent runs</text>
   <text x="446" y="584" fill="#7d8089" font-size="12">Today 14:02</text><text x="566" y="584" fill="#e8e9eb" font-size="12.5">web #31 opened by dana</text><text x="952" y="584" fill="#d9a441" font-size="12" text-anchor="end">working</text>
   <rect x="1055.48" y="569" width="46.52" height="24" rx="6" fill="none" stroke="#2f3137"/><text x="1064.48" y="585.14" fill="#e8e9eb" font-size="11.5">Go to</text>
@@ -155,5 +155,6 @@
   <text x="521.5" y="732.5" fill="#7d8089" font-size="11.5">~/.herdr/workspaces/acme/automations/review-new-prs.md</text>
   <rect x="1046.75" y="714" width="55.25" height="28" rx="6" fill="#ececed"/><text x="1060.75" y="732.5" fill="#17181b" font-size="12.5" font-weight="500">Save</text>
   <rect x="968.25" y="714" width="70.5" height="28" rx="6" fill="none" stroke="#2f3137"/><text x="980.25" y="732.5" fill="#e8e9eb" font-size="12.5">Run now</text>
+  <rect x="893.25" y="714" width="67" height="28" rx="6" fill="none" stroke="#2f3137"/><text x="905.25" y="732.5" fill="#e8e9eb" font-size="12.5">Preview</text>
   </g>
 </svg>

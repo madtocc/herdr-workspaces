@@ -479,10 +479,24 @@ export function compactionsTip(n, last) {
 // ended, its outcome line says how it went; without one, a report says done. A run
 // asked for that line (`reports`) that ended its turn without one is waiting on an
 // answer, while its tab is open.
+// A shell automation's run (`kind: "shell"`) says how its script ended: running, timed out,
+// "failed · exit N", nothing to do or "done · 1 s" (a script shown in a tab is followed like an
+// agent's until it ends). A run waiting for a parallel slot is "queued"; an agent's stopped
+// by its timeout is "timed out".
 export function runState(r, now = {}) {
   const { status = null, live = false, open = false, found = false, said = null, outcome = null } = now;
   const quiet = (word, tone = "dim") => ({ word, tone, quiet: true, open: false });
   const times = r.times > 1 ? ` ×${r.times}` : "";
+  const plain = (word, tone) => ({ word, tone, quiet: false, open: false });
+  if (r.status === "queued") return plain("queued", "dim");
+  if (r.kind === "shell" && (r.status === "running" || (r.status === "started" && r.closed))) {
+    if (r.status === "running") return plain("running", "working");
+    if (r.timedOut) return plain("timed out", "blocked");
+    if (r.outcome === "failed") return plain(r.exitCode != null ? `failed · exit ${r.exitCode}` : "failed", "blocked");
+    if (r.outcome === "nothing to do") return plain("nothing to do", "dim");
+    return plain(r.durationMs != null ? `done · ${took(r.durationMs)}` : "done", "muted");
+  }
+  if (r.status === "started" && r.timedOut) return plain("timed out", "blocked");
   switch (r.status) {
     case "started": break;
     case "failed": return r.check ? quiet(`check failed${times}`, "blocked") : { word: "failed to start", tone: "blocked", quiet: false, open: false };
@@ -603,8 +617,10 @@ export function clock(ms) {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-// How long something took, in words: "40 s", "1 min 33 s", "25 min", "2 h 5 min".
+// How long something took, in words: "<1 s", "40 s", "1 min 33 s", "25 min", "2 h 5 min".
 export function took(ms) {
+  const n = Number(ms);
+  if (Number.isFinite(n) && n >= 0 && n < 1000) return "<1 s"; // a quick script: not "0 s"
   const s = Math.max(0, Math.round((Number(ms) || 0) / 1000));
   if (s < 60) return `${s} s`;
   const m = Math.floor(s / 60);
@@ -616,10 +632,13 @@ export function took(ms) {
 // When a run ran, for its opened row: "Yesterday 21:15, for 1 min 33 s", "Today 10:41,
 // running for 3 min", or the start alone. Its end: when its conversation was last
 // written (`updated`, when it's its own: `found`), else when the runner closed its tab.
+// A script's run says how long it took (`durationMs`), else from its start to `finishedAt`.
 export function ranText(r, st, s, now = Date.now()) {
   const began = `${dayLabel(r.at, now)} ${clock(r.at)}`;
+  if (r.status === "running" || (r.status === "started" && st?.word === "running")) return `${began}, running for ${took(now - r.at)}`;
   if (r.status !== "started") return began;
-  if (st.word === "running") return `${began}, running for ${took(now - r.at)}`;
+  if (r.durationMs != null) return `${began}, for ${took(r.durationMs)}`;
+  if (r.finishedAt && r.finishedAt > r.at) return `${began}, for ${took(r.finishedAt - r.at)}`;
   const end = s && !s.stub && s.updated > r.at ? s.updated : r.closed;
   return end && end > r.at ? `${began}, for ${took(end - r.at)}` : began;
 }

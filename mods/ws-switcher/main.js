@@ -88,9 +88,11 @@
 // the window (background()): it starts it when it isn't running, copies what it
 // publishes (~/.herdr/runner/state.json) into shared state, shows its notes as
 // toasts, names the tabs and spaces of the runs it started, and hands it the
-// screen's Run now and allowed checks as files in the inbox.
-//   workspaces.runner      { on, running }: the background runner, for the screens
-//   workspaces.runner.set  { on, at }: a screen asks to turn it on or off
+// screen's Run now (with its text) and allowed checks and scripts as files in the inbox.
+//   workspaces.runner      { on, running, via, pid, login, plist }: the background runner, for the
+//                        screens: via "launchd" (started at login) or "hc" (a terminal herdr-core holds),
+//                        login: it starts at login (its LaunchAgent file, plist, is there)
+//   workspaces.runner.set  { on?, login?, at }: a screen asks to turn it, or Start at login, on or off
 // Not this block's: the package's own settings, ~/.herdr/settings.jsonc, as ws-agents
 // reads it (and our Settings window, ws-settings, sets it when you change one; settingsfacts.js).
 //   workspaces.settings    { experimental: { <key>: true|false }, features: { <key>: true|false } }
@@ -126,7 +128,7 @@ import { Scratch, isScratch, scratchDef, scratchLabel } from "./scratch.js";
 import { dir, expand, tilde, under, base, subdirs, loadDefs, loadOrder, orderFile, templatesDir, loadPresetDir, presetsFor, presetLaunch, withTask, notesOnly } from "./defs.js";
 import { arrange, move as moveRow, groupOf, groupName, renamed, withGroup, orderText } from "./arrange.js";
 import { buildSettings, hash, SOURCE as SETTINGS_SOURCE, TARGET as SETTINGS_TARGET } from "./settingsbuild.js";
-import { SETTINGS_FILE, parseSettings } from "./settingsfacts.js";
+import { SETTINGS_FILE, parseSettings, automationSetting } from "./settingsfacts.js";
 import { openIn, splitAt, follow as followLedger, wantsClose, trusted, drainAsks } from "./beside.js";
 import { Features, flips, FOLLOWED } from "./featuregate.js";
 import { NotifLog } from "./notiflog.js";
@@ -407,6 +409,8 @@ export default class Workspaces extends View {
     this.hooks = {
       presetsFor, presetLaunch, withTask,
       featureOn: (key) => this.features.on(key),
+      // Settings > Automations: ws-agents' copy of the file in shared state, else this copy's own read.
+      automationSetting: (key) => automationSetting(shared("workspaces.settings")?.automations ? shared("workspaces.settings") : this.settings, key),
       claim: (space, ws) => {
         this.known.add(space);
         setShared("workspaces.assigned", { ...(shared("workspaces.assigned") ?? {}), [space]: ws });
@@ -446,7 +450,8 @@ export default class Workspaces extends View {
     this.reload(cx);
     cx.spawn(async (cx) => {
       const text = await readTextFile(`${home()}/${SETTINGS_FILE}`).catch(() => null);
-      this.features.fromFile(parseSettings(text), shared("workspaces.settings"));
+      this.settings = parseSettings(text);
+      this.features.fromFile(this.settings, shared("workspaces.settings"));
       this.followFeatures();
       if (this.mine()) this.reload(cx); // the runners load once the answer is known
     });
@@ -673,7 +678,10 @@ export default class Workspaces extends View {
         }
         await this.notes();
         this.adopt();
-        const say = { on, running };
+        // Start at login: its LaunchAgent file (herdr-ws-runner --login on writes it).
+        const plist = `${home()}/Library/LaunchAgents/dev.herdr.ws-runner.plist`;
+        const login = window()?.platform === "macos" && (await readTextFile(plist).catch(() => null)) !== null;
+        const say = { on, running, via: running ? alive.via ?? "hc" : null, pid: running ? alive.pid ?? null : null, login, plist };
         if (JSON.stringify(say) !== JSON.stringify(shared("workspaces.runner") ?? null)) setShared("workspaces.runner", say);
       } finally {
         this.bgBusy = false;
@@ -1185,21 +1193,30 @@ export default class Workspaces extends View {
       this.runAsked = runAsk?.at;
       const recent = runAsk && Date.now() - runAsk.at < 15000;
       const a = recent && this.mine() && this.runner?.find(runAsk.workspace, runAsk.name);
-      if (a) this.runner.fire(cx, runAsk.workspace, a, "Started by hand", {}, { manual: true });
-      else if (recent && this.bg.owner) this.pass(cx, "run", `${runAsk.workspace}\n${runAsk.name}\n${Date.now()} hand\n`);
+      // What Run now's box says: {{text}} (a link automation's input).
+      const body = String(runAsk?.text ?? "").trim();
+      if (a) this.runner.fire(cx, runAsk.workspace, a, "Started by hand", body ? { text: body, event: body } : {}, { manual: true });
+      else if (recent && this.bg.owner) this.pass(cx, "run", `${runAsk.workspace}\n${runAsk.name}\n${Date.now()} hand\n${body}`);
     }
     // An allowed check: this copy's runner reads the request itself; the background one gets a file.
     const allowAsk = shared("workspaces.automation.allow") ?? null;
     if (allowAsk?.at !== this.allowAsked) {
       this.allowAsked = allowAsk?.at;
-      if (allowAsk && Date.now() - allowAsk.at < 15000 && this.bg.owner) this.pass(cx, "allow", JSON.stringify({ workspace: allowAsk.workspace, name: allowAsk.name, check: allowAsk.check }));
+      if (allowAsk && Date.now() - allowAsk.at < 15000 && this.bg.owner) this.pass(cx, "allow", JSON.stringify({ workspace: allowAsk.workspace, name: allowAsk.name, check: allowAsk.check, script: allowAsk.script }));
     }
     const setAsk = shared("workspaces.runner.set") ?? null;
     if (setAsk?.at !== this.setAsked) {
       this.setAsked = setAsk?.at;
+      // { on }: Keep running; { login }: Start at login (which turns it on too). Both: login first.
       if (setAsk && Date.now() - setAsk.at < 15000) cx.spawn(async (cx) => {
-        const r = await exec(`${appHome()}/mods/ws-switcher/bin/herdr-ws-runner`, [setAsk.on ? "--on" : "--off"], { timeout: 60000 }).catch((e) => ({ code: 1, stderr: String(e?.message ?? e) }));
-        if (r.code !== 0) notify({ title: `Couldn't turn the background runner ${setAsk.on ? "on" : "off"}`, body: String(r.stderr ?? "").trim().split("\n").pop() || "herdr-ws-runner gave no reason.", level: "error" });
+        const bin = `${appHome()}/mods/ws-switcher/bin/herdr-ws-runner`;
+        const steps = [];
+        if (typeof setAsk.login === "boolean") steps.push({ args: ["--login", setAsk.login ? "on" : "off"], what: `Start at login ${setAsk.login ? "on" : "off"}` });
+        if (typeof setAsk.on === "boolean" && !(setAsk.on && setAsk.login === true)) steps.push({ args: [setAsk.on ? "--on" : "--off"], what: `the background runner ${setAsk.on ? "on" : "off"}` });
+        for (const st of steps) {
+          const r = await exec(bin, st.args, { timeout: 60000 }).catch((e) => ({ code: 1, stderr: String(e?.message ?? e) }));
+          if (r.code !== 0) { notify({ title: `Couldn't turn ${st.what}`, body: String(r.stderr ?? "").trim().split("\n").pop() || "herdr-ws-runner gave no reason.", level: "error" }); break; }
+        }
         this.bg.tries = 0; this.bg.tried = 0; this.bg.failed = false;
         this.background(cx);
       });

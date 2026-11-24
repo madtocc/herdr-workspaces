@@ -14,6 +14,11 @@
 //   notes/*.json      toasts for the window, shown now or when Herdr next opens
 //   automations.json, prs.json, github.json   what they remember (see Store)
 // Requests come as files in ~/.herdr/workspaces/.inbox (automations.js).
+// It runs either as a terminal herdr-core holds (`hc run`, via "hc" in alive) or straight under
+// launchd at login (herdr-ws-runner --login on, via "launchd"): then herdr-core isn't started until
+// an agent run needs it (runner/herdr.js), so scripts and checks run with nothing else open.
+// Settings > Automations (the same file): how many agent runs go at once, and the quiet hours
+// in which its desktop notifications make no sound.
 // Settings > Features (~/.herdr/settings.jsonc, read here every 2s: this process has no
 // shared state of the window's): Board off, no pull request or GitHub board item follow-through;
 // Automations off, no runs (automations.js). Each change is one line in the log.
@@ -27,13 +32,14 @@ import * as nfs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  home, exec, readTextFile, writeTextFile, watchFolder, shared, setShared, onShared, refresh, terminals, spaces, runnerDir, hex, windowOpen,
+  home, exec, readTextFile, writeTextFile, watchFolder, shared, setShared, onShared, refresh, terminals, spaces, runnerDir, hex, windowOpen, setQuietHours,
 } from "./herdr.js";
 import { Runner, globalDir } from "../automations.js";
+import { terminalOf } from "../runfacts.js";
 import { PrWatcher } from "../prs.js";
 import { GhWatcher } from "../ghboard.js";
 import { dir, loadDefs, templatesDir, loadPresetDir, presetsFor, presetLaunch, withTask, notesOnly } from "../defs.js";
-import { SETTINGS_FILE, parseSettings } from "../settingsfacts.js";
+import { SETTINGS_FILE, parseSettings, automationSetting } from "../settingsfacts.js";
 import { Features, flips, FOLLOWED } from "../featuregate.js";
 
 const SPACE = "Automations";
@@ -63,16 +69,20 @@ let runner = null;
 // Automations goes off or comes back (once per change; at the start, the ones that are off).
 const features = new Features();
 let featuresSaid = null;
+let settings = null; // the file as last read: Settings > Automations for the runner
 async function readFeatures() {
   const parsed = parseSettings(await readTextFile(`${home()}/${SETTINGS_FILE}`));
+  settings = parsed;
+  setQuietHours(automationSetting(parsed, "quiet-hours"));
   features.fromFile(parsed, null);
   const now = Object.fromEntries(Object.keys(FOLLOWED).map((k) => [k, features.on(k)]));
   for (const f of flips(featuresSaid, now)) log(FOLLOWED[f.key][f.on ? "on" : "off"]);
   featuresSaid = now;
 }
 
-// A run's tab: a terminal labelled into the workspace's Automations space.
-async function open(ws, name, folder, argv, task) {
+// A run's tab: a terminal labelled into the workspace's Automations space. bare: argv as it is (a
+// shell automation's script, which says how it ended and ends), not an agent in your shell.
+async function open(ws, name, folder, argv, task, { bare = false } = {}) {
   ({ argv, task } = withTask(argv, task));
   const cmd = [...argv, ...(task?.trim() ? [task.trim()] : [])];
   await refresh(true).catch(() => {});
@@ -83,7 +93,7 @@ async function open(ws, name, folder, argv, task) {
   runner.save();
   const tab = `tb${hex(32)}`;
   const r = await exec("hc", ["run", "--json", "--bg", "--keep", "--no-parent", "--cwd", folder,
-    "--label", `herdr.space=${space}`, "--label", `herdr.tab=${tab}`, "--label", "herdr.seen=0", "--", ...agentArgv(cmd)], { timeout: 60000 });
+    "--label", `herdr.space=${space}`, "--label", `herdr.tab=${tab}`, "--label", "herdr.seen=0", "--", ...(bare ? cmd : agentArgv(cmd))], { timeout: 60000 });
   let out = null;
   try { out = JSON.parse(r.stdout); } catch {}
   const terminal = out?.address ?? out?.terminal?.address ?? out?.terminal ?? null;
@@ -95,14 +105,16 @@ async function open(ws, name, folder, argv, task) {
 // Ends this automation's older run terminals that aren't working or waiting on
 // you (their tabs close with them), keeping the newest `keep` that are still there.
 function tidy(runs, keep, busy) {
-  const live = runs.filter((r) => terminals().some((t) => t.address === r.terminal && t.state === "live" && t.labels?.["herdr.tab"] === r.tab));
+  const live = runs.filter((r) => terminalOf(r, terminals())?.state === "live");
   for (const r of live.slice(keep)) if (!busy(r)) exec("hc", ["kill", r.terminal]).catch(() => {});
 }
 
-// A finished run's tab: its terminal ends, and the tab with it.
+// A run's tab closing (its agent finished, or its time ran out): its terminal ends, and the tab
+// with it. Only the run's own terminal: an address that's another terminal's now is left alone.
 async function close(r) {
+  if (!terminalOf(r, terminals())) { log(`left ${r.ws}/${r.name} at ${r.terminal}: that terminal isn't its run's any more`); return; }
   await exec("hc", ["kill", r.terminal]).catch(() => {});
-  log(`closed ${r.ws}/${r.name} at ${r.terminal}: its agent finished`);
+  log(`closed ${r.ws}/${r.name} at ${r.terminal}`);
 }
 
 // --- what the window shows: state.json, and alive ---
@@ -121,7 +133,7 @@ async function beat() {
     }));
   }
   if (noted) { noted = false; rev++; }
-  await writeTextFile(`${runnerDir()}/alive`, JSON.stringify({ at: Date.now(), pid: process.pid, rev }));
+  await writeTextFile(`${runnerDir()}/alive`, JSON.stringify({ at: Date.now(), pid: process.pid, rev, via: process.env.HERDR_WS_RUNNER_VIA || "hc" }));
 }
 
 async function reload() {
@@ -170,7 +182,10 @@ async function main() {
   if (((await readTextFile(`${runnerDir()}/switch`)) ?? "").trim() !== "on") { log("it's off (herdr-ws-runner --on turns it on)"); process.exit(0); }
   await refresh(true).catch((e) => log("herdr-core:", said(e)));
   await readFeatures();
-  runner = new Runner({ presetsFor, presetLaunch, withTask, claim() {}, open, tidy, close, windowOpen, away: "while Herdr's runner wasn't running", featureOn: (k) => features.on(k) });
+  runner = new Runner({
+    presetsFor, presetLaunch, withTask, claim() {}, open, tidy, close, windowOpen, away: "while Herdr's runner wasn't running",
+    featureOn: (k) => features.on(k), automationSetting: (k) => automationSetting(settings, k), startWhy: "Herdr's background runner started",
+  });
   prs = new PrWatcher();
   gh = new GhWatcher();
   dirty = true;

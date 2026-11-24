@@ -9,8 +9,8 @@ set -eu
 src=${HERDR_APP_HOME:-$HOME/.config/herdr-app}
 dst=$(cd "$(dirname "$0")/.." && pwd)
 
-# The runner and the Automations screen read `when:`, `model:` and `effort:`, and run a `check:`, with the same files.
-for shared in when.js knobs.js check.js; do
+# The runner and the Automations screen read `when:`, `model:` and `effort:`, the front matter, and run a `check:`, with the same files.
+for shared in when.js knobs.js check.js autofacts.js; do
   cmp -s "$src/mods/ws-switcher/$shared" "$src/mods/ws-automations/$shared" || {
     echo "mods/ws-switcher/$shared and mods/ws-automations/$shared differ: make them the same first" >&2
     exit 1
@@ -41,13 +41,19 @@ cmp -s "$src/mods/ws-switcher/knobs.js" "$src/mods/ws-presets/knobs.js" || {
   exit 1
 }
 
-# Settings (Features, Files, Experimental), the Agents list, the switcher's runners, the status bar and Files read the package's settings (~/.herdr/settings.jsonc) by the same rules.
-for mod in ws-agents ws-switcher ws-status ws-files; do
+# Settings (Features, Automations, Files, Experimental), the Agents list, the switcher's runners, the status bar, Files and the Automations screen read the package's settings (~/.herdr/settings.jsonc) by the same rules.
+for mod in ws-agents ws-switcher ws-status ws-files ws-automations; do
   cmp -s "$src/mods/ws-settings/settingsfacts.js" "$src/mods/$mod/settingsfacts.js" || {
     echo "mods/ws-settings/settingsfacts.js and mods/$mod/settingsfacts.js differ: make them the same first" >&2
     exit 1
   }
 done
+
+# Settings > Automations shows the Automations screen's own icon.
+cmp -s "$src/mods/ws-automations/automations.svg" "$src/mods/ws-settings/automations.svg" || {
+  echo "mods/ws-automations/automations.svg and mods/ws-settings/automations.svg differ: make them the same first" >&2
+  exit 1
+}
 
 # History's Wipe moves the same files to the Trash as the Agents list's (wipeTargets()) and draws its menu the same size.
 cmp -s "$src/mods/ws-agents/menufacts.js" "$src/mods/ws-history/menufacts.js" || {

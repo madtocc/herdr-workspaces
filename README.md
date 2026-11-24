@@ -152,7 +152,8 @@ the workspace: a pill in the tab bar of each of its spaces.
 - **Automations**, the header's other side: each automation run with what its
   agent said at the end and how it went (running, needs you, done, failed,
   nothing to do), the whole report a click away, Go to while its tab is open
-  and Resume once it's closed.
+  and Resume once it's closed. A shell script's run shows its exit code, how
+  long it took and its output, with Run again and Open log in Files.
 - It only reads what the agents already keep; nothing is copied or changed.
   It needs Node 20.6 or newer.
 
@@ -177,14 +178,26 @@ tab bar of each of the workspace's spaces.
 
 ![The Automations screen](previews/automations.png)
 
-An automation starts an agent by itself. You make one by saying what it should
-do and when, in your own words: Claude drafts the trigger, the agent, its model
-and the prompt, and you read the draft before it's saved.
+An automation starts an agent by itself, or runs a shell script with no agent
+at all. You make one by saying what it should do and when, in your own words:
+an agent's CLI (Claude, Codex, Antigravity or Pi, as Settings > Automations
+says) drafts the trigger, the agent, its model and the prompt, or a script when
+no agent is needed, and you read the draft before it's saved.
 
 - **What sets one off**: a schedule (once or repeating), a task entering a board
-  column, an agent finishing or needing you, files changing, a PR or issue
-  opened on GitHub (asked every 2 minutes through `gh`), or another app calling
-  `herdr-ws-run`.
+  column, an agent finishing or needing you, files changing, GitHub (a PR or
+  issue opened or labeled, a PR merged or waiting for your review, CI failing;
+  asked every 2 minutes through `gh`), another automation finishing or failing,
+  Herdr starting or the Mac waking, or another app calling `herdr-ws-run`.
+- **Shell scripts** (`run: shell`): fetching repos, running tests, a backup. A
+  script runs in the background by default (or in a tab), with what set it off
+  as `$HERDR_…` variables; History keeps its exit code and output, and the bell
+  pins a failure. Try it runs it on the spot; Preview shows what a run would
+  get without starting anything.
+- **Guardrails**: a timeout per automation (scripts 2 minutes by default), at
+  most two agent runs at once (the rest queue), notification levels (problems
+  only, results, everything, silent), quiet hours for the desktop sound, and
+  what to do with a missed schedule.
 - **Seven ready-made ones** to start from (issue to pull request, PR review, a
   broken default branch, a morning review and more): open one, read it, and
   Create adds it.
@@ -195,8 +208,10 @@ and the prompt, and you read the draft before it's saved.
   alone. `github * issue opened` watches every repo of the workspace it runs in.
 - **A check first**: a command that runs before the agent, so no agent starts
   when there's nothing to do. It runs only once you've allowed it.
-- **Keep running**, in Settings > Agents: a background process herdr-core
-  keeps going while Herdr is closed (it needs Node 20.6 or newer). Without it
+- **Keep running**, in Settings > Automations: a background process herdr-core
+  keeps going while Herdr is closed (it needs Node 20.6 or newer). **Start at
+  login** (macOS) runs it from a LaunchAgent after a reboot, without opening
+  Herdr; scripts then run without starting herdr-core. Without it
   they run while Herdr is open. A schedule missed while nothing was running
   runs when Herdr opens if it was due in the last 12 hours; older ones are
   reported as missed, with a toast, for Run now.
@@ -242,11 +257,11 @@ own, where you can't watch it or type to it:
 None of them changes code. With the starter guide (see Install), Claude and
 Codex start one of these where they'd use their own subagent.
 
-### Settings: Features, Agents, Files and Experimental
+### Settings: Features, Agents, Automations, Files and Experimental
 
 ![Settings on its Agents section](previews/settings.png)
 
-The sidebar's Settings opens Herdr's own Settings window with four sections of
+The sidebar's Settings opens Herdr's own Settings window with five sections of
 ours at the end, after Privacy:
 
 - **Features**: a switch for each of the package's add-ons (Board, Notes,
@@ -260,8 +275,10 @@ ours at the end, after Privacy:
   agents** (the Herdr guide for every agent, with Edit / Write one, and bringing
   Claude and Antigravity agents back after a restart), **In the + menu** (which
   installed agents the tab bar's + menu lists; the menu's "Choose agents…" opens
-  this page) and **While Herdr is closed** (Keep running for automations and
-  board cards' pull requests).
+  this page).
+- **Automations**: **While Herdr is closed** (Keep running for automations and
+  board cards' pull requests, and Start at login), how many agent runs go at
+  once, quiet hours for the desktop sound, and which CLI drafts automations.
 - **Files**: the Files view's defaults: what Markdown and SVG open in, the app
   Open in starts with, whether ignored files show, where a Cmd-clicked path
   opens (beside the terminal, full size, or off to leave it to macOS) and
@@ -277,8 +294,8 @@ Herdr's sections are Herdr's: the package rebuilds its copy from Herdr's own
 file whenever Herdr updates it. The macOS menu's Settings… still opens Herdr's
 plain window; to have Cmd+, open this one, set `"cmd-,"` in the `global`
 section of your `~/.config/herdr-app/keys.json` to `"mod.open:ws-settings"`
-(or to `ws-switcher.settings/features`, `ws-switcher.settings/agents` or
-`ws-switcher.settings/files`, `ws-switcher.settings/experimental` to open it on a section; `ws-switcher.settings/extras` opens Agents). Herdr then
+(or to `ws-switcher.settings/features`, `ws-switcher.settings/agents`,
+`ws-switcher.settings/automations` or `ws-switcher.settings/files`, `ws-switcher.settings/experimental` to open it on a section; `ws-switcher.settings/extras` opens Agents). Herdr then
 leaves that file to you: new default shortcuts in its updates are added by hand.
 
 ### And when you're away
@@ -371,10 +388,15 @@ one runs). Following a card's pull request writes `pr:` into its task and, when
 it opens on a card still before the start column or merges, its `status:`, and types a message into the card's agent with
 `hc send` when a check fails, a review arrives or it conflicts. With Keep running
 on, that work is done by a Node process herdr-core holds as the terminal
-`herdr-ws-runner`: it writes `~/.herdr/runner/`, starts runs with `hc run`, ends
+`herdr-ws-runner`: it writes `~/.herdr/runner/` (a shell automation's output goes to
+`~/.herdr/runner/logs/`, deleted with its run), starts runs with `hc run`, ends
 old and finished run terminals with `hc kill`, and reads herdr-core's terminal list, the app's
 layout document, `shared.json`, `programs.json` and `view.json` (which tab is shown),
-and connects to the app's socket to see whether Herdr is open. Either runner closes an
+and connects to the app's socket to see whether Herdr is open. Start at login writes
+`~/Library/LaunchAgents/dev.herdr.ws-runner.plist` and loads it with `launchctl`; the runner
+it starts looks for herdr-core's socket before calling `hc`, so it doesn't start herdr-core
+until an agent automation fires. A shell automation runs its script (`bash`, `zsh` or `sh`)
+as you, in its folder, once you've allowed it. Either runner closes an
 automation run's tab once its agent has finished (unless the automation says `keep: true`),
 and reads the launcher's note of which conversation that terminal held
 (`~/.herdr/resume/<core>/<terminal>.session`), for History's Resume, and, for an agent
@@ -387,7 +409,7 @@ conversation's transcript and the folders Claude keeps for it under
 `~/.claude/`. That menu also types into an agent with `hc send` (Send a message,
 Compact), presses Esc there with `hc keys` (Interrupt) and puts a terminal or
 session id on the clipboard (`pbcopy`, `wl-copy` or `xclip`). Settings > Features,
-Settings > Files and Settings > Experimental write `~/.herdr/settings.jsonc` (the Files
+Settings > Automations, Settings > Files and Settings > Experimental write `~/.herdr/settings.jsonc` (the Files
 section asks macOS which apps open a text file, with `command -v` and `osascript`, about
 a sample file it writes once under `~/.config/herdr-app/data/ws-settings/`); the switcher, the background
 runner (every 2 seconds), the status bar and `herdr-ws-run` (with `node` when it's
@@ -500,9 +522,12 @@ with your login, every minute per open pull request), the board's GitHub view
 when its last read is over 10 minutes old and the view is open, and the items you
 took every 5 minutes; it only reads, writes the board's link into `workspace.jsonc`
 and keeps the board as last read in `~/.herdr/cache/github-boards/`), and the Automations screen's Draft it and Change it,
-which run `claude -p` with your Claude login and no tools. That sends Anthropic
-your words, the workspace's name, root, folder names, GitHub repos and presets,
-and, for a change, the automation as it stands.
+which run `claude -p` with your Claude login and no tools (or, as Settings >
+Automations' Drafter says, `codex exec` read-only and ephemeral, `agy -p` with a
+do-nothing browser shim, or `pi -p` with no tools or session, each with its own
+login). That sends that CLI's provider your words, the workspace's name, root,
+folder names, GitHub repos, presets and automation names, and, for a change, the
+automation as it stands.
 
 Built for Herdr 0.1.14; `ws-spaces`, `ws-agents`, `ws-tabs`, `ws-new-menu` and
 `ws-chrome` are copies of that version's `spaces`, `agents`, `tabs`, `new-menu`

@@ -74,7 +74,10 @@ const RESUMED = "workspaces.history.resumed";
 const PAGE = 120; // rows drawn at first, and more with each "Show more"
 const REPORT_LINES = 60; // lines of a run's report shown when it's opened
 // What a day's heading counts among its runs, and in which color (null: the heading's own).
-const LOOK = [["needs you", "blocked"], ["failed", "blocked"], ["failed to start", "blocked"], ["stuck", "blocked"], ["running", null]];
+const LOOK = [["needs you", "blocked"], ["failed", "blocked"], ["failed to start", "blocked"], ["timed out", "blocked"], ["stuck", "blocked"], ["running", "working"], ["queued", null]];
+const LOG_LINES = 25; // lines of a script run's log shown when it's opened
+// A state word as the day's heading counts it: "failed · exit 1" is a failure.
+const lookWord = (word) => (/^failed · exit/.test(word) ? "failed" : word);
 const SPANS = [90, 365, 3650]; // days back: the first read, then each "Look further back"
 const STALE = 20e3; // ms after which the screen, shown again, reads again
 // A pane beside the terminals narrower than this keeps search in its slim row and folds the
@@ -270,6 +273,7 @@ export default class History extends View {
     this.max = PAGE;
     this.open = null; // the row whose details show (a run's: "run:<id>")
     this.reports = new Map(); // runs' whole reports, by conversation file: { at, said, outcome } or "reading"
+    this.shellLogs = new Map(); // script runs' logs, by run id: { text } or { error } or "reading"
     this.starting = null; // the row being resumed, until Herdr says which terminal it made
     this.rows = [];
     this.notes = [];
@@ -347,6 +351,7 @@ export default class History extends View {
     const at = this.runsView().shown.findIndex((x) => x.r.id === want.runId);
     if (at >= this.max) this.max = at + 1;
     this.open = `run:${want.runId}`;
+    if (r) this.loadLog(r, cx);
     this.input().focus();
     cx.notify();
   }
@@ -443,7 +448,46 @@ export default class History extends View {
     const id = `run:${r.id}`;
     this.open = this.open === id ? null : id;
     if (this.open && s && !s.stub && s.saidMore && s.file && READS.has(s.provider)) this.readReport(s, cx);
+    if (this.open) this.loadLog(r, cx);
     cx.notify();
+  }
+
+  // A script run's log file (~/.herdr/runner/logs/<run>.log), read once when it's opened.
+  loadLog(r, cx) {
+    if (r.kind !== "shell" || !r.logFile || this.shellLogs.has(r.id)) return;
+    this.shellLogs.set(r.id, "reading");
+    cx.spawn(async (cx) => {
+      const text = await readTextFile(r.logFile).catch(() => null);
+      this.shellLogs.set(r.id, text === null ? { error: "Its log file is gone." } : { text });
+      cx.notify();
+    });
+  }
+
+  // Run again: the switcher starts the automation now, as Run now does (whatever its check says).
+  // One that's gone, or whose script or check waits to be allowed, doesn't start: the toast says so.
+  runAgain(r) {
+    const list = shared("workspaces.automations")?.[r.ws];
+    const a = Array.isArray(list) ? list.find((x) => x?.name === r.name) : undefined;
+    if (Array.isArray(list) && !a) {
+      notify({ title: `${r.name} isn't there any more`, body: "Its automation was taken out, so it can't run again. Its past runs stay here.", level: "warning" });
+      return;
+    }
+    if (a && a.allowed === false) {
+      const what = a.scriptAllowed === false && a.checkAllowed === false ? "Its script and its check haven't" : a.scriptAllowed === false ? "Its script hasn't" : "Its check hasn't";
+      notify({ title: `${r.name} didn't start`, body: `${what} been allowed yet. Read it in Automations, then allow it.`, level: "warning" });
+      return;
+    }
+    setShared("workspaces.automation.run", { workspace: r.ws, name: r.name, at: Date.now() });
+    notify({ title: `Running ${r.name} again`, body: r.kind === "shell" ? "Its script runs now; its run shows here when it ends." : "It starts in a new tab in the Automations space.", level: "info" });
+  }
+
+  // Open log in Files: the log file, full size in Files (shared "workspaces.files.open", which the switcher drains).
+  openLog(r) {
+    if (!r.logFile) return;
+    const now = Date.now(), queue = shared("workspaces.files.open");
+    const ask = { path: r.logFile, isDir: false, line: null, on: null, space: null, tab: null, placement: "full", id: `${now}-history-${Math.random().toString(36).slice(2, 8)}`, at: now };
+    setShared("workspaces.files.open", [...(Array.isArray(queue) ? queue : []).filter((a) => a && typeof a === "object" && now - (a.at ?? 0) < 15000), ask].slice(-64));
+    if (this.dialog) closeOverlay(props().overlay);
   }
 
   readReport(s, cx) {
@@ -644,7 +688,7 @@ export default class History extends View {
       const tally = new Map();
       for (const { r, st } of rv.shown) {
         const m = tally.get(dayLabel(r.at, now)) ?? {};
-        m[st.word] = (m[st.word] ?? 0) + 1;
+        m[lookWord(st.word)] = (m[lookWord(st.word)] ?? 0) + 1;
         tally.set(dayLabel(r.at, now), m);
       }
       const heading = (label) => {
@@ -834,8 +878,11 @@ export default class History extends View {
     const wsName = everywhere ? defOf(r.ws)?.name ?? r.ws : null;
     const said = s && !s.stub ? s.said ?? "" : "";
     const why = r.note ? `${r.why}. ${r.note}` : r.why;
+    const shellRun = r.kind === "shell";
+    // A script's first line of output (its summary) stands where an agent's report would.
+    const out = shellRun && r.summary && r.closed ? r.summary : "";
     // Opened, the report shows whole below: the line says why it ran.
-    const sub = opened || st.quiet ? why : st.word === "running" ? `Running since ${clock(r.at)}  ·  ${r.why}` : said || why;
+    const sub = opened || st.quiet ? why : st.word === "running" ? `Running since ${clock(r.at)}  ·  ${r.why}` : out || said || why;
     const act = (id, text, action, tip, solid) => div().id(id).h(24).px(9).flex().flex_none().items_center().rounded(6)
       .text_size(11.5).cursor_pointer().tooltip(tip).on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .when(solid, (el) => el.bg(t.solid).text_color(t.solid_foreground).font_medium().hover((x) => x.opacity(0.88)))
@@ -849,16 +896,21 @@ export default class History extends View {
       .when(!opened, (el) => el.hover((x) => x.bg(t.hover)))
       .on_click((_e, cx) => this.toggleRun(r, s, cx));
     const fill = (el) => el
-      .child(svg("mods/ws-automations/automations.svg").size(st.quiet ? 13 : 15).flex_none().text_color(st.quiet ? t.dim : t.muted))
+      .child(svg(shellRun ? "mods/workspace-chrome/terminal.svg" : "mods/ws-automations/automations.svg").size(st.quiet ? 13 : 15).flex_none()
+        .text_color(st.quiet ? t.dim : st.tone === "blocked" ? t.blocked : t.muted))
       .child(v_flex().flex_1().min_w(0).gap(2)
         .child(h_flex().min_w(0).gap(7).items_center()
           .child(div().flex_none().max_w(320).truncate().text_color(st.quiet ? t.muted : t.foreground).text_size(st.quiet ? 12 : 13).child(r.name))
+          // A script's run: the shell it ran with, as a quiet tag.
+          .when(shellRun && !st.quiet, (el) => el.child(div().flex_none().px(6).h(17).flex().items_center().rounded(5).bg(t.selected).text_size(10.5).text_color(t.accent).child(r.shell || "sh")))
           .when(Boolean(wsName), (el) => el.child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(wsName))))
-        .child(div().truncate().text_size(11.5).text_color(said && sub === said ? t.muted : t.dim).child(sub)))
+        .child(div().truncate().text_size(11.5).text_color((said && sub === said) || (out && sub === out) ? t.muted : t.dim).when(Boolean(out) && sub === out, (el) => el.font_family("JetBrains Mono")).child(sub)))
       .child(div().flex_none().text_size(11.5).text_color(t[st.tone] ?? t.dim).child(st.word))
       .child(div().w(30).flex_none().text_size(11.5).text_color(t.dim).child(ago(r.at, now)))
-      .child(h_flex().w(70).flex_none().gap(6).justify_end()
+      .child(h_flex().w(80).flex_none().gap(6).justify_end()
         .when(st.open, (el) => el.child(act(`rgo-${r.id}`, "Go to", () => this.goToRun(r), "Show its tab", st.word === "needs you")))
+        // A script's run that ended: Run again (opened, it's below with the log instead).
+        .when(shellRun && !st.open && !opened && !st.quiet && st.word !== "running" && st.word !== "queued" && featureOn("automations"), (el) => el.child(act(`rag-${r.id}`, "Run again", () => this.runAgain(r), "Run its script again now")))
         .when(!st.open && Boolean(at), (el) => el.child(act(`rgo-${r.id}`, "Go to", () => this.goTo(at), `Its conversation is open in ${at} now`)))
         .when(!st.open && !at && Boolean(own) && !own.gone && this.starting === key, (el) => el.child(div().text_size(11.5).text_color(t.dim).child("Starting…")))
         .when(!st.open && !at && Boolean(own) && !own.gone && this.starting !== key, (el) => el.child(act(`rre-${r.id}`, "Resume", (cx) => this.resume(own, cx),
@@ -885,16 +937,37 @@ export default class History extends View {
     const report = v_flex().flex_1().min_w(0).gap(2).text_color(t.foreground)
       .children(paras.slice(0, REPORT_LINES).map((p) => (p.trim() ? div().child(p) : div().h(5))))
       .when(paras.length > REPORT_LINES || cut, (el) => el.child(div().text_color(t.dim).child(reading ? "Reading the rest…" : paras.length > REPORT_LINES ? "… the rest is in its conversation" : "…")));
-    const automation = div().id(`rau-${r.id}`).h(24).px(9).flex().flex_none().items_center().rounded(6).text_size(11.5).cursor_pointer()
-      .border_1().border_color(t.input).text_color(t.muted).hover((x) => x.bg(t.hover).text_color(t.foreground)).tooltip(`Open ${r.name} in Automations`)
-      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-      .on_click((_e, cx) => { cx.stop_propagation(); this.openAutomation(r); }).child("Open the automation");
+    // Its buttons: Run again (the one solid button for a script's run), Open log in Files, Open the automation.
+    const btn = (id, text, tip, action, solid) => div().id(id).h(24).px(9).flex().flex_none().items_center().rounded(6).text_size(11.5).cursor_pointer()
+      .when(solid, (el) => el.bg(t.solid).text_color(t.solid_foreground).font_medium().hover((x) => x.opacity(0.88)))
+      .when(!solid, (el) => el.border_1().border_color(t.input).text_color(t.muted).hover((x) => x.bg(t.hover).text_color(t.foreground)))
+      .tooltip(tip).on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_click((_e, cx) => { cx.stop_propagation(); action(); }).child(text);
+    const shellRun = r.kind === "shell";
+    const ended = st.word !== "running" && st.word !== "queued" && !st.open;
+    const automation = btn(`rau-${r.id}`, "Open the automation", `Open ${r.name} in Automations`, () => this.openAutomation(r), false);
+    const again = btn(`rra-${r.id}`, "Run again", shellRun ? "Run its script again now" : "Start it again now, in a new tab", () => this.runAgain(r), shellRun);
+    const logBtn = btn(`rlf-${r.id}`, "Open log in Files", "Its whole output, in Files", () => this.openLog(r), false);
+    // A script's output: its log file's first lines, as it printed them.
+    const log = shellRun ? this.shellLogs.get(r.id) : null;
+    const logLines = log && log !== "reading" && log.text ? log.text.replace(/\n+$/, "").split("\n") : [];
+    const output = !shellRun || !r.logFile ? null
+      : log === "reading" || !log ? div().text_color(t.dim).child("Reading its log…")
+      : log.error ? div().text_color(t.dim).child(log.error)
+      : v_flex().flex_1().min_w(0).px(10).py(8).rounded(6).bg(t.background).font_family("JetBrains Mono").text_size(11.5).text_color(t.foreground)
+        .children(logLines.slice(0, LOG_LINES).map((p) => div().truncate().child(p || " ")))
+        .when(logLines.length > LOG_LINES, (el) => el.child(div().text_color(t.dim).child("… open log in Files for full output")));
     return v_flex().pl(33).pr(8).pt(2).pb(12).gap(7).text_size(12)
       .when(Boolean(said), (el) => el.child(line(st.word === "needs you" ? "It asked" : "It said", report)))
-      .child(line(r.status === "started" ? "Ran" : "When", ranText(r, st, s, now)))
+      .when(Boolean(output), (el) => el.child(line("Output", output)))
+      .when(shellRun && !r.logFile && Boolean(r.closed), (el) => el.child(line("Output", r.summary || "It printed nothing.")))
+      .child(line(r.status === "started" || r.status === "running" ? "Ran" : "When", ranText(r, st, s, now)))
       .when(Boolean(r.cmd), (el) => el.child(line("Check", r.cmd)))
       .when(Boolean(r.folder), (el) => el.child(line("Folder", tilde(r.folder))))
-      .when(featureOn("automations"), (el) => el.child(h_flex().gap(10).child(div().w(84).flex_none()).child(automation)));
+      .when(featureOn("automations"), (el) => el.child(h_flex().gap(8).child(div().w(84).flex_none())
+        .when(ended && (shellRun || !st.quiet), (el) => el.child(again))
+        .when(shellRun && Boolean(r.logFile), (el) => el.child(logBtn))
+        .child(automation)));
   }
 
   // Under an opened row, inside its highlight (item()): what was asked first and last,

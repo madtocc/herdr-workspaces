@@ -3,7 +3,9 @@
 // these are the Workspaces package's: for now its experimental features, each off
 // until turned on in the Settings window's Experimental section (ws-settings) or in the file.
 // And which of the package's add-ons are on (Settings > Features), each on until turned off,
-// and Files' defaults (Settings > Files, the "files" block), each today's behaviour until changed.
+// and Files' defaults (Settings > Files, the "files" block), each today's behaviour until changed,
+// and how automations run (Settings > Automations, the "automations" block: how many agents at once,
+// quiet hours for desktop sounds, which agent drafts one from words).
 // Copied in ws-settings (the screen), ws-agents (which reads it into shared "workspaces.settings"
 // for the mods that only draw), ws-switcher (its runners, in the sidebar and the background
 // runner), ws-status (its timed usage asks) and ws-files (Files and its Cmd-click handler read
@@ -167,6 +169,69 @@ export function appLabel(choices, id) {
   return String(id).startsWith("app:") ? String(id).slice(4) : String(id);
 }
 
+// How automations run (Settings > Automations), the same way as Files' settings: each key in
+// "automations", its title and what it does, its values (choices; "hours": a time range or null)
+// and the default. A missing value, or one that isn't one of these, is the default.
+export const AUTOMATIONS_SETTINGS = [
+  { key: "max-parallel", title: "Max parallel agent runs", type: "choice", default: 2,
+    values: [{ value: 1, label: "1" }, { value: 2, label: "2" }, { value: 3, label: "3" }, { value: 0, label: "Unlimited" }],
+    what: "How many automations with an agent run at once; the others wait their turn. Run now never waits.",
+    comment: "how many automation runs with an agent go at once, 1, 2, 3 or 0 for no limit. More wait their turn, in the order they came; Run now doesn't wait. Shell scripts go 4 at a time." },
+  { key: "quiet-hours", title: "Quiet hours", type: "hours", default: null,
+    what: "Desktop notifications from automations make no sound during these hours. The bell and History still keep everything.",
+    comment: "a time range such as \"22:00-08:00\" (over midnight) when the background runner's desktop notifications make no sound, or null for none. The bell and History still keep everything." },
+  { key: "drafter", title: "Drafter", type: "choice", default: "auto",
+    values: [{ value: "auto", label: "Automatic" }, { value: "claude", label: "Claude" }, { value: "codex", label: "Codex" }, { value: "agy", label: "Antigravity" }, { value: "pi", label: "Pi" }],
+    what: "Which agent writes an automation from your words in Automations.",
+    comment: "which agent writes an automation from the words in Automations' describe box: \"auto\" (the first installed of claude, codex, agy and pi) or one of those." },
+];
+export const AUTOMATIONS_KEYS = AUTOMATIONS_SETTINGS.map((a) => a.key);
+export const AUTOMATIONS_DEFAULTS = Object.fromEntries(AUTOMATIONS_SETTINGS.map((a) => [a.key, a.default]));
+
+// The comment above "automations" in the file.
+const AUTOMATIONS_NOTE = [
+  "  // How automations run (Settings > Automations); a missing or unknown value is the default.",
+];
+
+// "22:00-08:00" (or "9:00 - 17:30"), written "HH:MM-HH:MM"; undefined when it isn't a time range
+// (or its start is its end).
+function hoursValue(v) {
+  const m = /^\s*([01]?\d|2[0-3]):([0-5]\d)\s*[-–]\s*([01]?\d|2[0-3]):([0-5]\d)\s*$/.exec(typeof v === "string" ? v : "");
+  if (!m) return undefined;
+  const a = `${m[1].padStart(2, "0")}:${m[2]}`, b = `${m[3].padStart(2, "0")}:${m[4]}`;
+  return a === b ? undefined : `${a}-${b}`;
+}
+
+// An "automations" value as the file means it, or undefined when it isn't one of the key's values.
+function automationValue(key, v) {
+  const a = AUTOMATIONS_SETTINGS.find((x) => x.key === key);
+  if (!a) return undefined;
+  if (a.type === "choice") return a.values.some((x) => x.value === v) ? v : undefined;
+  if (a.type === "hours") return v === null ? null : hoursValue(v);
+  return undefined;
+}
+
+// Every automations setting from an "automations" object: its value, else the default.
+function readAutomations(raw) {
+  const obj = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  return Object.fromEntries(AUTOMATIONS_KEYS.map((k) => {
+    const v = automationValue(k, obj[k]);
+    return [k, v === undefined ? AUTOMATIONS_DEFAULTS[k] : v];
+  }));
+}
+
+// One automations setting, for parseSettings()' result or shared "workspaces.settings" (nothing
+// known yet, or a value that isn't one of the key's, is the default).
+export function automationSetting(settings, key) {
+  const v = automationValue(key, settings?.automations?.[key]);
+  return v === undefined ? AUTOMATIONS_DEFAULTS[key] ?? null : v;
+}
+
+const automationLines = (a, value) => [
+  ...wrap(`${a.title}: ${a.comment}`, "    // "),
+  `    "${a.key}": ${JSON.stringify(value)}`,
+].join("\n");
+
 // The comment above "files" in the file.
 const FILES_NOTE = [
   "  // Files' defaults (Settings > Files); a missing or unknown value is the default.",
@@ -205,8 +270,8 @@ const fileLines = (f, value) => [
 
 // The file as first written: every setting with what it does above it. values: the
 // experiments' (off unless true); features: the add-ons' (on unless false); files: Files'
-// defaults (each the default unless given).
-export function starter(values = {}, features = {}, files = {}) {
+// defaults (each the default unless given); automations: how automations run (the same).
+export function starter(values = {}, features = {}, files = {}, automations = {}) {
   const lines = EXPERIMENTS.map((e) => [
     ...wrap(`${e.title}: ${lowerFirst(e.what)}`, "    // "),
     ...wrap(`Experimental because ${lowerFirst(e.why)}`, "    // "),
@@ -219,9 +284,11 @@ export function starter(values = {}, features = {}, files = {}) {
   ].join("\n"));
   const fv = readFiles(files);
   const fileKeys = FILES_SETTINGS.map((f) => fileLines(f, fv[f.key]));
+  const av = readAutomations(automations);
+  const autoKeys = AUTOMATIONS_SETTINGS.map((a) => automationLines(a, av[a.key]));
   return `// Workspaces settings: the package's own (Herdr's are in ~/.config/herdr-app/settings.json).
-// Settings > Features, Settings > Files and Settings > Experimental (the sidebar footer's
-// Settings) change them; you can edit them here too.
+// Settings > Features, Settings > Files, Settings > Automations and Settings > Experimental (the
+// sidebar footer's Settings) change them; you can edit them here too.
 {
 ${FEATURES_NOTE.join("\n")}
   "features": {
@@ -231,6 +298,11 @@ ${feats.join(",\n")}
 ${FILES_NOTE.join("\n")}
   "files": {
 ${fileKeys.join(",\n\n")}
+  },
+
+${AUTOMATIONS_NOTE.join("\n")}
+  "automations": {
+${autoKeys.join(",\n\n")}
   },
 
   // Off until you turn them on. Each says what it does and why it's experimental.
@@ -304,21 +376,22 @@ function stripJsonc(text) {
 }
 
 // The settings: { experimental: { <key>: true|false }, features: { <key>: true|false },
-// files: { <key>: value } } with every experiment present (off unless the file says true),
-// every feature present (on unless the file says false) and every Files setting present (its
-// default unless the file gives one of its values), and `error` when the file can't be read as
-// JSONC (then the experiments are off, the features on and Files' settings the defaults).
+// files: { <key>: value }, automations: { <key>: value } } with every experiment present (off
+// unless the file says true), every feature present (on unless the file says false) and every
+// Files and automations setting present (its default unless the file gives one of its values),
+// and `error` when the file can't be read as JSONC (then the experiments are off, the features
+// on and the other settings the defaults).
 export function parseSettings(text) {
   const experimental = Object.fromEntries(EXPERIMENTS.map((e) => [e.key, false]));
   const features = Object.fromEntries(FEATURE_KEYS.map((k) => [k, true]));
-  if (text == null || !String(text).trim()) return { experimental, features, files: { ...FILES_DEFAULTS } };
+  if (text == null || !String(text).trim()) return { experimental, features, files: { ...FILES_DEFAULTS }, automations: { ...AUTOMATIONS_DEFAULTS } };
   try {
     const raw = JSON.parse(stripJsonc(String(text)));
     for (const e of EXPERIMENTS) experimental[e.key] = raw?.experimental?.[e.key] === true;
     for (const k of FEATURE_KEYS) features[k] = raw?.features?.[k] !== false;
-    return { experimental, features, files: readFiles(raw?.files) };
+    return { experimental, features, files: readFiles(raw?.files), automations: readAutomations(raw?.automations) };
   } catch (err) {
-    return { experimental, features: Object.fromEntries(FEATURE_KEYS.map((k) => [k, true])), files: { ...FILES_DEFAULTS }, error: String(err?.message ?? err) };
+    return { experimental, features: Object.fromEntries(FEATURE_KEYS.map((k) => [k, true])), files: { ...FILES_DEFAULTS }, automations: { ...AUTOMATIONS_DEFAULTS }, error: String(err?.message ?? err) };
   }
 }
 
@@ -405,6 +478,7 @@ export function withFeature(text, key, on) {
   if (FEATURE_KEYS.some((k) => k !== key && now.features[k] !== was.features[k])) return null;
   if (EXPERIMENTS.some((e) => now.experimental[e.key] !== was.experimental[e.key])) return null;
   if (FILES_KEYS.some((k) => now.files[k] !== was.files[k])) return null;
+  if (AUTOMATIONS_KEYS.some((k) => now.automations[k] !== was.automations[k])) return null;
   return next;
 }
 
@@ -466,6 +540,7 @@ export function withFileSetting(text, key, value) {
   if (FILES_KEYS.some((k) => k !== key && now.files[k] !== was.files[k])) return null;
   if (FEATURE_KEYS.some((k) => now.features[k] !== was.features[k])) return null;
   if (EXPERIMENTS.some((e) => now.experimental[e.key] !== was.experimental[e.key])) return null;
+  if (AUTOMATIONS_KEYS.some((k) => now.automations[k] !== was.automations[k])) return null;
   return next;
 }
 
@@ -494,6 +569,53 @@ function editFileSetting(text, key, value) {
   const fv = { ...FILES_DEFAULTS, [key]: value };
   const empty = /^\s*\}/.test(b.slice(root + 1));
   return `${s.slice(0, root + 1)}\n${FILES_NOTE.join("\n")}\n  "files": {\n${FILES_SETTINGS.map((x) => fileLines(x, fv[x.key])).join(",\n\n")}\n  }${empty ? "\n" : ",\n"}${s.slice(root + 1)}`;
+}
+
+// The file's text with one automations setting changed, its comments kept, the same way as
+// withFileSetting(): only that value changes; a file without the key gets it (with its comment) at
+// the top of "automations"; one without "automations" gets the whole block at the top; no file
+// gets the starter. Null when the key or the value isn't one of the settings' (a quiet-hours range
+// is written "HH:MM-HH:MM"), or the text can't be changed safely.
+export function withAutomationSetting(text, key, value) {
+  if (!AUTOMATIONS_KEYS.includes(key)) return null;
+  value = automationValue(key, value);
+  if (value === undefined) return null;
+  const next = editAutomationSetting(text, key, value);
+  if (next == null) return null;
+  const was = parseSettings(text), now = parseSettings(next);
+  if (now.error || now.automations[key] !== value) return null;
+  if (AUTOMATIONS_KEYS.some((k) => k !== key && now.automations[k] !== was.automations[k])) return null;
+  if (FILES_KEYS.some((k) => now.files[k] !== was.files[k])) return null;
+  if (FEATURE_KEYS.some((k) => now.features[k] !== was.features[k])) return null;
+  if (EXPERIMENTS.some((e) => now.experimental[e.key] !== was.experimental[e.key])) return null;
+  return next;
+}
+
+// withAutomationSetting()'s edit, before it's read back.
+function editAutomationSetting(text, key, value) {
+  if (text == null || !String(text).trim()) return starter({}, {}, {}, { [key]: value });
+  const s = String(text);
+  if (parseSettings(s).error) return null;
+  const b = blankComments(s);
+  const root = b.search(/\S/);
+  if (root < 0 || b[root] !== "{") return null;
+  const block = topBlock(b, "automations");
+  if (block === "other") return null;
+  const a = AUTOMATIONS_SETTINGS.find((x) => x.key === key);
+  if (block) {
+    const [open, close] = block;
+    const has = directKey(b, open, close, key);
+    if (has) {
+      if (has[2] === "{" || has[2] === "[") return null;
+      const at = open + 1 + has.index;
+      return s.slice(0, at) + has[1] + JSON.stringify(value) + s.slice(at + has[0].length);
+    }
+    const empty = /^\s*\}/.test(b.slice(open + 1));
+    return `${s.slice(0, open + 1)}\n${automationLines(a, value)}${empty ? "\n  " : ",\n"}${s.slice(open + 1)}`;
+  }
+  const av = { ...AUTOMATIONS_DEFAULTS, [key]: value };
+  const empty = /^\s*\}/.test(b.slice(root + 1));
+  return `${s.slice(0, root + 1)}\n${AUTOMATIONS_NOTE.join("\n")}\n  "automations": {\n${AUTOMATIONS_SETTINGS.map((x) => automationLines(x, av[x.key])).join(",\n\n")}\n  }${empty ? "\n" : ",\n"}${s.slice(root + 1)}`;
 }
 
 // How deep `at` is inside nested objects and arrays of the (comment-blanked) text.

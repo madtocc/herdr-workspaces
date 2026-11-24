@@ -4,11 +4,13 @@
 //
 // What the list holds, newest first in two groups:
 //   Needs you (pinned until it's resolved; a click goes there and leaves it): an agent waiting
-//     on you (sub-agents too), an automation run waiting in its terminal, a check nobody allowed,
-//     a check that failed or a run that didn't start, a run missed while Herdr was closed, a card's
+//     on you (sub-agents too), an automation run waiting in its terminal, a check or a script nobody
+//     allowed, a check that failed or a run that didn't start, a shell run that failed or a run that
+//     timed out (while it's the automation's newest), a run missed while Herdr was closed, a card's
 //     pull request failing, with changes asked for or conflicting while no agent works on it.
 //   Updates (unread until clicked, Mark all read or 7 days; then dimmed until Clear read): an
-//     agent that finished, an automation run that finished (not "nothing to do"), a card's pull
+//     agent that finished, an automation run that finished (not "nothing to do"; as the run's
+//     `notify` level allows: a shell run only with results or all, none of any with none), a card's pull
 //     request ready to merge, merged or closed, and a few things only the system says (a machine
 //     needs a login, the background runner didn't start, Settings fell back).
 // Everything else (working or idle agents, runs still going, quiet or skipped checks, drafts,
@@ -218,6 +220,14 @@ export function buildItems({ agents = [], terminals = [], spaces = [], defs = []
   if (on("automations")) {
     const newest = new Map();
     for (const r of runs ?? []) { const k = `${r.ws}/${r.name}`; if (!newest.has(k) || (newest.get(k).at ?? 0) < (r.at ?? 0)) newest.set(k, r); }
+    // The newest run of each automation that has ended (waiting for a slot or still going doesn't
+    // count): a failure or a timeout stays pinned while it's that.
+    const newestEnded = new Map();
+    for (const r of runs ?? []) {
+      if (!r || r.status === "queued" || r.status === "running" || (r.status === "started" && !r.closed)) continue;
+      const k = `${r.ws}/${r.name}`;
+      if (!newestEnded.has(k) || (newestEnded.get(k).at ?? 0) < (r.at ?? 0)) newestEnded.set(k, r);
+    }
     const once = new Set(); // a global automation's row said once for every workspace
     for (const r of runs ?? []) {
       if (!r || typeof r !== "object") continue;
@@ -243,9 +253,25 @@ export function buildItems({ agents = [], terminals = [], spaces = [], defs = []
       if (r.status === "started" && r.closed) {
         if (now - r.closed >= EXPIRE_MS) continue;
         if (r.outcome === "nothing to do") continue;
+        // Its tab went before it said how it ended (closed by hand, or gone with a restart): nothing to tell.
+        if (r.closedWhy === "gone") continue;
         const history = on("history");
-        const it = { ...base, at: r.closed, target: history ? { kind: "history", ws: r.ws, runId: r.id } : null };
-        const failed = r.outcome === "failed";
+        const level = r.notify ?? (r.kind === "shell" ? "problems" : "results");
+        const failed = r.outcome === "failed" || r.timedOut === true;
+        // A failed shell run, or any run stopped by its timeout: pinned while it's the newest that ended.
+        if (failed && (r.kind === "shell" || r.timedOut)) {
+          if (level === "none" || newestEnded.get(`${r.ws}/${r.name}`) !== r) continue;
+          const shell = r.kind === "shell";
+          add({ id: `run:${r.id}`, group: "needs", tone: "blocked", ...base, place: shell ? "Automations · Shell" : "Automations",
+            // A script the runner stopped (it stopped itself, say) has no exit code: "stopped", not "exit ?".
+            title: r.timedOut ? `${r.name} timed out` : shell && (r.closedWhy === "stopped" || r.exitCode == null) ? `${r.name} stopped` : `${r.name} failed (exit ${r.exitCode})`,
+            detail: shell ? trimDot(r.summary || r.note || "") : "Stopped after timeout",
+            at: r.closed, target: history ? { kind: "history", ws: r.ws, runId: r.id } : auto });
+          continue;
+        }
+        // What finished as the run's level says: a shell run only with results or all; none, never.
+        if (level === "none" || (!failed && level === "problems")) continue;
+        const it = { ...base, ...(r.kind === "shell" ? { place: "Automations · Shell" } : {}), at: r.closed, target: history ? { kind: "history", ws: r.ws, runId: r.id } : null };
         add({ id: `run:${r.id}`, group: "updates", tone: failed ? "warn" : "done", title: `${r.name} ${failed ? "failed" : "finished"}`, ...it,
           detail: r.summary ?? "", ...(r.summary ? {} : history ? { goneNote: "Tab closed", fallbackLabel: "Open in History" } : { gone: true, goneNote: "Tab closed" }) });
         continue;
@@ -261,7 +287,10 @@ export function buildItems({ agents = [], terminals = [], spaces = [], defs = []
       const everyGo = global ? { kind: "automation", ws: "*", name: r.name } : auto;
       if (r.status === "waiting" && a.allowed !== true) {
         if (global) { if (once.has(`waiting/${r.name}`)) continue; once.add(`waiting/${r.name}`); }
-        add({ id: global ? `run:*/${r.name}:waiting` : `run:${r.id}`, group: "needs", tone: "blocked", title: `Allow ${r.name}'s check?`, detail: `${r.cmd ?? a.check ?? ""} · waiting for approval`, ...every, at: r.at ?? now, target: everyGo });
+        // A shell automation's script nobody allowed (made outside Herdr, or changed on disk) before its check.
+        const script = a.scriptAllowed === false;
+        add({ id: global ? `run:*/${r.name}:waiting` : `run:${r.id}`, group: "needs", tone: "blocked", title: script ? `Allow ${r.name}'s script?` : `Allow ${r.name}'s check?`,
+          detail: script ? "Added outside Herdr · waiting for approval" : `${r.cmd ?? a.check ?? ""} · waiting for approval`, ...every, at: r.at ?? now, target: everyGo });
         continue;
       }
       if (now - (r.at ?? 0) >= EXPIRE_MS) continue;

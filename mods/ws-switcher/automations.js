@@ -19,8 +19,17 @@
 //                               newest three); without it a finished run's tab closes
 //   enabled: false              off: only Run now and herdr-ws-run start it
 //   off: client-a, client-b     (a global one) the workspaces it's off in
+//   run: shell                  no agent: the body is a script, run in the folder (shell: bash,
+//                               zsh or sh; terminal: true shows it in a tab, else it runs unseen
+//                               and its output goes to ~/.herdr/runner/logs/<run>.log)
+//   timeout: 15m                a run going longer is stopped (default 2m for a script, none for an agent)
+//   notify: problems            what it tells you: problems, results, all or none (autofacts.js)
+//   missed: skip                a schedule missed while nothing ran: run (within 12 hours), skip, always
+//   dedupe: always              a schedule's check printing the same as last time still starts it
 //   ---
-//   The prompt: the agent's task. {{event}} and the other {{…}} are filled in.
+//   The prompt: the agent's task (or the script). {{event}} and the other {{…}} are filled in;
+//   a script gets them as $HERDR_… variables instead, never in its text.
+//   The front matter is read by autofacts.js, so `check: |` can span lines.
 //
 // One Runner runs them. With the background runner on (bin/herdr-ws-runner), that's
 // a process herdr-core keeps going while Herdr is closed (runner/main.js); else the
@@ -28,13 +37,21 @@
 // A run is a tab in the workspace's "Automations" space (made the first time).
 // A one-time schedule (`when: once …`) writes `enabled: false` in its file when
 // its time comes, so it doesn't stay on.
+// Automatic runs take turns: Settings > Automations' max-parallel agents at once (shell scripts
+// four), the rest wait in order as "queued" runs; Run now never waits. A run past its timeout while
+// its agent still works (or its script runs) is stopped and noted as failed. `when: automation done
+// <name>` starts one after another finishes with its work done (not "nothing to do", nor an end that
+// isn't known); `failed`: after it fails or times out. What it said is {{output}}; a loop of them is
+// an error, and a chain stops five deep. `startup` runs once when the runner starts (not again within 5 minutes), `wake` when
+// the Mac wakes from sleep.
 // A check that prints nothing leaves one "quiet" entry in the runs, counted up
 // while it repeats; one that fails leaves a "failed" one the same way. On a
 // schedule, printing the same as at the last check is nothing new: quiet too.
 // A check runs only once you've allowed that exact line: by saving it in the
 // Automations screen, or with its Allow this check. One that arrives another way
 // (herdr-ws-run --add --check, an edited file) is asked about as soon as it's
-// seen, with a toast, and its automation doesn't start until then.
+// seen, with a toast, and its automation doesn't start until then. A shell automation's
+// script is allowed the same way, by its exact text (Allow this script).
 // Making a tab shows it, so the runner puts your view back straight after.
 // A run whose agent finished its turn closes its tab a few seconds later (runfacts.js
 // says when), and stays in the runs as closed, with what's needed to resume its
@@ -47,18 +64,24 @@
 //                                doesn't replace (scope "global"; `enabled` is for
 //                                that workspace, `everywhere` is the file's)
 //   workspaces.automations.global  the global ones as their files have them
-//   workspaces.automation.runs   the last 100 runs, newest first. A started one has `terminal`,
+//   workspaces.automation.runs   the runs, newest first (25 per automation, 500 in all). A started one has `terminal`,
 //                                `tab`, `space`, `folder`, `expects` (its agent reports), and
 //                                once it does `up`, `app` and, when it's known, `conv`
 //                                { provider, id }: its conversation; `closed` (when) and
 //                                `closedWhy` once the runner closed its tab; `reports` when its
 //                                agent was asked to end with an outcome line (OUTCOME_ASK), and once
 //                                it closed, `outcome` and `summary` when its screen showed that line
-//                                (notif.js outcomeOf; the bell leaves out "nothing to do")
+//                                (notif.js outcomeOf; the bell leaves out "nothing to do"). `notify`: the
+//                                automation's level then. A shell run: `kind: "shell"`, `shell`, "running"
+//                                while its script runs, then "started" and closed, with `exitCode`,
+//                                `durationMs`, `timedOut`, `outcome`, `summary` and `logFile`. A run
+//                                waiting for a slot is "queued"; one stopped by its timeout has `timedOut`
+//                                and closedWhy "timed_out".
+//                                Each automation also has `checkAllowed` and `scriptAllowed` (`allowed`: both).
 // Asked for (shared), by the screen's Run now (the switcher passes it on):
-//   workspaces.automation.run    { workspace, name, at }
-// … and by its Create, Save and Allow this check (read here):
-//   workspaces.automation.allow  { workspace, name, check, at }; workspace "*": a global one
+//   workspaces.automation.run    { workspace, name, text?, at }
+// … and by its Create, Save and Allow this check or script (read here):
+//   workspaces.automation.allow  { workspace, name, check?, script?, at }; workspace "*": a global one
 // Outside calls (bin/herdr-ws-run) are files in ~/.herdr/workspaces/.inbox; with the
 // background runner on, the switcher passes Run now and an allowed check on as files there too.
 // GitHub automations ask GitHub with `gh api` every POLL, one call per repo.
@@ -74,8 +97,12 @@ import { spaces, agents, terminals, focused, run, shared, setShared, home, readT
 import * as fs from "fs/promises";
 import { parseWhen, describe, due, nextAt, shortTime } from "./when.js";
 import { withKnobs } from "./knobs.js";
-import { runCheck } from "./check.js";
-import { closeStep, helpersOf, lookingAt, providerOf } from "./runfacts.js";
+import { runCheck, runShellScript, checkEnv, SCRIPT_MAX } from "./check.js";
+import { closeStep, helpersOf, lookingAt, providerOf, isTimedOut, countActive, terminalOf } from "./runfacts.js";
+import {
+  splitFront, fieldValue, withFrontFields, normCheck, normScript, optionError, effectiveTimeout, effectiveNotify, shouldNotify, formatDuration,
+  shellOf, findChainCycle, pruneRuns,
+} from "./autofacts.js";
 import { OFF_NOTE, everyNext } from "./featuregate.js";
 import { outcomeOf } from "./notif.js";
 
@@ -91,7 +118,15 @@ const OLD_CALL = 3600e3;    // an outside call that waited longer than this (Her
 const OUTCOME_ASK = "When you're done, end your last message with a line of its own saying how it went: `Outcome: done`, `Outcome: failed` or `Outcome: nothing to do`. Herdr shows it in History. If you need an answer from the person before you can finish, ask, and leave that line out.";
 const withOutcome = (task) => (task ? `${task}\n\n${OUTCOME_ASK}` : task);
 const KEEP_TABS = 3;        // each automation keeps its newest runs' tabs; older finished ones close
-const KEEP_RUNS = 100;
+const SHELL_CAP = 4;        // shell scripts running at once (agents: Settings > Automations' max-parallel)
+const STARTUP_GAP = 5 * 60e3; // `startup` automations don't run again within this (a reload of the mod)
+const CHAIN_MAX = 5;        // a chain of automations setting each other off stops this deep
+const OUTPUT_MAX = 4000;    // characters of a run's output passed on as {{output}}
+// A script in a tab: run, say how it ended, then end (or stay, with keep: true). $1 the shell, $2 the script.
+// The line it ends with is one a script wouldn't print itself (an "[exit 1]" of its own isn't its end).
+const SHELL_TAB = 'b=$1; s=$2; k=$3; "$b" -c "$s"; c=$?; printf "\\n[herdr-exit:%s]\\n" "$c"; if [ -n "$k" ]; then exec "${SHELL:-/bin/sh}" -i; fi; exit "$c"';
+const EXIT_LINE = /^\[herdr-exit:(\d+)\]$/;
+const YOUNG = 30e3;         // a run's terminal not listed this soon after it started is still being made
 const POLL = 120e3;         // how often GitHub automations look at their repos
 const MAX_NEW = 10;         // new PRs and issues one look starts at most, per repo
 const MAX_BODY = 4000;      // characters of a PR's or issue's description passed on
@@ -273,18 +308,40 @@ const yes = (v) => /^(true|yes|on|1)$/i.test(String(v ?? "").trim());
 const no = (v) => /^(false|no|off|0)$/i.test(String(v ?? "").trim());
 
 export function parseAutomation(name, file, text, scope = "workspace") {
-  const { head, body } = split(text.replace(/\r\n/g, "\n"));
-  const when = field(head, "when") ?? "";
+  const { entries, body } = splitFront(text);
+  const get = (k) => fieldValue(entries, k);
+  const low = (k) => (get(k) ?? "").trim().toLowerCase() || null;
+  const when = get("when") ?? "";
   const trigger = parseWhen(when);
-  return {
-    name, file, scope, description: field(head, "description") ?? "", when, trigger, summary: describe(trigger),
-    agent: field(head, "agent") || null, model: field(head, "model") || null, effort: field(head, "effort") || null,
-    folder: field(head, "folder") || null, check: field(head, "check") || null,
-    card: yes(field(head, "card")), keep: yes(field(head, "keep")), enabled: !no(field(head, "enabled")),
-    ...(scope === "global" ? { off: (field(head, "off") ?? "").split(",").map((w) => w.trim()).filter(Boolean) } : {}),
-    body: body.replace(/<!--[\s\S]*?-->/g, "").trim(),
+  const mode = low("run") ?? "agent";
+  const a = {
+    name, file, scope, description: get("description") ?? "", when, trigger, summary: describe(trigger),
+    agent: get("agent") || null, model: get("model") || null, effort: get("effort") || null,
+    folder: get("folder") || null, check: normCheck(get("check")) || null,
+    card: yes(get("card")), keep: yes(get("keep")), enabled: !no(get("enabled")),
+    ...(scope === "global" ? { off: (get("off") ?? "").split(",").map((w) => w.trim()).filter(Boolean) } : {}),
+    run: mode, shell: mode === "shell" ? low("shell") ?? "bash" : null, terminal: mode === "shell" && yes(get("terminal")),
+    timeout: get("timeout")?.trim() || null, notify: low("notify"), missed: low("missed") ?? "run", dedupe: low("dedupe") ?? "changed",
+    body: normScript(body),
     error: trigger.kind === "error" ? trigger.error : null,
   };
+  // A value the runner can't follow is the automation's error, as a `when:` it can't read is.
+  a.error ??= ["run", "shell", "timeout", "notify", "missed", "dedupe"].map((k) => optionError(k, get(k))).find(Boolean) ?? null;
+  if (!a.error && mode === "shell" && !a.body) a.error = "A shell automation runs its script: put it under the front matter.";
+  if (!a.error && mode === "shell" && a.card) a.error = "A shell automation has no agent to give a card to: take out card: true.";
+  a.timeoutMs = effectiveTimeout(a);
+  a.notifyLevel = effectiveNotify(a);
+  return a;
+}
+
+// Automations that wait on each other in a loop (`when: automation done <name>`) get it as their error.
+function chainErrors(autos) {
+  for (const a of autos) {
+    if (a.error || a.trigger.kind !== "chain") continue;
+    const loop = findChainCycle(autos, a.name);
+    if (loop) a.error = `A loop: ${loop.join(" → ")}. Each would start the next for ever, so none of them runs.`;
+  }
+  return autos;
 }
 
 async function loadAutomations(at, scope) {
@@ -363,12 +420,17 @@ function itemVars(repo, it) {
 
 const taskText = (t) => [`${t.id}: ${t.title}`, t.body, `The task file is ${tilde(t.file)}.`].filter(Boolean).join("\n\n");
 
+// The first line with text of what a script printed, at most 140 characters.
+const firstOf = (text) => { const l = String(text ?? "").split("\n").map((x) => x.trim()).find(Boolean) ?? ""; return l.length > 140 ? `${l.slice(0, 139)}…` : l; };
+
 // {{name}} from vars; unknown ones stay as written.
 const fill = (text, vars) => text.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (all, k) => (vars[k] ?? all));
 
 export class Runner {
   // h: { presetsFor(workspace), presetLaunch(preset, task), withTask(argv, task), claim(space, workspace),
-  //      featureOn(key): Settings > Features (missing: all on) }
+  //      featureOn(key): Settings > Features (missing: all on),
+  //      automationSetting(key): Settings > Automations (settingsfacts.js; missing: the defaults),
+  //      startWhy: what a `startup` run says set it off }
   // The background runner also gives open(...), tidy(...) and close(run), its own ways to
   // start and close a run's tab without the window, away, what it calls the time it wasn't
   // running, and windowOpen(), whether Herdr's window is open (Herdr toasts for itself then).
@@ -394,10 +456,18 @@ export class Runner {
     this.hold = 0;
     this.loaded = false;
     this.unasked = {};          // "<workspace>/<name>" -> a check nobody has allowed, and since when
+    this.unaskedScripts = {};   // … a shell automation's script nobody has allowed, the same way
+    this.waitQueue = [];        // automatic runs waiting for a parallel slot, oldest first
+    this.launching = { agent: 0, shell: 0 }; // runs between taking a slot and being in the runs
+    this.ghBranch = {};         // repo -> its default branch, for `ci failed`
+    this.cx = null;             // the last cx it was given: for chains set off when a run ends
     this.seen = new Map();      // run id -> what finished() saw of its agent (runfacts.js: closeStep)
     this.closing = new Set();   // run ids whose tab is being closed
     this.convAsked = new Set(); // run ids whose conversation has been looked up
-    this.state = { last: {}, base: {}, seen: 0, runs: [], github: {}, printed: {}, allowed: {}, asked: {}, spaces: {} };
+    this.state = {
+      last: {}, base: {}, seen: 0, runs: [], github: {}, printed: {}, allowed: {}, asked: {}, spaces: {},
+      allowedScripts: {}, askedScripts: {}, githubReview: {}, githubMerged: {}, githubCi: {}, githubLabeled: {},
+    };
     this.store = new Store(STORE);
     this.restored = false;
     this.allowAsked = shared("workspaces.automation.allow")?.at;
@@ -432,14 +502,26 @@ export class Runner {
   // Its check may run: it has none, or you allowed the line as it's written now.
   // A global one's line is allowed once, for every workspace: "*/<name>".
   akey(ws, a) { return `${a.scope === "global" ? "*" : ws}/${a.name}`; }
-  allowed(ws, a) { return !a.check || this.state.allowed[this.akey(ws, a)] === a.check; }
+  checkAllowed(ws, a) { return !a.check || this.state.allowed[this.akey(ws, a)] === a.check; }
+  // Its script may run: it isn't a shell automation, or you allowed the script as it's written now.
+  allowedScript(ws, a) { return a.run !== "shell" || this.state.allowedScripts[this.akey(ws, a)] === a.body; }
+  allowed(ws, a) { return this.checkAllowed(ws, a) && this.allowedScript(ws, a); }
+  // An allow from the screen (Create, Save, Allow this check or script) or the inbox:
+  // { workspace, name, check?, script? }, each the text as it's written now. True when it took one.
+  allow(ask) {
+    if (!ask?.workspace || !ask.name) return false;
+    const k = `${ask.workspace}/${ask.name}`;
+    let took = false;
+    if (typeof ask.check === "string" && normCheck(ask.check)) { this.state.allowed[k] = normCheck(ask.check); took = true; }
+    if (typeof ask.script === "string" && normScript(ask.script)) { this.state.allowedScripts[k] = normScript(ask.script); took = true; }
+    return took;
+  }
   // The screen's Create, Save and Allow this check: that line, for that automation.
   approvals() {
     const ask = shared("workspaces.automation.allow") ?? null;
     if (!ask || ask.at === this.allowAsked) return;
     this.allowAsked = ask.at;
-    if (Date.now() - ask.at > 15000 || !ask.workspace || !ask.name || !ask.check) return;
-    this.state.allowed[`${ask.workspace}/${ask.name}`] = String(ask.check);
+    if (Date.now() - ask.at > 15000 || !this.allow(ask)) return;
     this.save();
     if (this.loaded) this.publish();
   }
@@ -452,17 +534,27 @@ export class Runner {
       if (this.def(ws)) for (const a of autos) if (a.enabled && !a.error) fn(ws, a);
     }
   }
-  lastRun(ws, name) { return this.state.runs.find((r) => r.ws === ws && r.name === name && r.status === "started") ?? null; }
+  lastRun(ws, name) { return this.state.runs.find((r) => r.ws === ws && r.name === name && (r.status === "started" || r.status === "running")) ?? null; }
   // A run's agent is working or waiting on you. By terminal and tab: a terminal's
   // address can come back for another one later (after a restart, say); a tab's id can't.
   // Helpers it started that are still alive count as working: an orchestrator waits for them.
   busy(r) {
+    if (r?.status === "running") return true; // a shell script still running
+    if (r?.kind === "shell") return Boolean(r.terminal && !r.closed && this.there(r));
     const ag = r?.terminal ? agents().find((x) => x.address === r.terminal && (!r.tab || x.tab === r.tab)) : null;
     if (ag && this.there(r) && helpersOf(r.terminal, terminals()).length) return true;
     return Boolean(ag ? ag.status === "working" || ag.status === "blocked" : r?.stuck && this.there(r));
   }
   // A run's terminal is still there.
   there(r) { return terminals().some((t) => t.address === r.terminal && t.state === "live"); }
+  // The run's own terminal as herdr-core lists it now (live, or ended and kept): at its address and,
+  // when the run has a tab, labelled with that tab. Null when there's none: closed, or its address is
+  // another terminal's now (after a restart). Nothing is read or ended at an address without this.
+  ownTerminal(r, terms = terminals()) { return terminalOf(r, terms); }
+  // … and it's still running.
+  liveTab(r, terms) { return this.ownTerminal(r, terms)?.state === "live"; }
+  // Some automation here waits on this one (`when: automation done|failed <name>`).
+  hasFollowers(ws, name) { return (this.list[ws] ?? []).some((a) => a.enabled && !a.error && a.trigger.kind === "chain" && a.trigger.target === name); }
 
   // A run whose agent has reported nothing a minute in is most likely stopped at a
   // question of its own, before its first message (Claude's "do you trust this
@@ -493,7 +585,7 @@ export class Runner {
 
   // A run's record, changed: a new object, since what's published may be the old one.
   patch(id, fields) {
-    this.state.runs = this.state.runs.map((x) => (x.id === id ? { ...x, ...fields } : x));
+    this.state.runs = this.prune(this.state.runs.map((x) => (x.id === id ? { ...x, ...fields } : x)));
     this.save();
     this.publish();
   }
@@ -522,6 +614,24 @@ export class Runner {
         helpers: ag ? helpersOf(r.terminal, terms).length : 0, looking: lookingAt(view, r), seen: this.seen.get(r.id) ?? null, now,
       });
       if (step.seen) this.seen.set(r.id, step.seen); else this.seen.delete(r.id);
+      // Its agent's first finished turn is noted (`turnDone`): its timeout was for that turn, not for
+      // what you ask it after. A run that keeps its tab never closes: the automations waiting on it
+      // start then, with what its agent said (read off its screen: how it went decides which start).
+      if (!r.turnDone && step.seen?.worked && step.seen.since === now && (ag?.status === "done" || ag?.status === "idle")) {
+        const a = this.find(r.ws, r.name);
+        const kept = Boolean(a?.keep || r.card) && !r.chained;
+        this.patch(r.id, { turnDone: now, ...(kept ? { chained: true } : {}) });
+        if (kept && this.hasFollowers(r.ws, r.name)) {
+          cx.spawn(async () => {
+            const report = r.reports ? await this.report(r.terminal) : null;
+            // Asked for its outcome line and didn't give one (it asked you something, say): not known, nothing starts.
+            const outcome = report?.outcome ?? (r.reports ? null : "done");
+            if (outcome === "done" || outcome === "failed") {
+              this.triggerChains(r.ws, r.name, outcome, { output: report?.summary ?? r.summary ?? "", chainDepth: r.chainDepth ?? 0, runId: r.id });
+            }
+          });
+        }
+      }
       if (step.needsYou && this.h.windowOpen && !this.h.windowOpen()) notify({
         title: `${r.name} needs you`, level: "warning",
         body: `Its agent is waiting for you, in ${this.def(r.ws)?.name ?? r.ws} › ${SPACE}.`,
@@ -535,24 +645,121 @@ export class Runner {
   // Closes a finished run's tab (the background runner ends its terminal), after noting
   // its conversation (the launcher's note of it goes once the terminal is gone) and, for an
   // agent asked for an outcome line, that line and the one before it from its screen.
-  closeRun(cx, r, app) {
+  // why: "finished", or "timed_out" (with what to note in `extra`: outcome, timedOut, summary).
+  // Then the automations waiting on it start.
+  closeRun(cx, r, app, why = "finished", extra = {}) {
     this.closing.add(r.id);
     cx.spawn(async () => {
       try {
         const conv = r.conv ?? (await this.conversation(r.terminal, app ?? r.app));
-        // Only for the bell (Notifications off: not read).
-        const report = r.reports && this.h.featureOn?.("notifications") !== false ? await this.report(r.terminal) : null;
+        // For the bell, and for the automations waiting on this one (with Notifications off, only for them).
+        const report = r.reports && why === "finished" && (this.h.featureOn?.("notifications") !== false || this.hasFollowers(r.ws, r.name)) ? await this.report(r.terminal) : null;
         if (this.h.close) await this.h.close(r);
         else run("tab.close", { id: r.tab, confirmed: true });
-        this.patch(r.id, {
-          closed: Date.now(), closedWhy: "finished", ...(conv ? { conv } : {}),
-          ...(report?.outcome ? { outcome: report.outcome } : {}), ...(report?.summary ? { summary: report.summary } : {}),
-        });
+        const fields = {
+          closed: Date.now(), closedWhy: why, ...(conv ? { conv } : {}),
+          ...(report?.outcome ? { outcome: report.outcome } : {}), ...(report?.summary ? { summary: report.summary } : {}), ...extra,
+        };
+        this.patch(r.id, fields);
+        const a = this.find(r.ws, r.name);
+        // An agent asked for its outcome line that gave none: how it went isn't known. One not asked: done.
+        const outcome = fields.outcome ?? (r.reports ? null : "done");
+        if (a && !r.chained) this.ended(r.ws, a, { id: r.id, outcome, timedOut: fields.timedOut === true, summary: fields.summary ?? "", output: fields.summary ?? "", chainDepth: r.chainDepth ?? 0, toast: false });
       } finally {
         this.closing.delete(r.id);
         this.seen.delete(r.id);
       }
     });
+  }
+
+  // Agent runs going longer than their automation's timeout while their agent still works on its
+  // task (or hasn't said yet): their tab closes and they're noted as failed, timed out (the bell pins
+  // it; `automation failed <name>` ones start). Not one that finished its turn (a kept or a card's run,
+  // what you ask it after included) or waits on you. One whose tab is gone (closed by hand, or its
+  // address another terminal's now) has nothing to stop: it's noted closed, quietly, and nothing is ended.
+  timeouts(cx, now) {
+    let terms = null, list = null;
+    for (const r of this.state.runs) {
+      if (r.status !== "started" || r.closed || r.kind === "shell" || r.turnDone || this.closing.has(r.id)) continue;
+      if (!(this.h.close ? r.terminal : r.tab)) continue;
+      const a = this.find(r.ws, r.name);
+      const ms = a ? effectiveTimeout(a) : 0;
+      if (!isTimedOut(r, ms, now)) continue;
+      terms ??= terminals();
+      list ??= agents();
+      if (!this.liveTab(r, terms)) {
+        this.patch(r.id, { closed: now, closedWhy: "gone" });
+        this.seen.delete(r.id);
+        continue;
+      }
+      const ag = list.find((x) => x.address === r.terminal && (!r.tab || x.tab === r.tab));
+      if (ag && ag.status !== "working") continue;
+      const summary = `Stopped after ${formatDuration(ms)} timeout.`;
+      this.closeRun(cx, r, r.app, "timed_out", { outcome: "failed", timedOut: true, summary });
+      if (shouldNotify(effectiveNotify(a), "problem")) notify({
+        title: `${a.name} timed out`, body: `${summary} Its agent was still going in ${this.def(r.ws)?.name ?? r.ws} › ${SPACE}.`, level: "warning", action: openAt(r.ws, a),
+      });
+    }
+  }
+
+  // Shell runs shown in a tab (terminal: true): every 2s, a look at its screen for the
+  // "[herdr-exit:N]" line SHELL_TAB prints. Ended: noted, its tab closed (unless keep: true), and the
+  // ones waiting on it start. Past its timeout: closed and noted as timed out. Only at its own
+  // terminal (ownTerminal): one that's gone, or whose address is another terminal's now (after a
+  // herdr-core restart), is never read or ended (nor herdr-core started for it, under Start at login):
+  // it's noted closed, how it ended unknown, and nothing waiting on it starts.
+  shellTabs(cx, now) {
+    if (now - (this.tabsLooked ?? 0) < 2000) return;
+    this.tabsLooked = now;
+    const terms = terminals();
+    for (const r of this.state.runs) {
+      if (r.kind !== "shell" || r.status !== "started" || r.closed || !r.terminal || this.closing.has(r.id)) continue;
+      const a = this.find(r.ws, r.name);
+      const ms = a ? effectiveTimeout(a) : 0;
+      const own = this.ownTerminal(r, terms);
+      if (!own) {
+        if (now - (r.at ?? 0) < YOUNG) continue; // just made: not listed yet
+        this.patch(r.id, { closed: now, finishedAt: now, durationMs: now - r.at, exitCode: null, timedOut: false, outcome: null, summary: "Its tab closed before it said how it ended.", closedWhy: "gone" });
+        continue;
+      }
+      const live = own.state === "live";
+      this.closing.add(r.id);
+      cx.spawn(async () => {
+        try {
+          // Read even once it has ended: a terminal that's kept after its program exits still has its screen.
+          const screen = await exec("hc", ["read", String(r.terminal), "--lines", "200"], { timeout: 5000 }).catch(() => null);
+          const rows = String(screen?.code === 0 ? screen.stdout : "").replace(/\r/g, "").split("\n");
+          let at = -1;
+          for (let i = rows.length - 1; i >= 0; i--) if (EXIT_LINE.test(rows[i].trim())) { at = i; break; }
+          const timedOut = at < 0 && live && isTimedOut(r, ms, Date.now());
+          if (at < 0 && live && !timedOut) return;
+          const code = at >= 0 ? Number(EXIT_LINE.exec(rows[at].trim())[1]) : null;
+          const said = rows.slice(0, Math.max(0, at)).join("\n");
+          const summary = timedOut ? `Stopped after ${formatDuration(ms)} timeout.` : code === null ? "Its tab closed before it said how it ended." : firstOf(said) || null;
+          if (timedOut || !a?.keep) {
+            if (this.h.close) await this.h.close(r);
+            else if (r.tab) run("tab.close", { id: r.tab, confirmed: true });
+          }
+          const outcome = timedOut || (code !== null && code !== 0) ? "failed" : code === null ? null : said.trim() ? "done" : "nothing to do";
+          const end = Date.now();
+          this.patch(r.id, { closed: end, finishedAt: end, durationMs: end - r.at, exitCode: code, timedOut, outcome, summary, closedWhy: timedOut ? "timed_out" : code === null ? "gone" : "finished" });
+          if (a) this.ended(r.ws, a, { id: r.id, outcome, timedOut, exitCode: code, summary: summary ?? "", output: said.slice(-OUTPUT_MAX), chainDepth: r.chainDepth ?? 0, timeoutMs: ms });
+        } finally {
+          this.closing.delete(r.id);
+        }
+      });
+    }
+  }
+
+  // `startup` (the runner has just started: not again within STARTUP_GAP) or `wake` (the computer
+  // woke): those automations run on the next tick.
+  lifecycle(event, why, now) {
+    if (event === "startup") {
+      if (now - (this.state.lastStartup ?? 0) < STARTUP_GAP) return;
+      this.state.lastStartup = now;
+      this.save();
+    }
+    this.each((ws, a) => { if (a.trigger.kind === "lifecycle" && a.trigger.event === event) this.pending.push({ ws, name: a.name, why }); });
   }
 
   // How a run's agent said it went, read off its screen (`hc read`): { outcome, summary }, or null
@@ -579,9 +786,17 @@ export class Runner {
 
   // Every workspace's automations, read again (after the switcher's folder watch).
   async load(cx) {
+    this.cx = cx;
     if (!this.restored) {
       this.state = { ...this.state, ...((await this.store.read()) ?? {}) };
+      for (const k of ["allowedScripts", "askedScripts", "githubReview", "githubMerged", "githubCi", "githubLabeled"]) this.state[k] ??= {};
       this.restored = true;
+      // What was waiting or running when the last runner stopped doesn't carry on: its queue and
+      // its scripts went with it.
+      const now = Date.now();
+      this.state.runs = this.state.runs.map((r) => (r.status === "queued" ? { ...r, status: "skipped", note: "The runner stopped while it waited for a slot." }
+        : r.status === "running" ? { ...r, status: "started", closed: now, closedWhy: "stopped", outcome: "failed", summary: "The runner stopped while its script ran." } : r));
+      this.logsSwept = false; // once its runs are known (below)
     }
     // Before the files: a save in the screen allows its check, then writes the file.
     this.approvals();
@@ -592,9 +807,9 @@ export class Runner {
       // A copy each: on here unless its file is off, or names this workspace in `off:`.
       const forAll = globals.filter((g) => !own.some((o) => o.name === g.name))
         .map((g) => ({ ...g, everywhere: g.enabled, enabled: g.enabled && !g.off.includes(d.id) }));
-      list[d.id] = [...own, ...forAll];
+      list[d.id] = chainErrors([...own, ...forAll]);
     }
-    this.globals = globals;
+    this.globals = chainErrors(globals);
     const now = Date.now();
     for (const [ws, autos] of Object.entries(list)) {
       if (autos.some((a) => a.trigger.kind === "board")) this.tasks[ws] ??= await loadTasks(ws);
@@ -604,7 +819,7 @@ export class Runner {
     this.list = list;
     // Each github automation's repo; one that couldn't be found is looked for again.
     for (const k of Object.keys(this.repos)) if (this.repos[k].error) delete this.repos[k];
-    const watched = new Set();
+    const watched = new Set(); // "<repo>\t<event>", and "<repo>\tlabeled\t<label>" for each label
     for (const [ws, autos] of Object.entries(list)) {
       for (const a of autos) {
         if (a.trigger.kind !== "github") continue;
@@ -613,46 +828,74 @@ export class Runner {
           // Looked for again when the workspace's folders change.
           if (this.repos[k]?.sig !== JSON.stringify(repoFolders(def))) this.repos[k] = await everyRepo(def);
         } else this.repos[k] ??= await repoOf(def, a.trigger.repo);
-        if (a.enabled) for (const r of watchedOf(this.repos[k])) watched.add(r.repo);
+        if (!a.enabled || a.error || !this.def(ws)) continue;
+        const event = a.trigger.event ?? "opened";
+        for (const r of watchedOf(this.repos[k])) {
+          watched.add(`${r.repo}\t${event}`);
+          if (event === "labeled") watched.add(`${r.repo}\tlabeled\t${a.trigger.label.toLowerCase()}`);
+        }
       }
     }
-    // A repo nothing watches forgets what it saw, so watching it again starts afresh.
-    for (const repo of Object.keys(this.state.github)) if (!watched.has(repo)) delete this.state.github[repo];
+    // A kind of event (or a label) nothing watches on a repo forgets what it saw there, so watching it
+    // again starts afresh: its first look only notes what's there.
+    const kinds = { opened: this.state.github, "review-requested": this.state.githubReview, merged: this.state.githubMerged, failed: this.state.githubCi, labeled: this.state.githubLabeled };
+    for (const [event, map] of Object.entries(kinds)) {
+      for (const repo of Object.keys(map)) if (!watched.has(`${repo}\t${event}`)) delete map[repo];
+    }
+    for (const [repo, byLabel] of Object.entries(this.state.githubLabeled)) {
+      // Kept per label since automations v2's review; an older list of "number:label" pairs starts afresh.
+      if (!byLabel || typeof byLabel !== "object" || Array.isArray(byLabel)) { delete this.state.githubLabeled[repo]; continue; }
+      for (const label of Object.keys(byLabel)) if (!watched.has(`${repo}\tlabeled\t${label}`)) delete byLabel[label];
+      if (!Object.keys(byLabel).length) delete this.state.githubLabeled[repo];
+    }
     // What a check last printed goes with its automation, and with the check as it was written then.
     for (const k of Object.keys(this.state.printed)) {
       const i = k.indexOf("/");
       if (list[k.slice(0, i)]?.find((a) => a.name === k.slice(i + 1))?.check !== this.state.printed[k].cmd) delete this.state.printed[k];
     }
-    // An allowed line, and having asked about one, go with their automation.
-    for (const map of [this.state.allowed, this.state.asked]) {
+    // An allowed line or script, and having asked about one, go with their automation.
+    const what = [[this.state.allowed, (a) => a.check], [this.state.asked, (a) => a.check],
+      [this.state.allowedScripts, (a) => a.run === "shell"], [this.state.askedScripts, (a) => a.run === "shell"]];
+    for (const [map, has] of what) {
       for (const k of Object.keys(map)) {
         const i = k.indexOf("/"), w = k.slice(0, i);
         const autos = w === "*" ? globals : list[w]?.filter((a) => a.scope !== "global");
-        if (autos && !autos.some((a) => a.name === k.slice(i + 1) && a.check)) delete map[k];
+        if (autos && !autos.some((a) => a.name === k.slice(i + 1) && has(a))) delete map[k];
       }
     }
-    // A check nobody has allowed is asked about once, when it's first seen.
+    // A check or a script nobody has allowed is asked about once, when it's first seen.
     for (const [ws, autos] of Object.entries(list)) {
       for (const a of autos) {
         const k = this.akey(ws, a);
-        if (!a.check || this.state.allowed[k] === a.check || this.state.asked[k] === a.check) { delete this.unasked[k]; continue; }
-        if (this.unasked[k]?.check !== a.check) this.unasked[k] = { check: a.check, at: now };
+        if (!a.check || this.state.allowed[k] === a.check || this.state.asked[k] === a.check) delete this.unasked[k];
+        else if (this.unasked[k]?.check !== a.check) this.unasked[k] = { check: a.check, at: now };
+        const script = a.run === "shell" ? a.body : null;
+        if (!script || this.state.allowedScripts[k] === script || this.state.askedScripts[k] === script) delete this.unaskedScripts[k];
+        else if (this.unaskedScripts[k]?.script !== script) this.unaskedScripts[k] = { script, at: now };
       }
     }
-    for (const k of Object.keys(this.unasked)) {
-      const i = k.indexOf("/"), w = k.slice(0, i);
-      if (!(w === "*" ? globals : list[w])?.some((a) => a.name === k.slice(i + 1))) delete this.unasked[k];
+    for (const map of [this.unasked, this.unaskedScripts]) {
+      for (const k of Object.keys(map)) {
+        const i = k.indexOf("/"), w = k.slice(0, i);
+        if (!(w === "*" ? globals : list[w])?.some((a) => a.name === k.slice(i + 1))) delete map[k];
+      }
     }
     // A workspace that's gone takes its runs and times with it (one with a broken
     // workspace.jsonc is still there).
     const there = new Set((shared("workspaces.defs") ?? []).map((d) => d.id));
     if (there.size) {
-      this.state.runs = this.state.runs.filter((r) => there.has(r.ws));
-      for (const map of [this.state.last, this.state.base, this.state.allowed, this.state.asked]) for (const k of Object.keys(map)) if (!k.startsWith("*/") && !there.has(k.split("/")[0])) delete map[k];
+      const gone = this.state.runs.filter((r) => !there.has(r.ws));
+      if (gone.length) { this.state.runs = this.state.runs.filter((r) => there.has(r.ws)); this.dropLogs(gone.map((r) => r.logFile)); }
+      for (const map of [this.state.last, this.state.base, this.state.allowed, this.state.asked, this.state.allowedScripts, this.state.askedScripts]) for (const k of Object.keys(map)) if (!k.startsWith("*/") && !there.has(k.split("/")[0])) delete map[k];
     }
+    if (this.logsSwept === false) { this.logsSwept = true; await this.sweepLogs(now); }
     const gate = this.gate(now);
     // Off, or just back on: what came due meanwhile doesn't run late.
-    if (!this.loaded) { this.loaded = true; if (gate.on && !gate.back) this.catchUp(this.state.seen || now, now, this.h.away ?? "while Herdr was closed"); }
+    if (!this.loaded) {
+      this.loaded = true;
+      if (gate.on && !gate.back) this.catchUp(this.state.seen || now, now, this.h.away ?? "while Herdr was closed");
+      if (gate.on) this.lifecycle("startup", this.h.startWhy ?? "Herdr started", now);
+    }
     this.save();
     this.watchFiles(cx);
     this.publish();
@@ -662,6 +905,8 @@ export class Runner {
   // run, because Herdr was closed or its timer stopped while the Mac slept: each runs once.
   // One whose misses are all older than that doesn't run late: it's logged as
   // "missed" (how many times, and the last), and one toast lists them all.
+  // `missed: skip` never runs late and says nothing; `missed: always` runs once however late
+  // (up to LOOK_BACK).
   catchUp(from, now, reason) {
     const cutoff = now - MISSED;
     const older = Math.max(from, now - LOOK_BACK);
@@ -669,6 +914,7 @@ export class Runner {
     let one = null; // the automation the toast is about, when it's about one
     this.each((ws, a) => {
       if (a.trigger.kind !== "at" && a.trigger.kind !== "cron" && a.trigger.kind !== "once") return;
+      if (a.missed === "skip") return;
       const last = this.state.last[`${ws}/${a.name}`] ?? 0;
       let missed = null;
       for (let t = Math.floor(Math.max(from, cutoff) / 60e3) * 60e3; t < Math.floor(now / 60e3) * 60e3; t += 60e3) {
@@ -683,6 +929,7 @@ export class Runner {
       }
       if (!latest) return;
       const when = `${count > 1 ? `${count} times, last ` : ""}${shortTime(latest, now)}`;
+      if (a.missed === "always") { this.pending.push({ ws, name: a.name, why: `Missed ${when} ${reason}` }); return; }
       this.log({ ws, name: a.name, at: now, why: `Missed ${when} ${reason}`, status: "missed", note: "Over 12 hours ago, so it didn't run late. Run now runs it" });
       report.push(`${a.name} (${this.def(ws)?.name ?? ws}, ${when})`);
       one = report.length === 1 ? { ws, a } : null;
@@ -713,7 +960,14 @@ export class Runner {
   }
 
   warningOf(ws, a, def) {
-    if (!this.allowed(ws, a)) return "Its check hasn't been allowed yet, so it doesn't start. Read the command, then allow it.";
+    const check = this.checkAllowed(ws, a), script = this.allowedScript(ws, a);
+    if (!check && !script) return "Its script and its check haven't been allowed yet, so it doesn't run. Read them, then allow them.";
+    if (!script) return "Its script hasn't been allowed yet, so it doesn't run. Read it, then allow it.";
+    if (!check) return "Its check hasn't been allowed yet, so it doesn't start. Read the command, then allow it.";
+    // A script without a tab is one call, and Herdr stops any call after 10 minutes.
+    if (a.run === "shell" && !a.terminal && a.timeout && (a.timeoutMs === 0 || a.timeoutMs > SCRIPT_MAX)) {
+      return `Without a tab its script is stopped after ${formatDuration(SCRIPT_MAX)}, whatever its timeout says. For longer, give it terminal: true.`;
+    }
     const failing = this.checkFailing(ws, a);
     if (failing) return `Its check failed ${shortTime(failing.at)}: ${failing.what} No agent starts until the check works. Try it under Details.`;
     if (a.trigger.kind === "once") return a.enabled && a.trigger.at < Date.now() - 60e3 ? "Its time has passed and it didn't run. Change the date, or use Run now." : null;
@@ -731,11 +985,12 @@ export class Runner {
       const def = this.def(ws);
       out[ws] = autos.map((a) => ({
         ...a, next: this.next(ws, a, now), allowed: this.allowed(ws, a),
+        checkAllowed: this.checkAllowed(ws, a), scriptAllowed: this.allowedScript(ws, a),
         warning: this.warningOf(ws, a, def),
       }));
     }
     if (JSON.stringify(out) !== JSON.stringify(shared("workspaces.automations") ?? null)) setShared("workspaces.automations", out);
-    const globals = this.globals.map((a) => ({ ...a, allowed: this.allowed("*", a) }));
+    const globals = this.globals.map((a) => ({ ...a, allowed: this.allowed("*", a), checkAllowed: this.checkAllowed("*", a), scriptAllowed: this.allowedScript("*", a) }));
     if (JSON.stringify(globals) !== JSON.stringify(shared("workspaces.automations.global") ?? null)) setShared("workspaces.automations.global", globals);
     if (JSON.stringify(this.state.runs) !== JSON.stringify(shared("workspaces.automation.runs") ?? null)) setShared("workspaces.automation.runs", this.state.runs);
   }
@@ -743,17 +998,32 @@ export class Runner {
   // A check nobody has allowed is asked about once, a few seconds after it's first
   // seen: the screen's own Save allows it, and that can arrive just after the file.
   ask(now) {
+    const cut = (t) => (t.length > 160 ? `${t.slice(0, 160)}…` : t);
+    const where = (ws) => (ws === "*" ? "every workspace" : this.def(ws)?.name ?? ws);
+    const autoOf = (k) => { const i = k.indexOf("/"), ws = k.slice(0, i); return [ws, ws === "*" ? this.globals.find((g) => g.name === k.slice(i + 1)) : this.find(ws, k.slice(i + 1))]; };
     for (const [k, u] of Object.entries(this.unasked)) {
       if (now - u.at < ASK_AFTER) continue;
       delete this.unasked[k];
-      const i = k.indexOf("/"), ws = k.slice(0, i);
-      const a = ws === "*" ? this.globals.find((g) => g.name === k.slice(i + 1)) : this.find(ws, k.slice(i + 1));
-      if (!a || a.check !== u.check || this.allowed(ws, a) || this.state.asked[k] === a.check) continue;
+      const [ws, a] = autoOf(k);
+      if (!a || a.check !== u.check || this.checkAllowed(ws, a) || this.state.asked[k] === a.check) continue;
       this.state.asked[k] = a.check;
       this.save();
       notify({
         title: `Allow ${a.name}'s check?`,
-        body: `In ${ws === "*" ? "every workspace" : this.def(ws)?.name ?? ws}. Before each start, Herdr would run: ${a.check.length > 160 ? `${a.check.slice(0, 160)}…` : a.check}. It doesn't start until you allow that in Automations.`,
+        body: `In ${where(ws)}. Before each start, Herdr would run: ${cut(a.check)}. It doesn't start until you allow that in Automations.`,
+        level: "warning", action: openAt(ws, a),
+      });
+    }
+    for (const [k, u] of Object.entries(this.unaskedScripts)) {
+      if (now - u.at < ASK_AFTER) continue;
+      delete this.unaskedScripts[k];
+      const [ws, a] = autoOf(k);
+      if (!a || a.run !== "shell" || a.body !== u.script || this.allowedScript(ws, a) || this.state.askedScripts[k] === a.body) continue;
+      this.state.askedScripts[k] = a.body;
+      this.save();
+      notify({
+        title: `Allow ${a.name}'s script?`,
+        body: `In ${where(ws)}. It runs this ${shellOf(a)} script, with no agent: ${cut(a.body.replace(/\s*\n\s*/g, "; "))}. It doesn't run until you allow it in Automations.`,
         level: "warning", action: openAt(ws, a),
       });
     }
@@ -762,6 +1032,7 @@ export class Runner {
   // Every 500ms: from the switcher's timer, or the background runner's.
   tick(cx) {
     if (!this.loaded) return;
+    this.cx = cx;
     this.approvals();
     const now = Date.now();
     // Automations off: the minutes still pass (so nothing is caught up later) and runs going
@@ -774,8 +1045,12 @@ export class Runner {
     }
     const minute = Math.floor(now / 60e3);
     if (minute !== this.minute) {
-      // Minutes skipped since the last tick (the Mac slept): their schedules run late, once.
-      if (on && this.minute !== undefined && minute > this.minute + 1) this.catchUp((this.minute + 1) * 60e3, now, "while the Mac was asleep");
+      // Minutes skipped since the last tick (the Mac slept): their schedules run late, once, and
+      // the `wake` automations run.
+      if (on && this.minute !== undefined && minute > this.minute + 1) {
+        this.catchUp((this.minute + 1) * 60e3, now, "while the Mac was asleep");
+        this.lifecycle("wake", "The computer woke from sleep", now);
+      }
       this.minute = minute;
       const at = new Date(minute * 60e3);
       if (on) this.each((ws, a) => { if (due(a.trigger, at)) this.fire(cx, ws, a, `The ${shortTime(at.getTime(), now)} schedule`); });
@@ -788,6 +1063,9 @@ export class Runner {
     this.watchAgents(cx);
     this.stalled(now);
     this.finished(cx, now);
+    this.timeouts(cx, now);
+    this.shellTabs(cx, now);
+    this.drain(cx, on);
     for (const [k, f] of Object.entries(this.files)) {
       if (now - f.at >= QUIET) { delete this.files[k]; this.filesFire(cx, f); }
     }
@@ -806,7 +1084,8 @@ export class Runner {
   }
 
   // Starts an automation. how: { manual } (Run now, herdr-ws-run: even when it's
-  // off or its last run is working), { key } (one run per task or agent).
+  // off or its last run is working), { key } (one run per task or agent), { chainDepth }
+  // (how many automations set each other off before this one).
   // Automations off: nothing starts; a manual start is noted as skipped.
   fire(cx, ws, a, why, vars = {}, how = {}) {
     const k = `${ws}/${a.name}`, key = how.key ? `${k}#${how.key}` : k, now = Date.now();
@@ -815,7 +1094,7 @@ export class Runner {
       return;
     }
     if (!how.manual) {
-      if (this.starting.has(key)) return;
+      if (this.starting.has(key) || this.waitQueue.some((q) => q.key === key)) return;
       if (now - ((how.key ? this.recent.get(key) : this.state.last[k]) ?? 0) < GAP) return;
       if (how.key) this.recent.set(key, now);
       this.state.last[k] = now;
@@ -828,7 +1107,8 @@ export class Runner {
         return;
       }
     }
-    cx.spawn(async (cx) => { await this.start(ws, a, why, vars, key, how.folder, Boolean(how.manual)); cx.notify(); });
+    const extra = how.chainDepth ? { chainDepth: how.chainDepth } : {};
+    cx.spawn(async (cx) => { await this.start(ws, a, why, vars, key, how.folder, Boolean(how.manual), extra); cx.notify(); });
   }
 
   // A one-time schedule has had its turn: `enabled: false` in its file, which the
@@ -840,19 +1120,20 @@ export class Runner {
       for (let i = 0; i < 3; i++) {
         const old = await readTextFile(a.file);
         if (old === null) return;
-        const parts = split(old);
-        const head = [...parts.head.filter((l) => !/^enabled\s*:/.test(l)), "enabled: false"];
-        try { await writeTextFile(a.file, `---\n${head.join("\n")}\n---\n${parts.body}`, old); return; } catch {}
+        // Through autofacts.js, which reads a `check: |` block whole.
+        try { await writeTextFile(a.file, withFrontFields(old, { enabled: false }), old); return; } catch {}
       }
     });
   }
 
   // Starts of one automation take turns, so a burst of calls all run, one after another.
-  start(ws, a, why, vars, key, place, manual) {
+  // extra: { chainDepth, reserved (a slot is held for it: the queue's), checked (its check's
+  // output, from before it waited) }.
+  start(ws, a, why, vars, key, place, manual, extra = {}) {
     const at = Date.now();
     this.starting.set(key, (this.starting.get(key) ?? 0) + 1);
     const go = async () => {
-      try { await this.launch(ws, a, why, vars, at, place, manual); }
+      try { await this.launch(ws, a, why, vars, at, place, manual, { ...extra, key }); }
       catch (e) {
         this.log({ ws, name: a.name, at, why, status: "failed", note: message(e) });
         notify({ title: `${a.name} didn't start`, body: message(e), level: "error" });
@@ -865,73 +1146,222 @@ export class Runner {
     return turn;
   }
 
+  // --- taking turns: how many run at once ---
+
+  kindOf(a) { return a.run === "shell" ? "shell" : "agent"; }
+  // How many of a kind may run at once (0: no limit).
+  cap(kind) {
+    if (kind === "shell") return SHELL_CAP;
+    const n = Number(this.h.automationSetting?.("max-parallel") ?? 2);
+    return Number.isInteger(n) && n >= 0 ? n : 2;
+  }
+  // How many of a kind run now, those being started included.
+  going(kind) {
+    const c = countActive(this.state.runs, agents(), terminals(), Date.now());
+    return (kind === "shell" ? c.shells : c.agents) + this.launching[kind];
+  }
+  free(kind) { const cap = this.cap(kind); return cap === 0 || this.going(kind) < cap; }
+
+  // An automatic run with no slot: a "queued" entry in the runs, and its turn in the queue (once per key).
+  enqueue(ws, a, why, vars, place, at, extra, checked) {
+    const kind = this.kindOf(a);
+    if (this.waitQueue.some((q) => q.key === extra.key)) return;
+    const id = this.log({
+      ws, name: a.name, at, why, status: "queued", ...(kind === "shell" ? { kind: "shell", shell: shellOf(a) } : {}),
+      note: `Waiting for a parallel slot (${this.going(kind)} of ${this.cap(kind)} busy)`,
+    });
+    this.waitQueue.push({ key: extra.key, ws, name: a.name, why, vars, place, at, kind, id, extra: { ...(extra.chainDepth ? { chainDepth: extra.chainDepth } : {}), ...(checked !== undefined ? { checked } : {}) } });
+  }
+
+  // Each tick: the queued runs whose kind has a free slot start, oldest first. Automations off,
+  // or an automation that's gone or off: its queued run is noted as skipped.
+  drain(cx, on) {
+    if (!this.waitQueue.length) return;
+    const left = [];
+    for (const q of this.waitQueue) {
+      const a = this.find(q.ws, q.name);
+      const why = !on ? OFF_NOTE : !a ? "It was taken out while it waited." : !a.enabled || a.error ? "It was turned off while it waited." : null;
+      if (why) { this.patch(q.id, { status: "skipped", note: why }); continue; }
+      if (!this.free(q.kind)) { left.push(q); continue; }
+      this.launching[q.kind]++;
+      this.state.runs = this.state.runs.filter((r) => r.id !== q.id);
+      cx.spawn(async (cx) => { await this.start(q.ws, a, q.why, q.vars, q.key, q.place, false, { ...q.extra, reserved: true }); cx.notify(); });
+    }
+    this.waitQueue = left;
+  }
+
   // place: where it runs when the automation names no folder (a github one's repo), else the root.
-  // manual: started by hand or from outside, so it starts whatever its check says.
-  async launch(ws, a, why, vars, at, place, manual) {
-    // Turned off while it waited its turn: it doesn't start (nor its check).
-    if (!this.automationsOn()) { this.log({ ws, name: a.name, at, why, status: "skipped", note: OFF_NOTE }); return; }
-    const def = this.def(ws);
-    if (!def) throw new Error("Its workspace is gone.");
-    const b = boardOf(def);
-    const name = a.agent || b.agent;
-    const folder = a.folder ? folderPath(def, a.folder) : place ?? def.root;
-    if (!(await exists(folder))) throw new Error(`${tilde(folder)} isn't there.`);
-    const d = new Date(at);
-    const all = {
-      workspace: def.name, automation: a.name, folder: tilde(folder), event: why,
-      date: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`, time: `${pad(d.getHours())}:${pad(d.getMinutes())}`, ...vars,
-    };
-    if (a.check && !this.allowed(ws, a)) {
-      const again = this.repeat(ws, a, at, why, "waiting", "", (row) => `Its check hasn't been allowed${row}, so it didn't start`);
-      if (manual || a.trigger.kind === "once" || !again) notify({
-        title: `${a.name} didn't start`, body: "Its check hasn't been allowed yet. Read it in Automations, then allow it.", level: "warning",
-        action: openAt(ws, a),
+  // manual: started by hand or from outside, so it starts whatever its check says, and doesn't wait for a slot.
+  async launch(ws, a, why, vars, at, place, manual, extra = {}) {
+    const kind = this.kindOf(a);
+    // Holding a slot (the queue took one for it, or it took one below) until it's in the runs.
+    let held = Boolean(extra.reserved);
+    const release = () => { if (held) { held = false; this.launching[kind] = Math.max(0, this.launching[kind] - 1); } };
+    try {
+      // Turned off while it waited its turn: it doesn't start (nor its check).
+      if (!this.automationsOn()) { this.log({ ws, name: a.name, at, why, status: "skipped", note: OFF_NOTE }); return; }
+      const def = this.def(ws);
+      if (!def) throw new Error("Its workspace is gone.");
+      const b = boardOf(def);
+      const name = a.agent || b.agent;
+      const folder = a.folder ? folderPath(def, a.folder) : place ?? def.root;
+      if (!(await exists(folder))) throw new Error(`${tilde(folder)} isn't there.`);
+      const d = new Date(at);
+      const all = {
+        workspace: def.name, automation: a.name, folder: tilde(folder), event: why,
+        date: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`, time: `${pad(d.getHours())}:${pad(d.getMinutes())}`, ...vars,
+      };
+      if (!this.allowed(ws, a)) {
+        const script = !this.allowedScript(ws, a), check = !this.checkAllowed(ws, a);
+        const what = script && check ? "Its script and its check haven't" : script ? "Its script hasn't" : "Its check hasn't";
+        const again = this.repeat(ws, a, at, why, "waiting", "", (row) => `${what} been allowed${row}, so it didn't start`);
+        if (manual || a.trigger.kind === "once" || !again) notify({
+          title: `${a.name} didn't start`, body: `${what} been allowed yet. Read it in Automations, then allow it.`, level: "warning",
+          action: openAt(ws, a),
+        });
+        return;
+      }
+      if (a.check && extra.checked !== undefined) all.check = extra.checked; // checked before it waited for a slot
+      else if (a.check) {
+        const res = await runCheck(exec, a.check, folder, { ...all, folder, workspace_id: ws });
+        // On a schedule, what it printed at the last check too isn't news (unless `dedupe: always`).
+        // (What sets off the other kinds is new each time.) Printing nothing in between forgets it.
+        if (!res.error && (a.trigger.kind === "every" || a.trigger.kind === "at" || a.trigger.kind === "cron")) {
+          const k = `${ws}/${a.name}`, was = this.state.printed[k];
+          res.same = a.dedupe !== "always" && Boolean(res.out) && was?.cmd === a.check && was.out === res.out;
+          this.state.printed[k] = { cmd: a.check, out: res.out };
+          this.save();
+        }
+        if (!manual && !this.checked(ws, a, at, why, res)) return;
+        all.check = res.out ?? "";
+      }
+      // No slot free: it waits its turn (a manual start never does).
+      if (!held) {
+        if (!manual && !this.free(kind)) { this.enqueue(ws, a, why, vars, place, at, extra, a.check ? all.check : undefined); return; }
+        this.launching[kind]++;
+        held = true;
+      }
+      if (kind === "shell") return await this.shellRun(ws, a, why, all, at, folder, def, extra, release);
+      let prompt = fill(a.body, all);
+      // What set it off goes at the end, unless the prompt uses one of its fill-ins.
+      if (vars.event && !/\{\{\s*(event|text|task|task\.\w+|files?|agent|terminal|space|pr|issue|number|title|url|author|repo|labels|output|upstream|workflow)\s*\}\}/.test(a.body)) prompt = [prompt, vars.event].filter(Boolean).join("\n\n");
+      // What the check printed goes last, unless the prompt says where with {{check}}.
+      if (all.check && !/\{\{\s*check\s*\}\}/.test(a.body)) prompt = [prompt, `Before you were started, Herdr ran this automation's check (\`${a.check}\`). It printed:\n${all.check}`].filter(Boolean).join("\n\n");
+      const card = a.card ? await this.card(def, b, a, name, prompt, at, vars) : null;
+      const task = card ? brief(card, b) : prompt;
+      const preset = this.h.presetsFor(ws).find((x) => x.name === name);
+      let argv, first;
+      const known = await knownAgents().catch(() => []);
+      if (preset) ({ argv, task: first } = this.h.presetLaunch(preset, withOutcome(task)));
+      else {
+        argv = known.find((x) => x.key === name)?.run ?? [name];
+        first = task;
+      }
+      // One of the agents Herdr knows, which report what they're doing (see stalled).
+      const programs = new Set(known.flatMap((x) => [x.key, String(x.run?.[0] ?? "").split("/").pop()]));
+      const expects = argv.slice(0, 8).some((w) => programs.has(String(w).split("/").pop()));
+      // An agent is asked to end with its outcome line (History reads it); a script isn't.
+      if (!preset && expects) first = withOutcome(first);
+      const reports = Boolean(task) && (Boolean(preset) || expects);
+      argv = withKnobs(argv, a.model, a.effort);
+      const made = this.h.open ? await this.h.open(ws, a.name, folder, argv, first) : await this.open(ws, a.name, folder, argv, first);
+      if (card) await this.updateCard(card.file, { terminal: made.terminal ?? null, tab: made.tab ?? null, started: today() });
+      const level = effectiveNotify(a);
+      this.log({ ws, name: a.name, at, why, status: "started", terminal: made.terminal ?? null, tab: made.tab ?? null, space: made.space ?? null, folder, card: card?.id ?? null, notify: level, ...(extra.chainDepth ? { chainDepth: extra.chainDepth } : {}), ...(made.adopt ? { adopt: true } : {}), ...(expects ? { expects: true } : {}), ...(reports ? { reports: true } : {}) });
+      release();
+      this.tidy(ws, a.name);
+      // Said only at the level `all` (notify:): the run's end is what the others tell.
+      if (shouldNotify(level, "started")) notify({
+        title: `${a.name} started`, body: `${why}. In ${def.name} › ${SPACE}.`, level: "info",
+        ...(made.tab ? { action: { name: "tab.select", args: { id: made.tab } } } : {}),
       });
+    } finally {
+      release();
+    }
+  }
+
+  // A shell automation's run (run: shell): its script with the run's fill-ins as $HERDR_…
+  // variables. Without `terminal: true` it runs unseen: "running" in the runs, then its exit
+  // code, how long it took, what it printed (the log file) and a one-line summary. With it, a
+  // tab in the Automations space runs it (shellTabs() follows it). release(): its slot is taken
+  // once it's in the runs.
+  async shellRun(ws, a, why, all, at, folder, def, extra, release) {
+    const level = effectiveNotify(a), timeoutMs = effectiveTimeout(a), shell = shellOf(a);
+    const env = { ...all, folder, workspace_id: ws };
+    const depth = extra.chainDepth ? { chainDepth: extra.chainDepth } : {};
+    const started = () => {
+      if (shouldNotify(level, "started")) notify({ title: `${a.name} started`, body: `${why}. Its ${shell} script runs in ${tilde(folder)}.`, level: "info", action: openAt(ws, a) });
+    };
+    if (a.terminal) {
+      const argv = ["env", ...checkEnv(env), "sh", "-c", SHELL_TAB, "sh", shell, a.body, a.keep ? "1" : ""];
+      const made = this.h.open ? await this.h.open(ws, a.name, folder, argv, null, { bare: true }) : await this.open(ws, a.name, folder, argv, null);
+      this.log({ ws, name: a.name, at, why, status: "started", kind: "shell", shell, shown: true, terminal: made.terminal ?? null, tab: made.tab ?? null, space: made.space ?? null, folder, notify: level, ...depth, ...(made.adopt ? { adopt: true } : {}) });
+      release();
+      started();
       return;
     }
-    if (a.check) {
-      const res = await runCheck(exec, a.check, folder, { ...all, folder, workspace_id: ws });
-      // On a schedule, what it printed at the last check too isn't news. (What sets
-      // off the other kinds is new each time.) Printing nothing in between forgets it.
-      if (!res.error && (a.trigger.kind === "every" || a.trigger.kind === "at" || a.trigger.kind === "cron")) {
-        const k = `${ws}/${a.name}`, was = this.state.printed[k];
-        res.same = Boolean(res.out) && was?.cmd === a.check && was.out === res.out;
-        this.state.printed[k] = { cmd: a.check, out: res.out };
-        this.save();
-      }
-      if (!manual && !this.checked(ws, a, at, why, res)) return;
-      all.check = res.out ?? "";
+    const id = this.log({ ws, name: a.name, at, why, status: "running", kind: "shell", shell, folder, notify: level, ...depth });
+    release();
+    started();
+    const res = await runShellScript(exec, { shell, script: a.body, folder, vars: env, timeoutMs });
+    const end = Date.now();
+    let logFile = null;
+    if (res.combined) {
+      logFile = `${runnerDir()}/logs/${id}.log`;
+      try {
+        // Yours only: a script may print a token.
+        await exec("mkdir", ["-p", "-m", "700", `${runnerDir()}/logs`]);
+        await writeTextFile(logFile, res.combined, null);
+        await exec("chmod", ["600", logFile]).catch(() => {});
+      } catch { logFile = null; }
     }
-    let prompt = fill(a.body, all);
-    // What set it off goes at the end, unless the prompt uses one of its fill-ins.
-    if (vars.event && !/\{\{\s*(event|text|task|task\.\w+|files?|agent|terminal|space|pr|issue|number|title|url|author|repo|labels)\s*\}\}/.test(a.body)) prompt = [prompt, vars.event].filter(Boolean).join("\n\n");
-    // What the check printed goes last, unless the prompt says where with {{check}}.
-    if (all.check && !/\{\{\s*check\s*\}\}/.test(a.body)) prompt = [prompt, `Before you were started, Herdr ran this automation's check (\`${a.check}\`). It printed:\n${all.check}`].filter(Boolean).join("\n\n");
-    const card = a.card ? await this.card(def, b, a, name, prompt, at, vars) : null;
-    const task = card ? brief(card, b) : prompt;
-    const preset = this.h.presetsFor(ws).find((x) => x.name === name);
-    let argv, first;
-    const known = await knownAgents().catch(() => []);
-    if (preset) ({ argv, task: first } = this.h.presetLaunch(preset, withOutcome(task)));
-    else {
-      argv = known.find((x) => x.key === name)?.run ?? [name];
-      first = task;
-    }
-    // One of the agents Herdr knows, which report what they're doing (see stalled).
-    const programs = new Set(known.flatMap((x) => [x.key, String(x.run?.[0] ?? "").split("/").pop()]));
-    const expects = argv.slice(0, 8).some((w) => programs.has(String(w).split("/").pop()));
-    // An agent is asked to end with its outcome line (History reads it); a script isn't.
-    if (!preset && expects) first = withOutcome(first);
-    const reports = Boolean(task) && (Boolean(preset) || expects);
-    argv = withKnobs(argv, a.model, a.effort);
-    const made = this.h.open ? await this.h.open(ws, a.name, folder, argv, first) : await this.open(ws, a.name, folder, argv, first);
-    if (card) await this.updateCard(card.file, { terminal: made.terminal ?? null, tab: made.tab ?? null, started: today() });
-    this.log({ ws, name: a.name, at, why, status: "started", terminal: made.terminal ?? null, tab: made.tab ?? null, space: made.space ?? null, folder, card: card?.id ?? null, ...(made.adopt ? { adopt: true } : {}), ...(expects ? { expects: true } : {}), ...(reports ? { reports: true } : {}) });
-    this.tidy(ws, a.name);
-    notify({
-      title: `${a.name} started`, body: `${why}. In ${def.name} › ${SPACE}.`, level: "info",
-      ...(made.tab ? { action: { name: "tab.select", args: { id: made.tab } } } : {}),
+    this.patch(id, {
+      status: "started", closed: end, finishedAt: end, durationMs: res.durationMs, exitCode: res.code, timedOut: res.timedOut,
+      outcome: res.outcome, summary: res.summary || null, logFile, closedWhy: res.timedOut ? "timed_out" : "finished",
     });
+    this.ended(ws, a, { id, outcome: res.outcome, timedOut: res.timedOut, exitCode: res.code, summary: res.summary, output: res.combined, chainDepth: extra.chainDepth ?? 0, level, timeoutMs });
+  }
+
+  // A run has ended (a script's, or an agent's closed or stopped): what its level says about it,
+  // then the automations waiting on it (`when: automation done|failed <name>`).
+  ended(ws, a, { id, outcome, timedOut = false, exitCode = null, summary = "", output = "", chainDepth = 0, level = effectiveNotify(a), timeoutMs = 0, toast = true }) {
+    const action = { action: openAt(ws, a) };
+    if (toast && outcome === "failed" && shouldNotify(level, "problem")) {
+      notify({
+        title: timedOut ? `${a.name} timed out` : a.run === "shell" ? (exitCode == null ? `${a.name} stopped` : `${a.name} failed (exit ${exitCode})`) : `${a.name} failed`,
+        body: timedOut ? `Stopped after ${formatDuration(timeoutMs)}.${summary && !/^Timed out/.test(summary) ? ` ${summary}` : ""}` : summary || "It gave no reason.",
+        level: timedOut ? "warning" : "error", ...action,
+      });
+    } else if (toast && outcome === "done" && a.run === "shell" && shouldNotify(level, "finished")) {
+      notify({ title: `${a.name} finished`, body: summary || "Its script worked.", level: "info", ...action });
+    }
+    // `automation done` ones start when it did its work, `automation failed` ones when it failed or
+    // timed out. One that had nothing to do, or whose end isn't known (its tab closed first), starts neither.
+    const how = timedOut ? "failed" : outcome;
+    if (how === "done" || how === "failed") this.triggerChains(ws, a.name, how, { output, exitCode, chainDepth, runId: id });
+  }
+
+  // The automations here that wait on this one: each starts, told what it said ({{output}},
+  // $HERDR_OUTPUT), unless the chain is CHAIN_MAX deep already.
+  triggerChains(ws, name, outcome, { output = "", exitCode = null, chainDepth = 0, runId = "" } = {}) {
+    const cx = this.cx;
+    if (!cx) return;
+    const failed = outcome === "failed";
+    for (const a of this.list[ws] ?? []) {
+      const t = a.trigger;
+      if (!a.enabled || a.error || t.kind !== "chain" || t.target !== name || (t.on === "failed") !== failed) continue;
+      const why = `${name} ${failed ? "failed" : "finished"}`;
+      if (chainDepth + 1 >= CHAIN_MAX) {
+        this.log({ ws, name: a.name, at: Date.now(), why, status: "skipped", note: `${CHAIN_MAX} automations in a row set each other off: the chain stops here.` });
+        continue;
+      }
+      const out = String(output ?? "");
+      const text = out.length > OUTPUT_MAX ? `… ${out.slice(-OUTPUT_MAX)}` : out;
+      this.fire(cx, ws, a, why, {
+        upstream: name, outcome: outcome ?? "done", output: text, exit_code: exitCode === null || exitCode === undefined ? "" : String(exitCode),
+        event: [`${why}.`, text && `It said:\n${text}`].filter(Boolean).join("\n"),
+      }, { key: `after:${runId || Date.now()}`, chainDepth: chainDepth + 1 });
+    }
   }
 
   // A tab in the workspace's Automations space (made the first time), then your view back.
@@ -1020,10 +1450,37 @@ export class Runner {
     return again;
   }
 
+  // A run into the runs (newest first); its id. History keeps RUNS_PER_AUTOMATION of each
+  // automation's and RUNS_MAX in all (autofacts.js: pruneRuns); a dropped one's log file goes too.
   log(r) {
-    this.state.runs = [{ id: `${r.at}-${Math.random().toString(36).slice(2, 7)}`, ...r }, ...this.state.runs].slice(0, KEEP_RUNS);
+    const id = `${r.at}-${Math.random().toString(36).slice(2, 7)}`;
+    this.state.runs = this.prune([{ id, ...r }, ...this.state.runs]);
     this.save();
     this.publish();
+    return id;
+  }
+
+  prune(runs) {
+    const { kept, dropped } = pruneRuns(runs);
+    this.dropLogs(dropped.map((x) => x.logFile));
+    return kept;
+  }
+
+  // Deletes these log files: only ones in the logs folder.
+  dropLogs(files) {
+    const logs = (files ?? []).filter((f) => typeof f === "string" && f.startsWith(`${runnerDir()}/logs/`) && !f.includes("/../"));
+    if (logs.length) exec("rm", ["-f", "--", ...logs]).catch(() => {});
+  }
+
+  // Once, when it starts: the log files no run names go (a run dropped while nothing was looking,
+  // or a removed workspace's from before this was done). Not one from the last hour (its name starts
+  // with its run's start time): a runner handing over may have just written it.
+  async sweepLogs(now) {
+    const at = `${runnerDir()}/logs`;
+    let names = [];
+    try { names = await fs.readdir(at); } catch { return; }
+    const named = new Set(this.state.runs.map((r) => r.logFile).filter(Boolean));
+    this.dropLogs(names.filter((n) => n.endsWith(".log") && !named.has(`${at}/${n}`) && !(Number(/^\d+/.exec(n)?.[0] ?? 0) > now - 3600e3)).map((n) => `${at}/${n}`));
   }
 
   // --- what sets them off ---
@@ -1141,9 +1598,17 @@ export class Runner {
     });
   }
 
-  // New PRs and issues: one `gh api` call per watched repo (GitHub's issues list has
-  // both). The first look only notes the highest number there; after that, each
-  // higher one is new. What's opened while Herdr is closed is picked up when it opens.
+  // What's new on GitHub for the github automations: one `gh api` call per watched repo and kind
+  // of event, each made only while an automation watches for it. Each kind's first look (and each
+  // label's) only notes what's there; after that, what wasn't there before sets them off. A kind or a
+  // label nothing watches any more is forgotten (load()), so watching it again looks afresh.
+  //   opened             the issues list (it has PRs too): each number higher than the last look's
+  //   review-requested   a search for open PRs asking for your review: each one not asked last time
+  //   merged             recently closed PRs: each merged one not seen merged before
+  //   failed (ci)        the default branch's workflow runs: the newest of each workflow, failed (or timed
+  //                      out, or it couldn't start), not seen before
+  //   labeled            recently updated open issues and PRs: per label, each number not seen with it before
+  // What happens while Herdr is closed is picked up when it opens.
   github(cx) {
     if (this.ghBusy) return;
     const watch = new Map(); // repo -> [{ ws, a, folder }]
@@ -1154,7 +1619,7 @@ export class Runner {
         watch.get(r.repo).push({ ws, a, folder: r.folder });
       }
     });
-    // Back on after off: this look only notes the newest number, as a first look does.
+    // Back on after off: this look only notes what's there, as a first look does.
     if (this.ghRebase === "all") this.ghRebase = new Set(watch.keys());
     if (!watch.size) return;
     this.ghBusy = true;
@@ -1165,29 +1630,121 @@ export class Runner {
           this.me = r?.code === 0 ? r.stdout.trim() : "";
         }
         for (const [repo, subs] of watch) {
-          let r;
-          try { r = await exec("gh", ["api", `repos/${repo}/issues?state=all&sort=created&direction=desc&per_page=30`], { timeout: 60000 }); }
-          catch (e) { r = { code: 1, stderr: /start|not found|ENOENT/i.test(message(e)) ? "gh isn't installed" : message(e) }; }
-          let items = null;
-          if (r.code === 0) { try { items = JSON.parse(r.stdout); } catch {} }
-          if (!Array.isArray(items)) {
-            this.ghWarn[repo] = `Can't read ${repo} with gh: ${String(r.stderr || r.stdout || "no answer").trim().split("\n")[0]}`;
-            continue;
-          }
-          delete this.ghWarn[repo];
-          const seen = this.ghRebase?.has(repo) ? undefined : this.state.github[repo];
+          const rebase = Boolean(this.ghRebase?.has(repo));
           this.ghRebase?.delete(repo);
-          this.state.github[repo] = Math.max(seen ?? 0, ...items.map((it) => it.number ?? 0));
-          if (seen === undefined) continue;
-          const fresh = items.filter((it) => it.number > seen).sort((x, y) => x.number - y.number).slice(-MAX_NEW);
-          for (const it of fresh) {
+          const wants = (event) => subs.filter((x) => (x.a.trigger.event ?? "opened") === event);
+          delete this.ghWarn[repo];
+          const api = async (path) => {
+            let r;
+            try { r = await exec("gh", ["api", path], { timeout: 60000 }); }
+            catch (e) { r = { code: 1, stderr: /start|not found|ENOENT/i.test(message(e)) ? "gh isn't installed" : message(e) }; }
+            let out = null;
+            if (r.code === 0) { try { out = JSON.parse(r.stdout); } catch {} }
+            if (out === null) this.ghWarn[repo] ??= `Can't read ${repo} with gh: ${String(r.stderr || r.stdout || "no answer").trim().split("\n")[0]}`;
+            return out;
+          };
+          const fireFor = (list, it, why, key, vars) => {
             const isPr = Boolean(it.pull_request);
-            for (const { ws, a, folder } of subs) {
+            for (const { ws, a, folder } of list) {
               const t = a.trigger;
-              if ((t.what === "pr") !== isPr) continue;
+              if (t.what !== "ci" && (t.what === "pr") !== isPr) continue;
               if (t.others && this.me && it.user?.login === this.me) continue;
-              if (t.label && !(it.labels ?? []).some((l) => String(l.name ?? l).toLowerCase() === t.label.toLowerCase())) continue;
-              this.fire(cx, ws, a, `${isPr ? "PR" : "Issue"} #${it.number} opened in ${repo}`, itemVars(repo, it), { key: `${repo}#${it.number}`, folder });
+              if (t.label && t.event !== "labeled" && !(it.labels ?? []).some((l) => String(l.name ?? l).toLowerCase() === t.label.toLowerCase())) continue;
+              this.fire(cx, ws, a, why, vars ?? itemVars(repo, it), { key, folder });
+            }
+          };
+
+          // Opened: the highest number seen.
+          if (wants("opened").length) {
+            const items = await api(`repos/${repo}/issues?state=all&sort=created&direction=desc&per_page=30`);
+            if (Array.isArray(items)) {
+              const seen = rebase ? undefined : this.state.github[repo];
+              this.state.github[repo] = Math.max(seen ?? 0, ...items.map((it) => it.number ?? 0));
+              if (seen !== undefined) {
+                for (const it of items.filter((x) => x.number > seen).sort((x, y) => x.number - y.number).slice(-MAX_NEW)) {
+                  fireFor(wants("opened"), it, `${it.pull_request ? "PR" : "Issue"} #${it.number} opened in ${repo}`, `${repo}#${it.number}`);
+                }
+              }
+            }
+          }
+
+          // Review requested: the open PRs that ask you now; one not asked last time is new.
+          if (wants("review-requested").length) {
+            const res = await api(`search/issues?q=${encodeURIComponent(`repo:${repo} is:pr is:open review-requested:@me`).replace(/%20/g, "+")}&per_page=20`);
+            const items = Array.isArray(res?.items) ? res.items : null;
+            if (items) {
+              const seen = rebase ? undefined : this.state.githubReview[repo];
+              this.state.githubReview[repo] = items.map((it) => it.number);
+              if (seen !== undefined) {
+                for (const it of items.filter((x) => !seen.includes(x.number)).slice(0, MAX_NEW)) {
+                  fireFor(wants("review-requested"), { ...it, pull_request: it.pull_request ?? {} }, `Your review is asked for on PR #${it.number} in ${repo}`, `${repo}#${it.number}:review`);
+                }
+              }
+            }
+          }
+
+          // Merged: recently closed PRs that were merged, each once.
+          if (wants("merged").length) {
+            const items = await api(`repos/${repo}/pulls?state=closed&sort=updated&direction=desc&per_page=20`);
+            if (Array.isArray(items)) {
+              const merged = items.filter((it) => it.merged_at);
+              const seen = rebase ? undefined : this.state.githubMerged[repo];
+              this.state.githubMerged[repo] = [...new Set([...merged.map((it) => it.number), ...(seen ?? [])])].slice(0, 100);
+              if (seen !== undefined) {
+                for (const it of merged.filter((x) => !seen.includes(x.number)).reverse().slice(-MAX_NEW)) {
+                  fireFor(wants("merged"), { ...it, pull_request: {} }, `PR #${it.number} merged in ${repo}`, `${repo}#${it.number}:merged`);
+                }
+              }
+            }
+          }
+
+          // CI failed: the default branch's newest run of each workflow, when it failed.
+          if (wants("failed").length) {
+            if (!this.ghBranch[repo]) {
+              const r = await exec("gh", ["repo", "view", repo, "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"], { timeout: 30000 }).catch(() => null);
+              if (r?.code === 0 && r.stdout.trim()) this.ghBranch[repo] = r.stdout.trim();
+            }
+            const branch = this.ghBranch[repo];
+            const res = branch ? await api(`repos/${repo}/actions/runs?branch=${encodeURIComponent(branch)}&per_page=20`) : null;
+            if (!branch) this.ghWarn[repo] ??= `Can't read ${repo}'s default branch with gh.`;
+            const runs = Array.isArray(res?.workflow_runs) ? res.workflow_runs : null;
+            if (runs) {
+              const newest = new Map();
+              for (const w of runs) if (w.status === "completed" && !newest.has(w.workflow_id)) newest.set(w.workflow_id, w);
+              const failing = [...newest.values()].filter((w) => ["failure", "timed_out", "startup_failure"].includes(w.conclusion));
+              const seen = rebase ? undefined : this.state.githubCi[repo];
+              this.state.githubCi[repo] = [...new Set([...failing.map((w) => w.id), ...(seen ?? [])])].slice(0, 50);
+              if (seen !== undefined) {
+                for (const w of failing.filter((x) => !seen.includes(x.id))) {
+                  const block = [`The ${w.name ?? "workflow"} workflow failed on ${branch} in ${repo} (run #${w.run_number}): ${w.display_title ?? ""}`.trim(), w.html_url].filter(Boolean).join("\n");
+                  fireFor(wants("failed"), w, `${w.name ?? "A workflow"} failed in ${repo}`, `${repo}:ci:${w.id}`, {
+                    workflow: w.name ?? "", url: w.html_url ?? "", title: w.display_title ?? "", number: String(w.run_number ?? ""), repo, event: block,
+                  });
+                }
+              }
+            }
+          }
+
+          // Labeled: the recently updated open items with each label watched. Each label has its own
+          // first look (a label watched for the first time only notes what has it), then an item
+          // that has it and didn't before sets them off.
+          if (wants("labeled").length) {
+            const items = await api(`repos/${repo}/issues?state=open&sort=updated&direction=desc&per_page=30`);
+            if (Array.isArray(items)) {
+              const labels = new Set(wants("labeled").map((x) => x.a.trigger.label.toLowerCase()));
+              const was = rebase ? {} : this.state.githubLabeled[repo] ?? {};
+              const byLabel = {}, fresh = [];
+              for (const label of labels) {
+                const having = items.filter((it) => (it.labels ?? []).some((l) => String(l.name ?? l).toLowerCase() === label));
+                const seen = was[label];
+                byLabel[label] = [...new Set([...having.map((it) => it.number), ...(seen ?? [])])].slice(0, 300);
+                if (seen !== undefined) for (const it of having) if (!seen.includes(it.number)) fresh.push({ it, label });
+              }
+              this.state.githubLabeled[repo] = byLabel;
+              for (const p of fresh.slice(0, MAX_NEW)) {
+                const who = wants("labeled").filter((x) => x.a.trigger.label.toLowerCase() === p.label);
+                fireFor(who, p.it, `${p.it.pull_request ? "PR" : "Issue"} #${p.it.number} got the label ${p.label} in ${repo}`, `${repo}#${p.it.number}:label:${p.label}`);
+              }
             }
           }
         }
@@ -1214,13 +1771,12 @@ export class Runner {
           const text = await readTextFile(path);
           await exec("rm", ["-f", path]).catch(() => {});
           if (text === null) continue;
-          // The screen's Create, Save and Allow this check, passed on by the switcher
-          // while the background runner runs: { workspace, name, check }.
+          // The screen's Create, Save and Allow this check or script, passed on by the switcher
+          // while the background runner runs: { workspace, name, check?, script? }.
           if (n.endsWith(".allow")) {
             let ask = null;
             try { ask = JSON.parse(text); } catch {}
-            if (ask?.workspace && ask.name && ask.check) {
-              this.state.allowed[`${ask.workspace}/${ask.name}`] = String(ask.check);
+            if (this.allow(ask)) {
               this.save();
               this.publish();
             }
