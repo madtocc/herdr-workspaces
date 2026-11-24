@@ -10,6 +10,11 @@
 // reads ~/.herdr/settings.jsonc itself before its first ask (settingsfacts.js), then
 // follows shared "workspaces.settings" (followUsage()); turned on again, it asks at once.
 // What was read stays in workspaces.usage.
+// Antigravity's limits come in pools (Gemini models; Claude and GPT models): the bar shows
+// its own models' pool, the 5-hour limit unless one of that pool's is full (barRow()), the panel
+// draws each pool once, its 5-hour and weekly limits side by side (poolBlock()), and the
+// hover gives each pool its own line. A full limit shows when it's back, in the bar too
+// ("100% · 4:17 PM", barText()).
 //
 // Shared: workspaces.usage   { <plan>: { rows, at, from, tried } }: what the bar's copy
 //                            read, for the panel (rows: usagefacts.js)
@@ -19,7 +24,7 @@ import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { spaces, agents, theme, run, window, keys, exec, home, shared, setShared, props, openOverlay, checking } from "herdr";
 import * as fs from "fs/promises";
-import { claudeReportRows, agyReportRows, claudeStatusRows, topRow, resetsText, agoText, followFeature } from "./usagefacts.js";
+import { claudeReportRows, agyReportRows, claudeStatusRows, barRow, blocksOf, barText, hoverLines, resetsText, agoText, followFeature } from "./usagefacts.js";
 import { SETTINGS_FILE, parseSettings, featureOn } from "./settingsfacts.js";
 
 // The plans the bar shows, in its order: how to ask each agent for its usage without
@@ -192,19 +197,19 @@ export default class WorkspaceStatus extends View {
     return PLANS.filter((p) => u[p.key]?.rows?.length).map((p) => ({ ...p, data: u[p.key] }));
   }
 
-  // In the bar: each plan's icon and its most used limit's percent; hover lists every
-  // limit, a click opens the panel.
+  // In the bar: each plan's icon and the percent of the limit that matters (barRow(): its
+  // most used; Antigravity's Gemini 5-hour), and when it's back once it's full; hover lists every limit, a pool a line, a click opens the panel.
   usage(t, plans) {
-    const detail = plans.map((p) => `${p.name}: ${p.data.rows.map((w) => `${w.short} ${pctText(w)}`).join(", ")}`).join("\n");
+    const detail = plans.flatMap((p) => hoverLines(p.name, p.data.rows)).join("\n");
     return h_flex().id("usage").h(20).px(6).gap(10).items_center().rounded(5).cursor_pointer()
       .hover((s) => s.bg(t.hover))
       .tooltip(detail)
       .on_click(() => openOverlay({ mod: "ws-status", kind: "popup", width: 360, props: { panel: true } }))
       .children(plans.map((p) => {
-        const top = topRow(p.data.rows);
+        const top = barRow(p.data.rows);
         return h_flex().gap(5).items_center()
           .child(image(p.icon).w(12).h(12).flex_none())
-          .child(div().text_color(loud(top) ? tone(t, top) : t.muted).child(pctText(top)));
+          .child(div().text_color(loud(top) ? tone(t, top) : t.muted).child(barText(top)));
       }));
   }
 
@@ -232,14 +237,40 @@ export default class WorkspaceStatus extends View {
         .child(h_flex().items_center().gap(8)
           .child(image(p.icon).w(13).h(13).flex_none())
           .child(div().child(p.name)))
-        .children(p.data.rows.map((w, j) => v_flex().id(`usage-${p.key}-${j}`).gap(6)
-          .when(Boolean(w.note), (el) => el.tooltip(w.note))
-          .child(h_flex().items_center().gap(10)
-            .child(div().flex_1().min_w(0).truncate().child(w.label))
-            .child(div().flex_none().text_size(11).text_color(t.dim).child(resetsText(w.resets)))
-            .child(div().w(34).flex_none().text_right().text_color(loud(w) ? tone(t, w) : t.muted).child(pctText(w))))
-          .child(meter(t, w, "100%", 4))))
+        .children(blocksOf(p.data.rows).map((b, j) => b.group
+          ? this.poolBlock(t, b, `usage-${p.key}-${j}`)
+          : this.limitRow(t, b.rows[0], `usage-${p.key}-${j}`)))
         .child(div().text_size(10.5).text_color(t.dim).child(`From ${p.from[p.data.from] ?? p.data.from}, ${agoText(p.data.at)}`))));
+  }
+
+  // A limit on its own line: its name, when it resets and the percent, over a meter.
+  limitRow(t, w, id) {
+    return v_flex().id(id).gap(6)
+      .when(Boolean(w.note), (el) => el.tooltip(w.note))
+      .child(h_flex().items_center().gap(10)
+        .child(div().flex_1().min_w(0).truncate().child(w.label))
+        .child(div().flex_none().text_size(11).text_color(t.dim).child(resetsText(w.resets)))
+        .child(div().w(34).flex_none().text_right().text_color(loud(w) ? tone(t, w) : t.muted).child(pctText(w))))
+      .child(meter(t, w, "100%", 4));
+  }
+
+  // One pool of a plan (Antigravity's Gemini models): its name, hovered for its models,
+  // then its limits two to a line, each its window and percent over a meter and when it
+  // resets. A full one has its percent, meter and reset in the blocked color.
+  poolBlock(t, b, id) {
+    const cell = (w) => v_flex().flex_1().min_w(0).gap(4)
+      .child(h_flex().items_center().gap(6)
+        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.muted).child(w.span ?? w.short))
+        .child(div().flex_none().text_color(loud(w) ? tone(t, w) : t.muted).child(pctText(w))))
+      .child(meter(t, w, "100%", 4))
+      .child(div().truncate().text_size(10.5).text_color(w.pct >= 100 ? tone(t, w) : t.dim).child(resetsText(w.resets)));
+    const pairs = [];
+    for (let i = 0; i < b.rows.length; i += 2) pairs.push(b.rows.slice(i, i + 2));
+    return v_flex().gap(6)
+      .child(div().id(id).child(b.group).when(Boolean(b.note), (el) => el.tooltip(b.note)))
+      .children(pairs.map((pair) => h_flex().gap(14).items_start()
+        .children(pair.map(cell))
+        .when(pair.length === 1, (el) => el.child(div().flex_1()))));
   }
 
   render() {

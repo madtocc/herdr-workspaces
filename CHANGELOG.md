@@ -7,6 +7,9 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 
 ## [Unreleased]
 
+### Fixed
+- **Antigravity's usage reads by its own models.** The status bar showed Antigravity at 100% whenever its Claude and GPT pool was used up, though Gemini still worked. It now shows the Gemini pool's 5-hour limit, and a limit that is full says when it's back ("100% · 4:17 PM"). The usage panel shows each Antigravity pool once, its 5-hour and weekly limits side by side, and the bar's tooltip gives each pool its own line. To update, copy `mods/ws-status`.
+
 ## [0.25.0] - 2026-11-24
 
 ### New
