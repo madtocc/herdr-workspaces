@@ -430,8 +430,9 @@ touched. It runs `sh` (editor, Trash, symlinked folders), `herdr-app do` (the
 board's and automations' new tabs, and `pane.split` for a view opened beside
 the terminals) and, through the launcher, Start and
 automations, your agents. Changes (`ws-changes`, a copy of Herdr's own) runs `git` reads (status, diff,
-branch) in the repo of the terminal it follows and, when you press Commit,
-`git add -A` and `git commit` there, as Herdr's Changes does; Files (`ws-files`)
+branch, `worktree list`) in the repo of the terminal it follows (or nested repos found up to three
+levels under a non-git space folder with `sh`, or PowerShell on Windows) and, when you press Commit,
+`git add -A` and `git commit` in the selected checkout, as Herdr's Changes does; Files (`ws-files`)
 lists folders and reads files there, as Herdr's Files does, and also writes the
 file you save (on this computer only), searches with `rg` (else `grep`), runs
 `git` reads (branch, status, ignored files), `wc -c`, `head -c` and `sips` (an

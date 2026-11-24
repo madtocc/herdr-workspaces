@@ -7,6 +7,9 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 
 ## [Unreleased]
 
+### New
+- **Changes: nested repos and linked worktrees.** When a space's folder isn't a git repository itself (such as a workspace root holding several project repos), Changes now discovers nested git repos under it (up to three levels deep, one in `~` or `/`, skipping dot-folders and build/vendor folders) and also lists every repo's linked worktrees via `git worktree list`. When the space's folder *is* a git repo that has linked worktrees, those worktrees are listed too, defaulting to the terminal's current checkout (`here`) with a `↩` button to jump back after inspecting a sibling checkout. Full size (`≥ 640px`), repos and their indented worktrees appear in a resizable left rail with live dirty file counts and a filter box past six checkouts; in narrow panes (`< 640px`, such as beside a terminal), they collapse to a clickable `repo · branch ▾` header popover. Plain single repos with no worktrees stay unchanged, and non-git folders with no nested repos show a clean empty state without a commit box. Draft commit messages stay per checkout so switching never commits to the wrong repo. To update, copy `mods/ws-changes`.
+
 ## [0.24.0] - 2026-11-24
 
 ### New
