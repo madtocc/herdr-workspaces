@@ -7,6 +7,8 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 
 ## [Unreleased]
 
+## [0.23.1] - 2026-11-23
+
 ### Fixed
 - **No × on the bell's rows.** Hovering a row no longer swaps its time for a dismiss ×; Mark all read and Clear read tidy the list. To update, copy `mods/ws-notifications`.
 
