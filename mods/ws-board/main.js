@@ -64,6 +64,10 @@ const PALETTE = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
 const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b7cf6", ansi2: "#3fae6a", ansi1: "#d9649a" };
 const STATUS_WORD = { working: "working", blocked: "needs you", done: "finished", idle: "idle" };
 const START_WITH = "workspaces.board.start"; // Start with…'s dialog asks the board copy that opened it
+// The tab bar's bell asks the board (the switcher shows it first) to open a card: { ws, taskId, at, taken? }.
+// The screen of that workspace takes it once its cards are read (a tab or pane of it after 1.5s, if the
+// screen hasn't), within 15s.
+const CARD_OPEN = "workspaces.board.open";
 // Moves a file to the Trash ($1), or into $2 where there's no Trash command. Prints where.
 const TRASH = `
 if command -v trash >/dev/null 2>&1; then trash "$1" && echo Trash && exit 0; fi
@@ -381,7 +385,18 @@ export default class Board extends View {
     // Start with…: its dialog's tasks end when it closes, so this copy starts what it asks for.
     this.copyId = Math.random().toString(36).slice(2, 10);
     this.startAsked = shared(START_WITH)?.at;
-    if (!checking()) cx.timer.every(400, (cx) => this.startWithAsked(cx));
+    if (!checking()) cx.timer.every(400, (cx) => { this.startWithAsked(cx); this.cardAsked(); });
+  }
+
+  // A card the bell asked for (CARD_OPEN): its task dialog. Gone since: nothing (the bell said so).
+  cardAsked() {
+    const ask = shared(CARD_OPEN) ?? null;
+    if (!ask?.at || ask.taken || !this.loaded || ask.ws !== this.workspace) return;
+    const age = Date.now() - ask.at;
+    if (age > 15000 || (!this.follow && age < 1500)) return;
+    setShared(CARD_OPEN, { ...ask, taken: true });
+    const task = this.tasks.find((x) => x.id === ask.taskId);
+    if (task) this.openTask(task);
   }
 
   // A Start with… this copy opened: the card as it is now, started through start().
@@ -456,6 +471,7 @@ export default class Board extends View {
       if (ws !== this.workspace) return;
       this.tasks = tasks;
       this.loaded = true;
+      this.cardAsked();
       cx.notify();
     });
   }

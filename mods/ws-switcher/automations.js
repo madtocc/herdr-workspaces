@@ -52,7 +52,9 @@
 //                                once it does `up`, `app` and, when it's known, `conv`
 //                                { provider, id }: its conversation; `closed` (when) and
 //                                `closedWhy` once the runner closed its tab; `reports` when its
-//                                agent was asked to end with an outcome line (OUTCOME_ASK)
+//                                agent was asked to end with an outcome line (OUTCOME_ASK), and once
+//                                it closed, `outcome` and `summary` when its screen showed that line
+//                                (notif.js outcomeOf; the bell leaves out "nothing to do")
 // Asked for (shared), by the screen's Run now (the switcher passes it on):
 //   workspaces.automation.run    { workspace, name, at }
 // … and by its Create, Save and Allow this check (read here):
@@ -75,6 +77,7 @@ import { withKnobs } from "./knobs.js";
 import { runCheck } from "./check.js";
 import { closeStep, helpersOf, lookingAt, providerOf } from "./runfacts.js";
 import { OFF_NOTE, everyNext } from "./featuregate.js";
+import { outcomeOf } from "./notif.js";
 
 const SPACE = "Automations";
 const MISSED = 12 * 3600e3; // a schedule missed (Herdr closed, the Mac asleep) runs once if it was due this recently
@@ -530,20 +533,36 @@ export class Runner {
   }
 
   // Closes a finished run's tab (the background runner ends its terminal), after noting
-  // its conversation: the launcher's note of it goes once the terminal is gone.
+  // its conversation (the launcher's note of it goes once the terminal is gone) and, for an
+  // agent asked for an outcome line, that line and the one before it from its screen.
   closeRun(cx, r, app) {
     this.closing.add(r.id);
     cx.spawn(async () => {
       try {
         const conv = r.conv ?? (await this.conversation(r.terminal, app ?? r.app));
+        // Only for the bell (Notifications off: not read).
+        const report = r.reports && this.h.featureOn?.("notifications") !== false ? await this.report(r.terminal) : null;
         if (this.h.close) await this.h.close(r);
         else run("tab.close", { id: r.tab, confirmed: true });
-        this.patch(r.id, { closed: Date.now(), closedWhy: "finished", ...(conv ? { conv } : {}) });
+        this.patch(r.id, {
+          closed: Date.now(), closedWhy: "finished", ...(conv ? { conv } : {}),
+          ...(report?.outcome ? { outcome: report.outcome } : {}), ...(report?.summary ? { summary: report.summary } : {}),
+        });
       } finally {
         this.closing.delete(r.id);
         this.seen.delete(r.id);
       }
     });
+  }
+
+  // How a run's agent said it went, read off its screen (`hc read`): { outcome, summary }, or null
+  // when that can't be read. Never in the way of closing the tab: 5s at most.
+  async report(terminal) {
+    if (!terminal) return null;
+    try {
+      const r = await exec("hc", ["read", String(terminal), "--lines", "60"], { timeout: 5000 });
+      return r?.code === 0 ? outcomeOf(r.stdout) : null;
+    } catch { return null; }
   }
 
   // The conversation a terminal's agent holds, from the launcher's note

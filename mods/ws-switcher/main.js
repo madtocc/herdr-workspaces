@@ -63,6 +63,20 @@
 //   workspaces.prs       task file -> its pull request's one status (prs.js), drawn by ws-board
 //   workspaces.github    task file -> its GitHub board item's status (ghboard.js), drawn by ws-board
 //
+// The tab bar's bell (ws-notifications' list; notiflog.js keeps its log in ~/.herdr/notifications.json):
+//   workspaces.notifications.store  { read, dismissed, events, live }: the log as this block keeps it, and
+//                        when each live item was first listed (notif.js has the rules; the list reads it)
+//   workspaces.notifications.badge  { count, tone, needs, unread, height }: the bell's count (ws-tabs) and its
+//                        list's height
+//   workspaces.notifications.act    [{ id, action, item?, items?, target?, group?, at }]: the list asks this block
+//                        to open an item's thing (openNotification()), dismiss, mark all read or clear read
+//   workspaces.notifications.push   [{ id, title, body, level, action, at }]: every toast ws-toast showed, for the
+//                        log (notif.js classifyToast keeps the few worth it)
+//   workspaces.notifications.open   { overlay, at } or { overlay: null, closedAt }: the list is open (ws-notifications
+//                        says so), so the bell and its key close it
+//   workspaces.history.open  { ws, runId, at, taken? }: a notification asks History to show that run (ws-history)
+//   workspaces.board.open    { ws, taskId, at, taken? }: a notification asks the board to open that card (ws-board)
+//
 //   workspaces.usage     { <plan>: { rows, at, from, tried } }: each plan's usage, read by ws-status's bar for its panel
 //   workspaces.usage.ask { at }: ws-status's panel asks the bar to read the usage again
 //
@@ -115,6 +129,7 @@ import { buildSettings, hash, SOURCE as SETTINGS_SOURCE, TARGET as SETTINGS_TARG
 import { SETTINGS_FILE, parseSettings } from "./settingsfacts.js";
 import { openIn, splitAt, follow as followLedger, wantsClose, trusted, drainAsks } from "./beside.js";
 import { Features, flips, FOLLOWED } from "./featuregate.js";
+import { NotifLog } from "./notiflog.js";
 
 // "Edit" opens the workspace's folder in the first of these that's installed,
 // else with the system's opener (Finder, the file manager, Explorer).
@@ -414,23 +429,19 @@ export default class Workspaces extends View {
     // "ws-switcher.show/<screen>/<workspace>" only shows it (a toast's action: Notes' Move to the board);
     // "ws-switcher.settings" opens or closes our Settings window (ws-settings) and
     // "ws-switcher.settings/<section>" opens it on that section (features, agents, experimental, look, machines, …; extras is an alias for agents).
+    // "ws-switcher.show/board/<workspace>/<card>" also opens that card (a pull request's toast).
     cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
-        try {
-          if (c === "scratch-new") askScratch();
-          else if (c.startsWith("scratch-new/")) await this.scratch.create(c.slice("scratch-new/".length));
-          else if (screenOf(c) && !screenOf(c).space) this.toggleScreen(c, cx);
-          else if (c.startsWith("scratch-keep/")) await this.scratch.keep(c);
-          else if (c.startsWith("automation/")) this.openAutomation(c);
-          else if (c.startsWith("show/")) this.showScreen(c, cx);
-          else if (c === "settings" || c.startsWith("settings/")) openSettings(c.slice("settings/".length), cx);
-        } catch (e) { notify({ title: c.startsWith("automation/") ? "Couldn't open Automations" : "Couldn't make a scratch space", body: String(e?.message ?? e), level: "error" }); }
+        await this.command(c, cx);
       }
     });
     // known: the switch has been read once (nothing runs here before that).
     // owner: the background runner runs them, not this copy.
     this.bg = { known: false, owner: false, rev: null, tries: 0, tried: 0, failed: false };
+    // The bell's log (notiflog.js): read once, then kept from the timers below.
+    this.notif = new NotifLog((target, cx) => this.openNotification(target, cx));
+    if (!checking()) cx.spawn(async (cx) => { await this.notif.load(); this.notif.tick(); cx.notify(); });
     try { this.adopted = new Set(JSON.parse(localStorage.getItem("adopted") ?? "[]")); } catch { this.adopted = new Set(); }
     this.reload(cx);
     cx.spawn(async (cx) => {
@@ -475,7 +486,67 @@ export default class Workspaces extends View {
     // in the background, and a new space waits SETTLE for its folder.
     // Board off: no pull request follow-through or GitHub board item status (no gh, no messages).
     cx.timer.every(100, (cx) => this.drainViews(cx));
-    cx.timer.every(500, (cx) => { this.sync(); this.requests(cx); this.followFeatures(); this.followBeside(cx); if (this.mine()) { this.runner.tick(cx); if (this.features.on("board")) { this.prs.tick(cx); this.gh.tick(cx); } } this.scratch.tick(cx); if (spaces().some((s) => !this.known.has(s.id))) cx.notify(); });
+    cx.timer.every(500, (cx) => { this.sync(); this.requests(cx); this.notif.tick(); this.followFeatures(); this.followBeside(cx); if (this.mine()) { this.runner.tick(cx); if (this.features.on("board")) { this.prs.tick(cx); this.gh.tick(cx); } } this.scratch.tick(cx); if (spaces().some((s) => !this.known.has(s.id))) cx.notify(); });
+  }
+
+  // A command for this copy (see init): "scratch-new", "scratch-keep/…", "automation/…", "show/…",
+  // "settings…", a view's key. The bell's items with such an action come here too (openNotification()).
+  async command(c, cx) {
+    try {
+      if (c === "scratch-new") askScratch();
+      else if (c.startsWith("scratch-new/")) await this.scratch.create(c.slice("scratch-new/".length));
+      else if (screenOf(c) && !screenOf(c).space) this.toggleScreen(c, cx);
+      else if (c.startsWith("scratch-keep/")) await this.scratch.keep(c);
+      else if (c.startsWith("automation/")) this.openAutomation(c);
+      else if (c.startsWith("show/")) this.showScreen(c, cx);
+      else if (c === "settings" || c.startsWith("settings/")) openSettings(c.slice("settings/".length), cx);
+    } catch (e) { notify({ title: c.startsWith("automation/") ? "Couldn't open Automations" : "Couldn't make a scratch space", body: String(e?.message ?? e), level: "error" }); }
+  }
+
+  // A notification's row was clicked (notif.js buildItems' target): its agent, its run's tab, the run
+  // in History, the card on its board, the automation, or the command it carries. What's shown full
+  // size gives way to the terminals for an agent or a tab.
+  openNotification(target, cx) {
+    if (!target || typeof target !== "object") return;
+    const back = () => { if (shared("workspaces.screen")) setShared("workspaces.screen", null); };
+    const id = (v) => (/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(String(v ?? "")) ? String(v) : null);
+    switch (target.kind) {
+      case "agent":
+        if (!target.terminal) return;
+        back();
+        run("agent.focus", { terminal: String(target.terminal) });
+        return;
+      case "tab":
+        if (!target.tab) return;
+        back();
+        run("tab.select", { id: String(target.tab) });
+        return;
+      case "history": {
+        if (!featureOn("history")) return;
+        const ws = id(target.ws) && (shared("workspaces.defs") ?? []).some((d) => d.id === target.ws) ? target.ws : null;
+        this.openHistory(ws, cx);
+        setShared("workspaces.history.open", { ws, runId: String(target.runId ?? ""), at: Date.now() });
+        return;
+      }
+      case "board": {
+        const ws = id(target.ws);
+        if (!ws || !featureOn("board")) return;
+        this.openScreen(ws, "board", cx);
+        if (id(target.taskId)) setShared("workspaces.board.open", { ws, taskId: target.taskId, at: Date.now() });
+        return;
+      }
+      case "automation": {
+        const ws = target.ws === "*" ? "-" : id(target.ws), name = id(target.name);
+        if (ws && name) this.openAutomation(`automation/${ws}/${name}`);
+        return;
+      }
+      case "action": {
+        const name = String(target.name ?? "");
+        if (name.startsWith("ws-switcher.")) { this.command(name.slice("ws-switcher.".length), cx); return; }
+        if (name) run(name, target.args ?? {});
+        return;
+      }
+    }
   }
 
   reload(cx) {
@@ -620,7 +691,15 @@ export default class Workspaces extends View {
     if (!names.length) return;
     const list = [];
     for (const n of names) {
-      try { const note = JSON.parse((await readTextFile(`${at}/${n}`)) ?? "null"); if (note?.title) { delete note.at; list.push(note); } } catch {}
+      try {
+        const note = JSON.parse((await readTextFile(`${at}/${n}`)) ?? "null");
+        if (note?.title) {
+          // The bell keeps each one worth it, with its own time, before many become one toast.
+          this.notif?.record(note);
+          delete note.at;
+          list.push(note);
+        }
+      } catch {}
     }
     await exec("rm", ["-f", ...names.map((n) => `${at}/${n}`)]).catch(() => {});
     if (list.length <= 3) { for (const n of list) notify(n); return; }
@@ -1054,28 +1133,20 @@ export default class Workspaces extends View {
     this.sync();
     const defs = shared("workspaces.defs") ?? [];
     const active = defs.find((d) => d.id === shared("workspaces.active")) ?? null;
-    const assigned = shared("workspaces.assigned") ?? {};
-    const sp = spaces();
-    const count = active ? sp.filter((s) => assigned[s.id] === active.id).length : sp.length;
-    // An agent needs you in a workspace that isn't shown.
-    const elsewhere = active ? urgent(sp.filter((s) => assigned[s.id] !== active.id)) : null;
-    const dot = (id) => div().id(id).size(6).flex_none().rounded_full().bg(t[elsewhere])
-      .tooltip(elsewhere === "blocked" ? "An agent needs you in another workspace" : "An agent finished in another workspace");
+    // No count of spaces and no dot for another workspace's agents here: the spaces list shows the
+    // spaces, and the tab bar's bell (ws-notifications) says what needs you and where.
     const open = () => openOverlay({ mod: "ws-switcher", kind: "popup", width: 288, height: 600, props: { popup: true } });
     if (narrow()) {
       return h_flex().size_full().bg(t.chrome).items_center().justify_center()
         .child(h_flex().id("ws-rail").relative().size(32).rounded(6).items_center().justify_center().cursor_pointer()
           .hover((s) => s.bg(t.hover)).tooltip(active?.name ?? "All spaces").on_click(open)
-          .child(mark(active, defs, t, 20))
-          .when(Boolean(elsewhere), (el) => el.child(dot("ws-rail-dot").absolute().top(2).right(2))));
+          .child(mark(active, defs, t, 20)));
     }
     return h_flex().size_full().bg(t.chrome).px(8).items_center().text_size(13)
       .child(h_flex().id("ws-current").flex_1().min_w(0).h(34).px(8).gap(9).rounded(8).items_center().cursor_pointer()
         .hover((s) => s.bg(t.hover)).on_click(open)
         .child(mark(active, defs, t, 20))
         .child(div().flex_1().min_w(0).truncate().font_medium().text_color(t.foreground).child(active?.name ?? "All spaces"))
-        .when(Boolean(elsewhere), (el) => el.child(dot("ws-dot")))
-        .child(div().flex_none().text_size(11.5).text_color(t.dim).child(String(count)))
         .child(svg("mods/workspace-chrome/chevron-down.svg").size(11).flex_none().text_color(t.dim)));
   }
 
@@ -1167,6 +1238,8 @@ export default class Workspaces extends View {
   // the list's newest id with the one seen last. Never from render (a task started there stops at its
   // first await). Also the beside asks waiting for their tab's split (nextBeside()).
   drainViews(cx) {
+    // The bell's list's asks and the toasts shown since (notiflog.js).
+    this.notif?.drain(cx);
     const queue = shared("workspaces.view");
     const last = Array.isArray(queue) && queue.length ? queue[queue.length - 1]?.id : null;
     if (last !== this.viewLast) {
@@ -1459,10 +1532,14 @@ export default class Workspaces extends View {
   }
 
   // "show/<screen>/<workspace>": that workspace's screen, never back to the tabs.
+  // "show/board/<workspace>/<card>": its board, with that card open (ws-board takes "workspaces.board.open").
   showScreen(c, cx) {
-    const [, key, ws] = c.split("/");
-    if (!screenOf(key) || screenOf(key).space || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(String(ws ?? ""))) return;
-    if ((shared("workspaces.defs") ?? []).some((d) => d.id === ws)) this.openScreen(ws, key, cx);
+    const [, key, ws, card] = c.split("/");
+    const plain = (v) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(String(v ?? ""));
+    if (!screenOf(key) || screenOf(key).space || !plain(ws)) return;
+    if (!(shared("workspaces.defs") ?? []).some((d) => d.id === ws)) return;
+    this.openScreen(ws, key, cx);
+    if (key === "board" && plain(card) && featureOn("board")) setShared("workspaces.board.open", { ws, taskId: card, at: Date.now() });
   }
 
   pin(ws, key) {

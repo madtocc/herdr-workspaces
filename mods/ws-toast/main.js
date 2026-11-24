@@ -6,6 +6,9 @@
 //   you're in another app. A click on the desktop one brings Herdr forward and
 //   runs the toast's own action, or the action's `or` when Herdr refuses that one
 //   (a mod's command while the mod isn't shown). `herdr-ws-notify --off` turns them off.
+// - And handed to the tab bar's bell (shared "workspaces.notifications.push", a short list the
+//   switcher's sidebar copy drains), which keeps the few worth keeping (ws-switcher's notif.js
+//   classifyToast decides; nothing here filters). Not while Notifications is off in Settings > Features.
 //
 // How notifications look. Anything can post one with notify({ title, body,
 // level, icon, action }); replace this mod to restyle them all. Click to
@@ -13,9 +16,22 @@
 
 import { View, div, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { props, closeOverlay, run, theme, exec, appHome, checking } from "herdr";
+import { props, closeOverlay, run, theme, exec, appHome, checking, shared, setShared } from "herdr";
 
 const DOT = { error: "blocked", warning: "working", success: "done", info: "accent" };
+
+// The bell's list of toasts (ws-switcher's notiflog.js drains it): newest last, at most PUSH_KEEP, none
+// older than PUSH_TTL (the switcher may be unloaded for a while, with the sidebar hidden).
+const PUSH = "workspaces.notifications.push";
+const PUSH_KEEP = 64, PUSH_TTL = 10 * 60e3;
+let pushed = 0;
+function toBell(p) {
+  if (shared("workspaces.settings")?.features?.notifications === false) return;
+  const now = Date.now();
+  const list = (Array.isArray(shared(PUSH)) ? shared(PUSH) : []).filter((a) => a && typeof a === "object" && now - (a.at ?? 0) < PUSH_TTL);
+  const action = p.action?.name ? { name: String(p.action.name), args: p.action.args ?? {} } : null;
+  setShared(PUSH, [...list, { id: `${now}-${++pushed}-${Math.random().toString(36).slice(2, 7)}`, title: String(p.title), body: String(p.body ?? ""), level: p.level ?? null, action, at: now }].slice(-PUSH_KEEP));
+}
 
 // The script lives with the switcher: a mod can't import another mod's code, but it can run its script.
 const DESKTOP = () => `${appHome()}/mods/ws-switcher/bin/herdr-ws-notify`;
@@ -27,6 +43,7 @@ export default class Toast extends View {
     if (checking()) return;
     const p = props() ?? {};
     if (!p.title) return;
+    toBell(p);
     const args = ["--unless-front"];
     // One per place: an agent's later news replaces its earlier one.
     const place = p.action?.args?.terminal ?? p.action?.args?.id;

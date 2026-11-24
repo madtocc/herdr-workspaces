@@ -1,0 +1,145 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800" font-family="Geist, -apple-system, 'Helvetica Neue', sans-serif">
+  <!-- Notifications: the tab bar's bell open, its list under it: what needs you, then what finished. Demo names only. -->
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+  <rect x="0" y="0" width="1280" height="800" rx="0" fill="#111215"/>
+  <!-- sidebar -->
+  <rect width="288" height="800" fill="#17181b"/>
+  <rect x="288" width="1" height="800" fill="#25272b"/>
+  <circle cx="20" cy="24" r="6" fill="#ff5f57"/><circle cx="40" cy="24" r="6" fill="#febc2e"/><circle cx="60" cy="24" r="6" fill="#28c840"/>
+  <text x="124" y="30" fill="#e8e9eb" font-size="15" font-weight="600">Herdr</text>
+
+  <!-- the switcher -->
+  <rect x="10" y="60" width="268" height="40" rx="8" fill="#232428"/>
+  <rect x="20" y="70" width="20" height="20" rx="5" fill="#5b8def"/>
+  <text x="30" y="85" fill="#fff" font-size="11" font-weight="700" text-anchor="middle">A</text>
+  <text x="52" y="85" fill="#e8e9eb" font-size="14" font-weight="500">Acme</text>
+  <path d="M256 78 l4 4 l4 -4" stroke="#7d8089" stroke-width="1.5" fill="none"/>
+
+  <!-- spaces -->
+  <text x="19" y="128" fill="#7d8089" font-size="12">Spaces</text>
+  <text x="256" y="129" fill="#7d8089" font-size="16">+</text>
+  <rect x="10" y="144" width="268" height="34" rx="8" fill="#26272c"/>
+  <rect x="20" y="152" width="18" height="18" rx="5" fill="#22a99a"/><text x="29" y="165" fill="#fff" font-size="10.5" font-weight="700" text-anchor="middle">A</text>
+  <text x="50" y="166" fill="#e8e9eb" font-size="14">api</text>
+  <rect x="20" y="188" width="18" height="18" rx="5" fill="#e3814f"/><text x="29" y="201" fill="#fff" font-size="10.5" font-weight="700" text-anchor="middle">W</text>
+  <text x="50" y="202" fill="#e8e9eb" font-size="14">web</text><text x="268" y="202" fill="#7d8089" font-size="11.5" text-anchor="end">billing ↑2</text>
+  <rect x="20" y="224" width="18" height="18" rx="5" fill="#8b7cf6"/><text x="29" y="237" fill="#fff" font-size="10.5" font-weight="700" text-anchor="middle">D</text>
+  <text x="50" y="238" fill="#e8e9eb" font-size="14">docs</text>
+
+  <!-- agents: each row's second line is its model, a context meter and its compactions -->
+  <rect y="420" width="288" height="1" fill="#25272b"/>
+  <text x="19" y="454" fill="#7d8089" font-size="12">Agents</text>
+  <!-- agents-plus: the sort button (clock: Priority) and the + that starts an agent -->
+  <circle cx="234" cy="450" r="5.5" stroke="#7d8089" stroke-width="1.3" fill="none"/><path d="M234 447 v3 l2 1.3" stroke="#7d8089" stroke-width="1.3" fill="none" stroke-linecap="round"/>
+  <text x="256" y="455" fill="#7d8089" font-size="16">+</text>
+  <text x="19" y="490" fill="#e5534b" font-size="12">Needs you 1</text>
+  <rect x="10" y="500" width="268" height="42" rx="8" fill="#1f2024"/>
+  <rect x="20" y="513" width="16" height="16" rx="4" fill="#d97757"/>
+  <text x="46" y="518" fill="#e8e9eb" font-size="13.5">web</text><text x="80" y="518" fill="#7d8089" font-size="13">· Add billing page</text>
+  <text x="46" y="535" fill="#7d8089" font-size="11">Opus 5.5</text>
+  <rect x="96" y="531" width="26" height="4" rx="2" fill="#2c2e33"/><rect x="96" y="531" width="10" height="4" rx="2" fill="#a5a8ae"/>
+  <text x="127" y="535" fill="#7d8089" font-size="11">38%</text>
+  <text x="19" y="562" fill="#7d8089" font-size="12">Working 1</text>
+  <rect x="20" y="579" width="16" height="16" rx="4" fill="#d97757"/>
+  <text x="46" y="584" fill="#e8e9eb" font-size="13.5">api</text><text x="74" y="584" fill="#7d8089" font-size="13">· Fix login redirect</text>
+  <text x="46" y="601" fill="#7d8089" font-size="11">Fable 5.2</text>
+  <rect x="99" y="597" width="26" height="4" rx="2" fill="#2c2e33"/><rect x="99" y="597" width="21" height="4" rx="2" fill="#d6a541"/>
+  <text x="130" y="601" fill="#d6a541" font-size="11">81%</text>
+  <g transform="translate(154 592.5) scale(0.4167)" fill="none" stroke="#7d8089" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22v-6"/><path d="M12 8V2"/><path d="M4 12H2"/><path d="M10 12H8"/><path d="M16 12h-2"/><path d="M22 12h-2"/><path d="m15 19-3-3-3 3"/><path d="m15 5-3 3-3-3"/></g><text x="166" y="601" fill="#7d8089" font-size="11">1</text>
+  <!-- footer -->
+  <rect y="675" width="288" height="1" fill="#25272b"/>
+  <g transform="translate(19 688) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4.5 13.5H12L11 22l8.5-11.5H12z"/></g><text x="44" y="700" fill="#a5a8ae" font-size="13">Automations</text>
+  <g transform="translate(19 716) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></g><text x="44" y="728" fill="#a5a8ae" font-size="13">Agent presets</text>
+  <g transform="translate(19 744) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915" /> <circle cx="12" cy="12" r="3" /></g><text x="44" y="756" fill="#a5a8ae" font-size="13">Settings</text>
+  <g transform="translate(19 772) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g><text x="44" y="784" fill="#a5a8ae" font-size="13">Add machine</text>
+  <!-- tab bar: the workspace's Board pinned as a pill before the space's tab; + and Views at the right end -->
+  <g transform="translate(312 17) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M15 3v18"/><path d="M5.5 7h1.5"/><path d="M11.5 7h1.5"/><path d="M11.5 11h1.5"/><path d="M17.5 7h1"/></g>
+  <text x="333" y="29" fill="#a5a8ae" font-size="13">Board</text>
+  <rect x="390.1" y="16" width="1" height="16" fill="#2f3137"/>
+  <rect x="399.1" y="8" width="78" height="32" rx="8" fill="#26272c"/>
+  <text x="429.1" y="29" fill="#e8e9eb" font-size="13">1</text>
+  <g transform="translate(1112 17) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g>
+  <rect x="1135.5" y="10.5" width="77" height="27" rx="7" fill="#26272c" stroke="#2f3137"/>
+  <g transform="translate(1145 17) scale(0.5833)" fill="none" stroke="#e8e9eb" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></g>
+  <text x="1165" y="28.5" fill="#e8e9eb" font-size="12.5">Views</text>
+  <!-- the bell (ws-notifications, right of Views): what needs you and what finished; red count while anything needs you -->
+  <rect x="1215.5" y="10.5" width="52" height="27" rx="7" fill="#34363c" stroke="#3a3d44"/>
+  <g transform="translate(1222 17) scale(0.5833)" fill="none" stroke="#e8e9eb" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/></g>
+  <rect x="1242" y="16" width="17" height="16" rx="8" fill="#e5534b"/>
+  <text x="1250.5" y="28" fill="#111215" font-size="10.5" font-weight="600" text-anchor="middle">4</text>
+  <!-- the agent's pane -->
+  <rect x="300.5" y="56.5" width="969" height="707" rx="10" fill="#1b1c20" stroke="#2a2c31"/>
+  <rect x="301" y="57" width="968" height="34" rx="10" fill="#1d1e22"/>
+  <text x="322" y="79" fill="#e8e9eb" font-size="13" font-weight="500">Claude Code</text>
+  <text x="408" y="79" fill="#7d8089" font-size="12.5">~/work/acme/api</text>
+  <g font-family="'JetBrains Mono', Menlo, monospace" font-size="14" fill="#c9ccd1">
+    <text x="322" y="128">The redirect drops the return path</text>
+    <text x="322" y="152">when the session expires.</text>
+    <text x="322" y="186" fill="#7d8089">● Update src/auth/redirect.ts</text>
+    <text x="322" y="210" fill="#7d8089">● Update src/auth/session.ts</text>
+    <text x="322" y="234" fill="#7d8089">● Write test/auth/redirect.test.ts</text>
+    <text x="322" y="268">Keeping the return path in the</text>
+    <text x="322" y="292">login URL; running make verify…</text>
+    <text x="322" y="740" fill="#7d8089">❯</text>
+  </g>
+  <!-- status bar: each plan's most used limit before the commands hint (ws-status: Claude, Antigravity); a click opens the usage popup -->
+  <rect x="288" y="772" width="992" height="28" fill="#111215"/><rect x="288" y="772" width="992" height="1" fill="#25272b"/>
+  <g transform="translate(302 779.5) scale(0.5417)" fill="none" stroke="#a5a8ae" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2.5"/><path d="M8.5 20h7M12 16v4"/></g>
+  <text x="321" y="790" fill="#a5a8ae" font-size="11.5">This computer</text>
+  <circle cx="420" cy="786" r="3" fill="#7d8089"/><text x="429" y="790" fill="#a5a8ae" font-size="11.5">2 agents</text><text x="480" y="790" fill="#e5534b" font-size="11.5">· 1 needs you</text>
+  <g transform="translate(1073 780) scale(0.5)" fill="#D97757"><path clip-rule="evenodd" d="M20.998 10.949H24v3.102h-3v3.028h-1.487V20H18v-2.921h-1.487V20H15v-2.921H9V20H7.488v-2.921H6V20H4.487v-2.921H3V14.05H0V10.95h3V5h17.998v5.949zM6 10.949h1.488V8.102H6v2.847zm10.51 0H18V8.102h-1.49v2.847z" fill-rule="evenodd"></path></g><text x="1090" y="790" fill="#d6a541" font-size="11.5">72%</text>
+  <g transform="translate(1121 780) scale(0.5)"><defs><linearGradient id="agy-grad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFE432"/><stop offset=".35" stop-color="#FC413D"/><stop offset=".65" stop-color="#00B95C"/><stop offset="1" stop-color="#3186FF"/></linearGradient></defs><path d="M21.751 22.607c1.34 1.005 3.35.335 1.508-1.508C17.73 15.74 18.904 1 12.037 1 5.17 1 6.342 15.74.815 21.1c-2.01 2.009.167 2.511 1.507 1.506 5.192-3.517 4.857-9.714 9.715-9.714 4.857 0 4.522 6.197 9.714 9.715z" fill="url(#agy-grad)"/></g><text x="1138" y="790" fill="#a5a8ae" font-size="11.5">18%</text>
+  <text x="1266" y="790" fill="#7d8089" font-size="11.5" text-anchor="end">⌘⇧P  commands</text>
+
+  <!-- the list (ws-notifications): Needs you pinned above Updates; each row one click to its thing; workspace marks say where -->
+  <rect x="875.5" y="44.5" width="392" height="552" rx="10" fill="#202227" stroke="#33363c" filter="url(#shadow)"/>
+  <text x="891" y="72" fill="#e8e9eb" font-size="13.5" font-weight="600">Notifications</text>
+  <text x="1252" y="72" fill="#a5a8ae" font-size="11.5" text-anchor="end">Mark all read</text>
+  <text x="891" y="94" font-size="12"><tspan fill="#e5534b" font-weight="500">2 need you</tspan><tspan fill="#a5a8ae"> · </tspan><tspan fill="#76a8ff" font-weight="500">2 unread</tspan></text>
+  <rect x="890.5" y="104.5" width="96" height="22" rx="5" fill="#2c2e34" stroke="#33363c"/><text x="938.5" y="119.5" fill="#e8e9eb" font-size="11.5" font-weight="500" text-anchor="middle">All workspaces</text>
+  <rect x="997" y="109" width="13" height="13" rx="4" fill="#5b8def"/><text x="1003.5" y="119" fill="#fff" font-size="8" font-weight="700" text-anchor="middle">A</text><text x="1015" y="119.5" fill="#a5a8ae" font-size="11.5">Acme</text>
+  <rect x="876.0" y="136" width="391" height="1" fill="#33363c"/>
+  <text x="891" y="158" fill="#e5534b" font-size="10.5" font-weight="600" letter-spacing=".5">NEEDS YOU</text><text x="1252" y="158" fill="#e5534b" font-size="10.5" font-weight="600" text-anchor="end">2</text>
+  <g>
+    <circle cx="897" cy="181" r="3.5" fill="#e5534b"/>
+    <text x="910" y="186" fill="#e8e9eb" font-size="12.8" font-weight="500">Claude Code needs you</text><text x="1252" y="186" fill="#7d8089" font-size="11" text-anchor="end">2m</text>
+    <text x="910" y="205" fill="#a5a8ae" font-size="11.8">Waiting for permission to run the migration</text>
+    <rect x="910" y="215" width="12" height="12" rx="3" fill="#e3814f"/><text x="916" y="224" fill="#fff" font-size="7.5" font-weight="700" text-anchor="middle">G</text><text x="927" y="225" fill="#7d8089" font-size="11">Globex · web · fix-checkout</text>
+  </g>
+  <rect x="876.0" y="237" width="391" height="1" fill="#2a2c31"/>
+  <g>
+    <circle cx="897" cy="253" r="3.5" fill="#e5534b"/>
+    <text x="910" y="258" fill="#e8e9eb" font-size="12.8" font-weight="500">Allow nightly-audit's check?</text><text x="1252" y="258" fill="#7d8089" font-size="11" text-anchor="end">14m</text>
+    <text x="910" y="277" fill="#a5a8ae" font-size="11.8">git log --since=yesterday · waiting for approval</text>
+    <rect x="910" y="287" width="12" height="12" rx="3" fill="#5b8def"/><text x="916" y="296" fill="#fff" font-size="7.5" font-weight="700" text-anchor="middle">A</text><text x="927" y="297" fill="#7d8089" font-size="11">Acme · Automations</text>
+  </g>
+  <rect x="876.0" y="309" width="391" height="1" fill="#2a2c31"/>
+  <text x="891" y="330" fill="#7d8089" font-size="10.5" font-weight="600" letter-spacing=".5">UPDATES</text><text x="1252" y="330" fill="#7d8089" font-size="10.5" font-weight="600" text-anchor="end">3</text>
+  <g>
+    <circle cx="897" cy="353" r="3.5" fill="#76a8ff"/>
+    <text x="910" y="358" fill="#e8e9eb" font-size="12.8" font-weight="500">Claude Code finished</text><text x="1252" y="358" fill="#7d8089" font-size="11" text-anchor="end">5m</text>
+    <text x="910" y="377" fill="#a5a8ae" font-size="11.8">Kept the return path in the login URL</text>
+    <rect x="910" y="387" width="12" height="12" rx="3" fill="#5b8def"/><text x="916" y="396" fill="#fff" font-size="7.5" font-weight="700" text-anchor="middle">A</text><text x="927" y="397" fill="#7d8089" font-size="11">Acme · api</text>
+  </g>
+  <rect x="876.0" y="409" width="391" height="1" fill="#2a2c31"/>
+  <g>
+    <circle cx="897" cy="425" r="3.5" fill="#3fae6a"/>
+    <text x="910" y="430" fill="#e8e9eb" font-size="12.8" font-weight="500">ACM-4 is ready to merge</text><text x="1252" y="430" fill="#7d8089" font-size="11" text-anchor="end">18m</text>
+    <text x="910" y="449" fill="#a5a8ae" font-size="11.8">4 checks passed, approved, no conflicts</text>
+    <rect x="910" y="459" width="12" height="12" rx="3" fill="#5b8def"/><text x="916" y="468" fill="#fff" font-size="7.5" font-weight="700" text-anchor="middle">A</text><text x="927" y="469" fill="#7d8089" font-size="11">Acme · Board · PR #27</text>
+  </g>
+  <rect x="876.0" y="481" width="391" height="1" fill="#2a2c31"/>
+  <g opacity="0.7">
+    <circle cx="897" cy="497" r="3" fill="none" stroke="#7d8089" stroke-width="1.5"/>
+    <text x="910" y="502" fill="#a5a8ae" font-size="12.8" font-weight="400">pr-review finished</text><text x="1252" y="502" fill="#7d8089" font-size="11" text-anchor="end">42m</text>
+    <text x="910" y="521" fill="#7d8089" font-size="11.8">Left 2 review notes on PR #31</text>
+    <rect x="910" y="531" width="12" height="12" rx="3" fill="#5b8def"/><text x="916" y="540" fill="#fff" font-size="7.5" font-weight="700" text-anchor="middle">A</text><text x="927" y="541" fill="#7d8089" font-size="11">Acme · Automations</text>
+  </g>
+  <rect x="876.0" y="560" width="391" height="1" fill="#33363c"/>
+  <path d="M876.0 561 H1267.0 V586 a10 10 0 0 1 -10 10 H886.0 a10 10 0 0 1 -10 -10 Z" fill="#1b1c20"/>
+  <text x="891" y="582" fill="#7d8089" font-size="11">↑↓ move · Enter open · Esc close</text><text x="1252" y="582" fill="#a5a8ae" font-size="11.5" text-anchor="end">Clear read (1)</text>
+</svg>

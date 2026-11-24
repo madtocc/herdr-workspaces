@@ -31,7 +31,8 @@ for pair in mods/ws-switcher/preview.svg:preview.png mods/ws-board/preview.svg:p
             mods/ws-history/preview.svg:previews/history.png \
             mods/ws-notes/preview.svg:previews/notes.png \
             mods/ws-automations/preview.svg:previews/automations.png mods/ws-agents/preview.svg:previews/agent-menu.png \
-            mods/ws-settings/preview.svg:previews/settings.png mods/ws-tabs/preview.svg:previews/views.png; do
+            mods/ws-settings/preview.svg:previews/settings.png mods/ws-tabs/preview.svg:previews/views.png \
+            mods/ws-notifications/preview.svg:previews/notifications.png; do
   svg=${pair%%:*} png=${pair#*:}
   [ -e "$png" ] || { echo "release: $png is missing: run scripts/render-preview.sh" >&2; exit 1; }
   if [ -n "$last" ] && ! git diff --quiet "$last" -- "$svg" && git diff --quiet "$last" -- "$png"; then

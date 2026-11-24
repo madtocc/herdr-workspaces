@@ -28,8 +28,8 @@ export const EXPERIMENTS = [
 // board: the Board tab and button, pull request follow-through, GitHub board item status.
 // notes, worktrees, history: their screens and every way in. automations: none of them run.
 // usage: the status bar's plan usage and its timed asks. numbers: model, context and
-// compactions on Agents rows and in History.
-export const FEATURE_KEYS = ["board", "notes", "worktrees", "history", "automations", "usage", "numbers"];
+// compactions on Agents rows and in History. notifications: the tab bar's bell, its list and its log.
+export const FEATURE_KEYS = ["board", "notes", "worktrees", "history", "automations", "usage", "numbers", "notifications"];
 
 // What Settings > Features shows for each add-on, in FEATURE_KEYS' order: its group, title, what
 // it adds, and the line shown only while it's off (Automations' off line and its count while
@@ -56,6 +56,9 @@ export const FEATURES = [
   { key: "numbers", group: "Status bar and agent rows", title: "Agent numbers",
     what: "The model, how full the context is and how often it was compacted, on each agent's row and in History.",
     off: "Off: agent rows show the name and status only." },
+  { key: "notifications", group: "Tab bar", title: "Notifications bell",
+    what: "A bell at the right end of the tab bar: what needs you and what finished, in every workspace.",
+    off: "Off: the bell is gone and nothing new is kept. What it kept stays in ~/.herdr/notifications.json." },
 ];
 
 // The comment above "features" in the file, so someone who opens it knows what the block is.

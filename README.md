@@ -16,8 +16,8 @@ describes everything in full: it's the brief an agent builds it from.
 
 A workspace is a folder of repos with its own agent instructions; it groups
 Herdr's spaces. The switcher at the top of the sidebar picks one, and the spaces
-and agents lists show only what's in it. A dot on the switcher says an agent in
-another workspace needs you or finished.
+and agents lists show only what's in it. What needs you elsewhere is in the tab
+bar's bell (below), not on the switcher.
 
 - **New space**: a click on the Spaces + makes one in the workspace's root. Hold
   it (or right-click) to name the space and choose its folder.
@@ -51,6 +51,29 @@ Markdown and SVG in place (Save, never on its own), previews Markdown, SVG and
 images (Source | Preview | Split), searches the folder, and opens a file in the
 app you pick (Open in … ▾, remembered per extension). Cmd-click a path in a
 terminal or an agent's output and it opens in Files beside that terminal.
+
+### Notifications
+
+![The bell's list open under it](previews/notifications.png)
+
+A bell at the right end of the tab bar lists what needs you and what finished,
+in every workspace, with where each one is. Its count is red while anything
+needs you and blue for unread updates only.
+
+- **Needs you** stays at the top until it's resolved: an agent or a helper
+  waiting on you, an automation run stuck at a question, a check you haven't
+  allowed or that fails, a card's pull request failing, with changes asked for
+  or conflicting while no agent works on it.
+- **Updates**: an agent or an automation run that finished (not one with
+  nothing to do), an automation that didn't start or was missed while Herdr was
+  closed, a card's pull request ready to merge, merged or closed, and what only
+  the system says (a machine needs a login, the background runner didn't
+  start).
+- **One click goes there**: the agent, the run's tab or the run in History, the
+  card on its board, the automation. An update is read once clicked; Mark all
+  read, × and Clear read tidy the rest, and updates go after 7 days.
+- **It remembers** across restarts, the background runner's news from while
+  Herdr was closed included.
 
 ### A task board
 
@@ -227,8 +250,8 @@ The sidebar's Settings opens Herdr's own Settings window with four sections of
 ours at the end, after Privacy:
 
 - **Features**: a switch for each of the package's add-ons (Board, Notes,
-  Worktrees, History, Automations, the status bar's plan usage and the agent
-  rows' numbers), all on to start with and one setting for every workspace. Off
+  Worktrees, History, Automations, the status bar's plan usage, the agent
+  rows' numbers and the tab bar's notifications bell), all on to start with and one setting for every workspace. Off
   hides it everywhere and stops its background work (no automation runs, no
   pull request is followed, no usage is asked); nothing is deleted, so on brings
   it back as it was. Each row says what it adds, and while off what's gone and
@@ -272,7 +295,7 @@ leaves that file to you: new default shortcuts in its updates are added by hand.
 Ask your agent to add this layout (Herdr's own guide, `~/.config/herdr-app/AGENTS.md`,
 says how), or by hand:
 
-1. Copy `layouts/workspaces.json` to `~/.config/herdr-app/layouts/` and the seventeen
+1. Copy `layouts/workspaces.json` to `~/.config/herdr-app/layouts/` and the eighteen
    folders in `mods/` to `~/.config/herdr-app/mods/` (rename them if a name is taken).
 2. For agent instructions from the + menu, put the launcher on your `PATH` and
    point `programs.json` at it. `herdr-ws-run` starts automations from other
@@ -354,7 +377,10 @@ layout document, `shared.json`, `programs.json` and `view.json` (which tab is sh
 and connects to the app's socket to see whether Herdr is open. Either runner closes an
 automation run's tab once its agent has finished (unless the automation says `keep: true`),
 and reads the launcher's note of which conversation that terminal held
-(`~/.herdr/resume/<core>/<terminal>.session`), for History's Resume. Deleting a workspace, a task or an
+(`~/.herdr/resume/<core>/<terminal>.session`), for History's Resume, and, for an agent
+asked to end with an outcome line, its screen with `hc read` (the line and the one before it
+go into the run's record, for the bell). The bell keeps its log, what you read or dismissed
+and the news only a notification said, in `~/.herdr/notifications.json`. Deleting a workspace, a task or an
 automation (after a confirmation) moves it to the Trash, and so does wiping an
 agent from the Agents list's right-click menu: that Claude Code or Pi
 conversation's transcript and the folders Claude keeps for it under
@@ -491,7 +517,7 @@ than 0.1.0's notes, so read them all). To hear about new versions, watch the
 repo on GitHub for releases (Watch → Custom → Releases).
 
 - **You copied the files as they are:** copy `layouts/workspaces.json` and the
-  seventeen folders in `mods/` again, and do what the new versions' notes say
+  eighteen folders in `mods/` again, and do what the new versions' notes say
   (a new script to link, say). Your workspaces, tasks, presets and automations
   live elsewhere and aren't touched.
 - **You or your agent changed them:** tell your agent "apply what's in this

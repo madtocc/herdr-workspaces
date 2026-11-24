@@ -4,11 +4,13 @@
 //
 //   - its card shows one status (Checks failing, Changes requested, Conflicts,
 //     Checks running, Ready to merge, Merged, …): shared "workspaces.prs",
-//     { <task file>: { number, url, label, tone, tip } }, drawn by ws-board;
+//     { <task file>: { number, url, label, tone, tip, ws, taskId, terminal, tab, waking } }, drawn by
+//     ws-board (and the bell lists a failing one nobody works on: notif.js);
 //   - the card's agent is sent a message (`hc send`) when a check fails, when it
 //     conflicts with its base, or when reviews arrive, once it's free;
 //   - you get a toast when it's ready to merge, was closed, or needs someone and
-//     the card has no agent left;
+//     the card has no agent left; a click on it opens the card on its board
+//     ("ws-switcher.show/board/<workspace>/<card>"), and the bell keeps it (notif.js);
 //   - a card still in a column before the board's start one when its pull request
 //     opens moves to the finish column (the start one for a draft), once;
 //   - a merged one moves its card to the board's last column.
@@ -31,6 +33,9 @@ const WORK_GAP = 5000;
 const STORE = "prs";
 
 const label = (c) => c.charAt(0).toUpperCase() + c.slice(1).replace(/[-_]+/g, " ");
+// A toast's click: the card on its board (a workspace or card id a command can't carry: none).
+const PLAIN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const cardAt = (t) => (PLAIN.test(String(t.ws ?? "")) && PLAIN.test(String(t.id ?? "")) ? { action: { name: `ws-switcher.show/board/${t.ws}/${t.id}`, args: {} } } : {});
 
 // The card's agent: the one at its terminal, if it's still the one Start made
 // (an address can come back for another terminal later; a tab's id can't). Cards
@@ -113,7 +118,8 @@ export class PrWatcher {
       const e = this.state.items[t.file];
       if (!e?.f) continue;
       const stale = e.err && now - (e.at ?? 0) > STALE ? e.err : null;
-      out[t.file] = chip(e.f, stale);
+      // waking: news is waiting to be sent to the card's agent (deliver()), so the bell holds off.
+      out[t.file] = { ...chip(e.f, stale), ws: t.ws, taskId: t.id, terminal: t.terminal ?? null, tab: t.tab ?? null, waking: Boolean(e.queue?.length) };
     }
     if (JSON.stringify(out) !== JSON.stringify(shared("workspaces.prs") ?? null)) setShared("workspaces.prs", out);
   }
@@ -227,7 +233,7 @@ export class PrWatcher {
       t.status = to;
       await this.update(t, { status: to });
       notify({
-        title: `${t.id}: pull request open`, level: "info",
+        title: `${t.id}: pull request open`, level: "info", ...cardAt(t),
         body: `${f.draft ? "Draft pull request" : "Pull request"} #${f.number} is open, so its card moved from ${label(from)} to ${label(to)}.`,
       });
       return;
@@ -235,13 +241,13 @@ export class PrWatcher {
     if (kind === "ready") {
       const c = f.checks;
       notify({
-        title: `${t.id} is ready to merge`, level: "success",
+        title: `${t.id} is ready to merge`, level: "success", ...cardAt(t),
         body: `Pull request #${f.number}: ${c.total ? `${c.passed} ${c.passed === 1 ? "check" : "checks"} passed` : "no checks"}${f.decision === "APPROVED" ? ", approved" : ""}, no conflicts.`,
       });
       return;
     }
     if (kind === "closed") {
-      notify({ title: `${t.id}: pull request closed`, body: `#${f.number} was closed without merging. Its card stays where it is.`, level: "warning" });
+      notify({ title: `${t.id}: pull request closed`, body: `#${f.number} was closed without merging. Its card stays where it is.`, level: "warning", ...cardAt(t) });
       return;
     }
     const def = this.def(t.ws);
@@ -251,7 +257,7 @@ export class PrWatcher {
     t.status = done;
     t.last = true;
     await this.update(t, { status: done });
-    notify({ title: `${t.id} merged`, body: `Pull request #${f.number} merged, so its card moved to ${label(done)}.`, level: "success" });
+    notify({ title: `${t.id} merged`, body: `Pull request #${f.number} merged, so its card moved to ${label(done)}.`, level: "success", ...cardAt(t) });
   }
 
   async update(t, fields) {
@@ -277,7 +283,7 @@ export class PrWatcher {
         e.queue = [];
         this.save();
         notify({
-          title: `${t.id}: pull request #${e.f.number} needs someone`, level: "warning",
+          title: `${t.id}: pull request #${e.f.number} needs someone`, level: "warning", ...cardAt(t),
           body: `${said}. ${t.terminal ? "Its agent has ended" : "The card has no agent"}, so nobody was told.`,
         });
         continue;

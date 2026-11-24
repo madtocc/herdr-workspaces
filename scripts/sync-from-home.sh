@@ -61,10 +61,16 @@ cmp -s "$src/mods/ws-changes/follow.js" "$src/mods/ws-files/follow.js" || {
   exit 1
 }
 
+# The bell's rules: the switcher keeps its log and count, ws-notifications draws its list.
+cmp -s "$src/mods/ws-switcher/notif.js" "$src/mods/ws-notifications/notif.js" || {
+  echo "mods/ws-switcher/notif.js and mods/ws-notifications/notif.js differ: make them the same first" >&2
+  exit 1
+}
+
 mkdir -p "$dst/layouts"
 cp "$src/layouts/workspaces.json" "$dst/layouts/workspaces.json"
 
-for mod in ws-switcher ws-spaces ws-agents ws-board ws-worktrees ws-history ws-notes ws-presets ws-chrome ws-automations ws-tabs ws-new-menu ws-toast ws-status ws-settings ws-changes ws-files; do
+for mod in ws-switcher ws-spaces ws-agents ws-board ws-worktrees ws-history ws-notes ws-presets ws-chrome ws-automations ws-tabs ws-new-menu ws-toast ws-status ws-settings ws-changes ws-files ws-notifications; do
   rm -rf "$dst/mods/$mod"
   mkdir -p "$dst/mods/$mod"
   (cd "$src/mods/$mod" && find . -type f ! -name jsconfig.json ! -name gpui-kit.d.ts ! -name '.*' ! -name '*.error') |

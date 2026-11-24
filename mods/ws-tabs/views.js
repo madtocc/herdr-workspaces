@@ -162,6 +162,11 @@ export const itemWidth = (name, { close = false, mark = false, label = true } = 
 // The Views and Beside buttons: 2 border + 20 padding + 14 icon (+ 6 gap and the words).
 export const buttonWidth = (words, label = true) => 2 + 20 + 14 + (label ? 6 + textWidth(words) : 0);
 
+// The bell at the bar's right end (ws-notifications' list): 28 square bare; with its count, 2 border +
+// 14 padding + a 14 icon + 5 gap + the badge (10 padding + 6.5 a digit, at least 16).
+export const BELL_WIDTH = 28;
+export const bellWidth = (label) => (label ? 2 + 14 + 14 + 5 + Math.max(16, Math.ceil(10 + 6.5 * String(label).length)) : BELL_WIDTH);
+
 // Whether the inactive pills show only their icon: more than 3 pills, or the pills and tabs at full
 // names wouldn't fit `room` (the bar's width less its padding and the buttons at its right end).
 // pills: [{ name, shown }]; tabs: [{ name, shown, mark }].

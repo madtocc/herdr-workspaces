@@ -17,8 +17,6 @@
   <rect x="20" y="70" width="20" height="20" rx="5" fill="#5b8def"/>
   <text x="30" y="85" fill="#fff" font-size="11" font-weight="700" text-anchor="middle">A</text>
   <text x="52" y="85" fill="#e8e9eb" font-size="14" font-weight="500">Acme</text>
-  <circle cx="228" cy="80" r="3" fill="#e5534b"/>
-  <text x="242" y="85" fill="#7d8089" font-size="11.5">3</text>
   <path d="M256 78 l4 4 l4 -4" stroke="#7d8089" stroke-width="1.5" fill="none"/>
 
   <!-- spaces -->
@@ -64,10 +62,14 @@
   <rect x="390.1" y="16" width="1" height="16" fill="#2f3137"/>
   <rect x="399.1" y="8" width="78" height="32" rx="8" fill="#26272c"/>
   <text x="429.1" y="29" fill="#e8e9eb" font-size="13">1</text>
-  <g transform="translate(1167 17) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g>
-  <rect x="1190.5" y="10.5" width="77" height="27" rx="7" fill="#34363c" stroke="#3a3d44"/>
-  <g transform="translate(1200 17) scale(0.5833)" fill="none" stroke="#e8e9eb" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></g>
-  <text x="1220" y="28.5" fill="#e8e9eb" font-size="12.5">Views</text>
+  <g transform="translate(1112 17) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g>
+  <rect x="1135.5" y="10.5" width="77" height="27" rx="7" fill="#34363c" stroke="#3a3d44"/>
+  <g transform="translate(1145 17) scale(0.5833)" fill="none" stroke="#e8e9eb" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></g>
+  <text x="1165" y="28.5" fill="#e8e9eb" font-size="12.5">Views</text>
+  <!-- the bell (ws-notifications, right of Views): what needs you and what finished; red count while anything needs you -->
+  <g transform="translate(1222 17) scale(0.5833)" fill="none" stroke="#e8e9eb" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/></g>
+  <rect x="1242" y="16" width="17" height="16" rx="8" fill="#e5534b"/>
+  <text x="1250.5" y="28" fill="#111215" font-size="10.5" font-weight="600" text-anchor="middle">1</text>
   <!-- the agent's pane -->
   <rect x="300.5" y="56.5" width="482" height="707" rx="10" fill="#1b1c20" stroke="#2a2c31"/>
   <rect x="301" y="57" width="481" height="34" rx="10" fill="#1d1e22"/>
@@ -142,6 +144,7 @@
   <g transform="translate(1121 780) scale(0.5)"><defs><linearGradient id="agy-grad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFE432"/><stop offset=".35" stop-color="#FC413D"/><stop offset=".65" stop-color="#00B95C"/><stop offset="1" stop-color="#3186FF"/></linearGradient></defs><path d="M21.751 22.607c1.34 1.005 3.35.335 1.508-1.508C17.73 15.74 18.904 1 12.037 1 5.17 1 6.342 15.74.815 21.1c-2.01 2.009.167 2.511 1.507 1.506 5.192-3.517 4.857-9.714 9.715-9.714 4.857 0 4.522 6.197 9.714 9.715z" fill="url(#agy-grad)"/></g><text x="1138" y="790" fill="#a5a8ae" font-size="11.5">18%</text>
   <text x="1266" y="790" fill="#7d8089" font-size="11.5" text-anchor="end">⌘⇧P  commands</text>
 
+  <g transform="translate(-55 0)">
   <!-- the Views menu: this space's views, then the workspace's; a dot when it has a pill, its key, and the split icon (lit: already a pane in this tab) -->
   <rect x="966.5" y="44.5" width="302" height="322" rx="10" fill="#202227" stroke="#33363c" filter="url(#shadow)"/>
   <text x="982" y="70" font-size="12"><tspan fill="#a5a8ae" font-weight="500">api</tspan><tspan fill="#7d8089" font-size="11" dx="6">this space</tspan></text>
@@ -177,4 +180,5 @@
   <rect x="978" y="325" width="278" height="1" fill="#2f3137"/>
   <g transform="translate(982 342) scale(0.5)" fill="none" stroke="#7d8089" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M12 3v18"/></g>
   <text x="1000" y="353" fill="#7d8089" font-size="12">or ⌥ opens it beside Claude Code</text>
+  </g>
 </svg>

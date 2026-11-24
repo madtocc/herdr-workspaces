@@ -88,6 +88,10 @@ const ACT = "workspaces.history.act";
 // Shared "workspaces.history.wiped": { keys, at }: what History's Wipe took, so every
 // History reads again, and a helper left behind says it was started by a wiped conversation.
 const WIPED = "workspaces.history.wiped";
+// Shared "workspaces.history.open": { ws, runId, at, taken? }: the tab bar's bell asks History (the
+// switcher shows it first) to show that automation run, open. The screen (or a dialog) of that
+// workspace takes it once (taken), within 15s.
+const HIST_OPEN = "workspaces.history.open";
 
 // Moves each path given after $1 that's there to the Trash, or into $1 where there's
 // no Trash command. The same as ws-agents/main.js' TRASH: change both together.
@@ -321,10 +325,30 @@ export default class History extends View {
         this.load(cx);
         cx.notify();
       } else if (!this.reading && Date.now() - this.readAt > (back ? STALE : FRESH)) this.load(cx);
+      this.runAsked(cx);
       // In place of the terminals, it takes the keyboard from them: typing searches, and
       // mustn't land in a terminal nobody sees.
       if (back) this.input().focus();
     });
+  }
+
+  // A run the bell asked for (HIST_OPEN): the Automations side, that run open, quiet runs shown when
+  // it's one of them (anything but a started run: a check that failed, a miss, a skip).
+  runAsked(cx) {
+    const want = shared(HIST_OPEN) ?? null;
+    if (!want?.at || want.taken || !(this.follow || this.dialog) || Date.now() - want.at > 15000) return;
+    if ((want.ws ?? null) !== (this.workspace ?? null)) return;
+    setShared(HIST_OPEN, { ...want, taken: true });
+    const r = (shared("workspaces.automation.runs") ?? []).find((x) => x.id === want.runId) ?? null;
+    if (this.mode !== "automations") { this.mode = "automations"; this.max = PAGE; }
+    if (r && r.status !== "started") this.hideQuiet = false;
+    // Nothing in the way of the run: no search left in the box, and its row on the page.
+    if (this.runQuery.value()) this.runQuery.set_value("");
+    const at = this.runsView().shown.findIndex((x) => x.r.id === want.runId);
+    if (at >= this.max) this.max = at + 1;
+    this.open = `run:${want.runId}`;
+    this.input().focus();
+    cx.notify();
   }
 
   // Reads the list again, in a task of its own. Call it from a click, a timer or

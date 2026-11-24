@@ -18,6 +18,11 @@
 //   "ws-tabs.view/<view>" shows it full size, and goes back to the terminals when it's the one shown;
 //   "ws-tabs.beside/<view>" opens it beside (views.js: viewCommand, besideCommand); "ws-tabs.views"
 //   opens the Views menu, and closes it when it's open;
+// - Notifications: a bell at the bar's right end, right of Views (before the window's own buttons where
+//   Herdr draws them), opens ws-notifications' list as a popup under it. It shows the switcher's count
+//   (shared "workspaces.notifications.badge": red while anything needs you, blue for unread updates,
+//   none at 0) and is gone while Notifications is off in Settings > Features; "ws-tabs.notifications"
+//   (a key) opens the list, and closes it when it's open (shared "workspaces.notifications.open");
 // - a zoomed tab says so with an "Unzoom" chip (Herdr's: " Z"); a click on it unzooms;
 // - a view whose add-on is off in Settings > Features (shared "workspaces.settings", ws-agents reads
 //   ~/.herdr/settings.jsonc into it) has no pill and no row; it stays in "workspaces.screens", so
@@ -32,11 +37,15 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { spaces, panes, run, openOverlay, closeOverlay, theme, window, shared, setShared, props, layout, settings, keys, checking, nextCommand } from "herdr";
-import { VIEWS, ALL, isView, viewCommand, parseCommand, pushAsk, backName, canBeside, keyLabel, menu, menuRows, menuHeight, moveSel, pillKeys, pillTip, buttonWidth, tight, narrowWindow } from "./views.js";
+import { VIEWS, ALL, isView, viewCommand, parseCommand, pushAsk, backName, canBeside, keyLabel, menu, menuRows, menuHeight, moveSel, pillKeys, pillTip, buttonWidth, bellWidth, tight, narrowWindow } from "./views.js";
 
 // Whether an add-on is on in Settings > Features (nothing known yet counts as on).
 const featureOn = (key) => shared("workspaces.settings")?.features?.[key] !== false;
 const MENU_WIDTH = 300;
+// The bell's list (ws-notifications): its width, and the keys it and the switcher share.
+const BELL_LIST_WIDTH = 392;
+const BADGE = "workspaces.notifications.badge";
+const BELL_OPEN = "workspaces.notifications.open";
 // When a Views menu last closed on "ws-tabs.views" (module code is shared by this mod's copies), so the
 // command toggles the menu instead of stacking a second one.
 let menuClosedAt = 0;
@@ -125,6 +134,8 @@ export default class Tabs extends View {
     }
     if (p.back) return; // an older layout's Back row: hidden, nothing to do
     this.pressed = null;
+    // An "open" mark older than this copy is from before a crash or a restart: no list is open.
+    this.startedAt = Date.now();
     if (checking()) return;
     // Keys: every copy of the bar takes them (only a shown one is handed them).
     cx.spawn(async (cx) => {
@@ -140,6 +151,20 @@ export default class Tabs extends View {
             if (this.menuPending !== mine) return;
             this.menuPending = null;
             if (menuClosedAt < at - 50) { this.viewsBounds = null; this.openMenu(); }
+          });
+          continue;
+        }
+        // The bell's list: closed when it's open, else opened (the same way as the Views menu, so a
+        // key pressed twice quickly cancels out).
+        if (text === "notifications") {
+          if (this.bellPending) { this.bellPending = null; continue; }
+          const at = Date.now(), mine = { at };
+          this.bellPending = mine;
+          cx.timer.after(120, () => {
+            if (this.bellPending !== mine) return;
+            this.bellPending = null;
+            this.bellBounds = null;
+            this.openBell();
           });
           continue;
         }
@@ -186,6 +211,27 @@ export default class Tabs extends View {
     const m = menu({ ws: def ? { id: def.id, name: def.name, scratch: Boolean(def.scratch) } : null, space, covered,
       on: (k) => featureOn(k) && (Boolean(find(root, `screen-${k}`)) || VIEWS[k].space), panels: shared("workspace.panels") });
     openOverlay({ mod: "ws-tabs", kind: "popup", width: MENU_WIDTH, height: menuHeight(m), at, props: { viewsMenu: true } });
+  }
+
+  // The bell's list, under the bell, its right edge on the bell's (as the Views menu); as tall as what
+  // it shows (the switcher's badge carries the height notif.js gives). Open already: it closes. Just
+  // closed by this same click (a press outside a popup closes it first): it stays closed.
+  openBell() {
+    if (!featureOn("notifications")) return;
+    const o = shared(BELL_OPEN) ?? null;
+    if (o?.overlay && (o.at ?? 0) >= (this.startedAt ?? 0)) { closeOverlay(o.overlay); setShared(BELL_OPEN, { overlay: null, closedAt: Date.now() }); return; }
+    if (Date.now() - (o?.closedAt ?? 0) < 300) return;
+    const root = layout(), sidebar = find(root, "sidebar"), w = window();
+    const zoom = settings().zoom || 1, barWidth = (this.width ?? 0) / zoom;
+    const c = corner(this.bellBounds);
+    let at = "pointer";
+    if (c) at = { x: Math.max(0, c.right - BELL_LIST_WIDTH), y: c.bottom + 4 };
+    else if (barWidth > 0) {
+      const left = sidebar && !sidebar.hidden ? sidebar.size?.px ?? 0 : 0;
+      at = { x: Math.max(0, (left + barWidth - 10 - (w?.buttons ? 3 * 29 : 0) - BELL_LIST_WIDTH) * zoom), y: ((find(root, "tabs")?.size?.px ?? 42) - 4) * zoom };
+    }
+    const height = Math.max(120, Math.min(556, Number(shared(BADGE)?.height) || 240));
+    openOverlay({ mod: "ws-notifications", kind: "popup", width: BELL_LIST_WIDTH, height, at, props: { height } });
   }
 
   // The Views menu: the groups views.js gives, a row each; a click or Enter opens full size, the
@@ -334,8 +380,13 @@ export default class Tabs extends View {
     // Beside: while a view is shown full size, where it can open as a pane.
     const shownKey = over && scr && pinned.includes(scr.screen) && isShown(scr, scr.screen, ws, space) ? scr.screen : null;
     const beside = Boolean(shownKey) && canBeside(space, covered);
+    // The bell: Notifications on, with the switcher's count.
+    const bell = featureOn("notifications");
+    const badge = bell ? shared(BADGE) ?? null : null;
+    const count = badge?.count > 0 ? (badge.count > 99 ? "99+" : String(badge.count)) : "";
+    const bellOpen = Boolean(shared(BELL_OPEN)?.overlay) && (shared(BELL_OPEN)?.at ?? 0) >= (this.startedAt ?? 0);
     // The buttons at the right end, then whether the pills not shown go icon-only.
-    const right = 8 + (beside ? 3 + buttonWidth(`Beside ${tabName}`, !narrow) : 0) + buttonWidth("Views", !narrow) + (w?.buttons ? 3 * 29 : 0);
+    const right = 8 + (beside ? 3 + buttonWidth(`Beside ${tabName}`, !narrow) : 0) + buttonWidth("Views", !narrow) + (bell ? 3 + bellWidth(count) : 0) + (w?.buttons ? 3 * 29 : 0);
     const lightsPadding = w?.platform === "macos" && w.titlebar === "none" && !w.fullscreen && root?.traffic_lights
       ? Math.max(10, (root.traffic_lights[0] + 64) / zoom - (sidebar?.hidden ? 0 : sidebar?.size?.px ?? 0))
       : 10;
@@ -395,6 +446,16 @@ export default class Tabs extends View {
         .on_click(() => this.openMenu())
         .child(svg("mods/ws-tabs/views.svg").size(14).flex_none())
         .when(!narrow, el => el.child("Views")))
+      .when(bell, el => el.child(h_flex().id("notifications").h(28).min_w(28).px(count ? 7 : 0).gap(5).flex_none().items_center().justify_center().rounded(7)
+        .border(1).border_color(bellOpen ? t.border : t.chrome).bg(bellOpen ? t.raised : t.chrome)
+        .text_color(count || bellOpen ? t.foreground : t.muted).hover(s => s.bg(t.hover).text_color(t.foreground))
+        .tooltip(!count ? "Notifications" : `Notifications: ${[badge.needs && `${badge.needs} need${badge.needs === 1 ? "s" : ""} you`, badge.unread && `${badge.unread} unread`].filter(Boolean).join(", ")}`)
+        .on_mouse_down("left", (e, cx) => { cx.stop_propagation(); this.bellBounds = e.bounds ?? null; })
+        .on_click(() => this.openBell())
+        .child(svg("mods/ws-notifications/bell.svg").size(14).flex_none())
+        .when(Boolean(count), el => el.child(div().id("notifications-badge").h(16).min_w(16).px(5).flex_none().rounded(8)
+          .bg(badge.tone === "blocked" ? t.blocked : t.done).text_color(t.background).text_size(10.5).font_semibold()
+          .flex().items_center().justify_center().child(count)))))
       .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/ws-tabs/win-min.svg").size(16) : "−", () => run("window.minimize")))
         .child(button("maximize", w.platform === "windows" ? svg(`mods/ws-tabs/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))
         .child(button("close-window", w.platform === "windows" ? svg("mods/ws-tabs/win-close.svg").size(16) : svg("mods/pane/close.svg").size(13), () => run("window.close"))));
