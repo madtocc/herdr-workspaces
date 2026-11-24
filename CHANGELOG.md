@@ -7,6 +7,8 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-11-24
+
 ### New
 - **Find a model by typing part of its name.** In Agent presets and Automations, an agent that lists more than 12 models (Pi and OpenCode list a hundred or more) gets one box instead of model chips. Click it and it lists the providers; pick one, or type, and it lists the matching models with each one's provider on the right, so `grok 4.7` shows grok-4.7 from every provider that has it. Every word you type has to be somewhere in the name, in any order. Arrows move, Enter picks, Tab fills in the highlighted name, Esc closes. A name that isn't in the list can still be set as typed. The model set shows in the box, with × to go back to Default. Agents with short lists keep their chips. To update, copy `mods/ws-switcher`, `mods/ws-automations` and `mods/ws-presets`.
 
