@@ -7,6 +7,8 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-11-25
+
 ### New
 - **Right-click a file or folder in Files.** The tree (and Search's results) has a menu: New file… and New folder… (named right in the tree; `lib/auth.js` makes the folder too, and a new file opens), Open in ▸ (the same apps as Open in ▾, and a pick there is remembered for that kind of file; for a folder, your code editors and Finder), Reveal in Finder, New terminal here (a tab in that folder), Copy path and Copy relative path, Rename… (in the tree; the open file follows it), Duplicate ("auth copy.js", then you name it) and Move to Trash… (it asks first, says how many files a folder holds, and warns when unsaved edits would go with it). Right-click the empty space under the tree, or the folder's name, for the folder itself: New file, New folder, Open in, Reveal in Finder, New terminal here, Copy path. Nothing is ever written over: a name that's taken is said under the field. On another machine there's no Open in or Reveal, and a Trash there falls back to `~/.herdr/trash`. To update by hand: copy `mods/ws-files`.
 
