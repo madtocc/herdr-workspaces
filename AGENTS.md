@@ -61,4 +61,5 @@ A mod can't import from another mod's folder, so some things are copied. Change 
 `CHANGELOG.md` is what people read to update; `VERSION` (copied into `mods/ws-switcher/VERSION`) says which version a copy is. The middle number is for anything new, the last for fixes only.
 
 - `scripts/release.sh <version>` turns `## [Unreleased]` into that version, writes `VERSION`, commits and tags. `--publish` pushes and makes the GitHub release from those notes; people watching the repo's releases are notified.
+- After a release, copy `VERSION` to the live `~/.config/herdr-app/mods/ws-switcher/VERSION`. `release.sh` only writes this repo's copies, and the sync goes the other way (it takes this repo's `VERSION`), so the live copy says which version is installed only if you set it.
 - A release is one coherent thing. When unrelated work is pending (another feature half-done), release the finished part alone and leave the rest under Unreleased.
