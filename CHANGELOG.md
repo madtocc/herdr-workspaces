@@ -7,6 +7,8 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 
 ## [Unreleased]
 
+## [0.29.1] - 2026-11-25
+
 ### Fixed
 - **Helpers show their numbers in the Agents list.** A sub-agent under an agent (a helper started with `hc run`, an orchestrator's for instance) now has the same second line as the agent: model, how full its context is, and how often it was compacted. Its tree lines join through the taller rows. To update by hand: copy `mods/ws-agents`.
 
