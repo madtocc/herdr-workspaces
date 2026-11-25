@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800" font-family="Geist, -apple-system, 'Helvetica Neue', sans-serif">
-  <!-- Settings (ws-settings: Herdr's Settings window with the package's Features, Agents, Automations, Files and Experimental sections), open on Agents. Demo names only (the main drawing's Acme). -->
+  <!-- Settings (ws-settings: Herdr's Settings window with the package's Features, Agents, Automations, Files, Vault and Experimental sections), open on Agents. Demo names only (the main drawing's Acme). -->
   <defs>
     <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
       <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000" flood-opacity="0.45"/>
@@ -54,9 +54,10 @@
   <text x="130" y="601" fill="#d6a541" font-size="11">81%</text>
   <g transform="translate(154 592.5) scale(0.4167)" fill="none" stroke="#7d8089" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22v-6"/><path d="M12 8V2"/><path d="M4 12H2"/><path d="M10 12H8"/><path d="M16 12h-2"/><path d="M22 12h-2"/><path d="m15 19-3-3-3 3"/><path d="m15 5-3 3-3-3"/></g><text x="166" y="601" fill="#7d8089" font-size="11">1</text>
   <!-- footer -->
-  <rect y="675" width="288" height="1" fill="#25272b"/>
-  <g transform="translate(19 688) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4.5 13.5H12L11 22l8.5-11.5H12z"/></g><text x="44" y="700" fill="#a5a8ae" font-size="13">Automations</text>
-  <g transform="translate(19 716) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></g><text x="44" y="728" fill="#a5a8ae" font-size="13">Agent presets</text>
+  <rect y="647" width="288" height="1" fill="#25272b"/>
+  <g transform="translate(19 660) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4.5 13.5H12L11 22l8.5-11.5H12z"/></g><text x="44" y="672" fill="#a5a8ae" font-size="13">Automations</text>
+  <g transform="translate(19 688) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></g><text x="44" y="700" fill="#a5a8ae" font-size="13">Agent presets</text>
+  <g transform="translate(19 716) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4"/><path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/></g><text x="44" y="728" fill="#a5a8ae" font-size="13">Secrets</text>
   <g transform="translate(19 744) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915" /> <circle cx="12" cy="12" r="3" /></g><text x="44" y="756" fill="#a5a8ae" font-size="13">Settings</text>
   <g transform="translate(19 772) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g><text x="44" y="784" fill="#a5a8ae" font-size="13">Add machine</text>
 
@@ -97,7 +98,7 @@
   <!-- dimmed behind the dialog -->
   <rect width="1280" height="800" fill="#000" opacity="0.45"/>
 
-  <!-- the Settings dialog, 880 wide like Herdr's: its sections, then Features, Agents, Files and Experimental -->
+  <!-- the Settings dialog, 880 wide like Herdr's: its sections, then Features, Agents, Automations, Files, Vault and Experimental -->
   <g filter="url(#shadow)"><rect x="200" y="90" width="880" height="620" rx="12" fill="#202125" stroke="#303237"/></g>
   <clipPath id="st-dialog"><rect x="200" y="90" width="880" height="620" rx="12"/></clipPath>
   <g clip-path="url(#st-dialog)">
@@ -124,8 +125,10 @@
   <text x="245" y="439" fill="#a5a8ae" font-size="13.5">Automations</text>
   <g transform="translate(220 460.5) scale(0.625)" fill="none" stroke="#7d8089" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></g>
   <text x="245" y="473" fill="#a5a8ae" font-size="13.5">Files</text>
-  <g transform="translate(220 494.5) scale(0.625)" fill="none" stroke="#7d8089" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2"/><path d="M6.453 15h11.094"/><path d="M8.5 2h7"/></g>
-  <text x="245" y="507" fill="#a5a8ae" font-size="13.5">Experimental</text>
+  <g transform="translate(220 494.5) scale(0.625)" fill="none" stroke="#7d8089" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4"/><path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/></g>
+  <text x="245" y="507" fill="#a5a8ae" font-size="13.5">Secrets</text>
+  <g transform="translate(220 528.5) scale(0.625)" fill="none" stroke="#7d8089" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2"/><path d="M6.453 15h11.094"/><path d="M8.5 2h7"/></g>
+  <text x="245" y="541" fill="#a5a8ae" font-size="13.5">Experimental</text>
   <rect x="210" y="662" width="170" height="32" rx="7" fill="#2a2b30" stroke="#303237"/><text x="222" y="683" fill="#e8e9eb" font-size="13">Send feedback</text>
   <text x="419" y="124" fill="#7d8089" font-size="12" font-weight="600" letter-spacing="0.4">STARTING AGENTS</text>
   <text x="419" y="150" fill="#e8e9eb" font-size="14">Herdr guide for every agent</text>

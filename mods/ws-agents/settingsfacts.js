@@ -5,7 +5,9 @@
 // And which of the package's add-ons are on (Settings > Features), each on until turned off,
 // and Files' defaults (Settings > Files, the "files" block), each today's behaviour until changed,
 // and how automations run (Settings > Automations, the "automations" block: how many agents at once,
-// quiet hours for desktop sounds, which agent drafts one from words).
+// quiet hours for desktop sounds, which agent drafts one from words),
+// and Vault's defaults (Settings > Vault, the "vault" block: a new secret's tier and expiry, and
+// when a secret's use shows in the bell).
 // Copied in ws-settings (the screen), ws-agents (which reads it into shared "workspaces.settings"
 // for the mods that only draw), ws-switcher (its runners, in the sidebar and the background
 // runner), ws-status (its timed usage asks) and ws-files (Files and its Cmd-click handler read
@@ -31,7 +33,9 @@ export const EXPERIMENTS = [
 // notes, worktrees, history: their screens and every way in. automations: none of them run.
 // usage: the status bar's plan usage and its timed asks. numbers: model, context and
 // compactions on Agents rows and in History. notifications: the tab bar's bell, its list and its log.
-export const FEATURE_KEYS = ["board", "notes", "worktrees", "history", "automations", "usage", "numbers", "notifications"];
+// vault: the sidebar's Vault row, and automations that name secrets (secret_env) don't run; no secret
+// is deleted and herdr-ws-secret still works from a terminal.
+export const FEATURE_KEYS = ["board", "notes", "worktrees", "history", "automations", "usage", "numbers", "notifications", "vault"];
 
 // What Settings > Features shows for each add-on, in FEATURE_KEYS' order: its group, title, what
 // it adds, and the line shown only while it's off (Automations' off line and its count while
@@ -61,6 +65,9 @@ export const FEATURES = [
   { key: "notifications", group: "Tab bar", title: "Notifications bell",
     what: "A bell at the right end of the tab bar: what needs you and what finished, in every workspace.",
     off: "Off: the bell is gone and nothing new is kept. What it kept stays in ~/.herdr/notifications.json." },
+  { key: "vault", group: "Screens", title: "Secrets",
+    what: "Write-only secrets agents use by name for HTTP calls and commands, from the sidebar's Secrets screen, without ever seeing the values.",
+    off: "Off: Secrets is gone from the sidebar, and automations that name secrets (secret_env) don't run. No secret is deleted, and herdr-ws-secret still works from a terminal." },
 ];
 
 // The comment above "features" in the file, so someone who opens it knows what the block is.
@@ -232,6 +239,59 @@ const automationLines = (a, value) => [
   `    "${a.key}": ${JSON.stringify(value)}`,
 ].join("\n");
 
+// Vault's defaults (Settings > Vault), the same way as the automations': each key in "vault", its
+// title and what it does, its values and the default. A missing value, or one that isn't one of
+// these, is the default. default-tier and default-ttl only prefill a new secret in Vault; notify
+// says which uses of a secret show in the bell.
+export const VAULT_SETTINGS = [
+  { key: "default-tier", title: "Default tier", type: "choice", default: "standard",
+    values: [{ value: "standard", label: "Standard" }, { value: "protected", label: "Protected" }],
+    what: "Pre-selected when creating a secret. You can still pick Standard or Protected per entry.",
+    comment: "the tier Secrets picks for a new secret, \"standard\" (encrypted in ~/.herdr/vault) or \"protected\" (in the Keychain, used only through the macOS broker). Each secret can still pick its own." },
+  { key: "default-ttl", title: "Default expiry", type: "choice", default: "24h",
+    values: [{ value: "4h", label: "4h" }, { value: "24h", label: "24h" }, { value: "7d", label: "7d" }, { value: "30d", label: "30d" }, { value: "never", label: "Never" }],
+    what: "Expired secrets are refused automatically so temporary cookies and rollout tokens don't linger.",
+    comment: "how long a new secret lasts before it's refused, \"4h\", \"24h\", \"7d\", \"30d\" or \"never\". Each secret can still pick its own." },
+  { key: "notify", title: "Notify in Bell when used", type: "choice", default: "protected",
+    values: [{ value: "off", label: "Off" }, { value: "protected", label: "Protected only" }, { value: "always", label: "Always" }],
+    what: "Records a quiet Bell entry when an agent uses a secret (which host or CLI, never the value).",
+    comment: "which uses of a secret leave a quiet entry in the bell (who, and which host or command; never the value): \"off\", \"protected\" (Protected secrets only) or \"always\"." },
+];
+export const VAULT_KEYS = VAULT_SETTINGS.map((v) => v.key);
+export const VAULT_DEFAULTS = Object.fromEntries(VAULT_SETTINGS.map((v) => [v.key, v.default]));
+
+// The comment above "vault" in the file.
+const VAULT_NOTE = [
+  "  // Secrets' defaults (Settings > Secrets); a missing or unknown value is the default.",
+];
+
+// A "vault" value as the file means it, or undefined when it isn't one of the key's values.
+function vaultValue(key, v) {
+  const s = VAULT_SETTINGS.find((x) => x.key === key);
+  return s && s.values.some((x) => x.value === v) ? v : undefined;
+}
+
+// Every Vault setting from a "vault" object: its value, else the default.
+function readVault(raw) {
+  const obj = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  return Object.fromEntries(VAULT_KEYS.map((k) => {
+    const v = vaultValue(k, obj[k]);
+    return [k, v === undefined ? VAULT_DEFAULTS[k] : v];
+  }));
+}
+
+// One Vault setting, for parseSettings()' result or shared "workspaces.settings" (nothing known
+// yet, or a value that isn't one of the key's, is the default).
+export function vaultSetting(settings, key) {
+  const v = vaultValue(key, settings?.vault?.[key]);
+  return v === undefined ? VAULT_DEFAULTS[key] ?? null : v;
+}
+
+const vaultLines = (v, value) => [
+  ...wrap(`${v.title}: ${v.comment}`, "    // "),
+  `    "${v.key}": ${JSON.stringify(value)}`,
+].join("\n");
+
 // The comment above "files" in the file.
 const FILES_NOTE = [
   "  // Files' defaults (Settings > Files); a missing or unknown value is the default.",
@@ -270,8 +330,9 @@ const fileLines = (f, value) => [
 
 // The file as first written: every setting with what it does above it. values: the
 // experiments' (off unless true); features: the add-ons' (on unless false); files: Files'
-// defaults (each the default unless given); automations: how automations run (the same).
-export function starter(values = {}, features = {}, files = {}, automations = {}) {
+// defaults (each the default unless given); automations: how automations run (the same);
+// vault: Vault's defaults (the same).
+export function starter(values = {}, features = {}, files = {}, automations = {}, vault = {}) {
   const lines = EXPERIMENTS.map((e) => [
     ...wrap(`${e.title}: ${lowerFirst(e.what)}`, "    // "),
     ...wrap(`Experimental because ${lowerFirst(e.why)}`, "    // "),
@@ -286,9 +347,11 @@ export function starter(values = {}, features = {}, files = {}, automations = {}
   const fileKeys = FILES_SETTINGS.map((f) => fileLines(f, fv[f.key]));
   const av = readAutomations(automations);
   const autoKeys = AUTOMATIONS_SETTINGS.map((a) => automationLines(a, av[a.key]));
+  const vv = readVault(vault);
+  const vaultKeys = VAULT_SETTINGS.map((v) => vaultLines(v, vv[v.key]));
   return `// Workspaces settings: the package's own (Herdr's are in ~/.config/herdr-app/settings.json).
-// Settings > Features, Settings > Files, Settings > Automations and Settings > Experimental (the
-// sidebar footer's Settings) change them; you can edit them here too.
+// Settings > Features, Settings > Files, Settings > Automations, Settings > Vault and Settings >
+// Experimental (the sidebar footer's Settings) change them; you can edit them here too.
 {
 ${FEATURES_NOTE.join("\n")}
   "features": {
@@ -303,6 +366,11 @@ ${fileKeys.join(",\n\n")}
 ${AUTOMATIONS_NOTE.join("\n")}
   "automations": {
 ${autoKeys.join(",\n\n")}
+  },
+
+${VAULT_NOTE.join("\n")}
+  "vault": {
+${vaultKeys.join(",\n\n")}
   },
 
   // Off until you turn them on. Each says what it does and why it's experimental.
@@ -376,22 +444,23 @@ function stripJsonc(text) {
 }
 
 // The settings: { experimental: { <key>: true|false }, features: { <key>: true|false },
-// files: { <key>: value }, automations: { <key>: value } } with every experiment present (off
-// unless the file says true), every feature present (on unless the file says false) and every
-// Files and automations setting present (its default unless the file gives one of its values),
+// files: { <key>: value }, automations: { <key>: value }, vault: { <key>: value } } with every
+// experiment present (off unless the file says true), every feature present (on unless the file
+// says false) and every Files, automations and Vault setting present (its default unless the file
+// gives one of its values),
 // and `error` when the file can't be read as JSONC (then the experiments are off, the features
 // on and the other settings the defaults).
 export function parseSettings(text) {
   const experimental = Object.fromEntries(EXPERIMENTS.map((e) => [e.key, false]));
   const features = Object.fromEntries(FEATURE_KEYS.map((k) => [k, true]));
-  if (text == null || !String(text).trim()) return { experimental, features, files: { ...FILES_DEFAULTS }, automations: { ...AUTOMATIONS_DEFAULTS } };
+  if (text == null || !String(text).trim()) return { experimental, features, files: { ...FILES_DEFAULTS }, automations: { ...AUTOMATIONS_DEFAULTS }, vault: { ...VAULT_DEFAULTS } };
   try {
     const raw = JSON.parse(stripJsonc(String(text)));
     for (const e of EXPERIMENTS) experimental[e.key] = raw?.experimental?.[e.key] === true;
     for (const k of FEATURE_KEYS) features[k] = raw?.features?.[k] !== false;
-    return { experimental, features, files: readFiles(raw?.files), automations: readAutomations(raw?.automations) };
+    return { experimental, features, files: readFiles(raw?.files), automations: readAutomations(raw?.automations), vault: readVault(raw?.vault) };
   } catch (err) {
-    return { experimental, features: Object.fromEntries(FEATURE_KEYS.map((k) => [k, true])), files: { ...FILES_DEFAULTS }, automations: { ...AUTOMATIONS_DEFAULTS }, error: String(err?.message ?? err) };
+    return { experimental, features: Object.fromEntries(FEATURE_KEYS.map((k) => [k, true])), files: { ...FILES_DEFAULTS }, automations: { ...AUTOMATIONS_DEFAULTS }, vault: { ...VAULT_DEFAULTS }, error: String(err?.message ?? err) };
   }
 }
 
@@ -479,6 +548,7 @@ export function withFeature(text, key, on) {
   if (EXPERIMENTS.some((e) => now.experimental[e.key] !== was.experimental[e.key])) return null;
   if (FILES_KEYS.some((k) => now.files[k] !== was.files[k])) return null;
   if (AUTOMATIONS_KEYS.some((k) => now.automations[k] !== was.automations[k])) return null;
+  if (VAULT_KEYS.some((k) => now.vault[k] !== was.vault[k])) return null;
   return next;
 }
 
@@ -541,6 +611,7 @@ export function withFileSetting(text, key, value) {
   if (FEATURE_KEYS.some((k) => now.features[k] !== was.features[k])) return null;
   if (EXPERIMENTS.some((e) => now.experimental[e.key] !== was.experimental[e.key])) return null;
   if (AUTOMATIONS_KEYS.some((k) => now.automations[k] !== was.automations[k])) return null;
+  if (VAULT_KEYS.some((k) => now.vault[k] !== was.vault[k])) return null;
   return next;
 }
 
@@ -588,6 +659,7 @@ export function withAutomationSetting(text, key, value) {
   if (FILES_KEYS.some((k) => now.files[k] !== was.files[k])) return null;
   if (FEATURE_KEYS.some((k) => now.features[k] !== was.features[k])) return null;
   if (EXPERIMENTS.some((e) => now.experimental[e.key] !== was.experimental[e.key])) return null;
+  if (VAULT_KEYS.some((k) => now.vault[k] !== was.vault[k])) return null;
   return next;
 }
 
@@ -616,6 +688,55 @@ function editAutomationSetting(text, key, value) {
   const av = { ...AUTOMATIONS_DEFAULTS, [key]: value };
   const empty = /^\s*\}/.test(b.slice(root + 1));
   return `${s.slice(0, root + 1)}\n${AUTOMATIONS_NOTE.join("\n")}\n  "automations": {\n${AUTOMATIONS_SETTINGS.map((x) => automationLines(x, av[x.key])).join(",\n\n")}\n  }${empty ? "\n" : ",\n"}${s.slice(root + 1)}`;
+}
+
+// The file's text with one Vault setting changed, its comments kept, the same way as
+// withAutomationSetting(): only that value changes; a file without the key gets it (with its comment)
+// at the top of "vault"; one without "vault" gets the whole block at the top; no file gets the
+// starter. Null when the key or the value isn't one of the settings', or the text can't be changed
+// safely (not JSONC, not an object, "vault" or the key's value isn't a plain value, or the edit
+// wouldn't read back as asked with everything else as it was).
+export function withVaultSetting(text, key, value) {
+  if (!VAULT_KEYS.includes(key)) return null;
+  value = vaultValue(key, value);
+  if (value === undefined) return null;
+  const next = editVaultSetting(text, key, value);
+  if (next == null) return null;
+  const was = parseSettings(text), now = parseSettings(next);
+  if (now.error || now.vault[key] !== value) return null;
+  if (VAULT_KEYS.some((k) => k !== key && now.vault[k] !== was.vault[k])) return null;
+  if (AUTOMATIONS_KEYS.some((k) => now.automations[k] !== was.automations[k])) return null;
+  if (FILES_KEYS.some((k) => now.files[k] !== was.files[k])) return null;
+  if (FEATURE_KEYS.some((k) => now.features[k] !== was.features[k])) return null;
+  if (EXPERIMENTS.some((e) => now.experimental[e.key] !== was.experimental[e.key])) return null;
+  return next;
+}
+
+// withVaultSetting()'s edit, before it's read back.
+function editVaultSetting(text, key, value) {
+  if (text == null || !String(text).trim()) return starter({}, {}, {}, {}, { [key]: value });
+  const s = String(text);
+  if (parseSettings(s).error) return null;
+  const b = blankComments(s);
+  const root = b.search(/\S/);
+  if (root < 0 || b[root] !== "{") return null;
+  const block = topBlock(b, "vault");
+  if (block === "other") return null;
+  const v = VAULT_SETTINGS.find((x) => x.key === key);
+  if (block) {
+    const [open, close] = block;
+    const has = directKey(b, open, close, key);
+    if (has) {
+      if (has[2] === "{" || has[2] === "[") return null;
+      const at = open + 1 + has.index;
+      return s.slice(0, at) + has[1] + JSON.stringify(value) + s.slice(at + has[0].length);
+    }
+    const empty = /^\s*\}/.test(b.slice(open + 1));
+    return `${s.slice(0, open + 1)}\n${vaultLines(v, value)}${empty ? "\n  " : ",\n"}${s.slice(open + 1)}`;
+  }
+  const vv = { ...VAULT_DEFAULTS, [key]: value };
+  const empty = /^\s*\}/.test(b.slice(root + 1));
+  return `${s.slice(0, root + 1)}\n${VAULT_NOTE.join("\n")}\n  "vault": {\n${VAULT_SETTINGS.map((x) => vaultLines(x, vv[x.key])).join(",\n\n")}\n  }${empty ? "\n" : ",\n"}${s.slice(root + 1)}`;
 }
 
 // How deep `at` is inside nested objects and arrays of the (comment-blanked) text.

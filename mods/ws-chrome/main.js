@@ -1,10 +1,10 @@
 // ws-chrome: Herdr's `workspace-chrome` (0.1.14) for the sidebar footer, with
-// "Automations" and "Agent presets" rows above Settings. They open the ws-automations
-// and ws-presets screens for the shown workspace. (History was a row here; it opens from
+// "Automations", "Agent presets" and "Vault" rows above Settings. They open the ws-automations,
+// ws-presets and ws-vault screens for the shown workspace. (History was a row here; it opens from
 // the tab bar's Views menu now, ws-tabs.) Settings opens our copy of Herdr's Settings window (ws-settings,
-// with the package's Features, Agents and Experimental sections) instead of app.settings. The brand row still
+// with the package's own sections) instead of app.settings. The brand row still
 // uses Herdr's own workspace-chrome.
-// Automations is left out while its add-on is off in Settings > Features
+// Automations and Vault are each left out while its add-on is off in Settings > Features
 // (shared "workspaces.settings"), and the footer's block (`sidebar-footer`) is then asked
 // to be the height the layout file gives it less 28 px a hidden row (footer.js,
 // fitFooter()), so none leaves a hole; with every row shown, the file's height. The file
@@ -100,6 +100,8 @@ export default class WorkspaceChrome extends View {
           mod: "ws-automations", kind: "dialog", width: 940, height: 680, props: { workspace: shared("workspaces.active") ?? null } }))))
         .child(row("presets", "presets", "Agent presets", false, () => openOverlay({
           mod: "ws-presets", kind: "dialog", width: 900, height: 640, props: { workspace: shared("workspaces.active") ?? null } })))
+        .when(shown.includes("vault"), el => el.child(row("vault", "vault", "Secrets", false, () => openOverlay({
+          mod: "ws-vault", kind: "dialog", width: 940, height: 680, props: { workspace: shared("workspaces.active") ?? null } }))))
         .child(row("settings", "settings", "Settings", false, () => run("mod.open", { name: "ws-settings" }))
           .when(Boolean(updates().app.ready), el => el.child(collapsed ? ready.absolute().top(5).right(6) : ready)))
         .child(row("machine", "plus", "Add machine", true, () => run("mod.open", { name: "machine-add" })));

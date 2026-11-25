@@ -545,6 +545,13 @@ export default class Workspaces extends View {
         if (ws && name) this.openAutomation(`automation/${ws}/${name}`);
         return;
       }
+      case "vault": {
+        // A Vault usage note: the Vault dialog, on the workspace the use was in.
+        if (!featureOn("vault")) return;
+        const ws = id(target.ws) && (shared("workspaces.defs") ?? []).some((d) => d.id === target.ws) ? target.ws : shared("workspaces.active") ?? null;
+        openOverlay({ mod: "ws-vault", kind: "dialog", width: 940, height: 680, props: { workspace: ws } });
+        return;
+      }
       case "action": {
         const name = String(target.name ?? "");
         if (name.startsWith("ws-switcher.")) { this.command(name.slice("ws-switcher.".length), cx); return; }

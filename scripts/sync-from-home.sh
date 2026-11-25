@@ -43,8 +43,8 @@ for mod in ws-presets ws-agents; do
   }
 done
 
-# Settings (Features, Automations, Files, Experimental), the Agents list, the switcher's runners, the status bar, Files and the Automations screen read the package's settings (~/.herdr/settings.jsonc) by the same rules.
-for mod in ws-agents ws-switcher ws-status ws-files ws-automations; do
+# Settings (Features, Automations, Files, Vault, Experimental), the Agents list, the switcher's runners, the status bar, Files, the Automations screen and Vault read the package's settings (~/.herdr/settings.jsonc) by the same rules.
+for mod in ws-agents ws-switcher ws-status ws-files ws-automations ws-vault; do
   cmp -s "$src/mods/ws-settings/settingsfacts.js" "$src/mods/$mod/settingsfacts.js" || {
     echo "mods/ws-settings/settingsfacts.js and mods/$mod/settingsfacts.js differ: make them the same first" >&2
     exit 1
@@ -56,6 +56,20 @@ cmp -s "$src/mods/ws-automations/automations.svg" "$src/mods/ws-settings/automat
   echo "mods/ws-automations/automations.svg and mods/ws-settings/automations.svg differ: make them the same first" >&2
   exit 1
 }
+
+# Vault's screen and herdr-ws-secret (the switcher's) hold a secret to the same rules.
+cmp -s "$src/mods/ws-switcher/vaultfacts.js" "$src/mods/ws-vault/vaultfacts.js" || {
+  echo "mods/ws-switcher/vaultfacts.js and mods/ws-vault/vaultfacts.js differ: make them the same first" >&2
+  exit 1
+}
+
+# The sidebar's Vault row, Settings > Vault and the Vault screen draw the same key.
+for mod in ws-settings ws-vault; do
+  cmp -s "$src/mods/ws-chrome/vault.svg" "$src/mods/$mod/vault.svg" || {
+    echo "mods/ws-chrome/vault.svg and mods/$mod/vault.svg differ: make them the same first" >&2
+    exit 1
+  }
+done
 
 # History's Wipe moves the same files to the Trash as the Agents list's (wipeTargets()) and draws its menu the same size.
 cmp -s "$src/mods/ws-agents/menufacts.js" "$src/mods/ws-history/menufacts.js" || {
@@ -78,7 +92,7 @@ cmp -s "$src/mods/ws-switcher/notif.js" "$src/mods/ws-notifications/notif.js" ||
 mkdir -p "$dst/layouts"
 cp "$src/layouts/workspaces.json" "$dst/layouts/workspaces.json"
 
-for mod in ws-switcher ws-spaces ws-agents ws-board ws-worktrees ws-history ws-notes ws-presets ws-chrome ws-automations ws-tabs ws-new-menu ws-toast ws-status ws-settings ws-changes ws-files ws-notifications; do
+for mod in ws-switcher ws-spaces ws-agents ws-board ws-worktrees ws-history ws-notes ws-presets ws-chrome ws-automations ws-tabs ws-new-menu ws-toast ws-status ws-settings ws-changes ws-files ws-notifications ws-vault; do
   rm -rf "$dst/mods/$mod"
   mkdir -p "$dst/mods/$mod"
   (cd "$src/mods/$mod" && find . -type f ! -name jsconfig.json ! -name gpui-kit.d.ts ! -name '.*' ! -name '*.error') |

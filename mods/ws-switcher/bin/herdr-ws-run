@@ -37,7 +37,7 @@ tab=$(printf '\t')
 usage="usage: herdr-ws-run <workspace> <automation> [text... | -]
        herdr-ws-run --add (--at TIME | --when LINE) [--name NAME] [--agent NAME] [--model M] [--effort E] [--folder DIR] [--check CMD] [--card] [--keep] [--workspace ID | --global] prompt... | -
        herdr-ws-run --add (--at TIME | --when LINE) --shell [bash|zsh|sh] [--terminal] [--name NAME] [--folder DIR] [--check CMD] [--keep] [--workspace ID | --global] script... | -
-         (either: [--timeout DUR] [--notify problems|results|all|none] [--missed run|skip|always] [--dedupe changed|always])
+         (either: [--timeout DUR] [--notify problems|results|all|none] [--missed run|skip|always] [--dedupe changed|always] [--secret-env VAR=name]...)
        herdr-ws-run --off <automation> [--workspace ID | --global]
        herdr-ws-run --on <automation> [--at TIME] [--workspace ID | --global]
        herdr-ws-run --list
@@ -166,6 +166,11 @@ Have an agent do something later, from a folder in the workspace:
                   late) or always (once, however late)
   --dedupe POLICY changed (the default: on a repeating time, a check that
                   prints the same as last time starts nothing) or always
+  --secret-env VAR=NAME  (repeatable) the secret NAME as $VAR for the
+                  script and the check, never the agent itself: an agent
+                  automation needs a --check for it, and its prompt can name
+                  a secret for herdr-ws-secret http or run instead. NAME
+                  must be in Secrets (herdr-ws-secret list)
   --workspace ID  default: the workspace holding the current folder
   --global        for every workspace, not this one: it runs in each, in that
                   workspace's root (or --folder, from the root), unless the
@@ -370,7 +375,7 @@ if [ "${1:-}" = --add ] || [ "${1:-}" = --off ] || [ "${1:-}" = --on ]; then
   mode=${1#--}
   shift
   at= when= name= agent= model= effort= folder= card= keep= wsid= desc= auto= check= glob=
-  shell= terminal= timeout= notify= missed= dedupe=
+  shell= terminal= timeout= notify= missed= dedupe= secrets=
   while [ $# -gt 0 ]; do
     case $1 in
       --at|--when|--name|--agent|--model|--effort|--folder|--workspace|--description|--check|--timeout|--notify|--missed|--dedupe)
@@ -381,6 +386,12 @@ if [ "${1:-}" = --add ] || [ "${1:-}" = --off ] || [ "${1:-}" = --on ]; then
           --folder) folder=$2 ;; --workspace) wsid=$2 ;; --description) desc=$2 ;; --check) check=$2 ;;
           --timeout) timeout=$2 ;; --notify) notify=$2 ;; --missed) missed=$2 ;; --dedupe) dedupe=$2 ;;
         esac
+        shift 2 ;;
+      --secret-env)
+        [ $# -ge 2 ] || die "$1 needs VAR=name"
+        printf '%s' "$2" | grep -Eq '^[A-Za-z_][A-Za-z0-9_]*=[a-z0-9][a-z0-9._-]{0,63}$' ||
+          die "--secret-env is VAR=secret-name (STRIPE_KEY=stripe-test), not \"$2\""
+        secrets=${secrets:+$secrets, }$2
         shift 2 ;;
       --shell)
         shell=bash
@@ -490,6 +501,7 @@ $usage" ;;
     [ -z "$card" ] || die "a --shell automation has no agent to give a card to: leave out --card"
   else
     [ -z "$terminal" ] || die "--terminal is for a --shell automation (a script shown in a tab)"
+    [ -z "$secrets" ] || [ -n "$check" ] || die "--secret-env reaches a --check or a --shell script, never the agent itself: give a --check, or let the prompt name the secret for herdr-ws-secret http or run"
   fi
   case $timeout in
     ""|none|off|0) ;;
@@ -588,6 +600,7 @@ $usage" ;;
     [ -z "$notify" ] || echo "notify: $notify"
     [ -z "$missed" ] || echo "missed: $missed"
     [ -z "$dedupe" ] || echo "dedupe: $dedupe"
+    [ -z "$secrets" ] || echo "secret_env: $secrets"
     case $check in
       "") ;;
       *"
@@ -624,6 +637,11 @@ $usage" ;;
   what="the agent starts"
   [ -z "$shell" ] || what="the script runs"
   [ -z "$check" ] || echo "Each time, Herdr first runs its check there: $what only if that prints something."
+  if [ -n "$secrets" ]; then
+    who="Its script and its check get"
+    [ -n "$shell" ] || who="Its check gets (the agent itself doesn't)"
+    echo "$who these secrets as variables, through herdr-ws-secret: $secrets. A name Secrets doesn't have stops it, and its Automations screen says so. For a Protected one, macOS asks the person once when it first runs (and again when it changes): tell them."
+  fi
   if [ -n "$shell" ]; then
     echo "The script needs the person's OK before it runs: Herdr asks them with a toast now, and Automations has Allow this script${check:+ (and Allow this check)}. Until then this automation doesn't start. Tell them."
   elif [ -n "$check" ]; then

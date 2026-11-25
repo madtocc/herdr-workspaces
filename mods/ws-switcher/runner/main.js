@@ -185,6 +185,8 @@ async function main() {
   runner = new Runner({
     presetsFor, presetLaunch, withTask, claim() {}, open, tidy, close, windowOpen, away: "while Herdr's runner wasn't running",
     featureOn: (k) => features.on(k), automationSetting: (k) => automationSetting(settings, k), startWhy: "Herdr's background runner started",
+    // Vault's folder as herdr-ws-secret finds it (HERDR_VAULT_DIR, else ~/.herdr/vault): meta.json, for secret_env.
+    vaultDir: () => process.env.HERDR_VAULT_DIR || `${home()}/.herdr/vault`,
   });
   prs = new PrWatcher();
   gh = new GhWatcher();

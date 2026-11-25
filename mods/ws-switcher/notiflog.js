@@ -8,6 +8,12 @@
 //                                  dismiss, markAllRead, clearRead
 //   workspaces.notifications.push  [{ id, title, body, level, action, at }]: every toast ws-toast showed
 // and the background runner's notes (record(), from main.js notes(), before many become one toast).
+// Vault's usage notes: every few seconds what's new in ~/.herdr/vault/usage.jsonl (the CLI and the broker
+// append a line per use of a secret), each made a quiet Update or not by Settings > Vault's notify
+// (vaultfacts.js usageNote; notif.js usageEvent, appendUsage): never a toast, a desktop notification or a
+// sound. How far it has read is kept in the log (`usage`), so a restart doesn't replay; the first read
+// takes nothing, and none older than a day. Vault or Notifications off: nothing is logged (reading goes on,
+// so turning one on again doesn't bring back what came meanwhile).
 // Notifications off in Settings > Features: nothing is logged or written, and the count is 0.
 // The first time (no file yet), what's in the list then counts as read: the bell starts caught up.
 
@@ -15,12 +21,18 @@ import { home, readTextFile, writeTextFile, shared, setShared, agents, terminals
 import {
   NOTIF_FILE, ACT_KEY, PUSH_KEY, STORE_KEY, BADGE_KEY, emptyStore, parseStore, pruneStore, mergeStore, markRead, markAllRead,
   dismissItem, clearRead, appendEvent, forgetEpisodes, classifyToast, buildItems, badgeOf, hasMultiWs, panelHeight, drainQueue,
+  newUsage, usageEvent, appendUsage,
 } from "./notif.js";
+import { parseUsage, usageNote } from "./vaultfacts.js";
 
 // A toast waits this long for the switcher (a hidden sidebar unloads it) before it's dropped.
 export const PUSH_TTL = 10 * 60e3;
 
 const on = () => shared("workspaces.settings")?.features?.notifications !== false;
+const vaultOn = () => shared("workspaces.settings")?.features?.vault !== false;
+// Settings > Vault's notify: off, protected (the default) or always.
+const usageLevel = () => shared("workspaces.settings")?.vault?.notify ?? "protected";
+export const USAGE_EVERY = 3000; // how often usage.jsonl is looked at
 
 export class NotifLog {
   // open(target, cx): goes to an item's thing (main.js openNotification()).
@@ -41,6 +53,34 @@ export class NotifLog {
     this.actSeen = drainQueue(shared(ACT_KEY), [], now).seen;
     this.pushSeen = [];
     this.said = null;       // the store and badge as last published (text)
+    this.usageAt = 0;       // when usage.jsonl was last looked at, and its text then
+    this.usageText = undefined;
+    this.usageBusy = false;
+  }
+
+  usageFile() { return `${home()}/.herdr/vault/usage.jsonl`; }
+
+  // What's new in usage.jsonl, as quiet Updates (at most every USAGE_EVERY).
+  usage(now = Date.now()) {
+    if (!this.loaded || this.usageBusy || checking() || now - this.usageAt < USAGE_EVERY) return;
+    this.usageAt = now;
+    this.usageBusy = true;
+    (async () => {
+      try {
+        const text = await readTextFile(this.usageFile()).catch(() => null);
+        if (text === this.usageText && this.store.usage) return;
+        this.usageText = text;
+        const t = Date.now();
+        const { fresh, cursor } = newUsage(parseUsage(text ?? ""), this.store.usage ?? null, t);
+        let s = { ...this.store, usage: cursor };
+        if (on() && vaultOn()) for (const e of fresh) s = appendUsage(s, usageEvent(e, usageNote(e, usageLevel())), t);
+        if (JSON.stringify(cursor) === JSON.stringify(this.store.usage ?? null) && s.events === this.store.events) return;
+        this.store = s;
+        this.save();
+        this.publish();
+      } catch (e) { console.log(`ws-switcher: couldn't read Vault's usage: ${e?.message ?? e}`); }
+      finally { this.usageBusy = false; }
+    })();
   }
 
   file() { return `${home()}/${NOTIF_FILE}`; }
@@ -104,6 +144,7 @@ export class NotifLog {
   tick() {
     if (!this.loaded) return;
     const now = Date.now();
+    this.usage(now);
     const off = !on();
     // A finished agent that's working or idle again: its next finish is news.
     const fresh = forgetEpisodes(this.store, agents());

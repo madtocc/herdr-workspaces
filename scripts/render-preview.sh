@@ -21,7 +21,8 @@ mods/ws-automations/preview.svg:previews/automations.png
 mods/ws-agents/preview.svg:previews/agent-menu.png
 mods/ws-settings/preview.svg:previews/settings.png
 mods/ws-tabs/preview.svg:previews/views.png
-mods/ws-notifications/preview.svg:previews/notifications.png"
+mods/ws-notifications/preview.svg:previews/notifications.png
+mods/ws-vault/preview.svg:previews/vault.png"
 chrome=${CHROME:-}
 if [ -z "$chrome" ]; then
   for c in "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \

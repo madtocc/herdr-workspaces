@@ -9,7 +9,7 @@
 //     timed out (while it's the automation's newest), a run missed while Herdr was closed, a card's
 //     pull request failing, with changes asked for or conflicting while no agent works on it.
 //   Updates (unread until clicked, Mark all read or 7 days; then dimmed until Clear read): an
-//     agent that finished, an automation run that finished (not "nothing to do"; as the run's
+//     agent that used a Vault secret (quiet: logged here, never a toast; usageEvent), an agent that finished, an automation run that finished (not "nothing to do"; as the run's
 //     `notify` level allows: a shell run only with results or all, none of any with none), a card's pull
 //     request ready to merge, merged or closed, and a few things only the system says (a machine
 //     needs a login, the background runner didn't start, Settings fell back).
@@ -41,6 +41,14 @@ const obj = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v : {});
 
 export const emptyStore = () => ({ read: {}, dismissed: {}, events: [] });
 
+// How far ~/.herdr/vault/usage.jsonl has been read: { at, keys } (the newest line's time, and the lines
+// of that same millisecond already taken), or null before the first read.
+function usageCursor(c) {
+  return c && typeof c === "object" && typeof c.at === "number" && isFinite(c.at)
+    ? { at: c.at, keys: (Array.isArray(c.keys) ? c.keys : []).filter((k) => typeof k === "string").slice(-50) } : null;
+}
+const withUsage = (store, usage) => (usage ? { ...store, usage } : store);
+
 // The file's text as a store; anything unreadable is an empty one.
 export function parseStore(text) {
   let raw = null;
@@ -48,7 +56,7 @@ export function parseStore(text) {
   const s = obj(raw);
   const times = (m) => Object.fromEntries(Object.entries(obj(m)).filter(([, v]) => typeof v === "number" && isFinite(v)));
   const events = (Array.isArray(s.events) ? s.events : []).filter((e) => e && typeof e === "object" && typeof e.id === "string" && typeof e.at === "number");
-  return { read: times(s.read), dismissed: times(s.dismissed), events };
+  return withUsage({ read: times(s.read), dismissed: times(s.dismissed), events }, usageCursor(s.usage));
 }
 
 // Older than 7 days goes (marks and events); at most MAX_EVENTS events, the newest.
@@ -56,7 +64,7 @@ export function pruneStore(store, now) {
   const s = store ?? emptyStore();
   const keep = (m) => Object.fromEntries(Object.entries(obj(m)).filter(([, at]) => now - at < EXPIRE_MS));
   const events = (s.events ?? []).filter((e) => now - e.at < EXPIRE_MS).sort((a, b) => b.at - a.at).slice(0, MAX_EVENTS);
-  return { read: keep(s.read), dismissed: keep(s.dismissed), events };
+  return withUsage({ read: keep(s.read), dismissed: keep(s.dismissed), events }, usageCursor(s.usage));
 }
 
 export const markRead = (store, id, now) => ({ ...store, read: { ...store.read, [id]: now } });
@@ -101,7 +109,76 @@ export function mergeStore(a, b) {
   const dismissed = marks(x.dismissed, y.dismissed);
   const events = [...(x.events ?? [])];
   for (const e of y.events ?? []) if (!events.some((z) => z.id === e.id)) events.push(e);
-  return { read: marks(x.read, y.read), dismissed, events: events.filter((e) => !own(dismissed, e.id)).sort((p, q) => q.at - p.at) };
+  // The usage cursor that has read further.
+  const ux = usageCursor(x.usage), uy = usageCursor(y.usage);
+  const usage = !ux ? uy : !uy ? ux : uy.at > ux.at ? uy : ux;
+  return withUsage({ read: marks(x.read, y.read), dismissed, events: events.filter((e) => !own(dismissed, e.id)).sort((p, q) => q.at - p.at) }, usage);
+}
+
+// --- Vault's usage notes: a secret used, as usage.jsonl says (CONTRACT: the CLI and the broker append) ---
+
+export const USAGE_MERGE_MS = 10 * 60e3; // one secret, one agent, one target within this: one entry, counted
+export const USAGE_BACK_MS = 86400e3;    // a read after a long gap (Herdr closed) goes back at most this far
+export const USAGE_KEEP = 20;            // usage entries the log keeps
+const clip = (v, n = 80) => { const t = String(v ?? "").replace(/[\u0000-\u001f]/g, " ").trim(); return t.length > n ? `${t.slice(0, n - 1)}…` : t; };
+const usageKey = (e) => `${e.at}|${e.scope ?? ""}|${e.name}|${e.agent ?? ""}|${e.terminal ?? ""}|${e.via ?? ""}|${e.target ?? ""}`;
+
+// The usage lines (parsed: vaultfacts.js parseUsage) not taken yet, and where reading has got to.
+// The first read (no cursor) takes none: what was there before isn't news. Never older than
+// USAGE_BACK_MS. { fresh: [event], cursor }.
+export function newUsage(events, cursor, now) {
+  const list = (events ?? []).filter((e) => e && typeof e.at === "number" && typeof e.name === "string");
+  const c = usageCursor(cursor);
+  const newest = list.reduce((m, e) => Math.max(m, e.at), c?.at ?? -Infinity);
+  const top = (at) => list.filter((e) => e.at === at).map(usageKey);
+  if (!c) return { fresh: [], cursor: { at: isFinite(newest) ? newest : now, keys: isFinite(newest) ? top(newest) : [] } };
+  const seen = new Set(c.keys);
+  const fresh = list.filter((e) => (e.at > c.at || (e.at === c.at && !seen.has(usageKey(e)))) && e.at >= now - USAGE_BACK_MS).sort((a, b) => a.at - b.at);
+  if (!fresh.length) return { fresh, cursor: c };
+  const at = Math.max(c.at, newest);
+  return { fresh, cursor: { at, keys: at === c.at ? [...c.keys, ...top(at).filter((k) => !seen.has(k))] : top(at) } };
+}
+
+// A use as a Bell entry, or null: note is what vaultfacts.js usageNote(event, level) gave (null: the
+// notify level doesn't tell about it). Quiet: an Update the log keeps, never a toast. Only the
+// secret's name, who used it and the host or command's name: never a value, a path or a header.
+export function usageEvent(e, note) {
+  if (!note || !e || typeof e.name !== "string" || typeof e.at !== "number") return null;
+  const who = clip(e.agent, 40) || "Something";
+  const name = clip(e.name, 64);
+  const how = e.via === "run" ? `ran ${clip(e.target) || "a command"}` : `HTTP to ${clip(e.target) || "a host"}`;
+  // A refused try (ok: false: refused, expired, denied, failed) is an entry of its own, never one use more.
+  const key = `vault:${e.scope ?? ""}/${name}:${clip(e.agent, 40)}:${clip(e.terminal, 20)}:${e.via ?? ""}:${clip(e.target)}${e.ok === false ? ":refused" : ""}`;
+  // A refused try says why, in usageNote's words (its body's first part; the workspace shows apart).
+  const why = e.ok === false ? clip(String(note.body ?? "").split(" · ")[0], 100) : "";
+  const detail = !why ? how : e.target && why.includes(clip(e.target)) ? why : `${why} · ${how}`;
+  return {
+    id: `ev:${key}@${e.at}`, dedupeKey: key, at: e.at, kind: "vault", quiet: true, count: 1,
+    tone: e.ok === false ? "warn" : "dim", title: e.ok === false ? `${who} tried to use ${name}` : `${who} used ${name}`,
+    how: detail, detail, ws: typeof e.ws === "string" && e.ws ? e.ws : null, place: "Secrets",
+    target: { kind: "vault", ws: typeof e.ws === "string" && e.ws ? e.ws : null },
+  };
+}
+
+// A usage entry into the log: the same secret, agent and target as an entry from within
+// USAGE_MERGE_MS before is that entry, counted up (its id, so read stays read: it's quiet), else a new
+// one. One dismissed within that time takes it too.
+export function appendUsage(store, ev, now) {
+  if (!ev || typeof ev.id !== "string") return store;
+  const s = store ?? emptyStore();
+  const key = ev.dedupeKey;
+  const near = (t) => typeof t === "number" && ev.at - t < USAGE_MERGE_MS && ev.at - t >= -USAGE_MERGE_MS;
+  if (own(s.dismissed, key) && near(s.dismissed[key])) return { ...s, dismissed: { ...s.dismissed, [key]: Math.max(s.dismissed[key], ev.at) } };
+  const old = (s.events ?? []).find((e) => e.kind === "vault" && e.dedupeKey === key && near(e.lastAt ?? e.at));
+  if (old) {
+    const count = (old.count ?? 1) + 1;
+    const merged = { ...old, count, lastAt: Math.max(old.lastAt ?? old.at, ev.at), detail: `${old.how ?? ev.how} · ${count} times` };
+    return { ...s, events: (s.events ?? []).map((e) => (e === old ? merged : e)) };
+  }
+  // At most USAGE_KEEP of them, the newest, so they never push the log's other events out.
+  let n = 0;
+  const events = [{ ...ev, seenAt: now, lastAt: ev.at }, ...(s.events ?? [])].filter((e) => e.kind !== "vault" || ++n <= USAGE_KEEP);
+  return pruneStore({ ...s, events }, now);
 }
 
 // A finished agent's row is read or dismissed for that one finish: once the agent is seen working or
@@ -195,7 +272,7 @@ function cardOf(file, e) {
 //   { id, group: "needs"|"updates", tone, title, detail, ws, wsName, wsColor, place, at, unread, pinned,
 //     gone, goneNote, fallbackLabel, target }
 // target: { kind: "agent", terminal } | { kind: "tab", tab } | { kind: "history", ws, runId }
-//   | { kind: "board", ws, taskId } | { kind: "automation", ws, name } | { kind: "action", name, args }
+//   | { kind: "board", ws, taskId } | { kind: "automation", ws, name } | { kind: "vault", ws } | { kind: "action", name, args }
 //   | null. goneNote: what's no longer there ("Tab closed"); with a fallbackLabel a click does that
 // ("Open in History"), else the row is gone (gone: true) and a click does nothing.
 export function buildItems({ agents = [], terminals = [], spaces = [], defs = [], assigned = {}, runs = [], automations = {}, prs = null, store = null, features = {}, now = Date.now() } = {}) {
@@ -264,7 +341,8 @@ export function buildItems({ agents = [], terminals = [], spaces = [], defs = []
           const shell = r.kind === "shell";
           add({ id: `run:${r.id}`, group: "needs", tone: "blocked", ...base, place: shell ? "Automations · Shell" : "Automations",
             // A script the runner stopped (it stopped itself, say) has no exit code: "stopped", not "exit ?".
-            title: r.timedOut ? `${r.name} timed out` : shell && (r.closedWhy === "stopped" || r.exitCode == null) ? `${r.name} stopped` : `${r.name} failed (exit ${r.exitCode})`,
+            // herdr-ws-secret refused before the script started (r.vault: the kind): the summary says why.
+            title: r.vault ? `${r.name} didn't run` : r.timedOut ? `${r.name} timed out` : shell && (r.closedWhy === "stopped" || r.exitCode == null) ? `${r.name} stopped` : `${r.name} failed (exit ${r.exitCode})`,
             detail: shell ? trimDot(r.summary || r.note || "") : "Stopped after timeout",
             at: r.closed, target: history ? { kind: "history", ws: r.ws, runId: r.id } : auto });
           continue;
@@ -371,7 +449,8 @@ export function buildItems({ agents = [], terminals = [], spaces = [], defs = []
     if (ev.target?.kind === "tab" && !tabs.has(ev.target.tab)) gone = { gone: true, goneNote: "Tab closed" };
     if (ev.target?.kind === "agent" && !liveTerms.has(String(ev.target.terminal))) gone = { gone: true, goneNote: "Agent ended" };
     if (ev.target?.kind === "action" && ev.target.args?.name === "ws-automations" && !on("automations")) continue;
-    add({ id: ev.id, group: "updates", tone: ev.tone ?? "done", title: ev.title, detail: ev.detail ?? "", ...wsInfo(ev.ws), place: ev.place ?? "", at: ev.at, target: ev.target ?? null, ...gone });
+    if (ev.kind === "vault" && !on("vault")) continue;
+    add({ id: ev.id, group: "updates", tone: ev.tone ?? "done", title: ev.title, detail: ev.detail ?? "", ...wsInfo(ev.ws), place: ev.place ?? "", at: ev.kind === "vault" ? ev.lastAt ?? ev.at : ev.at, target: ev.target ?? null, ...gone });
   }
 
   const needs = items.filter((x) => x.group === "needs").sort((a, b) => b.at - a.at);

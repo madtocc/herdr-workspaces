@@ -1,4 +1,4 @@
-// The Workspaces package's own sections of ws-settings (Features, Agents, Automations, Files and Experimental), drawn inside
+// The Workspaces package's own sections of ws-settings (Features, Agents, Automations, Files, Vault and Experimental), drawn inside
 // the Settings window that ws-switcher/settingsbuild.js builds from Herdr's (main.js here).
 // These are plain functions on that window's view, so they don't depend on Herdr's own methods;
 // their state lives on the view as `view.wsx`.
@@ -26,16 +26,22 @@
 //   is the editors installed and the apps macOS offers for a text file, found once a window
 //   while Files is shown; its popup is the window's `picking` ("wsx-files-app"), so a section
 //   change closes it as it closes the font lists.
+// - Vault: PROTECTED BROKER (MACOS), the Keychain-ACL broker's row (brokerfacts.js: its state from
+//   `herdr-ws-secret broker status --json`, read every 10 s while the page is shown, and its
+//   buttons, which run `herdr-ws-secret broker install|restart|uninstall --json`; Uninstall asks
+//   in the row first), then DEFAULTS FOR NEW SECRETS and VISIBILITY: "vault" in
+//   ~/.herdr/settings.jsonc (settingsfacts.js VAULT_SETTINGS: default-tier, default-ttl, notify).
 // - Experimental: the experiments in ~/.herdr/settings.jsonc (settingsfacts.js), each off until
 //   turned on, with what it does and why it's experimental.
-// A switch or choice on Features, Files or Experimental rewrites only its value in the file
+// A switch or choice on Features, Files, Automations, Vault or Experimental rewrites only its value in the file
 // (comments kept) and sets shared "workspaces.settings" so the mods that read it follow at once.
 
 import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Popup, InputState, Input } from "gpui-base";
 import { theme, shared, setShared, exec, home, appHome, readTextFile, writeTextFile, notify, checking, knownAgents, props, closeOverlay, window } from "herdr";
 import * as fs from "fs/promises";
-import { SETTINGS_FILE, EXPERIMENTS, FEATURES, FILES_SETTINGS, EDITOR_CATALOG, AUTOMATIONS_SETTINGS, parseSettings, withExperiment, withFeature, withFileSetting, withAutomationSetting, experimentOn, featureOn, fileSetting, automationSetting, appChoices, appLabel, automationCount, automationsLine } from "./settingsfacts.js";
+import { SETTINGS_FILE, EXPERIMENTS, FEATURES, FILES_SETTINGS, EDITOR_CATALOG, AUTOMATIONS_SETTINGS, VAULT_SETTINGS, parseSettings, withExperiment, withFeature, withFileSetting, withAutomationSetting, withVaultSetting, experimentOn, featureOn, fileSetting, automationSetting, vaultSetting, appChoices, appLabel, automationCount, automationsLine } from "./settingsfacts.js";
+import { BROKER_OPS, STATUS_ARGS, parseBrokerStatus, actionError, brokerView, pressBroker } from "./brokerfacts.js";
 import { HIDDEN, hiddenFile, parseHidden, saveHidden, shownAgents, countLine, notInstalledLine } from "./hidefacts.js";
 
 // Our sections in the window's list, after Herdr's.
@@ -44,6 +50,7 @@ export const PACKAGE_SECTIONS = [
   { id: "agents", title: "Agents", icon: "mods/ws-settings/extras.svg" },
   { id: "automations", title: "Automations", icon: "mods/ws-settings/automations.svg" },
   { id: "files", title: "Files", icon: "mods/ws-settings/files.svg" },
+  { id: "vault", title: "Secrets", icon: "mods/ws-settings/vault.svg" },
   { id: "experimental", title: "Experimental", icon: "mods/ws-settings/experimental.svg" },
 ];
 
@@ -94,6 +101,7 @@ export function packageInit(view, cx) {
     quietFrom: InputState.new({ value: "", placeholder: "22:00" }),
     quietTo: InputState.new({ value: "", placeholder: "08:00" }),
     quietCustom: false,
+    broker: newBroker(),
   };
   for (const input of [view.wsx.quietFrom, view.wsx.quietTo]) {
     input.on("change", (_e, cx) => cx.notify());
@@ -107,6 +115,7 @@ export function packageInit(view, cx) {
       cx.notify();
     }
     if (view.section === "files" && (await findApps(view.wsx))) cx.notify();
+    if (view.section === "vault" && (await readBroker(view.wsx))) cx.notify();
   });
   refresh(cx);
   cx.timer.every(3000, refresh);
@@ -253,6 +262,85 @@ function setAutomationSetting(x, key, value, cx) {
     x.gen += 1;
     x.busy = false;
     cx.notify();
+  });
+}
+
+// One Vault default chosen: only its value changes in the file (withVaultSetting, comments kept),
+// and shared "workspaces.settings" gets the whole parse, so an open Vault and the bell follow it.
+function setVaultSetting(x, key, value, cx) {
+  if (x.busy || x.settings.error) return;
+  x.busy = true;
+  x.gen = (x.gen ?? 0) + 1;
+  cx.spawn(async (cx) => {
+    try {
+      const old = await readTextFile(file()).catch(() => null);
+      const was = parseSettings(old);
+      const next = was.error || vaultSetting(was, key) !== value ? withVaultSetting(old, key, value) : old;
+      if (next == null) {
+        throw new Error(was.error
+          ? `${tilde(file())} isn't valid JSONC; fix it in the file first`
+          : `${tilde(file())} isn't in a shape this can change safely (a "vault" value that isn't a plain value, or written twice); change it in the file`);
+      }
+      if (next !== old) await writeTextFile(file(), next, old ?? undefined);
+      x.text = next;
+      x.settings = parseSettings(next);
+      if (JSON.stringify(x.settings) !== JSON.stringify(shared("workspaces.settings") ?? null)) setShared("workspaces.settings", x.settings);
+    } catch (e) {
+      notify({ title: "Couldn't change it", body: errMsg(e), level: "error" });
+    }
+    x.gen += 1;
+    x.busy = false;
+    cx.notify();
+  });
+}
+
+// The broker row's state on the view: the last status answer, why it couldn't be read, the op
+// running, the last op's failure, whether Uninstall is asking, and when the status was read.
+const newBroker = () => ({ status: null, readError: null, busy: null, error: null, confirm: false, at: 0, reading: false });
+const isMac = () => (window()?.platform ?? "macos") === "macos";
+
+// herdr-ws-secret broker status --json, when the last read is 10 s old (or force), never during
+// an action (its own read follows it). Not on macOS there's nothing to ask. True when it read.
+async function readBroker(x, force = false) {
+  const b = x.broker ?? (x.broker = newBroker());
+  if (!isMac() || b.reading || (b.busy && !force) || (!force && Date.now() - b.at < 10000)) return false;
+  b.reading = true;
+  try {
+    const r = await exec(bin("herdr-ws-secret"), STATUS_ARGS, { timeout: 20000 }).catch((e) => ({ code: 1, stdout: "", stderr: errMsg(e) }));
+    const { status, error } = parseBrokerStatus(r);
+    if (status) b.status = status;
+    b.readError = error;
+    b.at = Date.now();
+    return true;
+  } finally {
+    b.reading = false;
+  }
+}
+
+// One of the row's buttons. "confirm-uninstall" and "cancel" only ask or stop asking; the others
+// run herdr-ws-secret (an install builds the broker, so it may take a minute), then read the
+// status again. A failure's first line stays under the row until the next action.
+function brokerAct(x, op, cx) {
+  const b = x.broker ?? (x.broker = newBroker());
+  if (b.busy) return;
+  const press = pressBroker(b, op);
+  b.confirm = press.confirm;
+  // Asking (or not) shows at once, not at the next status read.
+  cx.notify();
+  if (!press.run) return;
+  const what = BROKER_OPS[press.run];
+  b.busy = press.run;
+  b.error = null;
+  cx.notify();
+  cx.spawn(async (cx) => {
+    try {
+      const r = await exec(bin("herdr-ws-secret"), what.args, { timeout: 300000 }).catch((e) => ({ code: 1, stdout: "", stderr: errMsg(e) }));
+      b.error = actionError(r);
+      await readBroker(x, true);
+    } finally {
+      b.busy = null;
+      cx.notify();
+    }
   });
 }
 
@@ -659,9 +747,65 @@ function filesPage(t, x, view) {
     .child(choiceRow("catch", clickOff));
 }
 
-// The page: the window's body shows it for our section ids ("features", "agents", "automations", "files" and "experimental").
+// A button of the broker row, drawn as the Automations screen's: primary (solid), plain, or
+// danger (red words). Greyed and not clickable while an action runs.
+function actButton(t, id, label, kind, enabled, onClick) {
+  return h_flex().id(id).h(30).px(12).flex_none().items_center().rounded(7).border_1()
+    .border_color(kind === "primary" ? t.solid : t.border).bg(kind === "primary" ? t.solid : t.raised)
+    .text_color(kind === "primary" ? t.solid_foreground : kind === "danger" ? t.blocked : t.foreground)
+    .text_size(13).font_medium().when(!enabled, (el) => el.opacity(0.45))
+    .when(enabled, (el) => el.cursor_pointer().hover((s) => s.opacity(0.88)).on_click(onClick))
+    .child(label);
+}
+
+// Vault: the broker's row (brokerfacts.js brokerView), then the defaults for new secrets and the
+// bell, from "vault" in the settings file. A broken file: one note, those three greyed at their
+// defaults; the broker's row still works, since it doesn't live in the file.
+function vaultPage(t, x) {
+  const broken = x.settings.error;
+  const off = Boolean(broken) || x.busy;
+  const b = x.broker ?? (x.broker = newBroker());
+  const v = brokerView(b.status, { mac: isMac(), busy: b.busy, error: b.error, readError: b.readError, confirm: b.confirm, home: home() });
+  const tone = (c) => (c.tone === "ok" ? t.done : c.tone === "warn" ? t.working : t.muted);
+  const chip = (c) => div().flex_none().h(20).px(7).rounded(10).flex().items_center().text_size(11.5)
+    .bg(c.tone === "dim" ? t.raised : tone(c) + "24").text_color(tone(c)).child(c.label);
+  const brokerRow = h_flex().id("wsx-v-broker").w_full().gap(16).py(12).items_center().border_b(1).border_color(t.border)
+    .child(v_flex().flex_1().min_w(0).gap(3)
+      .child(h_flex().gap(8).items_center()
+        .child(div().text_size(14).text_color(t.foreground).child("Keychain-ACL broker"))
+        .when(Boolean(v.chip), (el) => el.child(chip(v.chip))))
+      .when(Boolean(v.about), (el) => el.child(div().text_size(12.5).line_height("18px").text_color(t.dim).child(v.about)))
+      // Each fact unbroken; the line wraps between them (a path never breaks in its middle).
+      .when(v.factParts.length > 0, (el) => el.child(h_flex().flex_wrap().gap_x(5).text_size(12).line_height("17px").text_color(t.muted)
+        .children(v.factParts.map((part, i) => div().whitespace_nowrap().child(i < v.factParts.length - 1 ? `${part} ·` : part)))))
+      .when(Boolean(v.note), (el) => el.child(div().text_size(12).line_height("17px").text_color(t.working).child(v.note)))
+      .when(Boolean(v.error), (el) => el.child(div().text_size(12).line_height("17px").text_color(t.blocked).child(v.error))))
+    .when(v.buttons.length > 0, (el) => el.child(h_flex().flex_none().gap(8).items_center()
+      .children(v.buttons.map((btn) => actButton(t, `wsx-v-broker-${btn.op}`, btn.label, btn.kind, btn.enabled, (_e, cx) => brokerAct(x, btn.op, cx))))));
+  const s = (key) => VAULT_SETTINGS.find((a) => a.key === key);
+  const choiceRow = (key) => row(t, `wsx-v-${key}`, s(key).title, s(key).what, "",
+    segmented(t, `wsx-v-${key}-seg`, s(key).values, vaultSetting(x.settings, key), (val, cx) => setVaultSetting(x, key, val, cx), off),
+    false, Boolean(broken));
+  return v_flex().w_full()
+    .child(div().pb(4).text_size(18).font_semibold().text_color(t.foreground).child("Secrets"))
+    .child(div().pb(14).text_size(12.5).line_height("18px").text_color(t.dim)
+      .child(`Defaults and the Protected broker for write-only secrets. These settings are kept in ${tilde(file())}.`))
+    .when(Boolean(broken), (el) => el.child(div().mb(14).p(10).rounded(8).bg(t.blocked + "1f").text_size(12.5).line_height("18px").text_color(t.blocked)
+      .child(`${tilde(file())} isn't valid JSONC (${broken}). Defaults stay in effect until it's fixed.`)))
+    .child(heading(t, "Protected broker (macOS)"))
+    .child(brokerRow)
+    .child(div().h(14))
+    .child(heading(t, "Defaults for new secrets"))
+    .child(choiceRow("default-tier"))
+    .child(choiceRow("default-ttl"))
+    .child(div().h(14))
+    .child(heading(t, "Visibility"))
+    .child(choiceRow("notify"));
+}
+
+// The page: the window's body shows it for our section ids ("features", "agents", "automations", "files", "vault" and "experimental").
 export function packagePage(view) {
   const t = theme();
-  const x = view.wsx ?? (view.wsx = { text: null, settings: parseSettings(null), resume: null, guide: null, known: [], hidden: [], busy: false, gen: 0, hiding: 0, loading: null, apps: null, appsLoading: false, quietFrom: null, quietTo: null });
-  return view.section === "features" ? featuresPage(t, x) : view.section === "automations" ? automationsPage(t, x) : view.section === "files" ? filesPage(t, x, view) : view.section === "experimental" ? experimentalPage(t, x) : agentsPage(t, x);
+  const x = view.wsx ?? (view.wsx = { text: null, settings: parseSettings(null), resume: null, guide: null, known: [], hidden: [], busy: false, gen: 0, hiding: 0, loading: null, apps: null, appsLoading: false, quietFrom: null, quietTo: null, broker: newBroker() });
+  return view.section === "features" ? featuresPage(t, x) : view.section === "automations" ? automationsPage(t, x) : view.section === "files" ? filesPage(t, x, view) : view.section === "vault" ? vaultPage(t, x) : view.section === "experimental" ? experimentalPage(t, x) : agentsPage(t, x);
 }

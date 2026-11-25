@@ -257,15 +257,49 @@ own, where you can't watch it or type to it:
 None of them changes code. With the starter guide (see Install), Claude and
 Codex start one of these where they'd use their own subagent.
 
-### Settings: Features, Agents, Automations, Files and Experimental
+### Secrets
+
+![Secrets open on a Protected secret](previews/vault.png)
+
+Tokens, cookies and keys that agents use by name and never see. Open Secrets from
+the sidebar footer, add a secret (write-only: after Save it shows only as
+`••••` · Saved), and an agent calls
+`herdr-ws-secret http <url> -H 'Authorization: Bearer {{secret:name}}'` or
+`herdr-ws-secret run --env VAR=name -- <command>`: the value is filled in for the
+call and replaced by `[secret:name]` in whatever comes back (its plain, URL-encoded,
+base64, hex and JSON forms; not a value inside something larger, or one the command
+changed). No command prints a value, and none takes one as an argument. The starter
+guide tells agents to use it instead of asking you to paste a token into the chat.
+
+- **Standard** needs no setup: the value is encrypted under `~/.herdr/vault`, its
+  key in your login Keychain. It keeps the value out of chats and of what agents
+  print, but any program running as you can still use it through
+  `herdr-ws-secret`, or read it.
+- **Protected** (macOS): Settings > Secrets builds and signs a small broker on your
+  Mac (`/usr/bin/swiftc`, Xcode's command line tools). Each Protected secret is a
+  Keychain item only that exact build can read; it goes only to the hosts you
+  allow, or to commands pinned to their full paths, and anything that would widen
+  that asks you in a macOS dialog first. A command you allow gets the value with
+  whatever arguments the agent gives it, so allow only tools that talk to fixed
+  hosts. After an update macOS asks once per Protected secret: allow that only
+  right after you pressed Install or Update yourself, and Deny a prompt that comes
+  on its own.
+- Each secret is for one workspace or every workspace (that's for naming and lists:
+  the workspace is what the agent says it's in, not a wall between projects), has an
+  expiry (4h to never; an expired one is refused), and says when and by whom it was
+  last used. Uses can show as quiet entries in the bell, and an automation can hand
+  secrets to its check or shell script with `secret_env:` (never to an agent's own
+  process: an agent uses them by name).
+
+### Settings: Features, Agents, Automations, Files, Secrets and Experimental
 
 ![Settings on its Agents section](previews/settings.png)
 
-The sidebar's Settings opens Herdr's own Settings window with five sections of
+The sidebar's Settings opens Herdr's own Settings window with six sections of
 ours at the end, after Privacy:
 
 - **Features**: a switch for each of the package's add-ons (Board, Notes,
-  Worktrees, History, Automations, the status bar's plan usage, the agent
+  Worktrees, History, Automations, Secrets, the status bar's plan usage, the agent
   rows' numbers and the tab bar's notifications bell), all on to start with and one setting for every workspace. Off
   hides it everywhere and stops its background work (no automation runs, no
   pull request is followed, no usage is asked); nothing is deleted, so on brings
@@ -284,6 +318,9 @@ ours at the end, after Privacy:
   opens (beside the terminal, full size, or off to leave it to macOS) and
   whether Files takes every file or only text, images and folders. A change
   applies at once, to every open Files.
+- **Secrets**: the Protected broker (Install & enable, Restart, Update, Uninstall,
+  with what it's doing now), the tier and expiry a new secret starts with, and
+  which uses show in the bell (off, Protected only, always).
 - **Experimental**: features that lean on things other programs don't promise to
   keep the same, each off until you turn it on and saying why it's experimental
   (the first: wiping Antigravity conversations from the Agents list's menu).
@@ -295,7 +332,7 @@ file whenever Herdr updates it. The macOS menu's Settings… still opens Herdr's
 plain window; to have Cmd+, open this one, set `"cmd-,"` in the `global`
 section of your `~/.config/herdr-app/keys.json` to `"mod.open:ws-settings"`
 (or to `ws-switcher.settings/features`, `ws-switcher.settings/agents`,
-`ws-switcher.settings/automations` or `ws-switcher.settings/files`, `ws-switcher.settings/experimental` to open it on a section; `ws-switcher.settings/extras` opens Agents). Herdr then
+`ws-switcher.settings/automations`, `ws-switcher.settings/files`, `ws-switcher.settings/vault` or `ws-switcher.settings/experimental` to open it on a section; `ws-switcher.settings/extras` opens Agents). Herdr then
 leaves that file to you: new default shortcuts in its updates are added by hand.
 
 ### And when you're away
@@ -312,18 +349,20 @@ leaves that file to you: new default shortcuts in its updates are added by hand.
 Ask your agent to add this layout (Herdr's own guide, `~/.config/herdr-app/AGENTS.md`,
 says how), or by hand:
 
-1. Copy `layouts/workspaces.json` to `~/.config/herdr-app/layouts/` and the eighteen
+1. Copy `layouts/workspaces.json` to `~/.config/herdr-app/layouts/` and the nineteen
    folders in `mods/` to `~/.config/herdr-app/mods/` (rename them if a name is taken).
 2. For agent instructions from the + menu, put the launcher on your `PATH` and
    point `programs.json` at it. `herdr-ws-run` starts automations from other
    apps and lets agents add them, and `herdr-ws-notify --off` / `--on` is the
    switch for the desktop notifications (on macOS, `brew install terminal-notifier`
-   makes a click on one go to Herdr):
+   makes a click on one go to Herdr). `herdr-ws-secret` is how agents use your
+   secrets (it needs Node 20 or newer):
    ```sh
    ln -s ~/.config/herdr-app/mods/ws-switcher/bin/herdr-ws-agent ~/.local/bin/
    ln -s ~/.config/herdr-app/mods/ws-switcher/bin/herdr-ws-run ~/.local/bin/
    ln -s ~/.config/herdr-app/mods/ws-switcher/bin/herdr-ws-runner ~/.local/bin/
    ln -s ~/.config/herdr-app/mods/ws-switcher/bin/herdr-ws-notify ~/.local/bin/
+   ln -s ~/.config/herdr-app/mods/ws-switcher/bin/herdr-ws-secret ~/.local/bin/
    ```
    ```json
    { "programs": { "claude": { "run": ["herdr-ws-agent", "claude"] },
@@ -516,7 +555,21 @@ none is installed. A click on a terminal-notifier one runs `herdr-app do` with
 the toast's own action. Its switch is `~/.herdr/notify/switch`. The launcher
 reads a workspace's `BRIEF.md`, when there is one, and puts it in the
 instructions of the agents started there.
-Four things use the network: GitHub automations (`gh api` with your login, every
+Secrets keeps `~/.herdr/vault/` (`0700`): `meta.json` (each secret's name, scope,
+rules and last use, never a value), `standard.enc` (Standard values, encrypted),
+`usage.jsonl` (one line per use, never a value), a `.lock`, the broker's socket,
+log and binary (`bin/herdr-ws-vaultd`), `vault.key` only where there's no Keychain,
+and for a moment the screen's `.inbox-*` handoff files, which `herdr-ws-secret ingest`
+deletes. In your login Keychain it keeps one item `herdr-ws-vault-standard` (Standard's
+key) and one `dev.herdr.ws-vault.protected` item per Protected secret. Installing the
+Protected broker runs `/usr/bin/swiftc` and `codesign`, writes
+`~/Library/LaunchAgents/dev.herdr.ws-vaultd.plist` and loads it with `launchctl`;
+Uninstall unloads it and removes the plist. `herdr-ws-secret run` makes a `0700`
+folder under `$TMPDIR` for `--file` secrets and removes it when the command ends.
+Settings > Secrets writes the `vault` block of `~/.herdr/settings.jsonc`.
+`herdr-ws-secret http` sends a request to the URL an agent (or you) gives it, with a
+secret only to the hosts that secret allows; nothing else in Secrets uses the network.
+Besides that, four things use the network: GitHub automations (`gh api` with your login, every
 2 minutes per watched repo), cards with a `pr:` or `branch:` line (`gh pr view`
 with your login, every minute per open pull request), the board's GitHub view
 (`gh api graphql` and `gh project list` with your login: the linked project board
@@ -543,7 +596,7 @@ than 0.1.0's notes, so read them all). To hear about new versions, watch the
 repo on GitHub for releases (Watch → Custom → Releases).
 
 - **You copied the files as they are:** copy `layouts/workspaces.json` and the
-  eighteen folders in `mods/` again, and do what the new versions' notes say
+  nineteen folders in `mods/` again, and do what the new versions' notes say
   (a new script to link, say). Your workspaces, tasks, presets and automations
   live elsewhere and aren't touched.
 - **You or your agent changed them:** tell your agent "apply what's in this

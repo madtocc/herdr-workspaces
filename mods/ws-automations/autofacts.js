@@ -15,6 +15,9 @@
 //   dedupe: always         changed (the default: on a schedule, a check printing the same is nothing new) or always
 //   check: |               a check over several lines: a YAML block, indented
 //     git status --porcelain
+//   secret_env: A=x, B=y   Vault secrets as variables (or a `|` block, one A=x a line): handed on as
+//                          text (fieldValue); the runner reads it with vaultfacts.js parseSecretEnv, and
+//                          withFrontFields leaves it as it is when the screen saves other keys
 //   ---
 
 // --- front matter ---

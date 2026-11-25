@@ -8,10 +8,12 @@
 
 // Every row, top to bottom; `feature`: its add-on's key in Settings > Features (the row
 // is shown while that's on). Presets, Settings and Add machine are always there. History,
-// once the first row, opens from the tab bar's Views menu now.
+// once the first row, opens from the tab bar's Views menu now. Vault (write-only secrets for
+// agents) sits between Agent presets and Settings.
 export const ROWS = [
   { id: "automations", feature: "automations" },
   { id: "presets" },
+  { id: "vault", feature: "vault" },
   { id: "settings" },
   { id: "machine" },
 ];

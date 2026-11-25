@@ -24,6 +24,9 @@
 // script, run by bash, zsh or sh in its folder, with what set it off as $HERDR_… variables.
 // Try it beside the script runs it here and now; Preview runs only the check and shows what a
 // run would get (the prompt filled in, or the script and its variables), starting nothing.
+// With secret_env (as the runner read the saved file), both run the check or script under
+// herdr-ws-secret as the runner does (check.js), so it gets its variables and what it prints comes
+// back redacted; Preview lists each such variable by its secret's name, never a value.
 //
 // A check (check.js) is a shell command the runner runs first: nothing starts
 // unless it prints something. It's shown in "What it does" whenever there is one,
@@ -810,6 +813,13 @@ export default class Automations extends View {
     };
   }
 
+  // The saved automation's secret_env, as the runner hands it over (check.js: runCheck, runShellScript):
+  // null without any. A new one has none until it's saved (the field is only in its file).
+  secretOf(def, sel) {
+    const pairs = this.lookup(sel)?.secretEnv ?? [];
+    return pairs.length ? { cli: `${appHome()}/mods/ws-switcher/bin/herdr-ws-secret`, pairs, workspace: def.id, automation: `${def.id}/${sel.name}` } : null;
+  }
+
   // Runs the check as written in the box, here and now, in the folder a run would
   // use. Nothing is set off, so the variables for what did (a PR's number) are empty.
   tryCheck(cx) {
@@ -821,7 +831,7 @@ export default class Automations extends View {
     this.tried = null;
     cx.notify();
     cx.spawn(async (cx) => {
-      const res = await runCheck(exec, cmd, folder, { ...this.runVars(def, sel, folder, "Tried from the Automations screen", false), folder, workspace_id: def.id });
+      const res = await runCheck(exec, cmd, folder, { ...this.runVars(def, sel, folder, "Tried from the Automations screen", false), folder, workspace_id: def.id }, this.secretOf(def, sel));
       this.trying = false;
       if (this.sel === sel) this.tried = { cmd, folder, ...res };
       cx.notify();
@@ -841,7 +851,7 @@ export default class Automations extends View {
     cx.notify();
     cx.spawn(async (cx) => {
       const vars = { ...this.runVars(def, sel, folder, "Tried from the Automations screen", false), folder, workspace_id: def.id };
-      const res = await runShellScript(exec, { shell: c.shell, script, folder, vars, timeoutMs: effectiveTimeout({ run: "shell", timeout: c.timeout }) });
+      const res = await runShellScript(exec, { shell: c.shell, script, folder, vars, timeoutMs: effectiveTimeout({ run: "shell", timeout: c.timeout }), secret: this.secretOf(def, sel) });
       this.tryingScript = false;
       if (this.sel === sel) this.triedScript = { script, folder, ...res };
       cx.notify();
@@ -872,13 +882,13 @@ export default class Automations extends View {
         if (!isSchedule(w) && w.kind !== "error" && w.kind !== "lifecycle" && w.kind !== "link" && !/\{\{\s*(event|text|task|task\.\w+|files?|agent|terminal|space|pr|issue|number|title|url|author|repo|labels|output|upstream|workflow)\s*\}\}/.test(body)) text = [text, event].filter(Boolean).join("\n\n");
         if (all.check && !/\{\{\s*check\s*\}\}/.test(body)) text = [text, `Before you were started, Herdr ran this automation's check (\`${check}\`). It printed:\n${all.check}`].filter(Boolean).join("\n\n");
       }
-      return { sel, loading: false, shell, check: !check ? null : waits ? { waits: true } : res, text, env: shell ? checkEnv({ ...all, folder, workspace_id: def.id }) : [], folder };
+      return { sel, loading: false, shell, check: !check ? null : waits ? { waits: true } : res, text, env: shell ? checkEnv({ ...all, folder, workspace_id: def.id }) : [], folder, secrets: this.secretOf(def, sel)?.pairs ?? [] };
     };
     if (!check || waits) { this.preview = show(null); cx.notify(); return; }
     this.preview = { sel, loading: true };
     cx.notify();
     cx.spawn(async (cx) => {
-      const res = await runCheck(exec, check, folder, { ...vars, folder, workspace_id: def.id });
+      const res = await runCheck(exec, check, folder, { ...vars, folder, workspace_id: def.id }, this.secretOf(def, sel));
       if (this.sel === sel && this.preview?.sel === sel) this.preview = show(res);
       cx.notify();
     });
@@ -1359,6 +1369,11 @@ export default class Automations extends View {
         .when(pv.shell, (el) => el
           .child(div().text_size(11.5).text_color(t.dim).child("With these variables (as data, never put into the script)"))
           .child(mono(pv.env.map((e) => (e.length > 110 ? `${e.slice(0, 109)}…` : e)))))
+        // secret_env: each variable by its secret's name; herdr-ws-secret hands the value over, never this screen.
+        .when((pv.secrets ?? []).length > 0, (el) => el
+          .child(div().text_size(11.5).text_color(t.dim).child(pv.shell ? "Secrets from Vault for the script and its check, handed over by herdr-ws-secret (their values never show here)"
+            : "Secrets from Vault for its check only, handed over by herdr-ws-secret: the agent itself isn't given them (their values never show here)"))
+          .child(mono(pv.secrets.map((p) => `${p.env}=[secret:${p.name}]`))))
         .when(!isSchedule(w), (el) => el.child(div().text_size(11).text_color(t.dim).child("What sets it off has example values here."))));
 
     // The body: the agent's prompt, or the script with its own Try it.

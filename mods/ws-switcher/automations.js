@@ -26,6 +26,8 @@
 //   notify: problems            what it tells you: problems, results, all or none (autofacts.js)
 //   missed: skip                a schedule missed while nothing ran: run (within 12 hours), skip, always
 //   dedupe: always              a schedule's check printing the same as last time still starts it
+//   secret_env: STRIPE_KEY=stripe-test, DB_URL=staging-db   Vault secrets as variables (or a `|` block,
+//                               one VAR=name a line): see "Secrets" below
 //   ---
 //   The prompt: the agent's task (or the script). {{event}} and the other {{…}} are filled in;
 //   a script gets them as $HERDR_… variables instead, never in its text.
@@ -57,6 +59,18 @@
 // says when), and stays in the runs as closed, with what's needed to resume its
 // conversation (History lists them). Unless `keep: true`: an agent that ends its turn
 // with a question looks just like one that's finished.
+//
+// Secrets (secret_env:): names of Vault secrets (meta.json: this workspace's, then every workspace's),
+// handed to a shell automation's script and to any automation's check as variables by herdr-ws-secret,
+// never to an agent's own process (whatever it holds can end up in its conversation). The runner never
+// holds a value: a script and a check run as `herdr-ws-secret run --automation <ws>/<name> --env VAR=name
+// … -- <shell> -c …` (check.js), whose output comes back redacted. An agent automation with secret_env
+// needs a check (else that's its error), and a note under it says the agent can use secrets by name
+// (`herdr-ws-secret http` / `run`); its report is still redacted by the CLI before it's kept. A name
+// Vault doesn't have, or a pair that doesn't read (vaultfacts.js refuses names like PATH or BASH_ENV),
+// is the automation's error; Vault off in Settings > Features, it doesn't run (skipped, with a note). A
+// Protected secret works once the person allows that check or script in the broker's own macOS dialog.
+// meta.json is looked at again every few seconds.
 //
 // Published (shared), for the ws-automations screen:
 //   workspaces.automations       { <workspace>: [automation, …] }, each with `next`:
@@ -93,11 +107,11 @@
 // as usual. On again it carries on from then (gate()): no catch-up, an `every` one waits its
 // interval, GitHub's first look only notes what's there (featuregate.js).
 
-import { spaces, agents, terminals, focused, run, shared, setShared, home, readTextFile, writeTextFile, watchFolder, exec, notify, knownAgents } from "herdr";
+import { spaces, agents, terminals, focused, run, shared, setShared, home, appHome, readTextFile, writeTextFile, watchFolder, exec, notify, knownAgents } from "herdr";
 import * as fs from "fs/promises";
 import { parseWhen, describe, due, nextAt, shortTime } from "./when.js";
 import { withKnobs } from "./knobs.js";
-import { runCheck, runShellScript, checkEnv, SCRIPT_MAX } from "./check.js";
+import { runCheck, runShellScript, checkEnv, SCRIPT_MAX, secretArgv, toolFailure, secretProblem } from "./check.js";
 import { closeStep, helpersOf, lookingAt, providerOf, isTimedOut, countActive, terminalOf } from "./runfacts.js";
 import {
   splitFront, fieldValue, withFrontFields, normCheck, normScript, optionError, effectiveTimeout, effectiveNotify, shouldNotify, formatDuration,
@@ -105,6 +119,7 @@ import {
 } from "./autofacts.js";
 import { OFF_NOTE, everyNext } from "./featuregate.js";
 import { outcomeOf } from "./notif.js";
+import { parseSecretEnv, parseMeta, resolveEntry, isExpired } from "./vaultfacts.js";
 
 const SPACE = "Automations";
 const MISSED = 12 * 3600e3; // a schedule missed (Herdr closed, the Mac asleep) runs once if it was due this recently
@@ -124,7 +139,8 @@ const CHAIN_MAX = 5;        // a chain of automations setting each other off sto
 const OUTPUT_MAX = 4000;    // characters of a run's output passed on as {{output}}
 // A script in a tab: run, say how it ended, then end (or stay, with keep: true). $1 the shell, $2 the script.
 // The line it ends with is one a script wouldn't print itself (an "[exit 1]" of its own isn't its end).
-const SHELL_TAB = 'b=$1; s=$2; k=$3; "$b" -c "$s"; c=$?; printf "\\n[herdr-exit:%s]\\n" "$c"; if [ -n "$k" ]; then exec "${SHELL:-/bin/sh}" -i; fi; exit "$c"';
+// $4…: herdr-ws-secret's words in front of the shell, when it has secrets (check.js secretArgv).
+const SHELL_TAB = 'b=$1; s=$2; k=$3; shift 3; "$@" "$b" -c "$s"; c=$?; printf "\\n[herdr-exit:%s]\\n" "$c"; if [ -n "$k" ]; then exec "${SHELL:-/bin/sh}" -i; fi; exit "$c"';
 const EXIT_LINE = /^\[herdr-exit:(\d+)\]$/;
 const YOUNG = 30e3;         // a run's terminal not listed this soon after it started is still being made
 const POLL = 120e3;         // how often GitHub automations look at their repos
@@ -133,6 +149,11 @@ const MAX_BODY = 4000;      // characters of a PR's or issue's description passe
 const STORE = "automations";
 const STALL = 60e3;         // an agent that has reported nothing this long after its run started is taken to be asking something first
 const ASK_AFTER = 5000;     // an unallowed check is asked about once it has stayed that way this long
+const VAULT_LOOK = 5000;    // how often meta.json is looked at again, while an automation uses secrets
+const TAB_SECRET_MAX = 600e3; // herdr-ws-secret runs a command 10 minutes at most: a script in a tab with no timeout gets that
+export const AGENT_NO_CHECK = "secret_env reaches a check or a script, never the agent itself, and this has no check. The agent can use a secret by name instead (herdr-ws-secret http or run: say which in its prompt), or make this a shell automation.";
+export const AGENT_SECRETS_NOTE = "Its check gets these secrets as variables. The agent itself isn't handed them: it can use them by name (herdr-ws-secret http or run).";
+export const VAULT_OFF_NOTE = "Secrets is off in Settings > Features, and it uses secrets (secret_env), so it didn't run.";
 // The first line of the launcher's note of which conversation terminal $1 holds, under
 // the resume folder $2: in the folder of this core (its socket's name, as herdr-ws-resume
 // finds it, else HC_SESSION), else the one core folder with a note for that terminal
@@ -327,6 +348,12 @@ export function parseAutomation(name, file, text, scope = "workspace") {
   };
   // A value the runner can't follow is the automation's error, as a `when:` it can't read is.
   a.error ??= ["run", "shell", "timeout", "notify", "missed", "dedupe"].map((k) => optionError(k, get(k))).find(Boolean) ?? null;
+  // secret_env: VAR=name pairs (vaultfacts.js); whether Vault has each name is the Runner's to say (vaultIssue).
+  const secrets = parseSecretEnv(get("secret_env") ?? "");
+  a.secretEnv = secrets.pairs;
+  a.error ??= secrets.errors.length ? `secret_env: ${secrets.errors[0]}.` : null;
+  // An agent is never handed secrets: on an agent automation they're for its check, so it needs one.
+  if (!a.error && mode !== "shell" && a.secretEnv.length && !a.check) a.error = AGENT_NO_CHECK;
   if (!a.error && mode === "shell" && !a.body) a.error = "A shell automation runs its script: put it under the front matter.";
   if (!a.error && mode === "shell" && a.card) a.error = "A shell automation has no agent to give a card to: take out card: true.";
   a.timeoutMs = effectiveTimeout(a);
@@ -473,9 +500,85 @@ export class Runner {
     this.allowAsked = shared("workspaces.automation.allow")?.at;
     this.autoOn = undefined;    // Automations in Settings > Features, at the last look (gate())
     this.ghRebase = null;       // on again: the repos whose next GitHub look only notes what's there
+    this.vault = { text: undefined, entries: [], error: null }; // meta.json as last read (names and policies, never values)
+    this.vaultLooked = 0;
   }
 
   automationsOn() { return this.h.featureOn ? this.h.featureOn("automations") !== false : true; }
+  vaultOn() { return this.h.featureOn ? this.h.featureOn("vault") !== false : true; }
+
+  // --- Vault: what secret_env names, as meta.json has it ---
+
+  vaultDir() { return this.h.vaultDir?.() ?? `${home()}/.herdr/vault`; }
+  secretCli() { return this.h.secretCli?.() ?? `${appHome()}/mods/ws-switcher/bin/herdr-ws-secret`; }
+  async readVault() {
+    const text = await readTextFile(`${this.vaultDir()}/meta.json`).catch(() => null);
+    const m = parseMeta(text);
+    this.vault = { text, entries: m.entries, error: m.error };
+  }
+  usesSecrets() { return Object.values(this.list).some((autos) => autos.some((a) => a.secretEnv?.length)); }
+  // What Vault says about an automation's secrets in a workspace: { error, warning } or null. error: a
+  // name it doesn't have there, a Protected one for an agent, a meta.json it can't read; warning: a
+  // Protected one (macOS asks), an expired one.
+  vaultIssue(ws, a) {
+    if (!a.secretEnv?.length) return null;
+    if (this.vault.error) return { error: `secret_env: Secrets' list can't be read (${this.vault.error}).`, warning: null };
+    const wsId = ws === "*" ? null : ws;
+    const errors = [], notes = [], now = Date.now();
+    for (const p of a.secretEnv) {
+      const e = resolveEntry(this.vault.entries, wsId, p.name);
+      if (!e) { errors.push(`secret_env: Secrets has no secret ${p.name} for ${wsId ? "this workspace" : "every workspace"}. Add it in Secrets, or fix the name.`); continue; }
+      if (e.tier === "protected") {
+        // The broker asks once for each command it runs: a shell automation's check and script are two.
+        notes.push(a.run !== "shell"
+          ? `Uses the Protected secret ${p.name}: macOS asks you once when its check first runs, and again when the check changes.`
+          : a.check
+          ? `Uses the Protected secret ${p.name}: macOS asks you once for its check and once for its script when each first runs, and again when either changes.`
+          : `Uses the Protected secret ${p.name}: macOS asks you once when it first runs, and again when the script changes.`);
+      }
+      if (isExpired(e, now)) notes.push(`${p.name} has expired: replace it in Secrets, or its runs fail.`);
+    }
+    if (a.run !== "shell") notes.unshift(AGENT_SECRETS_NOTE);
+    return { error: errors[0] ?? null, warning: notes.join(" ") || null };
+  }
+  // Each automation's error from Vault, as meta.json says now (one from before goes first).
+  applyVault(ws, autos) {
+    for (const a of autos) {
+      if (a.vaultError) { a.error = null; a.vaultError = false; }
+      const v = this.vaultIssue(ws, a);
+      if (!a.error && v?.error) { a.error = v.error; a.vaultError = true; }
+    }
+    return autos;
+  }
+  // meta.json changed (a secret added, removed, made Protected): the errors again.
+  lookAtVault(cx, now) {
+    if (this.vaultLooking || now - this.vaultLooked < VAULT_LOOK || !this.usesSecrets()) return;
+    this.vaultLooked = now;
+    this.vaultLooking = true;
+    cx.spawn(async () => {
+      try {
+        const was = this.vault.text;
+        await this.readVault();
+        if (this.vault.text === was) return;
+        for (const [ws, autos] of Object.entries(this.list)) chainErrors(this.applyVault(ws, autos));
+        this.publish();
+      } finally { this.vaultLooking = false; }
+    });
+  }
+  // How a run's command gets its secrets (check.js): null without any.
+  secretFor(ws, a) {
+    return a.secretEnv?.length ? { cli: this.secretCli(), pairs: a.secretEnv, workspace: ws, automation: `${ws}/${a.name}` } : null;
+  }
+  // What keeps an automation with secrets from running now: Vault off, or what vaultIssue calls an
+  // error. { status, note } or null.
+  vaultBlock(ws, a) {
+    // A secret_env that doesn't read, or one on an agent with no check: Run now doesn't start it either.
+    if (a.error && (a.error === AGENT_NO_CHECK || a.error.startsWith("secret_env:"))) return { status: "failed", note: a.error };
+    if (!a.secretEnv?.length) return null;
+    if (!this.vaultOn()) return { status: "skipped", note: VAULT_OFF_NOTE };
+    const v = this.vaultIssue(ws, a);
+    return v?.error ? { status: "failed", note: v.error } : null;
+  }
   // Automations turned off or on (or found so at the first load): off, what waits to start
   // is dropped; on again after off (here, or in state.off since before a restart), it
   // carries on from now. { on, back }: back is true when it just came back on.
@@ -623,7 +726,7 @@ export class Runner {
         this.patch(r.id, { turnDone: now, ...(kept ? { chained: true } : {}) });
         if (kept && this.hasFollowers(r.ws, r.name)) {
           cx.spawn(async () => {
-            const report = r.reports ? await this.report(r.terminal) : null;
+            const report = r.reports ? await this.report(r.terminal, r) : null;
             // Asked for its outcome line and didn't give one (it asked you something, say): not known, nothing starts.
             const outcome = report?.outcome ?? (r.reports ? null : "done");
             if (outcome === "done" || outcome === "failed") {
@@ -653,7 +756,7 @@ export class Runner {
       try {
         const conv = r.conv ?? (await this.conversation(r.terminal, app ?? r.app));
         // For the bell, and for the automations waiting on this one (with Notifications off, only for them).
-        const report = r.reports && why === "finished" && (this.h.featureOn?.("notifications") !== false || this.hasFollowers(r.ws, r.name)) ? await this.report(r.terminal) : null;
+        const report = r.reports && why === "finished" && (this.h.featureOn?.("notifications") !== false || this.hasFollowers(r.ws, r.name)) ? await this.report(r.terminal, r) : null;
         if (this.h.close) await this.h.close(r);
         else run("tab.close", { id: r.tab, confirmed: true });
         const fields = {
@@ -735,15 +838,18 @@ export class Runner {
           if (at < 0 && live && !timedOut) return;
           const code = at >= 0 ? Number(EXIT_LINE.exec(rows[at].trim())[1]) : null;
           const said = rows.slice(0, Math.max(0, at)).join("\n");
-          const summary = timedOut ? `Stopped after ${formatDuration(ms)} timeout.` : code === null ? "Its tab closed before it said how it ended." : firstOf(said) || null;
+          // herdr-ws-secret refused before the script started (exit 125 and its line): why, in plain words.
+          const fail = r.secrets?.length ? toolFailure(code, said) : null;
+          const summary = fail ? secretProblem(fail, { names: r.secrets, automation: `${r.ws}/${r.name}` })
+            : timedOut ? `Stopped after ${formatDuration(ms)} timeout.` : code === null ? "Its tab closed before it said how it ended." : firstOf(said) || null;
           if (timedOut || !a?.keep) {
             if (this.h.close) await this.h.close(r);
             else if (r.tab) run("tab.close", { id: r.tab, confirmed: true });
           }
           const outcome = timedOut || (code !== null && code !== 0) ? "failed" : code === null ? null : said.trim() ? "done" : "nothing to do";
           const end = Date.now();
-          this.patch(r.id, { closed: end, finishedAt: end, durationMs: end - r.at, exitCode: code, timedOut, outcome, summary, closedWhy: timedOut ? "timed_out" : code === null ? "gone" : "finished" });
-          if (a) this.ended(r.ws, a, { id: r.id, outcome, timedOut, exitCode: code, summary: summary ?? "", output: said.slice(-OUTPUT_MAX), chainDepth: r.chainDepth ?? 0, timeoutMs: ms });
+          this.patch(r.id, { closed: end, finishedAt: end, durationMs: end - r.at, exitCode: fail ? null : code, timedOut, outcome, summary, closedWhy: timedOut ? "timed_out" : code === null ? "gone" : "finished", ...(fail ? { vault: fail.kind } : {}) });
+          if (a) this.ended(r.ws, a, { id: r.id, outcome, timedOut, exitCode: fail ? null : code, summary: summary ?? "", output: fail ? "" : said.slice(-OUTPUT_MAX), chainDepth: r.chainDepth ?? 0, timeoutMs: ms, vault: fail?.kind ?? null });
         } finally {
           this.closing.delete(r.id);
         }
@@ -764,12 +870,35 @@ export class Runner {
 
   // How a run's agent said it went, read off its screen (`hc read`): { outcome, summary }, or null
   // when that can't be read. Never in the way of closing the tab: 5s at most.
-  async report(terminal) {
+  // run: a run with secrets has its screen redacted by herdr-ws-secret first; when that fails, its
+  // outcome word is kept and its summary isn't (no report text rather than an unredacted one).
+  async report(terminal, run = null) {
     if (!terminal) return null;
     try {
       const r = await exec("hc", ["read", String(terminal), "--lines", "60"], { timeout: 5000 });
-      return r?.code === 0 ? outcomeOf(r.stdout) : null;
+      if (r?.code !== 0) return null;
+      // Only Standard ones: a Protected value never reaches the runner's side (the broker redacts its
+      // own output), and the CLI refuses to redact one. A name Vault no longer has stays, so it fails safe.
+      const names = (run?.secrets ?? []).filter((n) => resolveEntry(this.vault.entries, run.ws, n)?.tier !== "protected");
+      if (!names.length) return outcomeOf(r.stdout);
+      const clean = await this.redacted(r.stdout, { ...run, secrets: names });
+      return clean === null ? { outcome: outcomeOf(r.stdout).outcome, summary: null } : outcomeOf(clean);
     } catch { return null; }
+  }
+
+  // Text with a run's secrets replaced by herdr-ws-secret redact, or null when that can't be done. The
+  // text goes through a 0600 file in the runner's logs folder (0700; exec has no stdin), removed after.
+  async redacted(text, run) {
+    const dir = `${runnerDir()}/logs`;
+    const file = `${dir}/${run.id}-${Math.random().toString(36).slice(2, 8)}-report.log`;
+    try {
+      await exec("mkdir", ["-p", "-m", "700", dir]);
+      await writeTextFile(file, String(text ?? ""), null);
+      await exec("chmod", ["600", file]);
+      const r = await exec(this.secretCli(), ["redact", "--workspace", run.ws, "--names", run.secrets.join(","), "--in", file], { timeout: 15000 });
+      return r?.code === 0 ? String(r.stdout ?? "") : null;
+    } catch { return null; }
+    finally { await exec("rm", ["-f", "--", file]).catch(() => {}); }
   }
 
   // The conversation a terminal's agent holds, from the launcher's note
@@ -800,6 +929,7 @@ export class Runner {
     }
     // Before the files: a save in the screen allows its check, then writes the file.
     this.approvals();
+    await this.readVault();
     const list = {};
     const globals = await loadAutomations(globalDir(), "global");
     for (const d of (shared("workspaces.defs") ?? []).filter((x) => !x.error)) {
@@ -807,7 +937,7 @@ export class Runner {
       // A copy each: on here unless its file is off, or names this workspace in `off:`.
       const forAll = globals.filter((g) => !own.some((o) => o.name === g.name))
         .map((g) => ({ ...g, everywhere: g.enabled, enabled: g.enabled && !g.off.includes(d.id) }));
-      list[d.id] = chainErrors([...own, ...forAll]);
+      list[d.id] = chainErrors(this.applyVault(d.id, [...own, ...forAll]));
     }
     this.globals = chainErrors(globals);
     const now = Date.now();
@@ -964,6 +1094,9 @@ export class Runner {
     if (!check && !script) return "Its script and its check haven't been allowed yet, so it doesn't run. Read them, then allow them.";
     if (!script) return "Its script hasn't been allowed yet, so it doesn't run. Read it, then allow it.";
     if (!check) return "Its check hasn't been allowed yet, so it doesn't start. Read the command, then allow it.";
+    if (a.secretEnv?.length && !this.vaultOn()) return "Secrets is off in Settings > Features, and this uses secrets (secret_env), so it doesn't run. Turn Secrets on to run it.";
+    const vault = this.vaultIssue(ws, a)?.warning;
+    if (vault) return vault;
     // A script without a tab is one call, and Herdr stops any call after 10 minutes.
     if (a.run === "shell" && !a.terminal && a.timeout && (a.timeoutMs === 0 || a.timeoutMs > SCRIPT_MAX)) {
       return `Without a tab its script is stopped after ${formatDuration(SCRIPT_MAX)}, whatever its timeout says. For longer, give it terminal: true.`;
@@ -1070,6 +1203,7 @@ export class Runner {
       if (now - f.at >= QUIET) { delete this.files[k]; this.filesFire(cx, f); }
     }
     if (now - this.polled >= 2000) { this.polled = now; this.inbox(cx); }
+    this.lookAtVault(cx, now);
     if (on && now - this.ghPolled >= POLL) { this.ghPolled = now; this.github(cx); }
   }
 
@@ -1211,6 +1345,13 @@ export class Runner {
         workspace: def.name, automation: a.name, folder: tilde(folder), event: why,
         date: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`, time: `${pad(d.getHours())}:${pad(d.getMinutes())}`, ...vars,
       };
+      // Vault off, or a secret it names that Vault doesn't have (or can't hand an agent): it doesn't run.
+      const blocked = this.vaultBlock(ws, a);
+      if (blocked) {
+        this.log({ ws, name: a.name, at, why, ...blocked });
+        if (manual || blocked.status === "failed") notify({ title: `${a.name} didn't start`, body: blocked.note, level: "warning", action: openAt(ws, a) });
+        return;
+      }
       if (!this.allowed(ws, a)) {
         const script = !this.allowedScript(ws, a), check = !this.checkAllowed(ws, a);
         const what = script && check ? "Its script and its check haven't" : script ? "Its script hasn't" : "Its check hasn't";
@@ -1223,7 +1364,7 @@ export class Runner {
       }
       if (a.check && extra.checked !== undefined) all.check = extra.checked; // checked before it waited for a slot
       else if (a.check) {
-        const res = await runCheck(exec, a.check, folder, { ...all, folder, workspace_id: ws });
+        const res = await runCheck(exec, a.check, folder, { ...all, folder, workspace_id: ws }, this.secretFor(ws, a));
         // On a schedule, what it printed at the last check too isn't news (unless `dedupe: always`).
         // (What sets off the other kinds is new each time.) Printing nothing in between forgets it.
         if (!res.error && (a.trigger.kind === "every" || a.trigger.kind === "at" || a.trigger.kind === "cron")) {
@@ -1264,10 +1405,13 @@ export class Runner {
       if (!preset && expects) first = withOutcome(first);
       const reports = Boolean(task) && (Boolean(preset) || expects);
       argv = withKnobs(argv, a.model, a.effort);
+      // Its secrets went to its check only: the agent's tab is started as it always is. Their names stay
+      // on the run, so its report is redacted before it's kept.
+      const secret = this.secretFor(ws, a);
       const made = this.h.open ? await this.h.open(ws, a.name, folder, argv, first) : await this.open(ws, a.name, folder, argv, first);
       if (card) await this.updateCard(card.file, { terminal: made.terminal ?? null, tab: made.tab ?? null, started: today() });
       const level = effectiveNotify(a);
-      this.log({ ws, name: a.name, at, why, status: "started", terminal: made.terminal ?? null, tab: made.tab ?? null, space: made.space ?? null, folder, card: card?.id ?? null, notify: level, ...(extra.chainDepth ? { chainDepth: extra.chainDepth } : {}), ...(made.adopt ? { adopt: true } : {}), ...(expects ? { expects: true } : {}), ...(reports ? { reports: true } : {}) });
+      this.log({ ws, name: a.name, at, why, status: "started", terminal: made.terminal ?? null, tab: made.tab ?? null, space: made.space ?? null, folder, card: card?.id ?? null, notify: level, ...(extra.chainDepth ? { chainDepth: extra.chainDepth } : {}), ...(made.adopt ? { adopt: true } : {}), ...(expects ? { expects: true } : {}), ...(reports ? { reports: true } : {}), ...(secret ? { secrets: secret.pairs.map((p) => p.name) } : {}) });
       release();
       this.tidy(ws, a.name);
       // Said only at the level `all` (notify:): the run's end is what the others tell.
@@ -1289,21 +1433,25 @@ export class Runner {
     const level = effectiveNotify(a), timeoutMs = effectiveTimeout(a), shell = shellOf(a);
     const env = { ...all, folder, workspace_id: ws };
     const depth = extra.chainDepth ? { chainDepth: extra.chainDepth } : {};
+    const secret = this.secretFor(ws, a);
+    const named = secret ? { secrets: secret.pairs.map((p) => p.name) } : {};
     const started = () => {
       if (shouldNotify(level, "started")) notify({ title: `${a.name} started`, body: `${why}. Its ${shell} script runs in ${tilde(folder)}.`, level: "info", action: openAt(ws, a) });
     };
     if (a.terminal) {
-      const argv = ["env", ...checkEnv(env), "sh", "-c", SHELL_TAB, "sh", shell, a.body, a.keep ? "1" : ""];
+      const argv = ["env", ...checkEnv(env), "sh", "-c", SHELL_TAB, "sh", shell, a.body, a.keep ? "1" : "",
+        ...(secret ? secretArgv(secret, { timeoutMs: timeoutMs > 0 ? Math.min(timeoutMs, TAB_SECRET_MAX) : TAB_SECRET_MAX }) : [])];
       const made = this.h.open ? await this.h.open(ws, a.name, folder, argv, null, { bare: true }) : await this.open(ws, a.name, folder, argv, null);
-      this.log({ ws, name: a.name, at, why, status: "started", kind: "shell", shell, shown: true, terminal: made.terminal ?? null, tab: made.tab ?? null, space: made.space ?? null, folder, notify: level, ...depth, ...(made.adopt ? { adopt: true } : {}) });
+      this.log({ ws, name: a.name, at, why, status: "started", kind: "shell", shell, shown: true, terminal: made.terminal ?? null, tab: made.tab ?? null, space: made.space ?? null, folder, notify: level, ...depth, ...named, ...(made.adopt ? { adopt: true } : {}) });
       release();
       started();
       return;
     }
-    const id = this.log({ ws, name: a.name, at, why, status: "running", kind: "shell", shell, folder, notify: level, ...depth });
+    const id = this.log({ ws, name: a.name, at, why, status: "running", kind: "shell", shell, folder, notify: level, ...depth, ...named });
     release();
     started();
-    const res = await runShellScript(exec, { shell, script: a.body, folder, vars: env, timeoutMs });
+    // With secrets, what comes back (and so the log, the summary, {{output}}) is redacted by the CLI.
+    const res = await runShellScript(exec, { shell, script: a.body, folder, vars: env, timeoutMs, secret });
     const end = Date.now();
     let logFile = null;
     if (res.combined) {
@@ -1317,18 +1465,19 @@ export class Runner {
     }
     this.patch(id, {
       status: "started", closed: end, finishedAt: end, durationMs: res.durationMs, exitCode: res.code, timedOut: res.timedOut,
-      outcome: res.outcome, summary: res.summary || null, logFile, closedWhy: res.timedOut ? "timed_out" : "finished",
+      outcome: res.outcome, summary: res.summary || null, logFile, closedWhy: res.timedOut ? "timed_out" : "finished", ...(res.vault ? { vault: res.vault } : {}),
     });
-    this.ended(ws, a, { id, outcome: res.outcome, timedOut: res.timedOut, exitCode: res.code, summary: res.summary, output: res.combined, chainDepth: extra.chainDepth ?? 0, level, timeoutMs });
+    // Refused by herdr-ws-secret before it started: no output to pass on.
+    this.ended(ws, a, { id, outcome: res.outcome, timedOut: res.timedOut, exitCode: res.code, summary: res.summary, output: res.vault ? "" : res.combined, chainDepth: extra.chainDepth ?? 0, level, timeoutMs, vault: res.vault ?? null });
   }
 
   // A run has ended (a script's, or an agent's closed or stopped): what its level says about it,
   // then the automations waiting on it (`when: automation done|failed <name>`).
-  ended(ws, a, { id, outcome, timedOut = false, exitCode = null, summary = "", output = "", chainDepth = 0, level = effectiveNotify(a), timeoutMs = 0, toast = true }) {
+  ended(ws, a, { id, outcome, timedOut = false, exitCode = null, summary = "", output = "", chainDepth = 0, level = effectiveNotify(a), timeoutMs = 0, toast = true, vault = null }) {
     const action = { action: openAt(ws, a) };
     if (toast && outcome === "failed" && shouldNotify(level, "problem")) {
       notify({
-        title: timedOut ? `${a.name} timed out` : a.run === "shell" ? (exitCode == null ? `${a.name} stopped` : `${a.name} failed (exit ${exitCode})`) : `${a.name} failed`,
+        title: vault ? `${a.name} didn't run` : timedOut ? `${a.name} timed out` : a.run === "shell" ? (exitCode == null ? `${a.name} stopped` : `${a.name} failed (exit ${exitCode})`) : `${a.name} failed`,
         body: timedOut ? `Stopped after ${formatDuration(timeoutMs)}.${summary && !/^Timed out/.test(summary) ? ` ${summary}` : ""}` : summary || "It gave no reason.",
         level: timedOut ? "warning" : "error", ...action,
       });
