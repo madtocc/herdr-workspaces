@@ -20,10 +20,10 @@
 // Also: History's own right-click Wipe hands an Antigravity conversation that's open in no
 // terminal to the Wipe dialog here (props wipe with no address: nothing to close first).
 // Also: a right-click on an agent's row (a sub-agent's too, and on the rail) opens its
-// menu: Peek, Send a message, Interrupt, Compact, Fork session, Rename, Pin, Copy
+// menu: Peek, Send a message, Interrupt, Compact, Fork session, Hand off, Rename, Pin, Copy
 // terminal id, Copy session id, Close session, Wipe session (menufacts.js says which a
-// row gets), with the Send a message and Wipe dialogs (agentMenu(), act(), sendDialog(),
-// wipeDialog()). Antigravity's Wipe is experimental, offered while "antigravity-wipe" is
+// row gets), with the Send a message, Hand off and Wipe dialogs (agentMenu(), act(),
+// sendDialog(), handoffDialog(), wipeDialog()). Antigravity's Wipe is experimental, offered while "antigravity-wipe" is
 // on in ~/.herdr/settings.jsonc (settingsfacts.js, read by readSettings() into shared
 // "workspaces.settings"), and only for a row whose conversation note is provably its running
 // process's (stats.js: fresh); agywipe.js checks it before the agent is closed, then
@@ -31,14 +31,24 @@
 // the Trash), and agyPending() finishes a wipe left for when no Antigravity runs.
 
 import { View, div, image, svg } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, exec, hc, appHome, home, notify, checking, readTextFile } from "herdr";
+import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, Popup, ScrollHandle } from "gpui-base";
+import { agents, terminals, panes, focused, spaces, knownAgents, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, exec, hc, appHome, home, notify, checking, readTextFile, writeTextFile } from "herdr";
 import { tokens } from "./statfacts.js";
-import { kindOf as menuKind, menuItems, menuHeight, closeAsks, forkArgv, wipeTargets, agyDir } from "./menufacts.js";
+import { kindOf as menuKind, menuItems, menuHeight, closeAsks, forkArgv, wipeTargets, agyDir, handoffChoices, firstHandoffPick, handoffLaunch, commandProgram, choiceArgv } from "./menufacts.js";
+import { KNOBS, knobsIn, configModels, listable, keptModels, listModels, SHORT_LIST, typeahead, markSegments } from "./knobs.js";
 import { SETTINGS_FILE, parseSettings, experimentOn, featureOn } from "./settingsfacts.js";
 
 // The workspace ws-switcher shows, null for every space.
 const workspace = () => (shared("workspaces.defs") ?? []).find((d) => d.id === shared("workspaces.active")) ?? null;
+// Shared request from the Hand off dialog to the sidebar copy to pre-fill a newly started
+// agent's prompt once it reports idle (an overlay's own tasks end when it closes).
+const PREFILL_KEY = "workspaces.agents.prefill";
+// The presets a workspace offers: its own, then the global ones it doesn't override.
+function presetsFor(id) {
+  const p = shared("workspaces.presets") ?? {};
+  const own = (id && p.workspaces?.[id]) || [];
+  return [...own, ...(p.global ?? []).filter((g) => !own.some((o) => o.name === g.name))].filter((x) => !x.error);
+}
 // An agent is in it when its space is (or its space is the shown one, still being placed).
 function inWorkspace(a, ws) {
   if (!ws) return true;
@@ -259,7 +269,7 @@ export default class Agents extends View {
   init(_props, cx) {
     const p = props();
     if (p?.sortMenu) return;
-    if (p?.agentMenu || p?.send || p?.wipe) return this.initOverlay(p, cx);
+    if (p?.agentMenu || p?.send || p?.wipe || p?.handoff) return this.initOverlay(p, cx);
     this.folded = new Set();
     // Each agent's last state and when it changed (ms), kept across restarts.
     this.changed = JSON.parse(localStorage.getItem("changed") ?? "{}");
@@ -273,7 +283,16 @@ export default class Agents extends View {
     this.statsAt = 0;
     this.statsFor = "";
     this.pids = new Map();
+    this.prefillSeen = shared(PREFILL_KEY)?.id ?? 0;
     if (checking()) return;
+    // Watch for Hand off "Pre-fill only" requests published by the dialog.
+    cx.timer.every(250, (cx) => {
+      const ask = shared(PREFILL_KEY);
+      if (ask && ask.id !== this.prefillSeen && Date.now() - ask.at < 15000) {
+        this.prefillSeen = ask.id;
+        cx.spawn(async () => this.runPrefill(ask));
+      }
+    });
     // The package's settings (an edit in the file shows within a minute; Settings sets them
     // at once), and an Antigravity wipe left to finish. The numbers wait for the settings:
     // while they're off, nothing is read for them.
@@ -460,6 +479,73 @@ export default class Agents extends View {
     this.handle.focus();
     // Antigravity's Wipe: which conversation it is and what stands in the way, before anything.
     if (p.wipe?.kind === "agy") this.agyLookUp(p.wipe, cx);
+    if (p.handoff) {
+      // Installed agents: the + menu's last list at once, then refreshed in the background.
+      this.hoAgents = shared("new-menu.agents")?.[""] ?? [];
+      this.hoChosen = false;
+      this.hoFocusedIn = null;
+      this.hoModel = null;
+      this.hoEffort = null;
+      this.hoKnobEdited = false;
+      this.codexModels = [];
+      this.listed = {};
+      this.hoModelIn = InputState.new({ value: "", placeholder: "another model, then Enter" });
+      this.hoModelIn.on("submit", (_e, cx) => {
+        const m = this.hoModelIn.value().trim();
+        if (m) { this.hoModel = m; this.hoKnobEdited = true; }
+        this.hoModelIn.set_value("");
+        cx.notify();
+      });
+      this.hoFindIn = InputState.new({ value: "", placeholder: "Type part of a model's name" });
+      this.hoFindHi = 0;
+      this.hoFindScroll = ScrollHandle.new();
+      this.hoFindIn.on("change", (_e, cx) => { this.hoFindHi = 0; this.hoFindScroll.scroll_to_item(0); cx.notify(); });
+      this.hoFindIn.on("submit", (_e, cx) => { this.hoFindSubmit(p.handoff); cx.notify(); });
+      for (const input of [this.hoModelIn, this.hoFindIn]) {
+        input.on("change", (_e, cx) => cx.notify());
+        input.on("focus", (_e, cx) => { this.hoFocusedIn = input; cx.notify(); });
+        input.on("blur", (_e, cx) => {
+          if (this.hoFocusedIn === input) this.hoFocusedIn = null;
+          if (input === this.hoFindIn) this.hoFindSet("");
+          cx.notify();
+        });
+      }
+      this.hoPick = firstHandoffPick(this.hoChoices(p.handoff), p.handoff.kind);
+      this.syncHoKnobs(p.handoff);
+      cx.spawn(async (cx) => {
+        const known = await knownAgents().catch(() => null);
+        if (known) {
+          this.hoAgents = known;
+          if (!this.hoChosen) {
+            this.hoPick = firstHandoffPick(this.hoChoices(p.handoff), p.handoff.kind);
+            this.syncHoKnobs(p.handoff);
+          }
+          cx.notify();
+        }
+      });
+      cx.spawn(async (cx) => {
+        this.codexModels = configModels(await readTextFile(`${home()}/.codex/config.toml`).catch(() => null));
+        cx.notify();
+      });
+      const io = { exec, readTextFile, writeTextFile, home };
+      for (const program of listable()) {
+        cx.spawn(async (cx) => {
+          this.listed[program] = (await keptModels(io, program).catch(() => null))?.models ?? [];
+          cx.notify();
+          this.listed[program] = await listModels(io, program).catch(() => this.listed[program]);
+          cx.notify();
+        });
+      }
+      this.hoText = TextareaState.new({
+        value: "",
+        rows: 5,
+        placeholder: "What should it do? Leave empty to inspect and wait.",
+      });
+      this.hoText.on("change", (_e, cx) => { this.error = null; cx.notify(); });
+      this.hoText.focus();
+      cx.timer.after(350, () => this.hoText.focus());
+      return;
+    }
     if (!p.send) return;
     this.sendIn = InputState.new({ value: "", placeholder: `What to tell ${p.send.name}` });
     this.sendIn.on("change", (_e, cx) => { this.error = null; cx.notify(); });
@@ -526,6 +612,9 @@ export default class Agents extends View {
         showTabs();
         return run("tab.new", { ...(f.space ? { space: f.space } : {}), name: `${f.tabName || f.program || "Agent"} fork`, ...(f.cwd ? { folder: f.cwd } : {}), argv });
       }
+      case "handoff":
+        done();
+        return openOverlay({ mod: "ws-agents", kind: "dialog", width: 580, height: 610, props: { handoff: f } });
       case "rename":
         done();
         return run("tab.rename", { id: f.tab });
@@ -659,6 +748,296 @@ export default class Agents extends View {
       this.error = `Couldn't send it: ${failure(r)}`;
       cx.notify();
     });
+  }
+
+  // Hand off: starts a new agent or preset in the same space and folder with a reference
+  // to this session (terminal id for hc read, transcript path when known, working folder).
+  hoWorkspace(f) {
+    const assigned = shared("workspaces.assigned") ?? {};
+    return (f?.space && assigned[f.space]) || shared("workspaces.active") || null;
+  }
+
+  hoChoices(f) {
+    return handoffChoices(presetsFor(this.hoWorkspace(f)), this.hoAgents ?? [], shared("new-menu.hidden") ?? []);
+  }
+
+  // Resets Model/Effort to whatever the newly picked agent or preset's own command sets.
+  syncHoKnobs(f) {
+    const pick = this.hoChoices(f).find((c) => c.id === this.hoPick) ?? null;
+    const k = knobsIn(choiceArgv(pick));
+    this.hoModel = k.model ?? null;
+    this.hoEffort = k.effort ?? null;
+    this.hoKnobEdited = false;
+    this.hoModelIn?.set_value("");
+    this.hoFindSet("");
+  }
+
+  hoModelState(f) {
+    const pick = this.hoChoices(f).find((c) => c.id === this.hoPick) ?? null;
+    const program = pick ? commandProgram(choiceArgv(pick)) : "";
+    const knobs = KNOBS[program] ?? null;
+    const models = knobs
+      ? [...new Set([...knobs.models, ...(program === "codex" ? this.codexModels : []), ...(this.listed[program] ?? []), ...(this.hoModel ? [this.hoModel] : [])])]
+      : [];
+    return { pick, program, knobs, models };
+  }
+
+  hoFindSet(text) {
+    if (!this.hoFindIn) return;
+    this.hoFindIn.set_value(text);
+    this.hoFindIn.set_selected_range({ start: text.length, end: text.length });
+    this.hoFindHi = 0;
+    this.hoFindScroll?.scroll_to_item(0);
+  }
+
+  hoFindPick(r) {
+    if (r.kind === "provider") return this.hoFindSet(`${r.provider}/`);
+    this.hoModel = r.kind === "model" ? r.id : r.text;
+    this.hoKnobEdited = true;
+    this.hoFindSet("");
+    this.hoFindIn.blur();
+  }
+
+  hoFindSubmit(f) {
+    const { rows } = typeahead(this.hoModelState(f).models, this.hoFindIn.value());
+    const r = rows[Math.min(this.hoFindHi, rows.length - 1)];
+    if (r) this.hoFindPick(r);
+  }
+
+  hoFindKey(f, e, cx) {
+    if (this.hoFocusedIn !== this.hoFindIn) return;
+    const { rows } = typeahead(this.hoModelState(f).models, this.hoFindIn.value());
+    const r = rows[Math.min(this.hoFindHi, rows.length - 1)];
+    if (e.key === "down" || e.key === "up") {
+      this.hoFindHi = Math.max(0, Math.min(rows.length - 1, Math.min(this.hoFindHi, rows.length - 1) + (e.key === "down" ? 1 : -1)));
+      this.hoFindScroll.scroll_to_item(this.hoFindHi);
+    } else if (e.key === "tab" && r && r.kind !== "typed") {
+      this.hoFindSet(r.kind === "provider" ? `${r.provider}/` : r.id);
+    } else if (e.key === "escape") {
+      this.hoFindSet("");
+      this.hoFindIn.blur();
+    } else return;
+    cx.stop_propagation();
+    cx.notify();
+  }
+
+  // Typeahead model box for providers with long lists (> SHORT_LIST, e.g. Pi and OpenCode).
+  hoModelFind(t, f, models, model, who) {
+    const open = this.hoFocusedIn === this.hoFindIn;
+    const typed = this.hoFindIn.value();
+    const { rows, words: marks, matches } = typeahead(models, typed);
+    const hi = Math.min(this.hoFindHi, rows.length - 1);
+    const W = 360;
+    const box = h_flex().id("ho-find").w(W).h(26).relative()
+      .on_key_down((e, cx) => this.hoFindKey(f, e, cx))
+      .child(Input.new(this.hoFindIn).w_full().h(26).px(10).rounded(13).border_1().border_color(open ? t.accent : t.input).bg(t.background)
+        .text_size(12).text_color(t.foreground))
+      .when(!open && Boolean(model), (el) => el.child(div().id("ho-find-set").absolute().inset_0().rounded(13).bg(t.background).cursor_text()
+        .on_click((_e, cx) => { this.hoFindIn.focus(); cx.notify(); })
+        .child(h_flex().size_full().px(10).gap(6).items_center().rounded(13).border_1().border_color(t.accent).bg(t.selected)
+          .text_size(12).text_color(t.foreground)
+          .child(div().flex_1().min_w(0).truncate().child(model))
+          .child(div().id("ho-find-clear").size(18).flex_none().flex().items_center().justify_center().rounded(9).text_color(t.dim).cursor_pointer()
+            .hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip("Back to Default")
+            .on_click((_e, cx) => { cx.stop_propagation(); this.hoModel = null; this.hoKnobEdited = true; cx.notify(); }).child("×")))));
+    const row = (r, i) => h_flex().id(`ho-find-${i}`).h(28).flex_none().px(8).gap(10).items_center().rounded(6).cursor_pointer()
+      .when(i === hi, (el) => el.bg(t.hover))
+      .text_size(12).text_color(i === hi || r.kind !== "model" ? t.foreground : t.muted)
+      .hover((s) => s.bg(t.hover))
+      .on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); this.hoFindPick(r); cx.notify(); })
+      .when(r.kind === "provider", (el) => el
+        .child(div().flex_1().min_w(0).truncate().child(`${r.provider}/`))
+        .child(div().flex_none().text_size(11.5).text_color(t.dim).child(`${r.count} models`)))
+      .when(r.kind === "typed", (el) => el
+        .child(div().flex_1().min_w(0).truncate().child(`Use “${r.text}” as typed`))
+        .child(div().flex_none().text_size(11.5).text_color(t.dim).child(`not in ${who}'s list`)))
+      .when(r.kind === "model", (el) => el
+        .child(div().w(12).flex_none().text_size(11).text_color(t.accent).child(r.id === model ? "✓" : ""))
+        .child(h_flex().flex_1().min_w(0).overflow_hidden()
+          .children(markSegments(r.name, marks).map((g) => div().flex_none().when(g.on, (d) => d.text_color(t.foreground).font_semibold()).child(g.text))))
+        .when(Boolean(r.provider), (d) => d.child(div().flex_none().text_size(11.5).text_color(t.dim).child(r.provider))));
+    const providers = rows.filter((r) => r.kind === "provider").length;
+    const count = !typed.trim() ? (providers ? `${models.length} models from ${providers} providers` : `${models.length} models`)
+      : matches ? `${matches} match${matches === 1 ? "" : "es"}` : "No match";
+    const list = v_flex().id("ho-find-list").w(W).mt(6).rounded(8).shadow_md().border_1().border_color(t.input).bg(t.popover).text_color(t.foreground)
+      .on_scroll_wheel((_e, cx) => cx.stop_propagation())
+      .child(v_flex().id("ho-find-rows").max_h(8 * 28 + 8).overflow_y_scrollbar().track_scroll(this.hoFindScroll).p(4)
+        .children(rows.map(row)))
+      .child(h_flex().h(24).flex_none().px(10).gap(12).items_center().border_t(1).border_color(t.border).text_size(11).text_color(t.dim)
+        .child(div().flex_1().child(count))
+        .child(div().flex_none().child("↑↓ move   ↵ pick   esc close")));
+    return Popup.new("ho-find-popup", box).when(open, (el) => el.content(list));
+  }
+
+  handoffDialog(t) {
+    const p = props();
+    const f = p.handoff;
+    const close = () => closeOverlay(p.overlay);
+    const choices = this.hoChoices(f);
+    const agentChoices = choices.filter((c) => c.kind === "agent");
+    const presetChoices = choices.filter((c) => c.kind === "preset");
+    const { pick, program, knobs, models } = this.hoModelState(f);
+    const allAgents = this.hoAgents ?? [];
+    const activeSpace = spaces().find((s) => s.active);
+    const spaceObj = spaces().find((s) => s.id === (f.space || activeSpace?.id));
+    const folder = f.cwd || spaceObj?.folder || null;
+    const modKey = window()?.platform === "macos" ? "⌘" : "Ctrl+";
+    const section = (text) => div().pt(10).pb(5).text_size(11.5).text_color(t.dim).child(text);
+    const glyph = (a) => (a?.icon ? (a.tint ? svg(a.icon).text_color(t.foreground) : image(a.icon)).size(13).flex_none()
+      : svg("mods/workspace-chrome/terminal.svg").size(13).flex_none().text_color(t.muted));
+    const iconFor = (c) => glyph(c.kind === "agent"
+      ? allAgents.find((a) => a.key === c.key)
+      : allAgents.find((a) => a.key === commandProgram(c.command)));
+    const chip = (c) => {
+      const on = this.hoPick === c.id;
+      return h_flex().id(`ho-${c.id}`).h(26).px(10).gap(6).flex_none().items_center().rounded(13).border_1()
+        .border_color(on ? t.accent : t.input).bg(on ? t.selected : t.background).text_size(12)
+        .text_color(on ? t.foreground : t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground))
+        .when(Boolean(c.tip), (el) => el.tooltip(c.tip))
+        .on_click((_e, cx) => {
+          if (this.hoPick !== c.id) {
+            this.hoPick = c.id;
+            this.hoChosen = true;
+            this.syncHoKnobs(f);
+          }
+          this.error = null;
+          cx.notify();
+        })
+        .child(iconFor(c)).child(c.name);
+    };
+    const knobChip = (id, label, on, action) => div().id(id).h(26).px(10).flex().items_center().rounded(13).border_1()
+      .border_color(on ? t.accent : t.input).bg(on ? t.selected : t.background).text_size(12)
+      .text_color(on ? t.foreground : t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground))
+      .on_click((_e, cx) => { action(); this.hoKnobEdited = true; cx.notify(); }).child(label);
+    const providerName = allAgents.find((a) => a.key === program)?.name ?? program;
+    const refMeta = [f.program || f.kind, `terminal ${f.address}`].filter(Boolean).join(" · ");
+    return v_flex().id("agent-handoff").track_focus(this.handle).size_full().min_h(0).p(18).bg(t.popover).text_size(13).text_color(t.foreground)
+      .on_key_down((e, cx) => {
+        if (e.key === "escape") close();
+        else if (e.key === "enter" && (e.modifiers?.platform || e.modifiers?.control)) this.doHandoff(cx, Boolean(e.modifiers?.shift));
+        else return;
+        cx.stop_propagation();
+      })
+      .child(h_flex().gap(10).items_center()
+        .child(div().flex_1().min_w(0).truncate().text_size(15).font_semibold().child(`Hand off ${f.name}`))
+        .child(div().text_size(11).text_color(t.dim).child("Esc")))
+      .child(v_flex().mt(10).p(10).gap(3).rounded(8).bg(t.background).border_1().border_color(t.border).text_size(11.5)
+        .child(h_flex().gap(8).items_center()
+          .child(div().text_color(t.foreground).truncate().child(`Reference: ${refMeta}`))
+          .child(div().flex_1())
+          .child(div().flex_none().text_color(t.dim).font_family("JetBrains Mono").child(`hc read ${f.address}`)))
+        .when(Boolean(f.file), (el) => el.child(div().text_color(t.muted).truncate().child(`Transcript: ${tilde(f.file)}`)))
+        .when(Boolean(folder), (el) => el.child(div().text_color(t.dim).truncate().child(`Folder: ${tilde(folder)}`))))
+      .child(section("Agent"))
+      .when(agentChoices.length > 0, (el) => el.child(h_flex().gap(6).flex_wrap().children(agentChoices.map(chip))))
+      .when(agentChoices.length === 0, (el) => el.child(div().text_size(12).text_color(t.dim).child("Checking installed agents…")))
+      .when(presetChoices.length > 0, (el) => el
+        .child(section("Presets"))
+        .child(h_flex().gap(6).flex_wrap().children(presetChoices.map(chip))))
+      .when(Boolean(knobs), (el) => el
+        .child(section("Model"))
+        .when(models.length > SHORT_LIST, (el) => el.child(h_flex().gap(6).items_center()
+          .child(knobChip("ho-model-default", "Default", !this.hoModel, () => { this.hoModel = null; }))
+          .child(this.hoModelFind(t, f, models, this.hoModel, providerName))))
+        .when(models.length <= SHORT_LIST, (el) => el.child(h_flex().gap(6).flex_wrap().items_center()
+          .child(knobChip("ho-model-default", program === "codex" && this.codexModels[0] ? `Default (${this.codexModels[0]})` : "Default", !this.hoModel, () => { this.hoModel = null; this.hoModelIn.set_value(""); }))
+          .children(models.map((m) => knobChip(`ho-model-${m}`, m, this.hoModel === m, () => { this.hoModel = m; this.hoModelIn.set_value(""); })))
+          .child(div().w(175).child(Input.new(this.hoModelIn).h(26).px(8).rounded(13).border_1().border_color(this.hoFocusedIn === this.hoModelIn ? t.accent : t.input).bg(t.background).text_size(11.5).text_color(t.foreground)))))
+        .when(Boolean(knobs.effort), (el) => el
+          .child(section("Effort"))
+          .child(h_flex().gap(6).flex_wrap()
+            .child(knobChip("ho-effort-default", "Default", !this.hoEffort, () => { this.hoEffort = null; }))
+            .children((knobs.effort?.levels ?? []).map((l) => knobChip(`ho-effort-${l}`, l, this.hoEffort === l, () => { this.hoEffort = l; }))))))
+      .child(section(pick?.kind === "preset"
+        ? "Task (sent with reference; preset instructions included)"
+        : "Task (sent with reference)"))
+      .child(div().flex_1().min_h(76).child(Textarea.new(this.hoText).size_full().p(10).rounded(8).border_1().border_color(t.accent)
+        .bg(t.background).text_size(12.5).text_color(t.foreground)))
+      .when(Boolean(this.error), (el) => el.child(div().pt(8).text_size(11.5).text_color(t.blocked).child(this.error)))
+      .child(h_flex().pt(12).gap(8).items_center()
+        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(`${modKey}Enter sends · ⇧${modKey}Enter pre-fills`))
+        .child(this.button(t, "agent-handoff-cancel", "Cancel", null, close))
+        .child(this.button(t, "agent-handoff-prefill", "Pre-fill only", null, (_e, cx) => this.doHandoff(cx, true))
+          .tooltip(`Start the agent and paste this into its prompt without sending (⇧${modKey}Enter)`))
+        .child(this.button(t, "agent-handoff-go", "Start", "primary", (_e, cx) => this.doHandoff(cx, false))
+          .tooltip(`Start the agent and send right away (${modKey}Enter)`)));
+  }
+
+  doHandoff(cx, prefill = false) {
+    const p = props();
+    const f = p.handoff;
+    const choices = this.hoChoices(f);
+    const choice = choices.find((c) => c.id === this.hoPick) ?? null;
+    if (!choice) {
+      this.error = choices.length ? "Pick an agent or preset first." : "No agents yet: still checking which are installed.";
+      cx.notify();
+      return;
+    }
+    const activeSpace = spaces().find((s) => s.active);
+    const targetSpace = f.space || activeSpace?.id || null;
+    const folder = f.cwd || spaces().find((s) => s.id === targetSpace)?.folder || null;
+    const program = commandProgram(choiceArgv(choice));
+    const knobs = KNOBS[program] ?? null;
+    const typedModel = this.hoModelIn?.value().trim() || "";
+    const override = knobs && (this.hoKnobEdited || Boolean(typedModel))
+      ? { knobs, model: typedModel || this.hoModel || "", effort: this.hoEffort || "" }
+      : {};
+    const launch = handoffLaunch(choice, f, this.hoText.value(), shared("workspaces.launcher") === true, { space: targetSpace, folder, prefill, ...override });
+    if (!launch) {
+      this.error = `Couldn't build a launch command for ${choice.name}.`;
+      cx.notify();
+      return;
+    }
+    const { prefill: prefillText, ...tabArgs } = launch;
+    const before = prefill ? terminals().map((t) => t.address) : null;
+    showTabs();
+    run("tab.new", tabArgs);
+    if (prefill && prefillText) {
+      setShared(PREFILL_KEY, { id: Date.now() + Math.random(), space: targetSpace, name: tabArgs.name, before, text: prefillText, at: Date.now() });
+    }
+    closeOverlay(p.overlay);
+  }
+
+  // Finds the terminal just opened by a Pre-fill handoff, waits until the agent reports
+  // idle, and pastes the reference + task into its prompt via bracketed paste without Enter.
+  async runPrefill(req) {
+    const sleep = (ms) => exec("sleep", [String(ms / 1000)]).catch(() => {});
+    const before = new Set(req.before ?? []);
+    let addr = null;
+    const findEnd = Date.now() + 6000;
+    while (!addr && Date.now() < findEnd) {
+      const added = terminals().filter((t) => t.state === "live" && !before.has(t.address));
+      const inSpace = req.space ? added.filter((t) => t.labels?.["herdr.space"] === req.space) : added;
+      const pool = inSpace.length ? inSpace : added;
+      const exact = pool.find((t) => req.name && String(t.labels?.where ?? "").endsWith(`/ ${req.name}`));
+      addr = (exact ?? pool[0])?.address ?? null;
+      if (!addr) await sleep(200);
+    }
+    if (!addr) {
+      notify({ title: `Couldn't pre-fill ${req.name || "agent"}`, body: "The new terminal wasn't found.", level: "error" });
+      return;
+    }
+    const readyEnd = Date.now() + 45000;
+    let ready = false;
+    while (Date.now() < readyEnd) {
+      const live = terminals().find((t) => t.address === addr && t.state === "live");
+      if (!live) return;
+      const ag = agents().find((a) => a.address === addr);
+      if (ag?.status === "idle") { ready = true; break; }
+      await sleep(250);
+    }
+    if (!ready) {
+      notify({ title: `Couldn't pre-fill ${req.name || addr}`, body: "It didn't report ready in time.", level: "error" });
+      return;
+    }
+    await sleep(350);
+    const agNow = agents().find((a) => a.address === addr);
+    if (!agNow || agNow.status !== "idle") return;
+    const r = await exec("python3", [`${appHome()}/mods/ws-agents/prefill.py`, addr, req.text], { timeout: 15000 })
+      .catch((e) => ({ code: 1, stderr: String(e?.message ?? e) }));
+    if (r.code !== 0) {
+      notify({ title: `Couldn't pre-fill ${req.name || addr}`, body: failure(r), level: "error" });
+    }
   }
 
   // Wipe: closes the agent and moves its conversation to the Trash (menufacts.js:
@@ -932,6 +1311,7 @@ export default class Agents extends View {
     if (props()?.sortMenu) return this.sortMenu(t);
     if (props()?.agentMenu) return this.agentMenu(t);
     if (props()?.send) return this.sendDialog(t);
+    if (props()?.handoff) return this.handoffDialog(t);
     if (props()?.wipe) return this.wipeDialog(t);
     const collapsed = narrow();
     const sort = sortOf();

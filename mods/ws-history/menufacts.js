@@ -1,5 +1,6 @@
 // The Agents list's right-click menu as rules, with no imports so node can test them:
-// which items an agent's row gets, how a fork starts, what a wipe moves to the Trash.
+// which items an agent's row gets, how a fork or handoff starts, what a wipe moves to
+// the Trash.
 //
 // An agent here is the row's facts (main.js: menuFacts()):
 //   { address, name, pane, tab, space, status, kind, pinned, top, focused, remote,
@@ -36,6 +37,7 @@ export function menuItems(a) {
     ],
     [
       forks && { id: "fork", label: "Fork session", icon: "mods/ws-agents/fork.svg" },
+      !a.remote && { id: "handoff", label: "Hand off…", icon: "mods/ws-agents/handoff.svg" },
       Boolean(a.tab) && { id: "rename", label: "Rename…", icon: "mods/workspace-chrome/square-pen.svg" },
       a.top && { id: "pin", label: a.pinned ? "Unpin" : "Pin to top", icon: `mods/workspace-chrome/${a.pinned ? "pin-off" : "pin"}.svg` },
       // Its Herdr address (t7, vps/t7), for hc read / hc send or another agent's task.
@@ -149,4 +151,221 @@ export function wipeTargets(a) {
       `${dir}/presence/${id}.lock`, `${dir}/annotations/${id}.pbtxt`];
   }
   return [];
+}
+
+// Words of a preset's command line (single quotes, double quotes and backslash escapes),
+// as ws-switcher/defs.js reads them.
+export function commandWords(line) {
+  const out = [];
+  let cur = null, q = null;
+  const s = String(line ?? "");
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (q) {
+      if (c === q) q = null;
+      else if (c === "\\" && q === '"' && i + 1 < s.length) cur += s[++i];
+      else cur += c;
+      continue;
+    }
+    if (/\s/.test(c)) { if (cur !== null) { out.push(cur); cur = null; } continue; }
+    cur ??= "";
+    if (c === "'" || c === '"') q = c;
+    else if (c === "\\" && i + 1 < s.length) cur += s[++i];
+    else cur += c;
+  }
+  if (cur !== null) out.push(cur);
+  return out;
+}
+
+// The program a command line runs, past `env`, VAR=x and the launcher.
+export function commandProgram(command) {
+  const argv = Array.isArray(command) ? command : commandWords(command);
+  let i = argv[0] === "env" ? 1 : 0;
+  while (argv[i] && /^[A-Za-z_][A-Za-z0-9_]*=/.test(argv[i])) i++;
+  if (tail(argv[i]) === "herdr-ws-agent") i++;
+  return tail(argv[i] ?? "");
+}
+
+// Raw argv of a handoff choice (agent or preset), for inspecting its default model/effort.
+export function choiceArgv(choice) {
+  if (!choice) return [];
+  return choice.kind === "agent" ? [...(choice.run ?? [])] : commandWords(choice.command ?? "");
+}
+
+// Replaces or clears a CLI flag (`--model x`, `--model=x`, `-m x`) in `ws`.
+function setFlag(ws, names, value) {
+  const out = [];
+  for (let i = 0; i < ws.length; i++) {
+    if (names.includes(ws[i])) { i++; continue; }
+    if (names.some((n) => n.startsWith("--") && ws[i].startsWith(`${n}=`))) continue;
+    out.push(ws[i]);
+  }
+  return value ? [...out, names[0], value] : out;
+}
+
+// Replaces or clears a Codex `-c key="value"` config override in `ws`.
+function setConfig(ws, key, value) {
+  const out = [];
+  for (let i = 0; i < ws.length; i++) {
+    if ((ws[i] === "-c" || ws[i] === "--config") && ws[i + 1]?.startsWith(`${key}=`)) { i++; continue; }
+    out.push(ws[i]);
+  }
+  return value ? [...out, "-c", `${key}="${value}"`] : out;
+}
+
+// Applies optional model/effort overrides (`undefined` keeps command as-is; `""` or `null` clears).
+function applyKnobs(argv, { model, effort, knobs } = {}) {
+  if (!knobs) return argv;
+  let out = argv;
+  if (model !== undefined && Array.isArray(knobs.model) && knobs.model.length) {
+    out = setFlag(out, knobs.model, model || "");
+  }
+  if (effort !== undefined && knobs.effort) {
+    out = knobs.effort.flag
+      ? setFlag(out, [knobs.effort.flag], effort || "")
+      : setConfig(out, knobs.effort.config, effort || "");
+  }
+  return out;
+}
+
+// Choices for the Hand off dialog: installed agents (respecting the + menu's hidden list
+// unless every installed agent is hidden), then valid workspace/global presets.
+export function handoffChoices(presets, agents, hidden = []) {
+  const hide = new Set(hidden ?? []);
+  const installed = [];
+  const seen = new Set();
+  for (const a of agents ?? []) {
+    if (!a?.key || a.installed === false || !Array.isArray(a.run) || !a.run.length || seen.has(a.key)) continue;
+    seen.add(a.key);
+    installed.push({
+      id: `agent:${a.key}`,
+      kind: "agent",
+      key: a.key,
+      name: a.name || a.key,
+      run: [...a.run],
+      tip: a.run.join(" "),
+    });
+  }
+  const shown = installed.filter((a) => !hide.has(a.key));
+  const agentList = shown.length ? shown : installed;
+  const presetList = [];
+  for (const p of presets ?? []) {
+    if (!p?.name || !p.command || p.error) continue;
+    presetList.push({
+      id: `preset:${p.name}`,
+      kind: "preset",
+      name: p.name,
+      command: p.command,
+      file: p.file ?? null,
+      body: p.body ?? "",
+      description: p.description ?? "",
+      scope: p.scope ?? null,
+      tip: [p.description, p.command].filter(Boolean).join("\n"),
+    });
+  }
+  return [...agentList, ...presetList];
+}
+
+// Default pick for Hand off: the source agent's own kind when installed, else the first choice.
+export function firstHandoffPick(choices, sourceKind) {
+  if (!choices?.length) return null;
+  if (sourceKind) {
+    const match = choices.find((c) => c.kind === "agent" && (c.key === sourceKind || kindOf(null, c.key) === sourceKind));
+    if (match) return match.id;
+  }
+  return choices[0].id;
+}
+
+// The initial message handed to the new agent: structured reference to the source session
+// (terminal id for `hc read`, transcript path when known, working folder) plus the task.
+// When `prefill` is true and no task was typed, ends with a blank line so the cursor is
+// ready for extra text or a pasted image without extra boilerplate to delete.
+export function handoffPrompt(source, task, { prefill = false } = {}) {
+  const lines = ["Context from another agent in Herdr:"];
+  const who = [source?.program || source?.kind, source?.address ? `terminal ${source.address}` : ""].filter(Boolean).join(", ");
+  lines.push(`- Agent: ${source?.name || source?.address || "unknown"}${who ? ` (${who})` : ""}`);
+  if (source?.address) {
+    lines.push(`- Live terminal: run \`hc read ${source.address}\` to inspect its recent output (or \`hc get ${source.address}\` for status)`);
+  }
+  if (source?.file) {
+    lines.push(`- Transcript: ${source.file} (JSONL; read or grep only what you need, it can be large)`);
+  }
+  if (source?.cwd) {
+    lines.push(`- Working folder: ${source.cwd}`);
+  }
+  const trimmed = String(task ?? "").trim();
+  if (prefill) return trimmed ? `${lines.join("\n")}\n\n${trimmed}` : `${lines.join("\n")}\n\n`;
+  const body = trimmed
+    || "Inspect the referenced session above as context, summarize where things stand, and wait for my next instruction.";
+  return `${lines.join("\n")}\n\n${body}`;
+}
+
+// Tab name for a handoff: `<target> · <source>` when the source has a telling name.
+export function handoffTabName(choice, source) {
+  const target = choice?.name || "Agent";
+  const raw = String(source?.tabName || source?.name || "").trim();
+  const base = raw && !/^\d+$/.test(raw) && raw !== source?.address ? raw : "";
+  if (!base || base.toLowerCase() === target.toLowerCase()) return target;
+  const short = base.length > 32 ? `${base.slice(0, 31).trimEnd()}…` : base;
+  return `${target} · ${short}`;
+}
+
+// Passes `task` through `herdr-ws-agent --task` when the command uses the launcher
+// (keeping it out of restart notes and handling agy's -i / pi's --); otherwise keeps Herdr's task.
+function withTaskArgv(argv, task) {
+  let i = argv[0] === "env" ? 1 : 0;
+  while (argv[i] && /^[A-Za-z_][A-Za-z0-9_]*=/.test(argv[i])) i++;
+  if (!task || tail(argv[i] ?? "") !== "herdr-ws-agent") return { argv, task };
+  return { argv: [...argv.slice(0, i + 1), "--task", task, ...argv.slice(i + 1)], task: "" };
+}
+
+// Parameters for `tab.new` to launch a handoff agent or preset referencing `source`.
+// With `fallback.prefill`, launches idle (no `--task` / `task`) and returns `prefill` text
+// for ws-agents to paste into the prompt once the new agent reports ready.
+// Optional `fallback.model`, `fallback.effort`, and `fallback.knobs` (from knobs.js KNOBS)
+// override or clear the model/effort flags on the agent or preset command.
+// Returns null when the choice has no runnable command.
+export function handoffLaunch(choice, source, task, launcher = false, fallback = {}) {
+  if (!choice) return null;
+  const prefill = Boolean(fallback.prefill);
+  const prompt = handoffPrompt(source, task, { prefill });
+  const space = source?.space || fallback.space || null;
+  const folder = source?.cwd || fallback.folder || null;
+  let argv, outTask = "", prefillText = null;
+  if (choice.kind === "agent") {
+    let base = Array.isArray(choice.run) ? [...choice.run] : [];
+    if (!base.length) return null;
+    base = applyKnobs(base, fallback);
+    if (prefill) { argv = base; prefillText = prompt; }
+    else ({ argv, task: outTask } = withTaskArgv(base, prompt));
+  } else if (choice.kind === "preset") {
+    let words = commandWords(choice.command);
+    if (words[0] === "env") words = words.slice(1);
+    const assigns = [];
+    while (words[0] && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) assigns.push(words.shift());
+    if (tail(words[0] ?? "") === "herdr-ws-agent") words = words.slice(1);
+    if (!words.length) return null;
+    const agent = tail(words[0]);
+    const system = Boolean(launcher) && (agent === "claude" || agent === "codex" || agent === "agy" || agent === "pi")
+      && Boolean(choice.body) && Boolean(choice.file);
+    let cmd = launcher ? ["herdr-ws-agent", ...(system ? ["--instructions", choice.file] : []), ...words] : words;
+    if (assigns.length) cmd = ["env", ...assigns, ...cmd];
+    cmd = applyKnobs(cmd, fallback);
+    const told = choice.body
+      ? `You are the "${choice.name}" agent, started from the Herdr agent preset of that name (${choice.file}). Its instructions:\n\n${choice.body}`
+      : "";
+    const msg = system ? prompt : [told, prompt].filter(Boolean).join("\n\n");
+    if (prefill) { argv = cmd; prefillText = msg; }
+    else ({ argv, task: outTask } = withTaskArgv(cmd, msg));
+  } else {
+    return null;
+  }
+  return {
+    name: handoffTabName(choice, source),
+    ...(space ? { space } : {}),
+    ...(folder ? { folder } : {}),
+    argv,
+    ...(outTask ? { task: outTask } : {}),
+    ...(prefillText !== null ? { prefill: prefillText } : {}),
+  };
 }

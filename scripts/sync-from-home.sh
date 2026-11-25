@@ -35,11 +35,13 @@ cmp -s "$src/mods/ws-new-menu/hidefacts.js" "$src/mods/ws-settings/hidefacts.js"
   exit 1
 }
 
-# The Presets screen offers each agent's models and efforts from the same table.
-cmp -s "$src/mods/ws-switcher/knobs.js" "$src/mods/ws-presets/knobs.js" || {
-  echo "mods/ws-switcher/knobs.js and mods/ws-presets/knobs.js differ: make them the same first" >&2
-  exit 1
-}
+# The Presets screen and the Agents list's Hand off dialog offer each agent's models and efforts from the same table.
+for mod in ws-presets ws-agents; do
+  cmp -s "$src/mods/ws-switcher/knobs.js" "$src/mods/$mod/knobs.js" || {
+    echo "mods/ws-switcher/knobs.js and mods/$mod/knobs.js differ: make them the same first" >&2
+    exit 1
+  }
+done
 
 # Settings (Features, Automations, Files, Experimental), the Agents list, the switcher's runners, the status bar, Files and the Automations screen read the package's settings (~/.herdr/settings.jsonc) by the same rules.
 for mod in ws-agents ws-switcher ws-status ws-files ws-automations; do
