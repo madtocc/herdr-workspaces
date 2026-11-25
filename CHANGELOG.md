@@ -7,6 +7,8 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-11-25
+
 ### New
 - **Hand off an agent to another.** Right-clicking any local agent in the Agents list now offers **Hand off…** right below Fork session (works on Codex, Antigravity and sub-agents too, not only Claude and Pi). It opens a dialog showing the referenced terminal (`hc read <id>`), its transcript path when known and its working folder, with chips to pick any installed agent or workspace/global preset, provider-aware **Model** (chips for short lists, typeahead search box for long lists like Pi and OpenCode) and **Effort** selectors (pre-populated from a preset's command when picking a preset), and an optional task box. **Start** (`⌘Enter` / `Ctrl+Enter`) opens a fresh tab in the same space and folder and sends the reference and your task (or an inspect-and-wait prompt when left empty) via `herdr-ws-agent --task` so restarts don't re-send it. **Pre-fill only** (`⇧⌘Enter` / `⇧Ctrl+Enter`) starts the agent idle and types the reference (plus any task) into its prompt once it's ready, line by line so Claude Code shows it inline rather than as `[Pasted text]`,—without pressing Enter or touching your clipboard—so you can paste images or add extra context before sending. To update, copy `mods/ws-agents` and `mods/ws-history` (`menufacts.js` is shared between both; `knobs.js`, `handoff.svg` and `prefill.py` are new in `ws-agents`).
 
