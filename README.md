@@ -230,7 +230,7 @@ workspace, managed in the Agent presets screen (open it from the sidebar
 footer), and they start from the tab bar's + menu, a card's Start or an
 automation.
 
-`examples/presets/` has nine to start from. Five are the usual roles: an
+`examples/presets/` has ten to start from. Five are the usual roles: an
 implementer, a reviewer, a watcher that can't push or write to GitHub (for
 automations that only look), an orchestrator that splits a task across helper
 agents with herdr-core's `hc`, and a foreman for when Claude's safety check

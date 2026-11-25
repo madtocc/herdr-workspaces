@@ -18,8 +18,6 @@
   <rect x="20" y="70" width="20" height="20" rx="5" fill="#5b8def"/>
   <text x="30" y="85" fill="#fff" font-size="11" font-weight="700" text-anchor="middle">A</text>
   <text x="52" y="85" fill="#e8e9eb" font-size="14" font-weight="500">Acme</text>
-  <circle cx="228" cy="80" r="3" fill="#e5534b"/>
-  <text x="242" y="85" fill="#7d8089" font-size="11.5">3</text>
   <path d="M256 78 l4 4 l4 -4" stroke="#7d8089" stroke-width="1.5" fill="none"/>
 
   <!-- spaces -->
@@ -67,11 +65,15 @@
   <rect x="390.1" y="16" width="1" height="16" fill="#2f3137"/>
   <rect x="399.1" y="8" width="78" height="32" rx="8" fill="#26272c"/>
   <text x="429.1" y="29" fill="#e8e9eb" font-size="13">1</text>
-  <g transform="translate(1167 17) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g>
+  <g transform="translate(1112 17) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g>
   <!-- Views (ws-tabs, at the bar's right end): its menu opens the views, full size or beside -->
-  <rect x="1190.5" y="10.5" width="77" height="27" rx="7" fill="#26272c" stroke="#2f3137"/>
-  <g transform="translate(1200 17) scale(0.5833)" fill="none" stroke="#e8e9eb" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></g>
-  <text x="1220" y="28.5" fill="#e8e9eb" font-size="12.5">Views</text>
+  <rect x="1135.5" y="10.5" width="77" height="27" rx="7" fill="#26272c" stroke="#2f3137"/>
+  <g transform="translate(1145 17) scale(0.5833)" fill="none" stroke="#e8e9eb" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></g>
+  <text x="1165" y="28.5" fill="#e8e9eb" font-size="12.5">Views</text>
+  <!-- the bell (ws-notifications, right of Views): what needs you and what finished; red count while anything needs you -->
+  <g transform="translate(1222 17) scale(0.5833)" fill="none" stroke="#e8e9eb" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/></g>
+  <rect x="1242" y="16" width="17" height="16" rx="8" fill="#e5534b"/>
+  <text x="1250.5" y="28" fill="#111215" font-size="10.5" font-weight="600" text-anchor="middle">1</text>
   <rect x="300.5" y="56.5" width="969" height="707" rx="10" fill="#1b1c20" stroke="#8ab4f8"/>
   <rect x="301" y="57" width="968" height="34" rx="10" fill="#1d1e22"/>
   <text x="322" y="79" fill="#e8e9eb" font-size="13" font-weight="500">Claude Code</text>

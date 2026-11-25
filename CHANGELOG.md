@@ -7,6 +7,10 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 
 ## [Unreleased]
 
+### Fixed
+- **The pictures show today's sidebar and tab bar.** Nine of the screen pictures still drew the switcher's old count and red dot and had no bell by Views; they match the app again. A new `scripts/check-drawings.sh`, run by `render-preview.sh` and `release.sh`, keeps the shared parts of every drawing the same.
+- **Pictures and docs that disagreed with the app.** The Worktrees picture puts worktrees under `~/.herdr/worktrees/<repo>/` as the board makes them, and the bell's picture names the same pull request as the board's (ACM-5, #31). The README counts ten example presets, and the recipe has the check line's wording, Settings > Features' Tab bar group and keys, and the guide's Edit opening Files. Nothing to copy: only pictures and docs changed.
+
 ## [0.28.0] - 2026-11-25
 
 ### New

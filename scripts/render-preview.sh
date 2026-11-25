@@ -23,6 +23,8 @@ mods/ws-settings/preview.svg:previews/settings.png
 mods/ws-tabs/preview.svg:previews/views.png
 mods/ws-notifications/preview.svg:previews/notifications.png
 mods/ws-vault/preview.svg:previews/vault.png"
+# The drawings must agree on the parts every screen shares before any is rendered.
+sh scripts/check-drawings.sh
 chrome=${CHROME:-}
 if [ -z "$chrome" ]; then
   for c in "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
