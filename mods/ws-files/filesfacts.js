@@ -444,3 +444,95 @@ export function targetFor(target, me, now, done) {
   if (target.scope === "tab" || target.scope === "pane") return Boolean(me.tab) && target.tab === me.tab;
   return false;
 }
+
+// --- The tree's right-click menu (main.js menuView) ---
+
+// The rows of the menu for a file or folder, in groups (null between groups). where: "tree",
+// "search" (a search row has no New file/New folder: the edit row lives in the tree) or "root"
+// (the folder Files shows: the empty space under the tree, or its name; no relative path, and it
+// isn't renamed, duplicated or trashed from here); remote: on
+// another machine (no Open in, no Reveal: they start apps here); writes: the shell steps can run
+// (not on Windows); blocked: the open file has unsaved edits under this path (Rename waits).
+export function menuRows({ where = "tree", remote = false, writes = true, platform = "macos" } = {}) {
+  const groups = [];
+  if (where !== "search" && writes) groups.push(["new-file", "new-folder"]);
+  const outside = [];
+  if (!remote) outside.push("open-in", "reveal");
+  outside.push("terminal");
+  groups.push(outside);
+  groups.push(where === "root" ? ["copy-path"] : ["copy-path", "copy-rel"]);
+  if (writes && where !== "root") groups.push(["rename", "duplicate", "trash"]);
+  const out = [];
+  for (const g of groups) { if (out.length) out.push(null); out.push(...g); }
+  return out;
+}
+
+// What a menu row says.
+export function menuLabel(id, platform = "macos") {
+  return {
+    "new-file": "New file…", "new-folder": "New folder…", "open-in": "Open in",
+    reveal: platform === "macos" ? "Reveal in Finder" : platform === "windows" ? "Show in Explorer" : "Show in folder",
+    terminal: "New terminal here", "copy-path": "Copy path", "copy-rel": "Copy relative path",
+    rename: "Rename…", duplicate: "Duplicate", trash: platform === "macos" ? "Move to Trash…" : "Move to trash…",
+  }[id] ?? id;
+}
+
+// Whether two names are the same entry on this machine: macOS (and Windows) folders don't
+// tell case apart by default, so "Readme.md" is taken when "README.md" is there.
+const sameName = (a, b, caseless) => (caseless ? a.toLowerCase() === b.toLowerCase() : a === b);
+
+// What's wrong with a name typed in the tree's edit row, or null. mode: "file" or "folder" (a new
+// one: "a/b.js" makes the folders on the way) or "rename" (one name, no "/"). taken: the names in
+// the folder it goes in; old: the name being renamed (a rename that only changes case is fine).
+export function nameProblem(name, { mode = "file", taken = [], old = null, caseless = true } = {}) {
+  const n = String(name ?? "");
+  if (!n.trim()) return "Type a name";
+  if (n !== n.trim()) return "A name can't start or end with a space";
+  if (mode === "rename" && n.includes("/")) return "A name can't have / in it";
+  if (n.startsWith("/")) return "Type a name, not a path from /";
+  const parts = n.split("/");
+  if (parts.some((p, i) => !p && i < parts.length - 1)) return "Two / in a row";
+  if (parts.some((p) => p === "." || p === "..")) return "A name can't be . or ..";
+  if (n.includes("\0")) return "A name can't have that character";
+  const first = parts.filter(Boolean)[0];
+  if (mode === "rename") {
+    if (old != null && n === old) return null; // unchanged: Enter just closes
+    if (old != null && sameName(n, old, caseless)) return null; // only the case changes
+    if (taken.some((t) => sameName(t, n, caseless))) return `${n} is already there`;
+    return null;
+  }
+  // A new one: taken only when the whole name is a single part that's there (deeper parts are
+  // checked by the shell step, which won't write over anything).
+  if (parts.filter(Boolean).length === 1 && taken.some((t) => sameName(t, first, caseless))) return `${first} is already there`;
+  return null;
+}
+
+// Where the name's extension starts (what Rename selects up to): "auth.test.js" → 9 ("auth.test"),
+// ".env" → 4 (a dotfile has no extension), "Makefile" → its length. Folders: the whole name.
+export function stemEnd(name, dir = false) {
+  const n = String(name ?? "");
+  if (dir) return n.length;
+  const i = n.lastIndexOf(".");
+  return i > 0 ? i : n.length;
+}
+
+// Duplicate's name: "auth copy.js", then "auth copy 2.js" and on, the first not taken.
+export function copyName(name, taken = [], dir = false, caseless = true) {
+  const n = String(name ?? ""), at = stemEnd(n, dir), stem = n.slice(0, at), ext = n.slice(at);
+  for (let i = 1; i < 1000; i++) {
+    const next = `${stem} copy${i > 1 ? ` ${i}` : ""}${ext}`;
+    if (!taken.some((t) => sameName(t, next, caseless))) return next;
+  }
+  return `${stem} copy ${Date.now()}${ext}`;
+}
+
+// A path after the entry at `from` was renamed to `to` (all relative to the same root): itself
+// or anything inside it moves along; anything else stays.
+export function movedPath(path, from, to) {
+  if (path == null) return path;
+  if (path === from) return to;
+  return path.startsWith(`${from}/`) ? to + path.slice(from.length) : path;
+}
+
+// Whether `path` is the entry at `gone` or inside it (absolute or relative alike).
+export const isUnder = (path, gone) => path != null && gone != null && (path === gone || path.startsWith(`${gone}/`));

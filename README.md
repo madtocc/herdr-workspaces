@@ -478,7 +478,10 @@ file you save (on this computer only), searches with `rg` (else `grep`), runs
 image's size), links images it previews under `~/.config/herdr-app/data/ws-files/`
 (`ln -sf`, `unlink`), asks macOS which apps open a file (`osascript`), looks
 for known editors with `command -v`, starts the app you pick (or `open -R` to
-reveal it), and remembers the pick in `~/.herdr/files-prefs.json`. It and its Cmd-click handler
+reveal it), and remembers the pick in `~/.herdr/files-prefs.json`. Its right-click menu makes,
+renames and duplicates files and folders with `mkdir`, `mv` and `cp` (never over an existing
+name), moves them to the Trash with `trash` or `gio trash` (else into `~/.herdr/trash`), counts a
+folder's files with `find`, copies paths to the clipboard and opens a terminal tab there. It and its Cmd-click handler
 read their defaults from `~/.herdr/settings.jsonc`. A Cmd-click
 on a path in a terminal is checked with `sh` (on that terminal's machine) before
 Files takes it. The Worktrees tab reads git in the workspace's repos and
