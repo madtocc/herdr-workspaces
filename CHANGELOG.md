@@ -7,6 +7,8 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-11-25
+
 ### New
 - **Linux, experimental.** Tried in a VM on Ubuntu 26.04 (GNOME, Wayland): every screen, the background runner, automations, Files and Standard secrets work there; Protected secrets stay macOS-only. macOS stays the supported platform; Windows is being worked on. The README's new Platforms section says what Linux uses in macOS's place and which packages it wants (`libsecret-tools`, `libnotify-bin`, `wl-clipboard` or `xclip`). To update by hand: copy `mods/ws-switcher`, `ws-settings`, `ws-files`, `ws-automations`, `ws-agents`, `ws-status` and `ws-vault`.
 - **Start at login on Linux.** Settings > Automations' switch (and `herdr-ws-runner --login on`) writes and enables a systemd user unit, `~/.config/systemd/user/herdr-ws-runner.service`, as the LaunchAgent does on macOS; off removes it. It used to print a unit to set up by hand.
