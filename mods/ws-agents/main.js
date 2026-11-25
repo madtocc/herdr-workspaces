@@ -17,6 +17,9 @@
 // height, and nothing reads the records on a timer; the right-click menu still needs its
 // conversation (Fork, Copy session id, Wipe), so a right-click reads that one agent's
 // records first (menuAt()). Turned on again, the numbers come at the next read.
+// A sub-agent's row in the tree gets the same second line (subRow(); statAgents() adds the
+// live sub-agents without a pane, which agents() leaves out), and its tree lines run the
+// whole row so they join at either height (treeLine()).
 // Also: History's own right-click Wipe hands an Antigravity conversation that's open in no
 // terminal to the Wipe dialog here (props wipe with no address: nothing to close first).
 // Also: a right-click on an agent's row (a sub-agent's too, and on the rail) opens its
@@ -130,10 +133,10 @@ function icon(p, size, color) {
 }
 
 // --- Each agent's numbers (stats.js) ---
-// The agents whose records stats.js reads: by what they report (OSC 7501 app), else
-// by their program (programs.json's key).
+// The agents whose records stats.js reads: by what they report (OSC 7501 app; a
+// terminals() entry's `agent`), else by their program (programs.json's key).
 const KINDS = { "claude-code": "claude", claude: "claude", pi: "pi", agy: "agy", antigravity: "agy" };
-const kindOf = (a) => KINDS[a.app] ?? KINDS[a.program?.key] ?? null;
+const kindOf = (a) => KINDS[a.app] ?? KINDS[a.agent] ?? KINDS[a.program?.key] ?? null;
 // Read again this often while one of them works, and this often anyway.
 const STATS_WORKING = 5000;
 const STATS_IDLE = 60000;
@@ -342,9 +345,14 @@ export default class Agents extends View {
     } finally { this.agyBusy = false; }
   }
 
-  // This computer's agents stats.js can read (another machine's records are there).
+  // This computer's agents stats.js can read (another machine's records are there):
+  // agents(), then the sub-agents without a pane, which only the tree shows (subRow).
   statAgents() {
-    return agents().filter((a) => !a.address.includes("/") && kindOf(a));
+    const local = (a) => !a.address.includes("/") && kindOf(a);
+    const own = agents().filter(local);
+    const seen = new Set(own.map((a) => a.address));
+    const subs = terminals().filter((k) => k.state === "live" && k.parent && !seen.has(k.address) && local(k));
+    return [...own, ...subs];
   }
 
   // Reads every agent's numbers (stats.js), or only `only`'s (a list of agents: the
@@ -395,10 +403,10 @@ export default class Agents extends View {
 
   // An agent row's second line: its model, a meter of its context and how often it
   // was compacted; the rest (effort, tokens, cost) on hover.
-  statLine(t, a, s) {
+  statLine(t, a, s, id = `stat-${a.address}`) {
     const pct = s.pct;
     return h_flex()
-      .id(`stat-${a.address}`)
+      .id(id)
       .min_w(0)
       .gap(5)
       .items_center()
@@ -1270,12 +1278,15 @@ export default class Agents extends View {
     const st = kidStatus(k, this.listed);
     const pic = icon(k.program, 14, t.foreground);
     const on = k.address === shown;
+    // Its numbers (as a top row's, statLine) on a second line, when there are any.
+    const stat = numbersOn() ? this.stats[k.address] : null;
+    const nameEl = div().flex_1().min_w(0).truncate().text_color(on ? t.foreground : t.muted).child(k.name || k.template || k.program?.name || k.address);
     return h_flex()
       .id(`sub-${k.address}`)
       .pl(39)
       .pr(8)
       .rounded(8)
-      .h(26)
+      .h(stat ? 38 : 26)
       .flex_none()
       .gap(0)
       .items_center()
@@ -1287,12 +1298,25 @@ export default class Agents extends View {
         cx.stop_propagation();
         this.menuAt(cx, this.agentsBy?.get(k.address) ?? k, k.name || k.template || k.program?.name || k.address, st, false);
       })
-      .children(s.lines.map(l => div().self_start().mt(-4).w(9).h(17).mr(4).flex_none()
-        .when(Boolean(l), el => el.border_l(1.5).border_color(t.input))
-        .when(l === "└" || l === "├", el => el.border_b(1.5).rounded_bl(6))))
+      .children(s.lines.map((l) => this.treeLine(t, l, stat ? 38 : 26, stat ? 15 : 17)))
       .when(Boolean(pic), el => el.child(div().mr(8).child(pic)))
-      .child(div().flex_1().truncate().text_color(on ? t.foreground : t.muted).child(k.name || k.template || k.program?.name || k.address))
+      .child(stat
+        ? v_flex().flex_1().min_w(0).mr(6).gap(1).child(nameEl).child(this.statLine(t, k, stat, `sub-stat-${k.address}`))
+        : nameEl)
       .child(this.status(t, { status: st }, compact));
+  }
+
+  // One step of a sub-row's tree lines, in a row h tall: "│" runs the whole row, "└" bends
+  // to the name (its middle `elbow` down, past the 4 px it starts above the row), "├" both.
+  treeLine(t, l, h, elbow) {
+    const seg = () => div().self_start().mt(-4).w(9).mr(4).flex_none();
+    const bend = (el) => el.h(elbow).border_l(1.5).border_b(1.5).border_color(t.input).rounded_bl(6);
+    if (l === "└") return bend(seg());
+    if (l === "│") return seg().h(h + 4).border_l(1.5).border_color(t.input);
+    if (l === "├") return seg().h(h + 4).flex().flex_col()
+      .child(bend(div().w(9).flex_none()))
+      .child(div().flex_1().border_l(1.5).border_color(t.input));
+    return seg();
   }
 
   // compact: a ! for blocked where a header already says "Needs you".
