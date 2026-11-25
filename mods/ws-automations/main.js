@@ -40,13 +40,13 @@
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input, TextareaState, Textarea, Popup, ScrollHandle } from "gpui-base";
-import { theme, shared, setShared, props, closeOverlay, home, appHome, readTextFile, writeTextFile, exec, notify, agents, terminals, run, knownAgents } from "herdr";
+import { theme, shared, setShared, props, closeOverlay, home, appHome, readTextFile, writeTextFile, exec, notify, agents, terminals, run, knownAgents, window } from "herdr";
 import { parseWhen, describe, nextAt, shortTime } from "./when.js";
 import { KNOBS, words, programOf, knobsIn, configModels, listable, keptModels, listModels, shownModels, knobsText, SHORT_LIST, typeahead, markSegments } from "./knobs.js";
 import { runCheck, runShellScript, checkEnv } from "./check.js";
 import { splitFront, fieldValue, withFrontFields, normCheck, normScript, parseDuration, formatDuration, effectiveTimeout, effectiveNotify, SHELLS } from "./autofacts.js";
 import { DRAFTER_NAMES, DRAFT_MODEL, DRAFT_TIMEOUT, SCHEMA, GUIDE, buildDraftCommand, parseDraftOutput, pickDrafters } from "./drafter.js";
-import { automationSetting, parseSettings, SETTINGS_FILE } from "./settingsfacts.js";
+import { automationSetting, parseSettings, SETTINGS_FILE, platformWords } from "./settingsfacts.js";
 import * as fs from "fs/promises";
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -1142,15 +1142,16 @@ export default class Automations extends View {
   editor(t, def) {
     const pane = v_flex().flex_1().min_w(0).min_h(0);
     if (!this.sel) {
+      const words = (s) => platformWords(s, window()?.platform ?? "macos");
       return pane.p(18).gap(10).text_color(t.muted).text_size(12.5)
         .child(div().text_size(14).font_semibold().text_color(t.foreground).child("Pick an automation, or make a new one."))
-        .child(div().child(`An automation runs by itself: on a schedule, when a task enters a board column, when an agent finishes or needs you, when files change, on GitHub (a PR opened, merged or waiting for your review, CI failing, a label), after another automation, when Herdr starts or the Mac wakes, or when another app calls it.`))
+        .child(div().child(words(`An automation runs by itself: on a schedule, when a task enters a board column, when an agent finishes or needs you, when files change, on GitHub (a PR opened, merged or waiting for your review, CI failing, a label), after another automation, when Herdr starts or the Mac wakes, or when another app calls it.`)))
         .child(div().child(`It starts an agent with a prompt, or runs a shell script with no agent at all (fetching repos, running tests, a backup).`))
         .child(div().child(`New automation asks what it should do, in your words. An agent drafts it, and nothing is saved until you've read it.`))
         .child(div().child(`The ready-made ones under the list are a place to start: open one to read it, change what you like, and Create adds it${def.none ? " for every workspace" : ` to ${def.name} or to every workspace`}.`))
         .child(div().child(`An agent's run is a tab in ${def.none ? "its workspace" : def.name}'s Automations space, made the first time; a script runs unseen, and History keeps what it printed. Your view stays where it is.`))
         .child(div().child(`An automation can have a check: a command Herdr runs first, so nothing starts when there's nothing to do.`))
-        .child(div().child(`They run while Herdr is open, or all the time with Keep running on, in Settings > Automations. A schedule missed while nothing was running or the Mac slept runs once when it can, if that's within 12 hours. A one-time schedule turns itself off after it runs.`))
+        .child(div().child(words(`They run while Herdr is open, or all the time with Keep running on, in Settings > Automations. A schedule missed while nothing was running or the Mac slept runs once when it can, if that's within 12 hours. A one-time schedule turns itself off after it runs.`)))
         .child(div().child(`One made for every workspace runs in each of them, as that workspace's own; a workspace's own automation of the same name replaces it there, and its switch in the list turns it off for that workspace alone.`))
         .child(div().child(def.none ? `No workspace is shown, so these are the ones for every workspace. Their files are in ${tilde(globalDir())}.`
           : `${def.name}'s files are in ${tilde(def.dir)}/automations, and the ones for every workspace in ${tilde(globalDir())}.`));

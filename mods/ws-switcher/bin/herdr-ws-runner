@@ -3,23 +3,25 @@
 # kept going while Herdr's window is closed. Off, Herdr runs them itself, while
 # it's open. On, they run in a Node process that herdr-core holds as a terminal
 # named herdr-ws-runner, so closing or updating Herdr doesn't stop them; or, with
-# Start at login, that launchd starts when you log in (macOS), outside herdr-core.
+# Start at login, that launchd (macOS) or systemd (Linux) starts when you log in,
+# outside herdr-core.
 #
 #   herdr-ws-runner --on            turn it on and start it
 #   herdr-ws-runner --off           turn it off and stop it (Herdr runs them again); Start at login goes off too
 #   herdr-ws-runner --status        on or off, and whether it's running (--json: for a screen)
 #   herdr-ws-runner --start         start it if it's on and not running (Herdr does this when it opens)
-#   herdr-ws-runner --login on      start it at login too (macOS): it turns it on, and launchd runs it
+#   herdr-ws-runner --login on      start it at login too: it turns it on, and launchd (macOS) or a
+#                                   systemd user unit (Linux) runs it
 #   herdr-ws-runner --login off     not at login any more (herdr-core runs it again while it's on)
 #   herdr-ws-runner --login status  whether it starts at login
-#   herdr-ws-runner --serve         what the terminal (or launchd) runs
+#   herdr-ws-runner --serve         what the terminal (or launchd, or systemd) runs
 #
 # It needs Node 20.6 or newer. Without Start at login, after a restart of the
 # computer it starts when Herdr first opens (or with --start), and schedules
-# missed in between are caught up as after any time away. Under launchd it doesn't
-# start herdr-core: scripts and checks run with nothing else open, and an agent
-# run starts herdr-core when it needs it.
-# Its log: hc read herdr-ws-runner --lines 100 (under launchd: ~/.herdr/runner/runner.log)
+# missed in between are caught up as after any time away. Under launchd or systemd
+# it doesn't start herdr-core: scripts and checks run with nothing else open, and
+# an agent run starts herdr-core when it needs it.
+# Its log: hc read herdr-ws-runner --lines 100 (started at login: ~/.herdr/runner/runner.log)
 set -eu
 
 name=herdr-ws-runner
@@ -27,6 +29,9 @@ label=dev.herdr.ws-runner
 dir=$HOME/.herdr/runner
 agents=${HERDR_WS_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}
 plist=$agents/$label.plist
+# Linux: the systemd user unit that starts it at login.
+units=${HERDR_WS_SYSTEMD_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user}
+unit=$units/$name.service
 self=$0
 while [ -L "$self" ]; do
   t=$(readlink "$self")
@@ -37,7 +42,12 @@ mod=$(dirname "$(dirname "$self")")
 
 is_on() { [ "$(cat "$dir/switch" 2>/dev/null || true)" = on ]; }
 mac() { [ "$(uname)" = Darwin ]; }
-login_on() { [ -f "$plist" ]; }
+linux() { [ "$(uname)" = Linux ]; }
+# The file that starts it at login: the LaunchAgent on macOS, the systemd unit on Linux.
+job() { if mac; then echo "$plist"; else echo "$unit"; fi; }
+login_on() { [ -f "$(job)" ]; }
+# Start at login needs launchd, or a running systemd user manager.
+can_login() { mac || { linux && command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; }; }
 
 # Its pid (and how it runs: via), if it said it was alive within the last 30 seconds and still is.
 running() {
@@ -63,20 +73,36 @@ stop_hc() {
   hc rm "$name" >/dev/null 2>&1 || true
 }
 
-# The launchd job, loaded again from its file, or unloaded.
+# The launchd job (or systemd unit), loaded again from its file, or unloaded.
 domain() { echo "gui/$(id -u)"; }
 load_job() {
-  launchctl bootout "$(domain)/$label" >/dev/null 2>&1 || true
-  launchctl bootstrap "$(domain)" "$plist"
+  if mac; then
+    launchctl bootout "$(domain)/$label" >/dev/null 2>&1 || true
+    launchctl bootstrap "$(domain)" "$plist"
+  else
+    systemctl --user daemon-reload
+    systemctl --user enable "$name.service" >/dev/null 2>&1
+    systemctl --user restart "$name.service"
+  fi
 }
-unload_job() { launchctl bootout "$(domain)/$label" >/dev/null 2>&1 || true; }
+unload_job() {
+  if mac; then launchctl bootout "$(domain)/$label" >/dev/null 2>&1 || true
+  elif command -v systemctl >/dev/null 2>&1; then
+    systemctl --user disable --now "$name.service" >/dev/null 2>&1 || true
+    systemctl --user reset-failed "$name.service" >/dev/null 2>&1 || true
+  fi
+}
 
 start() {
   running && return 0
   need_node
-  # Started at login: launchd runs it (again, if it stopped).
+  # Started at login: launchd or systemd runs it (again, if it stopped).
   if mac && login_on; then
     launchctl kickstart "$(domain)/$label" >/dev/null 2>&1 || load_job
+    return 0
+  fi
+  if linux && login_on && can_login; then
+    systemctl --user start "$name.service" >/dev/null 2>&1 || load_job
     return 0
   fi
   command -v hc >/dev/null 2>&1 || { echo "$name: hc (herdr-core) isn't on your PATH." >&2; exit 127; }
@@ -145,22 +171,45 @@ EOF
   mv "$tmp" "$plist"
 }
 
-linux_login() {
-  cat >&2 <<EOF
-$name: Start at login is for macOS (launchd). On Linux, a systemd user unit does the same:
+# Text inside a systemd unit's double quotes: \ " as escapes, % and $ doubled (specifiers, variables).
+sdq() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/%/%%/g' -e 's/\$/$$/g'; }
 
-  # ~/.config/systemd/user/herdr-ws-runner.service
-  [Unit]
-  Description=Herdr workspaces' background runner
-  [Service]
-  Environment=HERDR_WS_RUNNER_VIA=systemd
-  ExecStart=$self --serve
-  Restart=on-failure
-  [Install]
-  WantedBy=default.target
+# The systemd user unit, as the LaunchAgent: your login shell runs this script's --serve (-lc, no
+# terminal), with the PATH --login on had (node was found on it), and again after an error, not
+# when it's turned off or another runner is running (both end it with 0). With linger on (hc turns
+# it on), systemd starts it at boot rather than at the first login.
+write_unit() {
+  sh=${SHELL:-/bin/sh}
+  case $(basename "$sh") in sh|bash|zsh|dash|ksh|fish) ;; *) sh=/bin/sh ;; esac
+  case $sh in /*) ;; *) sh=/bin/sh ;; esac
+  cmd="exec $(squote "$self") --serve"
+  mkdir -p "$units" "$dir"
+  tmp=$unit.$$.tmp
+  cat > "$tmp" <<EOF
+# Herdr workspaces' background runner at login: herdr-ws-runner --login on wrote this, --login off removes it.
+[Unit]
+Description=Herdr workspaces' background runner
 
-then: systemctl --user enable --now herdr-ws-runner (and $name --on first).
+[Service]
+Environment=HERDR_WS_RUNNER_VIA=systemd
+Environment="PATH=$(sdq "$PATH")"
+WorkingDirectory=%h
+ExecStart="$(sdq "$sh")" -lc "$(sdq "$cmd")"
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:%h/.herdr/runner/runner.log
+StandardError=append:%h/.herdr/runner/runner.log
+
+[Install]
+WantedBy=default.target
 EOF
+  mv "$tmp" "$unit"
+}
+
+no_login() {
+  if linux; then echo "$name: Start at login needs a systemd user session (systemctl --user); none answered here." >&2
+  else echo "$name: Start at login is for macOS (launchd) and Linux (systemd)." >&2
+  fi
   exit 1
 }
 
@@ -177,7 +226,7 @@ case ${1:-} in
     echo off > "$dir/switch"
     stop_hc
     # Turned off, it doesn't start at login either.
-    if mac && login_on; then unload_job; rm -f "$plist"; fi
+    if login_on; then unload_job; rm -f "$(job)"; fi
     rm -f "$dir/alive"
     echo "off: Herdr runs them itself, while it's open"
     ;;
@@ -188,11 +237,11 @@ case ${1:-} in
       on=false; run=false; p=null; v=null
       is_on && on=true
       if running; then run=true; p=$pid; v="\"${via:-hc}\""; fi
-      printf '{"on":%s,"running":%s,"pid":%s,"via":%s,"login":%s,"plist":"%s"}\n' "$on" "$run" "$p" "$v" "$login" "$(printf '%s' "$plist" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+      printf '{"on":%s,"running":%s,"pid":%s,"via":%s,"login":%s,"plist":"%s"}\n' "$on" "$run" "$p" "$v" "$login" "$(job | sed 's/\\/\\\\/g; s/"/\\"/g')"
     elif ! is_on; then echo off
     elif running; then
       case ${via:-hc} in launchd|systemd) echo "on, running via $via (pid $pid)" ;; *) echo "on, running in herdr-core (pid $pid)" ;; esac
-      [ "$login" = false ] || echo "starts at login ($plist)"
+      [ "$login" = false ] || echo "starts at login ($(job))"
     else echo "on, not running (herdr-ws-runner --start starts it; Herdr does when it opens)"
     fi
     ;;
@@ -203,12 +252,12 @@ case ${1:-} in
   --login)
     case ${2:-} in
       on)
-        mac || linux_login
+        can_login || no_login
         need_node
         mkdir -p "$dir"
         echo on > "$dir/switch"
-        # One runner at a time: the one herdr-core holds (or launchd's from before) goes, and is
-        # gone before launchd's starts: one still ending would look alive to it, and it would leave.
+        # One runner at a time: the one herdr-core holds (or launchd's or systemd's from before) goes,
+        # and is gone before the new one starts: one still ending would look alive to it, and it would leave.
         old=
         if running; then old=$pid; fi
         stop_hc
@@ -218,16 +267,17 @@ case ${1:-} in
           while kill -0 "$old" 2>/dev/null && [ "$n" -lt 30 ]; do sleep 0.1; n=$((n + 1)); done
         fi
         rm -f "$dir/alive"
-        write_plist
+        if mac; then write_plist; else write_unit; fi
         load_job
-        echo "on at login: launchd starts it when you log in, without herdr-core ($plist)"
+        if mac; then echo "on at login: launchd starts it when you log in, without herdr-core ($plist)"
+        else echo "on at login: systemd starts it when you log in, without herdr-core ($unit)"
+        fi
         ;;
       off)
-        mac || { echo "$name: Start at login is for macOS; nothing to turn off here." >&2; exit 1; }
         was=
         login_on && was=1
         unload_job
-        rm -f "$plist"
+        rm -f "$(job)"
         rm -f "$dir/alive"
         # Still on: herdr-core runs it again, as before Start at login.
         if is_on; then start; echo "off at login: it runs in herdr-core while it's on (Herdr starts it when it opens)"
@@ -235,7 +285,7 @@ case ${1:-} in
         fi
         ;;
       status|"")
-        if login_on; then echo "on at login ($plist)"; else echo "off at login"; fi
+        if login_on; then echo "on at login ($(job))"; else echo "off at login"; fi
         ;;
       *) echo "$name: --login on, off or status" >&2; exit 2 ;;
     esac
@@ -244,8 +294,8 @@ case ${1:-} in
     need_node
     # A crash starts it again; turned off, or another one running, it ends.
     while is_on; do
-      # Its log under launchd (runner.log) keeps the last 1000 lines when it's over 1 MB; the whole of
-      # it before is runner.log.old. In place: launchd holds the file open.
+      # Its log under launchd or systemd (runner.log) keeps the last 1000 lines when it's over 1 MB;
+      # the whole of it before is runner.log.old. In place: launchd or systemd holds the file open.
       log=$dir/runner.log
       if [ -f "$log" ] && [ "$(wc -c < "$log")" -gt 1048576 ]; then
         cp "$log" "$log.old" && tail -n 1000 "$log.old" > "$log"

@@ -82,7 +82,7 @@ import {
   mergeApps, pickDefaultApp, rememberApp, parsePrefs, launchCommand, targetFor, svgSize, fitImage, sameFile,
   menuRows, menuLabel, nameProblem, stemEnd, copyName, movedPath, isUnder,
 } from "./filesfacts.js";
-import { SETTINGS_FILE, FILES_KEYS, FILES_DEFAULTS, parseSettings, fileSetting } from "./settingsfacts.js";
+import { SETTINGS_FILE, FILES_KEYS, FILES_DEFAULTS, parseSettings, fileSetting, LINUX_APPS_SH, parseLinuxApps, platformWords } from "./settingsfacts.js";
 const PER_FOLDER = 500, TOTAL = 5000;
 const NARROW = 640, RAIL = 248;
 const PREFS_FILE = () => `${home()}/.herdr/files-prefs.json`;
@@ -899,7 +899,7 @@ export default class Files extends View {
     });
   }
 
-  // Open with…: the editors installed (once a session) and, on macOS, the apps it offers for the file,
+  // Open with…: the editors installed (once a session) and, on macOS and Linux, the apps the system offers for the file,
   // kept a minute per extension so switching files is quick.
   discoverApps(ext, abs, cx) {
     const cached = this.appsCache.get(ext);
@@ -929,6 +929,11 @@ export default class Files extends View {
       const jxa = 'function run(argv) { ObjC.import("AppKit"); const ws = $.NSWorkspace.sharedWorkspace, fm = $.NSFileManager.defaultManager, url = $.NSURL.fileURLWithPath(argv[0]); const urls = ws.URLsForApplicationsToOpenURL(url), def = ws.URLForApplicationToOpenURL(url); const out = []; for (let i = 0; i < urls.count && i < 60; i++) { const u = urls.objectAtIndex(i), p = u.path.js; let b = null; try { const bb = $.NSBundle.bundleWithURL(u); b = bb && bb.bundleIdentifier ? bb.bundleIdentifier.js : null; } catch (e) {} out.push({ name: fm.displayNameAtPath(p).js, path: p, bundle: b || null }); } return JSON.stringify({ apps: out, system: def && def.path ? def.path.js : null }); }';
       const r = await exec("osascript", ["-l", "JavaScript", "-e", jxa, abs], { timeout: 5000 }).catch(() => null);
       try { const o = JSON.parse(r?.stdout || "{}"); macApps = o.apps ?? []; system = o.system ?? null; } catch { /* the editors alone */ }
+    }
+    if (platform === "linux" && !dir) {
+      // The desktop's apps for this type (their .desktop files), as macOS's list above.
+      const r = await exec("sh", ["-c", LINUX_APPS_SH, "apps", abs], { timeout: 5000 }).catch(() => null);
+      ({ apps: macApps, system } = parseLinuxApps(r?.stdout));
     }
     const got = { apps: mergeApps({ catalogInstalled: this.catalogIds, macApps, ext: dir ? "" : ext, platform }), system, at: Date.now() };
     this.appsCache.set(key, got);
@@ -1674,7 +1679,7 @@ export default class Files extends View {
   }
 
   viewerBody(t, st, narrow, room) {
-    if (st === "empty") return this.centered(t, "folder", "Select a file", "Pick any file on the left to read, preview, or edit it, or Cmd-click a path in a terminal.");
+    if (st === "empty") return this.centered(t, "folder", "Select a file", platformWords("Pick any file on the left to read, preview, or edit it, or Cmd-click a path in a terminal.", window()?.platform ?? "macos"));
     if (st === "loading") {
       return v_flex().flex_1().min_h(0).p(16).gap(10).children([0.7, 0.5, 0.85, 0.4, 0.6, 0.75].map((f, i) =>
         div().h(10).w(Math.round(f * Math.min(560, room.w - 40))).rounded(4).bg(t.raised).loop("opacity", { from: 0.4, to: 1, period: 1200 + i * 60 })));

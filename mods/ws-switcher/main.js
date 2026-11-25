@@ -90,8 +90,8 @@
 // toasts, names the tabs and spaces of the runs it started, and hands it the
 // screen's Run now (with its text) and allowed checks and scripts as files in the inbox.
 //   workspaces.runner      { on, running, via, pid, login, plist }: the background runner, for the
-//                        screens: via "launchd" (started at login) or "hc" (a terminal herdr-core holds),
-//                        login: it starts at login (its LaunchAgent file, plist, is there)
+//                        screens: via "launchd" or "systemd" (started at login) or "hc" (a terminal herdr-core
+//                        holds), login: it starts at login (its LaunchAgent or systemd unit file, plist, is there)
 //   workspaces.runner.set  { on?, login?, at }: a screen asks to turn it, or Start at login, on or off
 // Not this block's: the package's own settings, ~/.herdr/settings.jsonc, as ws-agents
 // reads it (and our Settings window, ws-settings, sets it when you change one; settingsfacts.js).
@@ -685,9 +685,12 @@ export default class Workspaces extends View {
         }
         await this.notes();
         this.adopt();
-        // Start at login: its LaunchAgent file (herdr-ws-runner --login on writes it).
-        const plist = `${home()}/Library/LaunchAgents/dev.herdr.ws-runner.plist`;
-        const login = window()?.platform === "macos" && (await readTextFile(plist).catch(() => null)) !== null;
+        // Start at login: its LaunchAgent file on macOS, its systemd user unit on Linux
+        // (herdr-ws-runner --login on writes either). "plist" names whichever file it is.
+        const platform = window()?.platform;
+        const plist = platform === "macos" ? `${home()}/Library/LaunchAgents/dev.herdr.ws-runner.plist`
+          : `${home()}/.config/systemd/user/herdr-ws-runner.service`;
+        const login = (platform === "macos" || platform === "linux") && (await readTextFile(plist).catch(() => null)) !== null;
         const say = { on, running, via: running ? alive.via ?? "hc" : null, pid: running ? alive.pid ?? null : null, login, plist };
         if (JSON.stringify(say) !== JSON.stringify(shared("workspaces.runner") ?? null)) setShared("workspaces.runner", say);
       } finally {

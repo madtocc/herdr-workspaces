@@ -98,11 +98,11 @@ export const FILES_SETTINGS = [
     values: [{ value: "beside", label: "Beside" }, { value: "full", label: "Full size" }, { value: "off", label: "Off" }],
     what: "Where a file or folder Cmd-clicked in a terminal or agent opens.",
     off: "Off: Herdr hands Cmd-clicked paths to macOS as before.",
-    comment: "where a path Cmd-clicked in a terminal opens, \"beside\" the terminal (full size for a terminal on another machine), \"full\" in Files full size, or \"off\" to leave it to Herdr and the system's opener, as without Files." },
+    comment: "where a path Cmd-clicked (Ctrl-clicked on Linux and Windows) in a terminal opens, \"beside\" the terminal (full size for a terminal on another machine), \"full\" in Files full size, or \"off\" to leave it to Herdr and the system's opener, as without Files." },
   { key: "catch", title: "Files to catch", type: "choice", default: "text-images-folders",
     values: [{ value: "text-images-folders", label: "Text, images & folders" }, { value: "everything", label: "Everything" }],
     what: "Which Cmd-clicked paths open in Files instead of macOS.",
-    comment: "which Cmd-clicked paths Files takes, \"text-images-folders\" (text, code, Markdown, SVG, images and folders; other files go to the system's opener) or \"everything\" (every file and folder that's there, binaries shown as Binary). A path that isn't there always goes on. Not used while \"cmd-click\" is \"off\"." },
+    comment: "which Cmd-clicked (Ctrl-clicked) paths Files takes, \"text-images-folders\" (text, code, Markdown, SVG, images and folders; other files go to the system's opener) or \"everything\" (every file and folder that's there, binaries shown as Binary). A path that isn't there always goes on. Not used while \"cmd-click\" is \"off\"." },
 ];
 export const FILES_KEYS = FILES_SETTINGS.map((f) => f.key);
 export const FILES_DEFAULTS = Object.fromEntries(FILES_SETTINGS.map((f) => [f.key, f.default]));
@@ -110,29 +110,36 @@ export const FILES_DEFAULTS = Object.fromEntries(FILES_SETTINGS.map((f) => [f.ke
 // Editors with a command line, as Files' Open in knows them: a copy of ws-files' filesfacts.js
 // EDITOR_CATALOG (keep them the same), so Settings > Files offers the same ids.
 export const EDITOR_CATALOG = [
-  { id: "zed", label: "Zed", binary: "zed", bundle: "dev.zed.Zed", lineStyle: "colon" },
-  { id: "cursor", label: "Cursor", binary: "cursor", bundle: "com.todesktop.230313mzl4w4u92", lineStyle: "goto" },
-  { id: "vscode", label: "VS Code", binary: "code", bundle: "com.microsoft.VSCode", lineStyle: "goto" },
-  { id: "vscode-insiders", label: "VS Code Insiders", binary: "code-insiders", bundle: "com.microsoft.VSCodeInsiders", lineStyle: "goto" },
-  { id: "windsurf", label: "Windsurf", binary: "windsurf", bundle: "com.exafunction.windsurf", lineStyle: "goto" },
-  { id: "sublime", label: "Sublime Text", binary: "subl", bundle: "com.sublimetext.4", lineStyle: "colon" },
-  { id: "idea", label: "IntelliJ IDEA", binary: "idea", bundle: "com.jetbrains.intellij", lineStyle: "line" },
-  { id: "webstorm", label: "WebStorm", binary: "webstorm", bundle: "com.jetbrains.WebStorm", lineStyle: "line" },
-  { id: "goland", label: "GoLand", binary: "goland", bundle: "com.jetbrains.goland", lineStyle: "line" },
-  { id: "pycharm", label: "PyCharm", binary: "pycharm", bundle: "com.jetbrains.pycharm", lineStyle: "line" },
+  { id: "zed", label: "Zed", binary: "zed", bundle: "dev.zed.Zed", lineStyle: "colon", desktop: ["dev.zed.Zed.desktop", "zed.desktop"] },
+  { id: "cursor", label: "Cursor", binary: "cursor", bundle: "com.todesktop.230313mzl4w4u92", lineStyle: "goto", desktop: ["cursor.desktop"] },
+  { id: "vscode", label: "VS Code", binary: "code", bundle: "com.microsoft.VSCode", lineStyle: "goto", desktop: ["code.desktop"] },
+  { id: "vscode-insiders", label: "VS Code Insiders", binary: "code-insiders", bundle: "com.microsoft.VSCodeInsiders", lineStyle: "goto", desktop: ["code-insiders.desktop"] },
+  { id: "windsurf", label: "Windsurf", binary: "windsurf", bundle: "com.exafunction.windsurf", lineStyle: "goto", desktop: ["windsurf.desktop"] },
+  { id: "sublime", label: "Sublime Text", binary: "subl", bundle: "com.sublimetext.4", lineStyle: "colon", desktop: ["sublime_text.desktop"] },
+  { id: "idea", label: "IntelliJ IDEA", binary: "idea", bundle: "com.jetbrains.intellij", lineStyle: "line", desktop: ["jetbrains-idea.desktop", "jetbrains-idea-ce.desktop"] },
+  { id: "webstorm", label: "WebStorm", binary: "webstorm", bundle: "com.jetbrains.WebStorm", lineStyle: "line", desktop: ["jetbrains-webstorm.desktop"] },
+  { id: "goland", label: "GoLand", binary: "goland", bundle: "com.jetbrains.goland", lineStyle: "line", desktop: ["jetbrains-goland.desktop"] },
+  { id: "pycharm", label: "PyCharm", binary: "pycharm", bundle: "com.jetbrains.pycharm", lineStyle: "line", desktop: ["jetbrains-pycharm.desktop", "jetbrains-pycharm-ce.desktop"] },
   { id: "xcode", label: "Xcode", binary: "xed", bundle: "com.apple.dt.Xcode", lineStyle: "xed" },
-  { id: "android-studio", label: "Android Studio", binary: "studio", bundle: "com.google.android.studio", lineStyle: "line" },
+  { id: "android-studio", label: "Android Studio", binary: "studio", bundle: "com.google.android.studio", lineStyle: "line", desktop: ["android-studio.desktop", "jetbrains-studio.desktop"] },
   { id: "fleet", label: "Fleet", binary: "fleet", bundle: "fleet.app", lineStyle: "colon" },
 ];
 
 // What Settings > Files' Default external app lists, with the ids Files' Open in knows
 // (filesfacts.js mergeApps and pickDefaultApp): the installed editors (catalogInstalled: their ids;
-// one macOS lists for a text file counts too) with Xcode last, the other apps macOS offers for a
-// text file (macApps: [{ name, path, bundle }], each once, no helper app inside another .app or test
-// browser) as "app:<bundle>", then "system" (the system's own pick for each file). The app macOS
-// opens a text file with (system: its path) is tagged "system". current: the setting now; one
+// one the system lists for a text file counts too) with Xcode last, the other apps the system offers
+// for a text file (macApps: [{ name, path, bundle }], each once, no helper app inside another .app or
+// test browser; on Linux the .desktop files of parseLinuxApps, bundle their desktop id) as
+// "app:<bundle>", then "system" (the system's own pick for each file). The app the system opens a
+// text file with (system: its path) is tagged "system". current: the setting now; one
 // that isn't in the list (written by hand, or not installed here) is added at the end, tagged
 // "not found", so it's never hidden. Each: { id, label, tag }.
+// The catalog's editor for an app the system lists: by macOS bundle id or Linux desktop id.
+const catalogFor = (bundle) => {
+  const b = String(bundle ?? "").toLowerCase();
+  return b ? EDITOR_CATALOG.find((e) => e.bundle.toLowerCase() === b || (e.desktop ?? []).some((d) => d.toLowerCase() === b)) : undefined;
+};
+
 export function appChoices({ catalogInstalled = [], macApps = [], system = null, current = null } = {}) {
   const installed = new Set(catalogInstalled ?? []);
   const editors = [], apps = [], seenBundle = new Set(), seenName = new Set();
@@ -151,7 +158,7 @@ export function appChoices({ catalogInstalled = [], macApps = [], system = null,
     if (!a?.name || !path) continue;
     if (/\.app\/.+\.app/i.test(path) || /\.app\/Contents\//i.test(path)) continue;
     if (/ms-playwright|puppeteer|Google Chrome for Testing|\/Library\/Caches\/|\/\.cache\//i.test(path)) continue;
-    const cat = EDITOR_CATALOG.find((e) => a.bundle && e.bundle.toLowerCase() === String(a.bundle).toLowerCase());
+    const cat = catalogFor(a.bundle);
     if (cat) {
       const had = editors.find((x) => x.id === cat.id);
       if (had) { if (!had.tag) had.tag = tagOf(path); continue; }
@@ -779,4 +786,67 @@ export function automationsLine({ count = 0, workspaces = 0 } = {}, on = true) {
   if (!count) return "Off: automations don't run, including the ones a card or a pull request starts. They're kept, and a run already going finishes.";
   if (count === 1) return "Off: the 1 automation doesn't run, even when a card or a pull request would start it. It's kept, and a run already going finishes.";
   return `Off: none of the ${count} automations run, including the ones a card or a pull request starts. They're kept, and a run already going finishes.`;
+}
+
+// Linux: the apps the desktop offers for a file ($1), as file managers find them: the .desktop
+// files (user's first, then the system's, Flatpak's and Snap's) whose MimeType lists the file's
+// type (text files: text/plain too), not hidden. Prints "default<TAB><desktop file>" for the one
+// xdg-mime opens it with, then "app<TAB><name><TAB><desktop file>" for each. parseLinuxApps reads it.
+export const LINUX_APPS_SH = `f=$1
+mime=$(xdg-mime query filetype "$f" 2>/dev/null || file --brief --mime-type "$f" 2>/dev/null) || true
+[ -n "$mime" ] || exit 0
+mimes=$mime; case $mime in text/*) mimes="$mime;text/plain" ;; esac
+def=$(xdg-mime query default "$mime" 2>/dev/null || true)
+[ -n "$def" ] || def=$(xdg-mime query default text/plain 2>/dev/null || true)
+dirs="\${XDG_DATA_HOME:-$HOME/.local/share}:\${XDG_DATA_DIRS:-/usr/local/share:/usr/share}:/var/lib/flatpak/exports/share:$HOME/.local/share/flatpak/exports/share:/var/lib/snapd/desktop"
+old=$IFS; IFS=:
+for d in $dirs; do
+  IFS=$old
+  [ -d "$d/applications" ] || continue
+  for a in "$d"/applications/*.desktop; do
+    [ -f "$a" ] || continue
+    [ -n "$def" ] && [ "\${a##*/}" = "$def" ] && printf 'default\\t%s\\n' "$a" && def=
+    awk -v mimes="$mimes" -v file="$a" '
+      /^\\[/ { sec = ($0 == "[Desktop Entry]"); next }
+      !sec { next }
+      /^Name=/ && name == "" { name = substr($0, 6) }
+      /^MimeType=/ { n = split(substr($0, 10), m, ";"); k = split(mimes, want, ";")
+        for (i = 1; i <= n; i++) for (j = 1; j <= k; j++) if (m[i] != "" && m[i] == want[j]) hit = 1 }
+      /^NoDisplay=true/ || /^Hidden=true/ { hide = 1 }
+      /^Type=/ && $0 != "Type=Application" { hide = 1 }
+      END { if (hit && !hide && name != "") printf "app\\t%s\\t%s\\n", name, file }' "$a"
+  done
+done
+true`;
+
+// LINUX_APPS_SH's output as the macOS list's shape: { apps: [{ name, path, bundle }], system } with
+// path the .desktop file, bundle its desktop id ("org.gnome.TextEditor.desktop"), each id once
+// (the first found wins, as XDG_DATA_HOME comes first), system the default's .desktop file.
+export function parseLinuxApps(stdout) {
+  const apps = [], seen = new Set();
+  let system = null;
+  for (const line of String(stdout ?? "").split("\n")) {
+    const [kind, a, b] = line.split("\t");
+    if (kind === "default" && a && !system) system = a;
+    if (kind !== "app" || !a || !b) continue;
+    const id = b.split("/").pop();
+    if (seen.has(id)) continue;
+    seen.add(id);
+    apps.push({ name: a, path: b, bundle: id });
+  }
+  if (system) {
+    const id = system.split("/").pop(), hit = apps.find((x) => x.bundle === id);
+    if (hit) system = hit.path;
+  }
+  return { apps, system };
+}
+
+// The words of a text for this platform: written for macOS, they're said as they are there. On
+// Linux and Windows a Cmd-click is a Ctrl-click, the paths Herdr hands on go to the system's opener,
+// and the machine is "the computer".
+export function platformWords(text, platform = "macos") {
+  const s = String(text ?? "");
+  if (platform === "macos") return s;
+  return s.replace(/Cmd-click/g, "Ctrl-click").replace(/instead of macOS/g, "instead of the system's opener")
+    .replace(/to macOS/g, "to the system's opener").replace(/\bthe Mac\b/g, "the computer");
 }

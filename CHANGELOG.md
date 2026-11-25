@@ -8,7 +8,17 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 ## [Unreleased]
 
 ### New
+- **Linux, experimental.** Tried in a VM on Ubuntu 26.04 (GNOME, Wayland): every screen, the background runner, automations, Files and Standard secrets work there; Protected secrets stay macOS-only. macOS stays the supported platform; Windows is being worked on. The README's new Platforms section says what Linux uses in macOS's place and which packages it wants (`libsecret-tools`, `libnotify-bin`, `wl-clipboard` or `xclip`). To update by hand: copy `mods/ws-switcher`, `ws-settings`, `ws-files`, `ws-automations`, `ws-agents`, `ws-status` and `ws-vault`.
+- **Start at login on Linux.** Settings > Automations' switch (and `herdr-ws-runner --login on`) writes and enables a systemd user unit, `~/.config/systemd/user/herdr-ws-runner.service`, as the LaunchAgent does on macOS; off removes it. It used to print a unit to set up by hand.
+- **Open in on Linux lists your desktop's apps.** Files' Open in ▸ and ▾, and Settings > Files' Default external app, list the apps whose `.desktop` files open that kind of file (and mark the default one), beside your code editors; picking one starts it with `gio launch`. Before, Linux had only "Default app".
+- **Standard secrets keep their key in the Linux keyring.** On Linux with `secret-tool` (package `libsecret-tools`), a new vault's key goes into the desktop keyring (GNOME Keyring, KWallet) instead of a `vault.key` file beside the secrets. A `vault.key` that's already there is still used; `HERDR_VAULT_KEY=file` keeps the file.
 - **Helpers' helpers fold.** In the Agents list, a sub-agent with its own sub-agents gets a fold chevron (its icon folds too), as the top row has; folded, it says how many and the most urgent state. The tree's lines now run down from the middle of the icon above, so nested rows sit further left and their names and models fit, and a row too narrow for its model, meter and % drops the meter and keeps the model. To update by hand: copy `mods/ws-agents`.
+
+### Fixed
+- **No more Mac words on Linux.** Files and Settings > Files say Ctrl-click and "the system's opener", Automations says "the computer wakes", and Settings > Secrets greys out Protected as the default tier where it can't be used.
+- **Keys for Views on Linux.** The recipe's suggested keys clashed with Herdr's own Linux defaults (Ctrl+Shift+B, N, E); it now gives a Ctrl+Alt set for Linux.
+- **`herdr-ws-agent --help` prints its help** instead of trying to start a program called `--help`; any other option where the agent's name goes is refused.
+- **The README says where `programs.json` is** (`~/.config/herdr-app/programs.json`).
 
 ## [0.29.1] - 2026-11-25
 

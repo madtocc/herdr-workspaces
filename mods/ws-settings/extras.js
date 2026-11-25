@@ -40,7 +40,7 @@ import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Popup, InputState, Input } from "gpui-base";
 import { theme, shared, setShared, exec, home, appHome, readTextFile, writeTextFile, notify, checking, knownAgents, props, closeOverlay, window } from "herdr";
 import * as fs from "fs/promises";
-import { SETTINGS_FILE, EXPERIMENTS, FEATURES, FILES_SETTINGS, EDITOR_CATALOG, AUTOMATIONS_SETTINGS, VAULT_SETTINGS, parseSettings, withExperiment, withFeature, withFileSetting, withAutomationSetting, withVaultSetting, experimentOn, featureOn, fileSetting, automationSetting, vaultSetting, appChoices, appLabel, automationCount, automationsLine } from "./settingsfacts.js";
+import { SETTINGS_FILE, EXPERIMENTS, FEATURES, FILES_SETTINGS, EDITOR_CATALOG, LINUX_APPS_SH, parseLinuxApps, AUTOMATIONS_SETTINGS, VAULT_SETTINGS, parseSettings, withExperiment, withFeature, withFileSetting, withAutomationSetting, withVaultSetting, experimentOn, featureOn, fileSetting, automationSetting, vaultSetting, appChoices, appLabel, automationCount, automationsLine, platformWords } from "./settingsfacts.js";
 import { BROKER_OPS, STATUS_ARGS, parseBrokerStatus, actionError, brokerView, pressBroker } from "./brokerfacts.js";
 import { HIDDEN, hiddenFile, parseHidden, saveHidden, shownAgents, countLine, notInstalledLine } from "./hidefacts.js";
 
@@ -358,8 +358,8 @@ function saveQuiet(x, cx) {
 }
 
 // Default external app's makings, once a window (true when found now): the editors installed
-// (their commands on PATH, as Files' Open in finds them) and, on macOS, the apps it offers for a
-// text file and the one it opens text with (a sample file under appHome()/data/ws-settings).
+// (their commands on PATH, as Files' Open in finds them) and, on macOS and Linux, the apps the system
+// offers for a text file and the one it opens text with (a sample file under appHome()/data/ws-settings).
 async function findApps(x) {
   if (x.apps || x.appsLoading) return false;
   x.appsLoading = true;
@@ -378,6 +378,13 @@ async function findApps(x) {
       const jxa = 'function run(argv) { ObjC.import("AppKit"); const ws = $.NSWorkspace.sharedWorkspace, fm = $.NSFileManager.defaultManager, url = $.NSURL.fileURLWithPath(argv[0]); const urls = ws.URLsForApplicationsToOpenURL(url), def = ws.URLForApplicationToOpenURL(url); const out = []; for (let i = 0; i < urls.count && i < 60; i++) { const u = urls.objectAtIndex(i), p = u.path.js; let b = null; try { const bb = $.NSBundle.bundleWithURL(u); b = bb && bb.bundleIdentifier ? bb.bundleIdentifier.js : null; } catch (e) {} out.push({ name: fm.displayNameAtPath(p).js, path: p, bundle: b || null }); } return JSON.stringify({ apps: out, system: def && def.path ? def.path.js : null }); }';
       const r = await exec("osascript", ["-l", "JavaScript", "-e", jxa, `${dir}/sample.txt`], { timeout: 5000 }).catch(() => null);
       try { const o = JSON.parse(r?.stdout || "{}"); macApps = o.apps ?? []; system = o.system ?? null; } catch { /* the editors alone */ }
+    }
+    if (platform === "linux") {
+      // The desktop's apps for a text file (their .desktop files), as macOS's list above.
+      const dir = `${appHome()}/data/ws-settings`;
+      await exec("sh", ["-c", 'mkdir -p "$1" && { [ -f "$1/sample.txt" ] || printf "text\\n" >"$1/sample.txt"; }', "sample", dir]).catch(() => null);
+      const r = await exec("sh", ["-c", LINUX_APPS_SH, "apps", `${dir}/sample.txt`], { timeout: 5000 }).catch(() => null);
+      ({ apps: macApps, system } = parseLinuxApps(r?.stdout));
     }
     x.apps = { catalogInstalled, macApps, system };
     return true;
@@ -560,11 +567,13 @@ function automationsPage(t, x) {
   const runner = shared("workspaces.runner") ?? { on: false, running: false };
   const runnerNote = !runner.on ? "Off: they run while Herdr is open"
     : !runner.running ? "On, but not running yet"
-    : runner.via === "launchd" ? `On: running via launchd${runner.pid ? ` (pid ${runner.pid})` : ""}`
+    : runner.via === "launchd" || runner.via === "systemd" ? `On: running via ${runner.via}${runner.pid ? ` (pid ${runner.pid})` : ""}`
     : `On: running in herdr-core${runner.pid ? ` (pid ${runner.pid})` : ""}`;
-  const mac = (window()?.platform ?? "macos") === "macos";
-  const loginNote = !mac ? "macOS only. On Linux, herdr-ws-runner --login on prints a systemd user unit to set up."
-    : runner.login ? `On: ${tilde(runner.plist || `${home()}/Library/LaunchAgents/dev.herdr.ws-runner.plist`)}` : "";
+  const platform = window()?.platform ?? "macos";
+  const mac = platform === "macos";
+  const canLogin = mac || platform === "linux";
+  const loginNote = !canLogin ? "macOS and Linux only."
+    : runner.login ? `On: ${tilde(runner.plist || (mac ? `${home()}/Library/LaunchAgents/dev.herdr.ws-runner.plist` : `${home()}/.config/systemd/user/herdr-ws-runner.service`))}` : "";
   const s = (key) => AUTOMATIONS_SETTINGS.find((a) => a.key === key);
   const val = (key) => automationSetting(x.settings, key);
   const quiet = val("quiet-hours");
@@ -606,10 +615,10 @@ function automationsPage(t, x) {
       toggle(t, "wsx-s-runner-switch", runner.on, () => setShared("workspaces.runner.set", { on: !runner.on, at: Date.now() })),
       Boolean(runner.on && !runner.running)))
     .child(row(t, "wsx-au-login", "Start at login",
-      "Install a macOS LaunchAgent so automations run after a reboot without opening Herdr. Shell scripts run without starting herdr-core.",
+      `Install a ${mac ? "macOS LaunchAgent" : "systemd user unit"} so automations run after a reboot without opening Herdr. Shell scripts run without starting herdr-core.`,
       loginNote,
-      toggle(t, "wsx-au-login-switch", Boolean(runner.login), () => setShared("workspaces.runner.set", { login: !runner.login, at: Date.now() }), !mac),
-      false, !mac))
+      toggle(t, "wsx-au-login-switch", Boolean(runner.login), () => setShared("workspaces.runner.set", { login: !runner.login, at: Date.now() }), !canLogin),
+      false, !canLogin))
     .child(div().h(14))
     .child(heading(t, "Limits & quiet hours"))
     .child(row(t, "wsx-au-parallel", s("max-parallel").title,
@@ -718,10 +727,11 @@ function filesPage(t, x, view) {
   const broken = x.settings.error;
   const val = (key) => fileSetting(x.settings, key);
   const off = Boolean(broken) || x.busy;
+  const words = (s) => platformWords(s, window()?.platform ?? "macos");
   const f = (key) => FILES_SETTINGS.find((s) => s.key === key);
   const choiceRow = (key, greyed = false) => {
     const s = f(key), now = val(key);
-    return row(t, `wsx-files-${key}`, s.title, s.what, key === "cmd-click" && now === "off" && !broken ? s.off : "",
+    return row(t, `wsx-files-${key}`, words(s.title), words(s.what), key === "cmd-click" && now === "off" && !broken ? words(s.off) : "",
       segmented(t, `wsx-files-${key}-seg`, s.values, now, (v, cx) => setFileSetting(x, key, v, cx), off || greyed),
       false, Boolean(broken) || greyed);
   };
@@ -731,7 +741,7 @@ function filesPage(t, x, view) {
     .child(div().pb(4).text_size(18).font_semibold().text_color(t.foreground).child("Files"))
     // Two lines, so the path never breaks at one of its slashes.
     .child(v_flex().pb(14).text_size(12.5).line_height("18px").text_color(t.dim)
-      .child(div().child("Defaults for the Files view and Cmd-clicked paths."))
+      .child(div().child(words("Defaults for the Files view and Cmd-clicked paths.")))
       .child(div().child(`Changes apply immediately and save to ${tilde(file())}.`)))
     .when(Boolean(broken), (el) => el.child(div().mb(14).p(10).rounded(8).bg(t.blocked + "1f").text_size(12.5).line_height("18px").text_color(t.blocked)
       .child(`${tilde(file())} isn't valid JSONC (${broken}). Defaults stay in effect until it's fixed.`)))
@@ -783,9 +793,12 @@ function vaultPage(t, x) {
     .when(v.buttons.length > 0, (el) => el.child(h_flex().flex_none().gap(8).items_center()
       .children(v.buttons.map((btn) => actButton(t, `wsx-v-broker-${btn.op}`, btn.label, btn.kind, btn.enabled, (_e, cx) => brokerAct(x, btn.op, cx))))));
   const s = (key) => VAULT_SETTINGS.find((a) => a.key === key);
-  const choiceRow = (key) => row(t, `wsx-v-${key}`, s(key).title, s(key).what, "",
-    segmented(t, `wsx-v-${key}-seg`, s(key).values, vaultSetting(x.settings, key), (val, cx) => setVaultSetting(x, key, val, cx), off),
-    false, Boolean(broken));
+  // Protected needs macOS: elsewhere new secrets are Standard, whatever default-tier says.
+  const tierOff = (key) => key === "default-tier" && !isMac();
+  const choiceRow = (key) => row(t, `wsx-v-${key}`, s(key).title, s(key).what,
+    tierOff(key) ? "New secrets are Standard here: Protected needs macOS." : "",
+    segmented(t, `wsx-v-${key}-seg`, s(key).values, tierOff(key) ? "standard" : vaultSetting(x.settings, key), (val, cx) => setVaultSetting(x, key, val, cx), off || tierOff(key)),
+    false, Boolean(broken) || tierOff(key));
   return v_flex().w_full()
     .child(div().pb(4).text_size(18).font_semibold().text_color(t.foreground).child("Secrets"))
     .child(div().pb(14).text_size(12.5).line_height("18px").text_color(t.dim)

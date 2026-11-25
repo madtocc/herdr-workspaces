@@ -11,9 +11,11 @@ const ACCOUNT = "master";
 const SECURITY = "/usr/bin/security";
 
 // ---- the master key ----
-// A vault.key that's there is used as it is, before any Keychain; else the Keychain on macOS
-// (unless HERDR_VAULT_KEY=file); else a new vault.key. HERDR_VAULT_KEYCHAIN names the keychain
-// file the security calls use (a throwaway one in a test).
+// A vault.key that's there is used as it is, before any Keychain; else the Keychain on macOS, or
+// the desktop's keyring (Secret Service, through secret-tool) on Linux (unless HERDR_VAULT_KEY=file);
+// else a new vault.key. HERDR_VAULT_KEYCHAIN names the keychain file the security calls use (a
+// throwaway one in a test). A keychain or keyring that's there but doesn't answer is an error, never
+// a new key: one made then would leave every secret sealed with the old one unreadable.
 
 function keyFromFile() {
   const file = vaultFile("vault.key");
@@ -51,6 +53,68 @@ function keyToKeychain(key) {
   if (r.status !== 0 || /error|fail/i.test(r.stderr || "")) throw fail("keychain", "couldn't keep the vault's key in the Keychain");
 }
 
+// ---- Linux: the Secret Service (GNOME Keyring, KWallet), through secret-tool ----
+// Used when secret-tool is on PATH and a session bus is there. The key goes in on stdin, never as an
+// argument. A new key goes there only while the keyring is unlocked (keyringState); reading one from a
+// locked keyring asks the person to unlock it (the desktop's own dialog), with a minute's wait.
+const SECRET_TOOL_ATTRS = ["service", SERVICE, "account", ACCOUNT];
+let secretTool;
+function secretToolPath() {
+  if (secretTool !== undefined) return secretTool;
+  secretTool = null;
+  for (const dir of String(process.env.PATH ?? "").split(":")) {
+    const p = `${dir || "."}/secret-tool`;
+    try { fs.accessSync(p, fs.constants.X_OK); secretTool = p; break; } catch { /* not here */ }
+  }
+  return secretTool;
+}
+
+function useSecretService() {
+  return process.platform === "linux" && process.env.HERDR_VAULT_KEY !== "file" &&
+    Boolean(process.env.DBUS_SESSION_BUS_ADDRESS || process.env.XDG_RUNTIME_DIR) && Boolean(secretToolPath());
+}
+
+// Whether the keyring a new key would go into (the Secret Service's default collection) is there
+// and unlocked: "unlocked" | "locked" | "absent" (no default collection: one would be made with a
+// dialog) | null (no answer). Asked of busctl, else gdbus, so nothing prompts.
+function keyringState() {
+  const path = "/org/freedesktop/secrets/aliases/default";
+  const ask = [
+    ["busctl", ["--user", "get-property", "org.freedesktop.secrets", path, "org.freedesktop.Secret.Collection", "Locked"]],
+    ["gdbus", ["call", "--session", "--dest", "org.freedesktop.secrets", "--object-path", path, "--method", "org.freedesktop.DBus.Properties.Get", "org.freedesktop.Secret.Collection", "Locked"]],
+  ];
+  for (const [cmd, args] of ask) {
+    const r = spawnSync(cmd, args, { encoding: "utf8", timeout: 5000 });
+    if (r.error) continue; // not installed
+    const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+    if (r.status === 0 && /\btrue\b/.test(out)) return "locked";
+    if (r.status === 0 && /\bfalse\b/.test(out)) return "unlocked";
+    if (/does not exist|UnknownObject|UnknownMethod|No such object/i.test(out)) return "absent";
+    return null;
+  }
+  return null;
+}
+
+function keyFromSecretService() {
+  const r = spawnSync(secretToolPath(), ["lookup", ...SECRET_TOOL_ATTRS], { encoding: "utf8", timeout: 60000 });
+  const out = String(r.stdout ?? "").trim(), err = String(r.stderr ?? "").trim();
+  // Not there: exit 1 with nothing said. Anything else said (no keyring, locked, timed out): an error.
+  if (r.status === 1 && !out && !err) return null;
+  if (r.status !== 0 || r.error) throw fail("keychain", `the desktop keyring didn't give the vault's key${err ? ` (${err.split("\n")[0]})` : r.error ? ` (${r.error.code ?? r.error.message})` : ""}; set HERDR_VAULT_KEY=file to keep it in ~/.herdr/vault instead`);
+  const key = Buffer.from(out, "base64");
+  if (key.length !== 32) throw fail("keychain", "the vault's key in the desktop keyring isn't a 32-byte key");
+  return key;
+}
+
+function keyToSecretService(key) {
+  const r = spawnSync(secretToolPath(), ["store", "--label", "Herdr Secrets (Standard)", ...SECRET_TOOL_ATTRS],
+    { input: key.toString("base64"), encoding: "utf8", timeout: 60000 });
+  if (r.status !== 0 || r.error) {
+    const err = String(r.stderr ?? "").trim().split("\n")[0];
+    throw fail("keychain", `couldn't keep the vault's key in the desktop keyring${err ? ` (${err})` : ""}; set HERDR_VAULT_KEY=file to keep it in ~/.herdr/vault instead`);
+  }
+}
+
 let cachedKey = null;
 
 // The key, made when there's none yet (create: false only reads).
@@ -65,6 +129,22 @@ export function masterKey({ create = true } = {}) {
       const back = keyFromKeychain();
       if (!back || !back.equals(key)) throw fail("keychain", "the vault's key didn't read back from the Keychain");
     }
+  } else if (!key && useSecretService()) {
+    // Secrets sealed already and no vault.key: their key is in the keyring (unlocking it may ask).
+    // A new vault: the keyring only when it's there and open, so no dialog ever waits on an
+    // agent or an automation (autologin and SSH sessions often have it locked); else the file.
+    // A failed store falls back to the file too: no secret was sealed with a key yet.
+    if (fs.existsSync(vaultFile("standard.enc"))) {
+      key = keyFromSecretService();
+      if (!key) throw fail("keychain", "standard.enc is there but its key isn't (no vault.key, nothing in the desktop keyring)");
+    } else if (create && keyringState() === "unlocked") {
+      const made = crypto.randomBytes(32);
+      try {
+        keyToSecretService(made);
+        const back = keyFromSecretService();
+        if (back && back.equals(made)) key = made;
+      } catch { /* the file, below */ }
+    }
   }
   if (!key && create) {
     ensureVaultDir();
@@ -76,10 +156,11 @@ export function masterKey({ create = true } = {}) {
   return key;
 }
 
-// Where the key is: "file" | "keychain" | null (none yet).
+// Where the key is: "file" | "keychain" | "keyring" (Linux's Secret Service) | null (none yet).
 export function keyPlace() {
   if (fs.existsSync(vaultFile("vault.key"))) return "file";
   if (useKeychain()) return keyFromKeychain() ? "keychain" : null;
+  if (useSecretService() && fs.existsSync(vaultFile("standard.enc"))) return keyFromSecretService() ? "keyring" : null;
   return null;
 }
 

@@ -272,25 +272,26 @@ export function parseSearchOutput(stdout, root, maxMatches = 200) {
 // Editors with a command line, as Compozy lists them: id, name, the command, the macOS bundle
 // id, and how a line is passed ("colon": file:line, "goto": -g file:line, "line": --line n file).
 export const EDITOR_CATALOG = [
-  { id: "zed", label: "Zed", binary: "zed", bundle: "dev.zed.Zed", lineStyle: "colon" },
-  { id: "cursor", label: "Cursor", binary: "cursor", bundle: "com.todesktop.230313mzl4w4u92", lineStyle: "goto" },
-  { id: "vscode", label: "VS Code", binary: "code", bundle: "com.microsoft.VSCode", lineStyle: "goto" },
-  { id: "vscode-insiders", label: "VS Code Insiders", binary: "code-insiders", bundle: "com.microsoft.VSCodeInsiders", lineStyle: "goto" },
-  { id: "windsurf", label: "Windsurf", binary: "windsurf", bundle: "com.exafunction.windsurf", lineStyle: "goto" },
-  { id: "sublime", label: "Sublime Text", binary: "subl", bundle: "com.sublimetext.4", lineStyle: "colon" },
-  { id: "idea", label: "IntelliJ IDEA", binary: "idea", bundle: "com.jetbrains.intellij", lineStyle: "line" },
-  { id: "webstorm", label: "WebStorm", binary: "webstorm", bundle: "com.jetbrains.WebStorm", lineStyle: "line" },
-  { id: "goland", label: "GoLand", binary: "goland", bundle: "com.jetbrains.goland", lineStyle: "line" },
-  { id: "pycharm", label: "PyCharm", binary: "pycharm", bundle: "com.jetbrains.pycharm", lineStyle: "line" },
+  { id: "zed", label: "Zed", binary: "zed", bundle: "dev.zed.Zed", lineStyle: "colon", desktop: ["dev.zed.Zed.desktop", "zed.desktop"] },
+  { id: "cursor", label: "Cursor", binary: "cursor", bundle: "com.todesktop.230313mzl4w4u92", lineStyle: "goto", desktop: ["cursor.desktop"] },
+  { id: "vscode", label: "VS Code", binary: "code", bundle: "com.microsoft.VSCode", lineStyle: "goto", desktop: ["code.desktop"] },
+  { id: "vscode-insiders", label: "VS Code Insiders", binary: "code-insiders", bundle: "com.microsoft.VSCodeInsiders", lineStyle: "goto", desktop: ["code-insiders.desktop"] },
+  { id: "windsurf", label: "Windsurf", binary: "windsurf", bundle: "com.exafunction.windsurf", lineStyle: "goto", desktop: ["windsurf.desktop"] },
+  { id: "sublime", label: "Sublime Text", binary: "subl", bundle: "com.sublimetext.4", lineStyle: "colon", desktop: ["sublime_text.desktop"] },
+  { id: "idea", label: "IntelliJ IDEA", binary: "idea", bundle: "com.jetbrains.intellij", lineStyle: "line", desktop: ["jetbrains-idea.desktop", "jetbrains-idea-ce.desktop"] },
+  { id: "webstorm", label: "WebStorm", binary: "webstorm", bundle: "com.jetbrains.WebStorm", lineStyle: "line", desktop: ["jetbrains-webstorm.desktop"] },
+  { id: "goland", label: "GoLand", binary: "goland", bundle: "com.jetbrains.goland", lineStyle: "line", desktop: ["jetbrains-goland.desktop"] },
+  { id: "pycharm", label: "PyCharm", binary: "pycharm", bundle: "com.jetbrains.pycharm", lineStyle: "line", desktop: ["jetbrains-pycharm.desktop", "jetbrains-pycharm-ce.desktop"] },
   { id: "xcode", label: "Xcode", binary: "xed", bundle: "com.apple.dt.Xcode", lineStyle: "xed" },
-  { id: "android-studio", label: "Android Studio", binary: "studio", bundle: "com.google.android.studio", lineStyle: "line" },
+  { id: "android-studio", label: "Android Studio", binary: "studio", bundle: "com.google.android.studio", lineStyle: "line", desktop: ["android-studio.desktop", "jetbrains-studio.desktop"] },
   { id: "fleet", label: "Fleet", binary: "fleet", bundle: "fleet.app", lineStyle: "colon" },
 ];
 const IMAGE_VIEWERS = new Set(["com.apple.Preview", "preview"]);
 const isTexty = (ext) => !IMAGES.has(ext) && ext !== "svg" ? !BINARY_EXTS.has(ext) : false;
 
 // The Open with… list for a file: the catalog's installed editors (catalogInstalled: ids) and the
-// apps macOS lists for it (macApps: [{ name, path, bundle }]), each once (by bundle, else name),
+// apps the system lists for it (macApps: [{ name, path, bundle }]: macOS's, or on Linux the .desktop
+// files settingsfacts' parseLinuxApps reads, bundle their desktop id), each once (by bundle, else name),
 // without helper apps nested in another .app or test browsers. Order: for text, code editors first
 // (Xcode after them), then the rest; for images, image viewers first. Each:
 // { id, label, kind: "editor" | "app", binary?, bundle?, path?, lineStyle? }.
@@ -305,12 +306,13 @@ export function mergeApps({ catalogInstalled = [], macApps = [], ext = "", platf
   };
   const installed = new Set(catalogInstalled);
   for (const e of EDITOR_CATALOG) if (installed.has(e.id)) add({ id: e.id, label: e.label, kind: "editor", binary: e.binary, bundle: e.bundle, lineStyle: e.lineStyle, cli: true });
-  if (platform === "macos") for (const a of macApps ?? []) {
+  if (platform === "macos" || platform === "linux") for (const a of macApps ?? []) {
     const path = String(a?.path ?? "");
     if (!a?.name || !path) continue;
     if (/\.app\/.+\.app/i.test(path) || /\.app\/Contents\//i.test(path)) continue;
     if (/ms-playwright|puppeteer|Google Chrome for Testing|\/Library\/Caches\/|\/\.cache\//i.test(path)) continue;
-    const cat = EDITOR_CATALOG.find((e) => a.bundle && e.bundle.toLowerCase() === String(a.bundle).toLowerCase());
+    const ab = String(a.bundle ?? "").toLowerCase();
+    const cat = ab ? EDITOR_CATALOG.find((e) => e.bundle.toLowerCase() === ab || (e.desktop ?? []).some((d) => d.toLowerCase() === ab)) : undefined;
     if (cat) {
       // Its command line was found already: keep it (line numbers), and note where the app is.
       const had = out.find((x) => x.id === cat.id);
@@ -372,6 +374,10 @@ export function parsePrefs(text) {
 // The command that opens a file with an app (line: 1-based or null). An editor whose command line was
 // found (cli) runs it, with the line; one macOS listed without it opens as an app. app.id "system": the system's
 // opener; "reveal": the file shown in Finder / Explorer / its folder.
+// Linux: start a .desktop file's app with a file (gio, else gtk-launch, else the system's opener).
+export const LINUX_LAUNCH_SH = 'command -v gio >/dev/null 2>&1 && exec gio launch "$1" "$2"; ' +
+  'command -v gtk-launch >/dev/null 2>&1 && exec gtk-launch "$(basename "$1" .desktop)" "$2"; exec xdg-open "$2"';
+
 export function launchCommand(app, path, line, platform = "macos") {
   const at = line ? `${path}:${line}` : path;
   if (app?.id === "reveal") {
@@ -384,6 +390,9 @@ export function launchCommand(app, path, line, platform = "macos") {
     if (platform === "windows") return { cmd: "explorer", args: [path] };
     return { cmd: "xdg-open", args: [path] };
   }
+  // Linux: an app found by its .desktop file (and no command line found for it) starts through it.
+  const desktop = platform === "linux" && !app.cli && /\.desktop$/.test(String(app.path ?? ""));
+  if (desktop) return { cmd: "sh", args: ["-c", LINUX_LAUNCH_SH, "open", app.path, path] };
   if (app.kind === "editor" && app.binary && (platform !== "macos" || !app.path || app.cli)) {
     if (app.lineStyle === "goto") return { cmd: app.binary, args: line ? ["-g", at] : [path] };
     if (app.lineStyle === "line") return { cmd: app.binary, args: line ? ["--line", String(line), path] : [path] };

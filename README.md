@@ -210,8 +210,8 @@ no agent is needed, and you read the draft before it's saved.
   when there's nothing to do. It runs only once you've allowed it.
 - **Keep running**, in Settings > Automations: a background process herdr-core
   keeps going while Herdr is closed (it needs Node 20.6 or newer). **Start at
-  login** (macOS) runs it from a LaunchAgent after a reboot, without opening
-  Herdr; scripts then run without starting herdr-core. Without it
+  login** runs it after a reboot without opening Herdr, from a LaunchAgent on
+  macOS or a systemd user unit on Linux; scripts then run without starting herdr-core. Without it
   they run while Herdr is open. A schedule missed while nothing was running
   runs when Herdr opens if it was due in the last 12 hours; older ones are
   reported as missed, with a toast, for Run now.
@@ -272,7 +272,8 @@ changed). No command prints a value, and none takes one as an argument. The star
 guide tells agents to use it instead of asking you to paste a token into the chat.
 
 - **Standard** needs no setup: the value is encrypted under `~/.herdr/vault`, its
-  key in your login Keychain. It keeps the value out of chats and of what agents
+  key in your login Keychain (on Linux, your desktop's keyring through `secret-tool`,
+  else a `vault.key` file beside it; `HERDR_VAULT_KEY=file` picks the file). It keeps the value out of chats and of what agents
   print, but any program running as you can still use it through
   `herdr-ws-secret`, or read it.
 - **Protected** (macOS): Settings > Secrets builds and signs a small broker on your
@@ -344,6 +345,28 @@ leaves that file to you: new default shortcuts in its updates are added by hand.
   desktop, and a click takes you to the agent. With Keep running on they come
   while Herdr is closed too.
 
+## Platforms
+
+- **macOS**: supported. It's built and used there every day.
+- **Linux**: experimental. Tried in a VM on Ubuntu 26.04 (ARM64, GNOME on Wayland):
+  every screen, the background runner, automations, Files and Standard secrets
+  work; Protected secrets need macOS. Not yet tried on other desktops (KDE,
+  Sway), other distributions, a real GPU, or with signed-in agents and GitHub.
+  Please open an issue for what breaks.
+- **Windows**: not yet; it's being worked on.
+
+What Linux uses in macOS's place:
+
+| | macOS | Linux |
+|---|---|---|
+| Start at login | a LaunchAgent | a systemd user unit (`systemctl --user`) |
+| Standard secrets' key | the login Keychain | the desktop keyring (`secret-tool`, package `libsecret-tools`), else a file |
+| Desktop notifications | `terminal-notifier`, else `osascript` | `notify-send` (`libnotify-bin`) |
+| Open in ▸ | the apps macOS offers | your editors and the `.desktop` apps for the file's type (`xdg-mime`, `gio`) |
+| Copy | `pbcopy` | `wl-copy` (`wl-clipboard`) or `xclip` |
+| Move to trash | `trash` | `gio trash`, else `~/.herdr/trash` |
+| Clicking a path in a terminal | Cmd-click | Ctrl-click |
+
 ## Install
 
 Ask your agent to add this layout (Herdr's own guide, `~/.config/herdr-app/AGENTS.md`,
@@ -352,7 +375,7 @@ says how), or by hand:
 1. Copy `layouts/workspaces.json` to `~/.config/herdr-app/layouts/` and the nineteen
    folders in `mods/` to `~/.config/herdr-app/mods/` (rename them if a name is taken).
 2. For agent instructions from the + menu, put the launcher on your `PATH` and
-   point `programs.json` at it. `herdr-ws-run` starts automations from other
+   point Herdr's `~/.config/herdr-app/programs.json` at it. `herdr-ws-run` starts automations from other
    apps and lets agents add them, and `herdr-ws-notify --off` / `--on` is the
    switch for the desktop notifications (on macOS, `brew install terminal-notifier`
    makes a click on one go to Herdr). `herdr-ws-secret` is how agents use your
@@ -432,7 +455,8 @@ on, that work is done by a Node process herdr-core holds as the terminal
 old and finished run terminals with `hc kill`, and reads herdr-core's terminal list, the app's
 layout document, `shared.json`, `programs.json` and `view.json` (which tab is shown),
 and connects to the app's socket to see whether Herdr is open. Start at login writes
-`~/Library/LaunchAgents/dev.herdr.ws-runner.plist` and loads it with `launchctl`; the runner
+`~/Library/LaunchAgents/dev.herdr.ws-runner.plist` and loads it with `launchctl` (on Linux,
+`~/.config/systemd/user/herdr-ws-runner.service`, enabled with `systemctl --user`); the runner
 it starts looks for herdr-core's socket before calling `hc`, so it doesn't start herdr-core
 until an agent automation fires. A shell automation runs its script (`bash`, `zsh` or `sh`)
 as you, in its folder, once you've allowed it. Either runner closes an
@@ -449,7 +473,8 @@ conversation's transcript and the folders Claude keeps for it under
 Compact), presses Esc there with `hc keys` (Interrupt) and puts a terminal or
 session id on the clipboard (`pbcopy`, `wl-copy` or `xclip`). Settings > Features,
 Settings > Automations, Settings > Files and Settings > Experimental write `~/.herdr/settings.jsonc` (the Files
-section asks macOS which apps open a text file, with `command -v` and `osascript`, about
+section asks the system which apps open a text file, with `command -v` and `osascript` (on Linux,
+`xdg-mime` and the `.desktop` files that list its type), about
 a sample file it writes once under `~/.config/herdr-app/data/ws-settings/`); the switcher, the background
 runner (every 2 seconds), the status bar and `herdr-ws-run` (with `node` when it's
 there) read it to know which add-ons are off, and the sidebar footer reads the shown
@@ -476,9 +501,10 @@ lists folders and reads files there, as Herdr's Files does, and also writes the
 file you save (on this computer only), searches with `rg` (else `grep`), runs
 `git` reads (branch, status, ignored files), `wc -c`, `head -c` and `sips` (an
 image's size), links images it previews under `~/.config/herdr-app/data/ws-files/`
-(`ln -sf`, `unlink`), asks macOS which apps open a file (`osascript`), looks
-for known editors with `command -v`, starts the app you pick (or `open -R` to
-reveal it), and remembers the pick in `~/.herdr/files-prefs.json`. Its right-click menu makes,
+(`ln -sf`, `unlink`), asks macOS which apps open a file (`osascript`; on Linux,
+`xdg-mime` and the `.desktop` files), looks for known editors with `command -v`,
+starts the app you pick (`open`; on Linux the editor's command, `gio launch` or
+`xdg-open`), or reveals it (`open -R`, `xdg-open` on its folder), and remembers the pick in `~/.herdr/files-prefs.json`. Its right-click menu makes,
 renames and duplicates files and folders with `mkdir`, `mv` and `cp` (never over an existing
 name), moves them to the Trash with `trash` or `gio trash` (else into `~/.herdr/trash`), counts a
 folder's files with `find`, copies paths to the clipboard and opens a terminal tab there. It and its Cmd-click handler

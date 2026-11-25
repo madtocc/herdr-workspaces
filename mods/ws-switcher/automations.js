@@ -107,7 +107,7 @@
 // as usual. On again it carries on from then (gate()): no catch-up, an `every` one waits its
 // interval, GitHub's first look only notes what's there (featuregate.js).
 
-import { spaces, agents, terminals, focused, run, shared, setShared, home, appHome, readTextFile, writeTextFile, watchFolder, exec, notify, knownAgents } from "herdr";
+import { spaces, agents, terminals, focused, run, shared, setShared, home, appHome, readTextFile, writeTextFile, watchFolder, exec, notify, knownAgents, window } from "herdr";
 import * as fs from "fs/promises";
 import { parseWhen, describe, due, nextAt, shortTime } from "./when.js";
 import { withKnobs } from "./knobs.js";
@@ -1181,7 +1181,7 @@ export class Runner {
       // Minutes skipped since the last tick (the Mac slept): their schedules run late, once, and
       // the `wake` automations run.
       if (on && this.minute !== undefined && minute > this.minute + 1) {
-        this.catchUp((this.minute + 1) * 60e3, now, "while the Mac was asleep");
+        this.catchUp((this.minute + 1) * 60e3, now, window()?.platform === "macos" ? "while the Mac was asleep" : "while the computer was asleep");
         this.lifecycle("wake", "The computer woke from sleep", now);
       }
       this.minute = minute;
