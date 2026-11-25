@@ -19,7 +19,10 @@
 // records first (menuAt()). Turned on again, the numbers come at the next read.
 // A sub-agent's row in the tree gets the same second line (subRow(); statAgents() adds the
 // live sub-agents without a pane, which agents() leaves out), and its tree lines run the
-// whole row so they join at either height (treeLine()).
+// whole row so they join at either height (treeLine()). A sub-agent with its own sub-agents
+// folds them like a top row (its chevron or its icon: fold(), toggleFold(), tree()'s `up`),
+// each line runs down from the middle of the icon above it, and a stat line too narrow for
+// the meter drops it, so the model shows and the % says how full (measured(), statWidth()).
 // Also: History's own right-click Wipe hands an Antigravity conversation that's open in no
 // terminal to the Wipe dialog here (props wipe with no address: nothing to close first).
 // Also: a right-click on an agent's row (a sub-agent's too, and on the rail) opens its
@@ -193,6 +196,11 @@ function dayTime(ms) {
 const fullness = (t, pct) => (pct >= 85 ? t.blocked : pct >= 70 ? t.ansi3 : t.muted);
 
 // A small bar, filled to pct.
+// A stat line's width at its 11 px text, roughly (6.3 px a character): when its column is
+// narrower, the meter goes, so the model keeps its room (measured(), statLine()).
+const statWidth = (s) => (s.name ? s.name.length * 6.3 + 5 : 0)
+  + (s.pct != null ? 31 + String(s.pct).length * 7 + 9 : 0)
+  + (s.compactions > 0 ? 17 + String(s.compactions).length * 7 : 0);
 const meter = (t, pct, w) => div().w(w).h(4).flex_none().rounded(2).bg(t.border)
   .child(div().h(4).rounded(2).bg(fullness(t, pct)).w(Math.max(2, Math.round((w * Math.min(pct, 100)) / 100))));
 
@@ -274,6 +282,7 @@ export default class Agents extends View {
     if (p?.sortMenu) return;
     if (p?.agentMenu || p?.send || p?.wipe || p?.handoff) return this.initOverlay(p, cx);
     this.folded = new Set();
+    this.widths = new Map();
     // Each agent's last state and when it changed (ms), kept across restarts.
     this.changed = JSON.parse(localStorage.getItem("changed") ?? "{}");
     this.pendingPins = JSON.parse(localStorage.getItem("pins") ?? "[]");
@@ -402,8 +411,8 @@ export default class Agents extends View {
   }
 
   // An agent row's second line: its model, a meter of its context and how often it
-  // was compacted; the rest (effort, tokens, cost) on hover.
-  statLine(t, a, s, id = `stat-${a.address}`) {
+  // was compacted; the rest (effort, tokens, cost) on hover. Short: no meter, the % says it.
+  statLine(t, a, s, id = `stat-${a.address}`, short = false) {
     const pct = s.pct;
     return h_flex()
       .id(id)
@@ -415,7 +424,7 @@ export default class Agents extends View {
       .tooltip(statDetail(s))
       .when(Boolean(s.name), (el) => el.child(div().min_w(0).truncate().child(s.name)))
       .when(pct != null, (el) => el
-        .child(meter(t, pct, 26))
+        .when(!short, (el) => el.child(meter(t, pct, 26)))
         .child(div().flex_none().text_color(pct >= 70 ? fullness(t, pct) : t.dim).child(`${pct}%`)))
       .when(pct == null && s.used != null, (el) => el.child(div().flex_none().child(tokens(s.used))))
       .when(s.compactions > 0, (el) => el.child(h_flex().flex_none().gap(2).items_center()
@@ -1261,19 +1270,68 @@ export default class Agents extends View {
     run("terminal.keep", { terminal: k.address });
   }
 
-  // Live sub-agents of `addr`, depth first, each with the tree lines in front of it.
-  tree(all, addr, lead = []) {
+  // Live sub-agents of `addr`, depth first, each with the tree lines in front of it
+  // and the sub-agents above it (`up`, nearest last), so folding one hides its own.
+  tree(all, addr, lead = [], up = []) {
     const kids = all.filter((k) => k.parent === addr && k.state === "live");
     return kids.flatMap((k, i) => {
       const last = i === kids.length - 1;
       return [
-        { t: k, lines: [...lead, last ? "└" : "├"] },
-        ...this.tree(all, k.address, [...lead, last ? "" : "│"]),
+        { t: k, lines: [...lead, last ? "└" : "├"], up },
+        ...this.tree(all, k.address, [...lead, last ? "" : "│"], [...up, k.address]),
       ];
     });
   }
 
-  subRow(t, s, shown, compact, root) {
+  // The fold chevron of a row with sub-agents (`subs`, every one under it); folded,
+  // the count too, colored by the most urgent one.
+  fold(t, addr, subs) {
+    const sts = subs.map((s) => kidStatus(s.t, this.listed));
+    const top = sts.reduce((m, s) => ((RANK[s] ?? 0) > (RANK[m] ?? 0) ? s : m), null);
+    const open = !this.folded.has(addr);
+    return div()
+      .id(`fold-${addr}`)
+      .h(18)
+      .px(3)
+      .gap(3)
+      .flex()
+      .flex_none()
+      .items_center()
+      .rounded(4)
+      .text_size(11)
+      .text_color(open ? t.dim : (t[top] ?? t.dim))
+      .cursor_pointer()
+      .hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .on_click((_e, cx) => {
+        cx.stop_propagation();
+        this.toggleFold(addr, cx);
+      })
+      .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(11).flex_none())
+      .when(!open, (el) => el.child(String(subs.length)));
+  }
+
+  toggleFold(addr, cx) {
+    this.folded.has(addr) ? this.folded.delete(addr) : this.folded.add(addr);
+    cx.notify();
+  }
+
+  // A stat line's column reports its width; too narrow for the whole line (statWidth),
+  // the line drops the meter and keeps the model and the % (statLine's `short`).
+  measured(el, id) {
+    return el.on_size_change((size, cx) => {
+      const w = Math.round(size.width);
+      if (this.widths.get(id) === w) return;
+      this.widths.set(id, w);
+      cx.notify();
+    });
+  }
+
+  short(id, s) {
+    const w = this.widths.get(id);
+    return w != null && w < statWidth(s);
+  }
+
+  subRow(t, s, shown, compact, root, kids = []) {
     const k = s.t;
     const st = kidStatus(k, this.listed);
     const pic = icon(k.program, 14, t.foreground);
@@ -1283,7 +1341,7 @@ export default class Agents extends View {
     const nameEl = div().flex_1().min_w(0).truncate().text_color(on ? t.foreground : t.muted).child(k.name || k.template || k.program?.name || k.address);
     return h_flex()
       .id(`sub-${k.address}`)
-      .pl(39)
+      .pl(9)
       .pr(8)
       .rounded(8)
       .h(stat ? 38 : 26)
@@ -1298,23 +1356,29 @@ export default class Agents extends View {
         cx.stop_propagation();
         this.menuAt(cx, this.agentsBy?.get(k.address) ?? k, k.name || k.template || k.program?.name || k.address, st, false);
       })
-      .children(s.lines.map((l) => this.treeLine(t, l, stat ? 38 : 26, stat ? 15 : 17)))
-      .when(Boolean(pic), el => el.child(div().mr(8).child(pic)))
+      .children(s.lines.map((l) => this.treeLine(t, l, stat ? 38 : 26, stat ? 23 : 17)))
+      .when(Boolean(pic), el => el.child(div().id(`sub-fold-${k.address}`).mr(6)
+        .when(kids.length > 0, (el) => el.on_click((_e, cx) => { cx.stop_propagation(); this.toggleFold(k.address, cx); }))
+        .child(pic)))
       .child(stat
-        ? v_flex().flex_1().min_w(0).mr(6).gap(1).child(nameEl).child(this.statLine(t, k, stat, `sub-stat-${k.address}`))
+        ? this.measured(v_flex().id(`sub-col-${k.address}`).flex_1().min_w(0).mr(6).gap(1), k.address)
+          .child(nameEl).child(this.statLine(t, k, stat, `sub-stat-${k.address}`, this.short(k.address, stat)))
         : nameEl)
+      .when(kids.length > 0, (el) => el.child(div().mr(4).child(this.fold(t, k.address, kids))))
       .child(this.status(t, { status: st }, compact));
   }
 
   // One step of a sub-row's tree lines, in a row h tall: "│" runs the whole row, "└" bends
-  // to the name (its middle `elbow` down, past the 4 px it starts above the row), "├" both.
+  // to the icon (its middle `elbow` down, past the 4 px it starts above the row), "├" both.
+  // A step is as wide as an icon's middle (7) plus the bend (6) and a gap (2), so each line
+  // runs down from the middle of the icon above it.
   treeLine(t, l, h, elbow) {
-    const seg = () => div().self_start().mt(-4).w(9).mr(4).flex_none();
-    const bend = (el) => el.h(elbow).border_l(1.5).border_b(1.5).border_color(t.input).rounded_bl(6);
+    const seg = () => div().self_start().mt(-4).ml(7).w(6).mr(2).flex_none();
+    const bend = (el) => el.h(elbow).border_l(1.5).border_b(1.5).border_color(t.input).rounded_bl(5);
     if (l === "└") return bend(seg());
     if (l === "│") return seg().h(h + 4).border_l(1.5).border_color(t.input);
     if (l === "├") return seg().h(h + 4).flex().flex_col()
-      .child(bend(div().w(9).flex_none()))
+      .child(bend(div().w(6).flex_none()))
       .child(div().flex_1().border_l(1.5).border_color(t.input));
     return seg();
   }
@@ -1370,34 +1434,11 @@ export default class Agents extends View {
       const subs = collapsed ? [] : this.tree(all, a.address);
       const r = row(a, i, subs);
       if (this.folded.has(a.address)) return [r];
-      return [r, ...subs.map((s) => this.subRow(t, s, shown, byPriority, a))];
+      return [r, ...subs
+        .filter((s) => !s.up.some((u) => this.folded.has(u)))
+        .map((s) => this.subRow(t, s, shown, byPriority, a, subs.filter((x) => x.up.includes(s.t.address))))];
     };
 
-    // The fold chevron; folded, the count too, colored by the most urgent one.
-    const fold = (a, subs) => {
-      const sts = subs.map((s) => kidStatus(s.t, this.listed));
-      const top = sts.reduce((m, s) => ((RANK[s] ?? 0) > (RANK[m] ?? 0) ? s : m), null);
-      const open = !this.folded.has(a.address);
-      return div()
-        .id(`fold-${a.address}`)
-        .h(18)
-        .px(3)
-        .gap(3)
-        .flex()
-        .items_center()
-        .rounded(4)
-        .text_size(11)
-        .text_color(open ? t.dim : (t[top] ?? t.dim))
-        .cursor_pointer()
-        .hover((s) => s.bg(t.hover).text_color(t.foreground))
-        .on_click((_e, cx) => {
-          cx.stop_propagation();
-          open ? this.folded.add(a.address) : this.folded.delete(a.address);
-          cx.notify();
-        })
-        .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(11).flex_none())
-        .when(!open, (el) => el.child(String(subs.length)));
-    };
 
     // A row reads "space \u00b7 detail": the detail is a tab someone named or the
     // agent's own title, never an automatic tab number unless two rows would
@@ -1486,14 +1527,14 @@ export default class Agents extends View {
         .when(Boolean(pic), el => el.child(div().id(`agent-fold-${a.address}`)
           .when(subs.length > 0, el => el.on_click((_e, cx) => {
             cx.stop_propagation();
-            this.folded.has(a.address) ? this.folded.delete(a.address) : this.folded.add(a.address);
-            cx.notify();
+            this.toggleFold(a.address, cx);
           })).child(pic)))
         .child(stat
-          ? v_flex().flex_1().min_w(0).gap(2).child(nameLine).child(this.statLine(t, a, stat))
+          ? this.measured(v_flex().id(`col-${a.address}`).flex_1().min_w(0).gap(2), a.address)
+            .child(nameLine).child(this.statLine(t, a, stat, undefined, this.short(a.address, stat)))
           : nameLine.flex_1())
         .when(Boolean(machine), el => el.child(div().text_size(10).text_color(t.dim).child(machine)))
-        .when(subs.length > 0, el => el.child(fold(a, subs)))
+        .when(subs.length > 0, el => el.child(this.fold(t, a.address, subs)))
         .when(this.hovered === a.address, el => el.child(pin))
         .when(this.hovered !== a.address && Boolean(when), el => el.child(div().flex_none().text_size(11).text_color(t.dim).child(duration(now - when))))
         .child(this.status(t, a, byPriority && !isPinned));

@@ -7,6 +7,9 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 
 ## [Unreleased]
 
+### New
+- **Helpers' helpers fold.** In the Agents list, a sub-agent with its own sub-agents gets a fold chevron (its icon folds too), as the top row has; folded, it says how many and the most urgent state. The tree's lines now run down from the middle of the icon above, so nested rows sit further left and their names and models fit, and a row too narrow for its model, meter and % drops the meter and keeps the model. To update by hand: copy `mods/ws-agents`.
+
 ## [0.29.1] - 2026-11-25
 
 ### Fixed
