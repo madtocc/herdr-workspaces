@@ -115,11 +115,8 @@
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input } from "gpui-base";
-import {
-  spaces, panes, machines, run, theme, shared, setShared, props, openOverlay, closeOverlay,
-  home, appHome, layout, watchFolder, readTextFile, writeTextFile, pickFolder, exec, notify, window, nextCommand, focused,
-  updates, checking,
-} from "herdr";
+import { spaces, panes, machines, run, theme, shared, setShared, props, openOverlay, closeOverlay, home, appHome, layout, watchFolder, readTextFile, writeTextFile, pickFolder, notify, window, nextCommand, focused, updates, checking } from "herdr";
+import { exec } from "./posix.js";
 import * as fs from "fs/promises";
 import { Runner, runnerDir, globalDir } from "./automations.js";
 import { PrWatcher } from "./prs.js";
@@ -132,6 +129,8 @@ import { SETTINGS_FILE, parseSettings, automationSetting } from "./settingsfacts
 import { openIn, splitAt, follow as followLedger, wantsClose, trusted, drainAsks } from "./beside.js";
 import { Features, flips, FOLLOWED } from "./featuregate.js";
 import { NotifLog } from "./notiflog.js";
+// The system's trash by its name: the Recycle Bin on Windows, the Trash elsewhere.
+const trashName = () => (window()?.platform === "windows" ? "Recycle Bin" : "Trash");
 
 // "Edit" opens the workspace's folder in the first of these that's installed,
 // else with the system's opener (Finder, the file manager, Explorer).
@@ -251,7 +250,7 @@ function scratchDeleteText(d) {
   const folders = (shared("workspaces.scratch.folders") ?? []).length;
   const open = spaces().filter((s) => (shared("workspaces.assigned") ?? {})[s.id] === d.id).length;
   const n = (k, one, many) => `${k} ${k === 1 ? one : many}`;
-  return `Moves ${tilde(d.dir)} and ${tilde(d.root)} (${n(folders, "scratch folder", "scratch folders")}, kept ones too) to the Trash`
+  return `Moves ${tilde(d.dir)} and ${tilde(d.root)} (${n(folders, "scratch folder", "scratch folders")}, kept ones too) to the ${trashName()}`
     + (open ? `, and closes its ${n(open, "space", "spaces")}, ending what runs there.` : ".")
     + " Scratch comes back, empty, the next time you make a scratch space.";
 }
@@ -420,7 +419,7 @@ export default class Workspaces extends View {
     this.prs = new PrWatcher();
     this.gh = new GhWatcher();
     this.scratch = new Scratch({
-      home, exec, spaces, panes, run, notify, shared, setShared, readTextFile, writeTextFile, wsDir: dir,
+      home, exec, spaces, panes, run, notify, shared, setShared, readTextFile, writeTextFile, wsDir: dir, platform: () => window()?.platform,
       trash: async (path) => (await exec("sh", ["-c", TRASH, "sh", path, `${home()}/.herdr/scratch/.trash`, `${base(path)}-${Date.now()}`])).stdout.trim(),
     });
     // Commands for this copy: "ws-switcher.scratch-new" (bind it to a key) asks for a scratch
@@ -687,10 +686,20 @@ export default class Workspaces extends View {
         this.adopt();
         // Start at login: its LaunchAgent file on macOS, its systemd user unit on Linux
         // (herdr-ws-runner --login on writes either). "plist" names whichever file it is.
+        // Windows: its scheduled task, as Task Scheduler says (asked at most every 30 seconds,
+        // and again after a switch).
         const platform = window()?.platform;
         const plist = platform === "macos" ? `${home()}/Library/LaunchAgents/dev.herdr.ws-runner.plist`
+          : platform === "windows" ? "Task Scheduler: \\Herdr\\herdr-ws-runner"
           : `${home()}/.config/systemd/user/herdr-ws-runner.service`;
-        const login = (platform === "macos" || platform === "linux") && (await readTextFile(plist).catch(() => null)) !== null;
+        let login = false;
+        if (platform === "windows") {
+          if (!this.loginTask || Date.now() - this.loginTask.at > 30000) {
+            const r = await exec("schtasks", ["/query", "/tn", "\\Herdr\\herdr-ws-runner"], { timeout: 15000 }).catch(() => null);
+            this.loginTask = { at: Date.now(), on: r?.code === 0 };
+          }
+          login = this.loginTask.on;
+        } else login = (platform === "macos" || platform === "linux") && (await readTextFile(plist).catch(() => null)) !== null;
         const say = { on, running, via: running ? alive.via ?? "hc" : null, pid: running ? alive.pid ?? null : null, login, plist };
         if (JSON.stringify(say) !== JSON.stringify(shared("workspaces.runner") ?? null)) setShared("workspaces.runner", say);
       } finally {
@@ -1049,8 +1058,8 @@ export default class Workspaces extends View {
         setShared("workspaces.last", last);
         if (shared("workspaces.active") === d.id) setShared("workspaces.active", null);
         notify({ title: `Deleted ${d.name}`, body: d.scratch
-          ? (where === "Trash" ? "It and its scratch folders are in the Trash. It comes back, empty, with the next scratch space." : `It and its scratch folders are in ${tilde(`${dir()}/.trash`)}.`)
-          : where === "Trash" ? "Its folder is in the Trash." : `Its folder is in ${tilde(where)}.`, level: "success" });
+          ? (where === "Trash" ? `It and its scratch folders are in the ${trashName()}. It comes back, empty, with the next scratch space.` : `It and its scratch folders are in ${tilde(`${dir()}/.trash`)}.`)
+          : where === "Trash" ? `Its folder is in the ${trashName()}.` : `Its folder is in ${tilde(where)}.`, level: "success" });
         closeOverlay(props().overlay);
       } catch (e) {
         this.error = `Couldn't delete it: ${e?.message ?? e}`;
@@ -1134,11 +1143,11 @@ export default class Workspaces extends View {
       .child(title(`Delete “${d.name}”?`))
       .child(div().pt(12).text_color(t.muted).child(
         d.scratch ? scratchDeleteText(d) :
-        `Moves ${tilde(d.dir)} (its workspace.jsonc and AGENTS.md) to the Trash. Your repos and folders aren't touched, and its spaces stay open: they join the workspace their folder is in, else show under All spaces.`))
+        `Moves ${tilde(d.dir)} (its workspace.jsonc and AGENTS.md) to the ${trashName()}. Your repos and folders aren't touched, and its spaces stay open: they join the workspace their folder is in, else show under All spaces.`))
       .when(Boolean(this.error), (el) => el.child(error()))
       .child(h_flex().pt(18).gap(8).justify_end()
         .child(button("ws-delete-cancel", "Cancel", false, close))
-        .child(button("ws-delete-yes", this.busy ? "Deleting…" : "Move to Trash", true, (_e, cx) => this.remove(cx))));
+        .child(button("ws-delete-yes", this.busy ? "Deleting…" : `Move to ${trashName()}`, true, (_e, cx) => this.remove(cx))));
   }
 
   render(cx) {
@@ -1228,6 +1237,7 @@ export default class Workspaces extends View {
           if (r.code !== 0) { notify({ title: `Couldn't turn ${st.what}`, body: String(r.stderr ?? "").trim().split("\n").pop() || "herdr-ws-runner gave no reason.", level: "error" }); break; }
         }
         this.bg.tries = 0; this.bg.tried = 0; this.bg.failed = false;
+        this.loginTask = null;
         this.background(cx);
       });
     }

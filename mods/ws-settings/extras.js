@@ -38,7 +38,8 @@
 
 import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Popup, InputState, Input } from "gpui-base";
-import { theme, shared, setShared, exec, home, appHome, readTextFile, writeTextFile, notify, checking, knownAgents, props, closeOverlay, window } from "herdr";
+import { theme, shared, setShared, home, appHome, readTextFile, writeTextFile, notify, checking, knownAgents, props, closeOverlay, window } from "herdr";
+import { exec } from "./posix.js";
 import * as fs from "fs/promises";
 import { SETTINGS_FILE, EXPERIMENTS, FEATURES, FILES_SETTINGS, EDITOR_CATALOG, LINUX_APPS_SH, parseLinuxApps, AUTOMATIONS_SETTINGS, VAULT_SETTINGS, parseSettings, withExperiment, withFeature, withFileSetting, withAutomationSetting, withVaultSetting, experimentOn, featureOn, fileSetting, automationSetting, vaultSetting, appChoices, appLabel, automationCount, automationsLine, platformWords } from "./settingsfacts.js";
 import { BROKER_OPS, STATUS_ARGS, parseBrokerStatus, actionError, brokerView, pressBroker } from "./brokerfacts.js";
@@ -152,7 +153,7 @@ async function load(x, wait = false) {
     for (const core of await fs.readdir(resumeDir).catch(() => [])) {
       count += (await fs.readdir(`${resumeDir}/${core}`).catch(() => [])).filter((f) => f.endsWith(".cmd")).length;
     }
-    const config = await readTextFile(`${home()}/.config/herdr-core/config.toml`).catch(() => null);
+    const config = await readTextFile(`${home()}/${window()?.platform === "windows" ? "AppData/Roaming" : ".config"}/herdr-core/config.toml`).catch(() => null);
     x.resume = { on: await sw(`${resumeDir}/switch`), count, ready: (config ?? "").includes("herdr-ws-resume") };
     const guideText = await readTextFile(guideFile()).catch(() => null);
     x.guide = { on: await sw(`${home()}/.herdr/guide/switch`), bytes: guideText ? guideText.length : 0 };
@@ -366,9 +367,9 @@ async function findApps(x) {
   try {
     const platform = window()?.platform ?? "macos";
     let catalogInstalled = [], macApps = [], system = null;
-    if (platform !== "windows") {
+    {
       const bins = EDITOR_CATALOG.map((e) => e.binary).join(" ");
-      const r = await exec("sh", ["-c", `for b in ${bins}; do command -v "$b" >/dev/null 2>&1 && printf '%s\\n' "$b"; done; true`]).catch(() => null);
+      const r = await exec("sh", ["-c", `for b in ${bins}; do { command -v "$b" || command -v "$b.cmd"; } >/dev/null 2>&1 && printf '%s\\n' "$b"; done; true`]).catch(() => null);
       const found = new Set(String(r?.stdout ?? "").split("\n").filter(Boolean));
       catalogInstalled = EDITOR_CATALOG.filter((e) => found.has(e.binary)).map((e) => e.id);
     }
@@ -384,6 +385,13 @@ async function findApps(x) {
       const dir = `${appHome()}/data/ws-settings`;
       await exec("sh", ["-c", 'mkdir -p "$1" && { [ -f "$1/sample.txt" ] || printf "text\\n" >"$1/sample.txt"; }', "sample", dir]).catch(() => null);
       const r = await exec("sh", ["-c", LINUX_APPS_SH, "apps", `${dir}/sample.txt`], { timeout: 5000 }).catch(() => null);
+      ({ apps: macApps, system } = parseLinuxApps(r?.stdout));
+    }
+    if (platform === "windows") {
+      // The apps Windows' Open with lists for a text file (ws-files' winapps.ps1).
+      const dir = `${appHome()}/data/ws-settings`, w = (p) => p.replace(/\//g, "\\");
+      await exec("sh", ["-c", 'mkdir -p "$1" && { [ -f "$1/sample.txt" ] || printf "text\\n" >"$1/sample.txt"; }', "sample", dir]).catch(() => null);
+      const r = await exec("powershell", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", w(`${appHome()}/mods/ws-files/winapps.ps1`), "list", w(`${dir}/sample.txt`)], { timeout: 8000 }).catch(() => null);
       ({ apps: macApps, system } = parseLinuxApps(r?.stdout));
     }
     x.apps = { catalogInstalled, macApps, system };
@@ -567,12 +575,12 @@ function automationsPage(t, x) {
   const runner = shared("workspaces.runner") ?? { on: false, running: false };
   const runnerNote = !runner.on ? "Off: they run while Herdr is open"
     : !runner.running ? "On, but not running yet"
-    : runner.via === "launchd" || runner.via === "systemd" ? `On: running via ${runner.via}${runner.pid ? ` (pid ${runner.pid})` : ""}`
+    : runner.via === "launchd" || runner.via === "systemd" || runner.via === "task" ? `On: running via ${runner.via === "task" ? "Task Scheduler" : runner.via}${runner.pid ? ` (pid ${runner.pid})` : ""}`
     : `On: running in herdr-core${runner.pid ? ` (pid ${runner.pid})` : ""}`;
   const platform = window()?.platform ?? "macos";
   const mac = platform === "macos";
-  const canLogin = mac || platform === "linux";
-  const loginNote = !canLogin ? "macOS and Linux only."
+  const canLogin = mac || platform === "linux" || platform === "windows";
+  const loginNote = !canLogin ? "macOS, Linux and Windows only."
     : runner.login ? `On: ${tilde(runner.plist || (mac ? `${home()}/Library/LaunchAgents/dev.herdr.ws-runner.plist` : `${home()}/.config/systemd/user/herdr-ws-runner.service`))}` : "";
   const s = (key) => AUTOMATIONS_SETTINGS.find((a) => a.key === key);
   const val = (key) => automationSetting(x.settings, key);
@@ -615,7 +623,8 @@ function automationsPage(t, x) {
       toggle(t, "wsx-s-runner-switch", runner.on, () => setShared("workspaces.runner.set", { on: !runner.on, at: Date.now() })),
       Boolean(runner.on && !runner.running)))
     .child(row(t, "wsx-au-login", "Start at login",
-      `Install a ${mac ? "macOS LaunchAgent" : "systemd user unit"} so automations run after a reboot without opening Herdr. Shell scripts run without starting herdr-core.`,
+      canLogin ? `Install a ${mac ? "macOS LaunchAgent" : platform === "windows" ? "scheduled task (Task Scheduler)" : "systemd user unit"} so automations run after a reboot without opening Herdr. Shell scripts run without starting herdr-core.`
+        : "Start the background runner when you sign in, so automations run after a reboot without opening Herdr.",
       loginNote,
       toggle(t, "wsx-au-login-switch", Boolean(runner.login), () => setShared("workspaces.runner.set", { login: !runner.login, at: Date.now() }), !canLogin),
       false, !canLogin))

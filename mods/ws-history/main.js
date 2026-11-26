@@ -57,13 +57,13 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input } from "gpui-base";
-import {
-  spaces, panes, terminals, run, theme, shared, setShared, props, openOverlay, closeOverlay,
-  home, appHome, exec, notify, checking, knownAgents, readTextFile,
-} from "herdr";
+import { spaces, panes, terminals, run, theme, shared, setShared, props, openOverlay, closeOverlay, home, appHome, notify, checking, knownAgents, readTextFile, window } from "herdr";
+import { exec } from "./posix.js";
 import { PROVIDERS, inWorkspace, whereOf, liveOf, keyOf, titleOf, matches, dayLabel, ago, span, modelLabel, resumeArgv, presetOf, tokens, compactionText, compactionsTip, runState, runMatches, runSessions, clock, ranText, READS } from "./histfacts.js";
 import { forest, treeRows, chipText, kidNames, indent, historyMenu, wipeCheck, holdState, liveUnder, helpersOf } from "./treefacts.js";
 import { menuHeight, wipeTargets } from "./menufacts.js";
+// The system's trash by its name: the Recycle Bin on Windows, the Trash elsewhere.
+const trashName = () => (window()?.platform === "windows" ? "Recycle Bin" : "Trash");
 
 const PALETTE = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
 const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b7cf6", ansi2: "#3fae6a", ansi1: "#d9649a" };
@@ -111,7 +111,8 @@ const COPY = `
 if command -v pbcopy >/dev/null 2>&1; then printf %s "$1" | pbcopy
 elif command -v wl-copy >/dev/null 2>&1; then printf %s "$1" | wl-copy
 elif command -v xclip >/dev/null 2>&1; then printf %s "$1" | xclip -selection clipboard
-else echo "no clipboard command (pbcopy, wl-copy, xclip)" >&2; exit 1; fi`;
+elif command -v powershell >/dev/null 2>&1; then HERDR_CLIP=$1 powershell -NoProfile -NonInteractive -Command 'for ($i = 0; $i -lt 5; $i++) { try { Set-Clipboard -Value $env:HERDR_CLIP -ErrorAction Stop; exit 0 } catch { Start-Sleep -Milliseconds 150 } }; exit 1'
+else echo "no clipboard command (pbcopy, wl-copy, xclip, PowerShell)" >&2; exit 1; fi`;
 // When each given transcript was last written (seconds, a tab, the path), after
 // "now<tab><seconds>" on the same clock (GNU stat, else BSD's): the newest of it and, for
 // Claude, its <id>/subagents/*.jsonl (a sub-agent at work writes only there). A file that
@@ -151,7 +152,7 @@ const defs = () => shared("workspaces.defs") ?? [];
 const defOf = (id) => defs().find((d) => d.id === id) ?? null;
 const trees = () => `${home()}/.herdr/worktrees`;
 const tilde = (p) => (p === home() ? "~" : p.startsWith(home() + "/") ? "~" + p.slice(home().length) : p);
-const base = (p) => String(p ?? "").replace(/\/+$/, "").split("/").pop();
+const base = (p) => String(p ?? "").replace(/[\\/]+$/, "").split(/[\\/]/).pop();
 const message = (e) => String(e?.message ?? e);
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 // What the switcher takes as a workspace or automation name in a command (automations.js: openAt).
@@ -1227,7 +1228,7 @@ export default class History extends View {
         .child(div().text_size(11).text_color(t.dim).child("Esc")))
       // What it says scrolls when it's more than the dialog holds; the buttons stay.
       .child(v_flex().id("hist-wipe-text").flex_1().min_h(0).overflow_y_scrollbar()
-        .child(div().pt(12).text_color(t.muted).child(`Moves this conversation to the Trash (${what}), so History won't list it and it can't be resumed.${c?.ok && c.close ? ` It's open in ${c.close}: Wipe closes that first.` : ""}`))
+        .child(div().pt(12).text_color(t.muted).child(`Moves this conversation to the ${trashName()} (${what}), so History won't list it and it can't be resumed.${c?.ok && c.close ? ` It's open in ${c.close}: Wipe closes that first.` : ""}`))
         .when(f.helpers.length > 0, (el) => el.child(line(`${helperWords(f, wipeable.length)}${opens > (c?.close ? 1 : 0) ? " Wipe all closes the ones that are open." : ""}`, t.muted, 12)))
         .when(!this.checks && !this.error, (el) => el.child(line("Looking at what has it open…", t.dim)))
         .when(Boolean(c) && !c.ok && !this.error, (el) => el.child(line(`Can't wipe it now: ${c.why}`, t.blocked)))
@@ -1279,10 +1280,10 @@ export default class History extends View {
           if (pane && panes().some((q) => q.pane === pane)) run("pane.close", { pane });
         }
         const r = await exec("sh", ["-c", TRASH, "sh", `${home()}/.herdr/trash`, ...list.flatMap((x) => x.targets)]);
-        if (r.code !== 0) throw new Error(String(r.stderr ?? "").trim() || "moving it to the Trash failed");
+        if (r.code !== 0) throw new Error(String(r.stderr ?? "").trim() || `moving it to the ${trashName()} failed`);
         const elsewhere = String(r.stdout ?? "").split("\n").map((l) => l.trim()).find((l) => l && l !== "Trash");
         const more = list.length > 1 ? ` and ${plural(list.length - 1, "helper")}` : "";
-        notify({ title: `Wiped “${f.row.title}”${more}`, body: elsewhere ? `${list.length > 1 ? "Their conversations are" : "Its conversation is"} in ${tilde(elsewhere)}.` : `${list.length > 1 ? "Their conversations are" : "Its conversation is"} in the Trash.`, level: "success" });
+        notify({ title: `Wiped “${f.row.title}”${more}`, body: elsewhere ? `${list.length > 1 ? "Their conversations are" : "Its conversation is"} in ${tilde(elsewhere)}.` : `${list.length > 1 ? "Their conversations are" : "Its conversation is"} in the ${trashName()}.`, level: "success" });
         const before = shared(WIPED)?.keys ?? [];
         setShared(WIPED, { keys: [...new Set([...before, ...keys])].slice(-200), at: Date.now() });
         closeOverlay(p.overlay);

@@ -107,7 +107,8 @@
 // as usual. On again it carries on from then (gate()): no catch-up, an `every` one waits its
 // interval, GitHub's first look only notes what's there (featuregate.js).
 
-import { spaces, agents, terminals, focused, run, shared, setShared, home, appHome, readTextFile, writeTextFile, watchFolder, exec, notify, knownAgents, window } from "herdr";
+import { spaces, agents, terminals, focused, run, shared, setShared, home, appHome, readTextFile, writeTextFile, watchFolder, notify, knownAgents, window } from "herdr";
+import { exec } from "./posix.js";
 import * as fs from "fs/promises";
 import { parseWhen, describe, due, nextAt, shortTime } from "./when.js";
 import { withKnobs } from "./knobs.js";
@@ -160,7 +161,7 @@ export const VAULT_OFF_NOTE = "Secrets is off in Settings > Features, and it use
 // (the app's programs don't always get HC_SESSION).
 const SESSION_NOTE = `t=$1 d=\${HERDR_WS_RESUME_DIR:-$2}
 case "$t" in *[!0-9A-Za-z]*|"") exit 0 ;; esac
-c=\${HC_TERMINAL_SOCKET##*/}; c=\${c%.sock}; [ -n "$c" ] || c=\${HC_SESSION:-default}
+c=\${HC_TERMINAL_SOCKET##*[/\\\\]}; c=\${c%.sock}; case "$HC_TERMINAL_SOCKET" in '\\\\.\\pipe\\'*) c=\${c#herdr-core-*-} ;; esac; [ -n "$c" ] || c=\${HC_SESSION:-default}
 f=$d/$c/$t.session
 if [ ! -f "$f" ]; then set -- "$d"/*/"$t.session"; [ $# -eq 1 ] && [ -f "$1" ] || exit 0; f=$1; fi
 sed -n 1p "$f"`;

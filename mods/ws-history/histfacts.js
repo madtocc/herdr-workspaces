@@ -340,7 +340,7 @@ export function presetOf(session) {
 }
 
 export const inside = (p, dir) => Boolean(p && dir) && (p === dir || p.startsWith(dir + "/"));
-const base = (p) => String(p ?? "").replace(/\/+$/, "").split("/").pop();
+const base = (p) => String(p ?? "").replace(/[\\/]+$/, "").split(/[\\/]/).pop();
 
 // Whether a folder is one of a workspace's: under its root or one of its folders
 // (or where a symlink leads to them), or a Herdr worktree of one of its repos

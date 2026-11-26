@@ -40,17 +40,24 @@ export const hex = (n) => randomBytes(Math.ceil(n / 2)).toString("hex").slice(0,
 // runner's workers) doesn't run on. A timeout's error has `timedOut: true` and what was printed until
 // then (`stdout`, `stderr`), as does one for too much output (`tooMuch: true`), so neither is lost.
 const MAX_BUFFER = 64 * 1024 * 1024;
+const WIN = process.platform === "win32";
 const KILL_GRACE = 2000;
 export function exec(command, args = [], options = {}) {
   return new Promise((resolve, reject) => {
     const timeout = Math.min(options.timeout ?? 30000, 600000);
     let child;
-    try { child = spawn(command, args, { cwd: options.cwd, detached: true, stdio: ["ignore", "pipe", "pipe"] }); }
+    // Windows: no process groups (detached would give it a console window of its own); taskkill /T ends the tree.
+    try { child = spawn(command, args, { cwd: options.cwd, detached: !WIN, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }); }
     catch (e) { reject(new Error(String(e?.message ?? e))); return; }
     const out = [], err = [];
     let size = 0, timedOut = false, tooMuch = false, settled = false, timer = null, grace = null;
     const text = (list) => Buffer.concat(list).toString("utf8");
     const stopGroup = () => {
+      if (WIN) {
+        try { spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }); } catch {}
+        grace = setTimeout(() => finish(null, "SIGKILL"), KILL_GRACE);
+        return;
+      }
       try { process.kill(-child.pid, "SIGTERM"); } catch {}
       grace = setTimeout(() => { try { process.kill(-child.pid, "SIGKILL"); } catch {} finish(null, "SIGKILL"); }, KILL_GRACE);
     };
@@ -210,14 +217,18 @@ async function desktop(file, note) {
 // Where herdr-core listens, as hc finds it (herdr-core's paths.rs): HC_SOCKET, else the config's
 // `socket`, else $XDG_RUNTIME_DIR/herdr-core/<session>.sock, else beside its state:
 // ~/.local/state/herdr-core/<session>/<session>.sock. The session is HC_SESSION, else "default".
+// Windows: a named pipe, \\.\pipe\herdr-core-<user>-<session>.sock (the user's name in letters and
+// digits), and the config in %APPDATA%\herdr-core.
 export function coreSocketPath() {
   if (process.env.HC_SOCKET) return process.env.HC_SOCKET;
   const session = (process.env.HC_SESSION || "default").trim() || "default";
   try {
-    const conf = readFileSync(`${process.env.XDG_CONFIG_HOME || `${home()}/.config`}/herdr-core/config.toml`, "utf8");
+    const confDir = process.env.XDG_CONFIG_HOME || (WIN ? process.env.APPDATA || `${home()}/AppData/Roaming` : `${home()}/.config`);
+    const conf = readFileSync(`${confDir}/herdr-core/config.toml`, "utf8");
     const m = /^\s*socket\s*=\s*["']([^"']+)["']/m.exec(conf);
     if (m) return m[1];
   } catch {}
+  if (WIN) return `\\\\.\\pipe\\herdr-core-${String(process.env.USERNAME ?? "").replace(/[^A-Za-z0-9]/g, "")}-${session}.sock`;
   const runtime = process.env.XDG_RUNTIME_DIR || (() => { try { const d = `/run/user/${process.getuid()}`; return statSync(d).isDirectory() ? d : null; } catch { return null; } })();
   if (runtime) return `${runtime}/herdr-core/${session}.sock`;
   return `${process.env.XDG_STATE_HOME || `${home()}/.local/state`}/herdr-core/${session}/${session}.sock`;
@@ -229,7 +240,7 @@ async function coreUp() {
   if (Date.now() - coreSeen.at < 3000) return coreSeen.up;
   const at = coreSocketPath();
   let up = false;
-  try { statSync(at); up = await knock(at); } catch {}
+  try { if (!WIN) statSync(at); up = await knock(at); } catch {}
   coreSeen = { at: Date.now(), up };
   return up;
 }
@@ -294,9 +305,22 @@ export async function refresh(docNow = false) {
   }
 }
 
-// The window is open while its socket takes a connection.
+// The window is open while its socket takes a connection. Windows: Herdr's is an AF_UNIX socket,
+// which Node can't open there, so while herdr-app.exe runs (asked every 10 seconds).
+let appSeen = { at: 0, open: false };
+function appRunning() {
+  if (Date.now() - appSeen.at < 10000) return Promise.resolve(appSeen.open);
+  return new Promise((resolve) => {
+    let out = "";
+    const p = spawn("tasklist", ["/FI", "IMAGENAME eq herdr-app.exe", "/NH"], { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+    p.stdout.on("data", (d) => { out += d; });
+    const done = (open) => { appSeen = { at: Date.now(), open }; resolve(open); };
+    p.on("error", () => done(false));
+    p.on("close", () => done(/herdr-app\.exe/i.test(out)));
+  });
+}
 async function look() {
-  core.open = await new Promise((resolve) => {
+  core.open = WIN ? await appRunning() : await new Promise((resolve) => {
     const s = net.connect(`${appHome()}/herdr-app.sock`);
     const done = (v) => { clearTimeout(t); s.destroy(); resolve(v); };
     const t = setTimeout(() => done(false), 1000);

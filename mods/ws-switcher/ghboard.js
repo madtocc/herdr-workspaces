@@ -16,7 +16,8 @@
 // on, else by the switcher's sidebar copy. What it remembers (each card's title and
 // whether it was closed, as last seen) is in ~/.herdr/runner/github.json.
 
-import { shared, setShared, readTextFile, writeTextFile, exec, notify } from "herdr";
+import { shared, setShared, readTextFile, writeTextFile, notify } from "herdr";
+import { exec } from "./posix.js";
 import * as fs from "fs/promises";
 import { wsDir, message, boardOf, split, field, withFields, Store } from "./automations.js";
 import { ITEM_ID, itemsQuery, shape, chip, step, refOf, ghError } from "./ghfacts.js";

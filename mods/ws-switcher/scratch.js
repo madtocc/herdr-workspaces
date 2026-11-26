@@ -74,9 +74,14 @@ done`;
 
 // io: { home, exec, spaces, panes, run, notify, shared, setShared, readTextFile,
 //       writeTextFile, wsDir, trash(path) -> where it went }
+// The system's trash by its name: the Recycle Bin on Windows, the Trash elsewhere.
+let platformOf = () => null; // io.platform, set by the constructor
+const trashName = () => (platformOf() === "windows" ? "Recycle Bin" : "Trash");
+
 export class Scratch {
   constructor(io) {
     this.io = io;
+    if (io.platform) platformOf = io.platform;
     const saved = JSON.parse(localStorage.getItem("scratch") ?? "{}");
     this.free = saved.free ?? {}; // folder -> when it was first seen unused
     this.used = new Set(saved.used ?? []); // folders seen in use, so leaving one is noticed
@@ -195,14 +200,14 @@ export class Scratch {
         this.told.add(path);
         notify({
           title: `Scratch folder ${name} has files`,
-          body: `Click to keep it. Otherwise it goes to the Trash after ${KEEP_DAYS} days unused.`,
+          body: `Click to keep it. Otherwise it goes to the ${trashName()} after ${KEEP_DAYS} days unused.`,
           level: "info",
           action: { name: `ws-switcher.scratch-keep/${name}` },
         });
       }
       if (now - since >= KEEP_DAYS * DAY) {
         const where = await trash(path);
-        notify({ title: "Scratch folder moved to the Trash", body: `${name}: unused for ${KEEP_DAYS} days${where && where !== "Trash" ? `, now in ${where}` : ""}.`, level: "info" });
+        notify({ title: `Scratch folder moved to the ${trashName()}`, body: `${name}: unused for ${KEEP_DAYS} days${where && where !== "Trash" ? `, now in ${where}` : ""}.`, level: "info" });
       } else left.push(path);
     }
     // Gone (deleted, trashed, moved out): forget it.

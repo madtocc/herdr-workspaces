@@ -3,18 +3,18 @@
 # kept going while Herdr's window is closed. Off, Herdr runs them itself, while
 # it's open. On, they run in a Node process that herdr-core holds as a terminal
 # named herdr-ws-runner, so closing or updating Herdr doesn't stop them; or, with
-# Start at login, that launchd (macOS) or systemd (Linux) starts when you log in,
+# Start at login, that launchd (macOS), systemd (Linux) or Task Scheduler (Windows) starts when you log in,
 # outside herdr-core.
 #
 #   herdr-ws-runner --on            turn it on and start it
 #   herdr-ws-runner --off           turn it off and stop it (Herdr runs them again); Start at login goes off too
 #   herdr-ws-runner --status        on or off, and whether it's running (--json: for a screen)
 #   herdr-ws-runner --start         start it if it's on and not running (Herdr does this when it opens)
-#   herdr-ws-runner --login on      start it at login too: it turns it on, and launchd (macOS) or a
-#                                   systemd user unit (Linux) runs it
+#   herdr-ws-runner --login on      start it at login too: it turns it on, and launchd (macOS), a
+#                                   systemd user unit (Linux) or a scheduled task (Windows) runs it
 #   herdr-ws-runner --login off     not at login any more (herdr-core runs it again while it's on)
 #   herdr-ws-runner --login status  whether it starts at login
-#   herdr-ws-runner --serve         what the terminal (or launchd, or systemd) runs
+#   herdr-ws-runner --serve         what the terminal (or launchd, systemd, Task Scheduler) runs
 #
 # It needs Node 20.6 or newer. Without Start at login, after a restart of the
 # computer it starts when Herdr first opens (or with --start), and schedules
@@ -43,11 +43,23 @@ mod=$(dirname "$(dirname "$self")")
 is_on() { [ "$(cat "$dir/switch" 2>/dev/null || true)" = on ]; }
 mac() { [ "$(uname)" = Darwin ]; }
 linux() { [ "$(uname)" = Linux ]; }
-# The file that starts it at login: the LaunchAgent on macOS, the systemd unit on Linux.
-job() { if mac; then echo "$plist"; else echo "$unit"; fi; }
-login_on() { [ -f "$(job)" ]; }
-# Start at login needs launchd, or a running systemd user manager.
-can_login() { mac || { linux && command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; }; }
+# Git for Windows' sh (MSYS2): uname says MINGW64_NT-…, MSYS_NT-… or CYGWIN_NT-….
+windows() { case $(uname) in MINGW*|MSYS*|CYGWIN*) return 0 ;; esac; return 1; }
+# A process by its pid: on Windows node's pid is Windows', which Git's kill can't see.
+alive() {
+  if windows; then tasklist //FI "PID eq $1" //NH 2>/dev/null | grep -q " $1 "; else kill -0 "$1" 2>/dev/null; fi
+}
+# Windows: the scheduled task that starts it at login (Task Scheduler Library > Herdr).
+task='\Herdr\herdr-ws-runner'
+# What starts it at login: the LaunchAgent's file on macOS, the systemd unit's on Linux, the
+# scheduled task on Windows (Task Scheduler keeps no file of ours).
+job() { if mac; then echo "$plist"; elif windows; then echo "Task Scheduler: $task"; else echo "$unit"; fi; }
+login_on() { if windows; then schtasks //query //tn "$task" >/dev/null 2>&1; else [ -f "$(job)" ]; fi; }
+# Start at login needs launchd, a running systemd user manager, or PowerShell (for Task Scheduler).
+can_login() {
+  mac || { linux && command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; } ||
+    { windows && command -v powershell >/dev/null 2>&1; }
+}
 
 # Its pid (and how it runs: via), if it said it was alive within the last 30 seconds and still is.
 running() {
@@ -57,7 +69,7 @@ running() {
   via=$(sed -n 's/.*"via":"\([a-z]*\)".*/\1/p' "$dir/alive")
   [ -n "$pid" ] && [ -n "$at" ] || return 1
   [ $(( $(date +%s) - at / 1000 )) -lt 30 ] || return 1
-  kill -0 "$pid" 2>/dev/null
+  alive "$pid"
 }
 
 need_node() {
@@ -73,10 +85,12 @@ stop_hc() {
   hc rm "$name" >/dev/null 2>&1 || true
 }
 
-# The launchd job (or systemd unit), loaded again from its file, or unloaded.
+# The launchd job (or systemd unit, or scheduled task), loaded again from its file (run now), or unloaded.
 domain() { echo "gui/$(id -u)"; }
 load_job() {
-  if mac; then
+  if windows; then
+    schtasks //run //tn "$task" >/dev/null
+  elif mac; then
     launchctl bootout "$(domain)/$label" >/dev/null 2>&1 || true
     launchctl bootstrap "$(domain)" "$plist"
   else
@@ -86,11 +100,21 @@ load_job() {
   fi
 }
 unload_job() {
-  if mac; then launchctl bootout "$(domain)/$label" >/dev/null 2>&1 || true
+  if windows; then
+    # Ending the task ends only its console: the runner's node goes by its pid.
+    if running && [ "${via:-}" = task ]; then taskkill //PID "$pid" //T //F >/dev/null 2>&1 || true; fi
+    schtasks //end //tn "$task" >/dev/null 2>&1 || true
+  elif mac; then launchctl bootout "$(domain)/$label" >/dev/null 2>&1 || true
   elif command -v systemctl >/dev/null 2>&1; then
     systemctl --user disable --now "$name.service" >/dev/null 2>&1 || true
     systemctl --user reset-failed "$name.service" >/dev/null 2>&1 || true
   fi
+}
+
+# The file (or scheduled task) that starts it at login, gone.
+remove_job() {
+  if windows; then schtasks //delete //tn "$task" //f >/dev/null 2>&1 || true
+  else rm -f "$(job)"; fi
 }
 
 start() {
@@ -105,9 +129,22 @@ start() {
     systemctl --user start "$name.service" >/dev/null 2>&1 || load_job
     return 0
   fi
+  if windows && login_on; then
+    # Task Scheduler ignores a run while an instance is there (one whose node stopped answering):
+    # that one ends first.
+    unload_job
+    load_job
+    return 0
+  fi
   command -v hc >/dev/null 2>&1 || { echo "$name: hc (herdr-core) isn't on your PATH." >&2; exit 127; }
   # One left over that isn't answering.
   stop_hc
+  # Windows: herdr-core starts Windows programs, not this script; Git's sh runs it (a login
+  # shell: Git's PATH, then Windows' with node, gh and git).
+  if windows; then
+    hc run --bg --no-parent --name "$name" --cwd "$HOME" -- "$(cygpath -m /)/bin/sh.exe" -lc 'exec "$0" --serve' "$self" >/dev/null
+    return
+  fi
   sh=${SHELL:-/bin/sh}
   # Through your shell, as agents start: its PATH has node, gh and git.
   case $(uname) in Darwin) flag=-lic ;; *) flag=-ic ;; esac
@@ -206,9 +243,35 @@ EOF
   mv "$tmp" "$unit"
 }
 
+# The scheduled task: at your sign-in, Git's sh (a login shell: node, gh and git on its PATH) runs
+# this script's --serve in a console nobody sees (conhost --headless), its output in runner.log.
+# No time limit (Task Scheduler's default stops a task after 3 days), on battery too; a crash is
+# --serve's to start again. Only while you're signed in: no password is stored. The paths go in
+# through the environment and the script encoded, so no quoting reaches PowerShell.
+write_task() {
+  mkdir -p "$dir"
+  ps=$(cat <<'PS'
+$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'
+trap { [Console]::Error.WriteLine("can't add the scheduled task: " + $_.Exception.Message.Trim()); exit 1 }
+$cmd = 'HERDR_WS_RUNNER_VIA=task exec "$0" --serve >>"$1" 2>&1'
+$arg = '--headless "{0}" -lc ''{1}'' "{2}" "{3}"' -f $env:HERDR_TASK_SH, $cmd, $env:HERDR_TASK_SELF, $env:HERDR_TASK_LOG
+$me = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+$a = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\conhost.exe" -Argument $arg -WorkingDirectory $env:USERPROFILE
+$t = New-ScheduledTaskTrigger -AtLogOn -User $me
+$s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew
+$p = New-ScheduledTaskPrincipal -UserId $me -LogonType Interactive -RunLevel Limited
+Register-ScheduledTask -TaskPath '\Herdr\' -TaskName 'herdr-ws-runner' -Action $a -Trigger $t -Settings $s -Principal $p -Description 'Herdr workspaces background runner: herdr-ws-runner --login on made this, --login off removes it.' -Force | Out-Null
+PS
+)
+  enc=$(printf '%s' "$ps" | iconv -f UTF-8 -t UTF-16LE | base64 | tr -d '\n')
+  HERDR_TASK_SH=$(cygpath -w "$(cygpath -m /)/bin/sh.exe") HERDR_TASK_SELF=$(cygpath -m "$self") HERDR_TASK_LOG=$(cygpath -m "$dir/runner.log") \
+    powershell -NoProfile -NonInteractive -EncodedCommand "$enc" >/dev/null
+}
+
 no_login() {
   if linux; then echo "$name: Start at login needs a systemd user session (systemctl --user); none answered here." >&2
-  else echo "$name: Start at login is for macOS (launchd) and Linux (systemd)." >&2
+  elif windows; then echo "$name: Start at login needs PowerShell (Task Scheduler's commands); none answered here." >&2
+  else echo "$name: Start at login is for macOS (launchd), Linux (systemd) and Windows (Task Scheduler)." >&2
   fi
   exit 1
 }
@@ -226,7 +289,7 @@ case ${1:-} in
     echo off > "$dir/switch"
     stop_hc
     # Turned off, it doesn't start at login either.
-    if login_on; then unload_job; rm -f "$(job)"; fi
+    if login_on; then unload_job; remove_job; fi
     rm -f "$dir/alive"
     echo "off: Herdr runs them itself, while it's open"
     ;;
@@ -240,7 +303,7 @@ case ${1:-} in
       printf '{"on":%s,"running":%s,"pid":%s,"via":%s,"login":%s,"plist":"%s"}\n' "$on" "$run" "$p" "$v" "$login" "$(job | sed 's/\\/\\\\/g; s/"/\\"/g')"
     elif ! is_on; then echo off
     elif running; then
-      case ${via:-hc} in launchd|systemd) echo "on, running via $via (pid $pid)" ;; *) echo "on, running in herdr-core (pid $pid)" ;; esac
+      case ${via:-hc} in launchd|systemd) echo "on, running via $via (pid $pid)" ;; task) echo "on, running via Task Scheduler (pid $pid)" ;; *) echo "on, running in herdr-core (pid $pid)" ;; esac
       [ "$login" = false ] || echo "starts at login ($(job))"
     else echo "on, not running (herdr-ws-runner --start starts it; Herdr does when it opens)"
     fi
@@ -254,6 +317,8 @@ case ${1:-} in
       on)
         can_login || no_login
         need_node
+        # Windows: the task first, so a refusal leaves the runner as it was.
+        if windows; then write_task || exit 1; fi
         mkdir -p "$dir"
         echo on > "$dir/switch"
         # One runner at a time: the one herdr-core holds (or launchd's or systemd's from before) goes,
@@ -264,12 +329,13 @@ case ${1:-} in
         unload_job
         if [ -n "$old" ]; then
           n=0
-          while kill -0 "$old" 2>/dev/null && [ "$n" -lt 30 ]; do sleep 0.1; n=$((n + 1)); done
+          while alive "$old" && [ "$n" -lt 30 ]; do sleep 0.1; n=$((n + 1)); done
         fi
         rm -f "$dir/alive"
-        if mac; then write_plist; else write_unit; fi
+        if mac; then write_plist; elif ! windows; then write_unit; fi
         load_job
         if mac; then echo "on at login: launchd starts it when you log in, without herdr-core ($plist)"
+        elif windows; then echo "on at login: Task Scheduler starts it when you sign in, without herdr-core ($task)"
         else echo "on at login: systemd starts it when you log in, without herdr-core ($unit)"
         fi
         ;;
@@ -277,7 +343,7 @@ case ${1:-} in
         was=
         login_on && was=1
         unload_job
-        rm -f "$(job)"
+        remove_job
         rm -f "$dir/alive"
         # Still on: herdr-core runs it again, as before Start at login.
         if is_on; then start; echo "off at login: it runs in herdr-core while it's on (Herdr starts it when it opens)"
@@ -300,7 +366,10 @@ case ${1:-} in
       if [ -f "$log" ] && [ "$(wc -c < "$log")" -gt 1048576 ]; then
         cp "$log" "$log.old" && tail -n 1000 "$log.old" > "$log"
       fi
-      node --import "$mod/runner/register.js" "$mod/runner/main.js" && break
+      # Windows' node takes --import as a URL only (C:/… is read as the scheme "c:").
+      reg=$mod/runner/register.js
+      ! windows || reg=file:///$(cygpath -m "$reg")
+      node --import "$reg" "$mod/runner/main.js" && break
       echo "$name: it stopped; starting again in 5 seconds" >&2
       sleep 5
     done

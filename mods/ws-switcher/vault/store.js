@@ -12,8 +12,9 @@ const SECURITY = "/usr/bin/security";
 
 // ---- the master key ----
 // A vault.key that's there is used as it is, before any Keychain; else the Keychain on macOS, or
-// the desktop's keyring (Secret Service, through secret-tool) on Linux (unless HERDR_VAULT_KEY=file);
-// else a new vault.key. HERDR_VAULT_KEYCHAIN names the keychain file the security calls use (a
+// the desktop's keyring (Secret Service, through secret-tool) on Linux, or vault.key.dpapi (the key
+// sealed with DPAPI: only this Windows user, signed in, can open it) on Windows (unless
+// HERDR_VAULT_KEY=file); else a new vault.key. HERDR_VAULT_KEYCHAIN names the keychain file the security calls use (a
 // throwaway one in a test). A keychain or keyring that's there but doesn't answer is an error, never
 // a new key: one made then would leave every secret sealed with the old one unreadable.
 
@@ -115,6 +116,47 @@ function keyToSecretService(key) {
   }
 }
 
+// ---- Windows: DPAPI (CurrentUser), through PowerShell ----
+// vault.key.dpapi holds the key sealed for this Windows user, in base64. The key goes to and from
+// PowerShell on stdin and stdout, never as an argument; the file's path through the environment.
+const DPAPI_FILE = "vault.key.dpapi";
+const DPAPI_PS = {
+  seal: "$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Security; $k=[Convert]::FromBase64String([Console]::In.ReadToEnd().Trim()); [Convert]::ToBase64String([Security.Cryptography.ProtectedData]::Protect($k, $null, 'CurrentUser'))",
+  open: "$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Security; $b=[Convert]::FromBase64String([IO.File]::ReadAllText($env:HERDR_VAULT_DPAPI).Trim()); [Convert]::ToBase64String([Security.Cryptography.ProtectedData]::Unprotect($b, $null, 'CurrentUser'))",
+};
+
+function useDpapi() {
+  return process.platform === "win32" && process.env.HERDR_VAULT_KEY !== "file";
+}
+
+function dpapi(what, input) {
+  const r = spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", DPAPI_PS[what]],
+    { input: input ?? "", encoding: "utf8", timeout: 30000, windowsHide: true, env: { ...process.env, HERDR_VAULT_DPAPI: vaultFile(DPAPI_FILE) } });
+  if (r.status !== 0 || r.error) {
+    const err = String(r.stderr ?? "").replace(/#< CLIXML[\s\S]*/, "").trim().split("\n")[0];
+    const why = err ? ` (${err})` : r.error ? ` (${r.error.code ?? r.error.message})` : "";
+    // Opening is for a key that seals secrets already: without it they can't be read, and no new key may
+    // take its place. Sealing is for a new vault only, where the file can stand in.
+    if (what === "open") throw fail("keychain", `the vault's key, sealed for this Windows user (DPAPI), didn't open${why}; the Standard secrets can't be read without it (a profile moved to another user or computer can't open it)`);
+    throw fail("keychain", `Windows' DPAPI didn't seal the vault's key${why}`);
+  }
+  return String(r.stdout ?? "").trim();
+}
+
+function keyFromDpapi() {
+  if (!fs.existsSync(vaultFile(DPAPI_FILE))) return null;
+  const key = Buffer.from(dpapi("open"), "base64");
+  if (key.length !== 32) throw fail("keychain", "the vault's DPAPI-sealed key isn't a 32-byte key");
+  return key;
+}
+
+function keyToDpapi(key) {
+  const sealed = dpapi("seal", key.toString("base64"));
+  if (!sealed) throw fail("keychain", "Windows' DPAPI gave nothing back for the vault's key");
+  ensureVaultDir();
+  writeAtomic(vaultFile(DPAPI_FILE), sealed + "\n");
+}
+
 let cachedKey = null;
 
 // The key, made when there's none yet (create: false only reads).
@@ -146,6 +188,24 @@ export function masterKey({ create = true } = {}) {
       } catch { /* the file, below */ }
     }
   }
+  else if (!key && useDpapi()) {
+    // Windows: the sealed file when it's there (one that won't open is an error, never a new key);
+    // a new vault's key sealed, else (DPAPI refused) the file: no secret was sealed with a key yet.
+    key = keyFromDpapi();
+    if (!key && fs.existsSync(vaultFile("standard.enc"))) throw fail("keychain", "standard.enc is there but its key isn't (no vault.key, no vault.key.dpapi)");
+    if (!key && create) {
+      const made = crypto.randomBytes(32);
+      try {
+        keyToDpapi(made);
+        const back = keyFromDpapi();
+        if (back && back.equals(made)) key = made;
+      } catch { /* the file, below */ }
+      // Not sealed and read back: no vault.key.dpapi left beside the vault.key made below.
+      if (!key) fs.rmSync(vaultFile(DPAPI_FILE), { force: true });
+    }
+  }
+  // Secrets sealed already and no key found for them: never a new one, which would leave them all unreadable.
+  if (!key && create && fs.existsSync(vaultFile("standard.enc"))) throw fail("keychain", "standard.enc is there but its key isn't (no vault.key, and none where this system keeps it)");
   if (!key && create) {
     ensureVaultDir();
     key = crypto.randomBytes(32);
@@ -156,9 +216,10 @@ export function masterKey({ create = true } = {}) {
   return key;
 }
 
-// Where the key is: "file" | "keychain" | "keyring" (Linux's Secret Service) | null (none yet).
+// Where the key is: "file" | "keychain" | "keyring" (Linux's Secret Service) | "dpapi" (Windows) | null (none yet).
 export function keyPlace() {
   if (fs.existsSync(vaultFile("vault.key"))) return "file";
+  if (useDpapi()) return fs.existsSync(vaultFile(DPAPI_FILE)) ? "dpapi" : null;
   if (useKeychain()) return keyFromKeychain() ? "keychain" : null;
   if (useSecretService() && fs.existsSync(vaultFile("standard.enc"))) return keyFromSecretService() ? "keyring" : null;
   return null;

@@ -39,7 +39,8 @@
 //    worktrees.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list, Popup, h_resizable, resizable_panel } from "gpui-base";
-import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, props, shared, setShared, checking, machines, home, window } from "herdr";
+import { spaces, panes, focused, readTextFile, watchFolder, theme, settings, props, shared, setShared, checking, machines, home, window } from "herdr";
+import { exec } from "./posix.js";
 import { locate, toRemember, placeKey } from "./follow.js";
 import {
   SKIP_DIRS, MAX_REPOS, MAX_DIRS, FILTER_THRESHOLD,
@@ -225,11 +226,14 @@ export default class Changes extends View {
   // Scan nested folders for `.git` directories/files (stopping descent inside repos).
   async scanNested(cwd, on) {
     const depth = maxScanDepth(cwd, on ? "" : home());
-    if (!on && window()?.platform === "windows") {
-      const r = await exec("powershell", windowsScanArgs(cwd, depth), { on }).catch(() => ({ code: 1, stdout: "" }));
-      return parseScanOutput(r.code === 0 ? r.stdout : "", MAX_REPOS);
+    // Windows: Git's sh scans in a tenth of PowerShell's time; PowerShell only when there's no sh.
+    const win = !on && window()?.platform === "windows";
+    const r = await exec("sh", ["-c", posixScanScript(), "ws-changes-scan", win ? String(cwd).replace(/\\/g, "/") : cwd, String(depth), String(MAX_REPOS), String(MAX_DIRS)], { on }).catch(() => null);
+    if (!r && win) {
+      const w = await exec("powershell", windowsScanArgs(cwd, depth), { on }).catch(() => ({ code: 1, stdout: "" }));
+      return parseScanOutput(w.code === 0 ? w.stdout : "", MAX_REPOS);
     }
-    const r = await exec("sh", ["-c", posixScanScript(), "ws-changes-scan", cwd, String(depth), String(MAX_REPOS), String(MAX_DIRS)], { on }).catch(() => ({ code: 1, stdout: "" }));
+    if (!r) return parseScanOutput("", MAX_REPOS);
     return parseScanOutput(r.code === 0 ? r.stdout : "", MAX_REPOS);
   }
 

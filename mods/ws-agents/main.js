@@ -38,11 +38,14 @@
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, Popup, ScrollHandle } from "gpui-base";
-import { agents, terminals, panes, focused, spaces, knownAgents, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, exec, hc, appHome, home, notify, checking, readTextFile, writeTextFile } from "herdr";
+import { agents, terminals, panes, focused, spaces, knownAgents, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, hc, appHome, home, notify, checking, readTextFile, writeTextFile } from "herdr";
+import { exec } from "./posix.js";
 import { tokens } from "./statfacts.js";
 import { kindOf as menuKind, menuItems, menuHeight, closeAsks, forkArgv, wipeTargets, agyDir, handoffChoices, firstHandoffPick, handoffLaunch, commandProgram, choiceArgv } from "./menufacts.js";
 import { KNOBS, knobsIn, configModels, listable, keptModels, listModels, SHORT_LIST, typeahead, markSegments } from "./knobs.js";
 import { SETTINGS_FILE, parseSettings, experimentOn, featureOn } from "./settingsfacts.js";
+// The system's trash by its name: the Recycle Bin on Windows, the Trash elsewhere.
+const trashName = () => (window()?.platform === "windows" ? "Recycle Bin" : "Trash");
 
 // The workspace ws-switcher shows, null for every space.
 const workspace = () => (shared("workspaces.defs") ?? []).find((d) => d.id === shared("workspaces.active")) ?? null;
@@ -246,7 +249,8 @@ const COPY = `
 if command -v pbcopy >/dev/null 2>&1; then printf %s "$1" | pbcopy
 elif command -v wl-copy >/dev/null 2>&1; then printf %s "$1" | wl-copy
 elif command -v xclip >/dev/null 2>&1; then printf %s "$1" | xclip -selection clipboard
-else echo "no clipboard command (pbcopy, wl-copy, xclip)" >&2; exit 1; fi`;
+elif command -v powershell >/dev/null 2>&1; then HERDR_CLIP=$1 powershell -NoProfile -NonInteractive -Command 'for ($i = 0; $i -lt 5; $i++) { try { Set-Clipboard -Value $env:HERDR_CLIP -ErrorAction Stop; exit 0 } catch { Start-Sleep -Milliseconds 150 } }; exit 1'
+else echo "no clipboard command (pbcopy, wl-copy, xclip, PowerShell)" >&2; exit 1; fi`;
 
 // What hc (or a shell step) said went wrong, in its words.
 function failure(r) {
@@ -261,7 +265,7 @@ function failure(r) {
 }
 
 // Where a wipe's files went, in words (agywipe.js moves them into its backup folder).
-const filesWhere = (n, backup) => (n ? `its files are in ${tilde(backup)}/files (move that folder to the Trash once you're sure)` : "it had no files left to move");
+const filesWhere = (n, backup) => (n ? `its files are in ${tilde(backup)}/files (move that folder to the ${trashName()} once you're sure)` : "it had no files left to move");
 // What changed in Antigravity's lists, in words, from agywipe.js' `changed`.
 const changedWords = (changed) => (changed?.length ? `Antigravity's lists were partly changed (${changed.join(", ")})` : "Antigravity's lists weren't changed");
 
@@ -999,7 +1003,7 @@ export default class Agents extends View {
     const override = knobs && (this.hoKnobEdited || Boolean(typedModel))
       ? { knobs, model: typedModel || this.hoModel || "", effort: this.hoEffort || "" }
       : {};
-    const launch = handoffLaunch(choice, f, this.hoText.value(), shared("workspaces.launcher") === true, { space: targetSpace, folder, prefill, ...override });
+    const launch = handoffLaunch(choice, f, this.hoText.value(), shared("workspaces.launcher") === true, { space: targetSpace, folder, prefill, platform: window()?.platform, ...override });
     if (!launch) {
       this.error = `Couldn't build a launch command for ${choice.name}.`;
       cx.notify();
@@ -1067,7 +1071,7 @@ export default class Agents extends View {
     const working = f.status === "working" ? "; it's working, so this also stops what it's doing" : "";
     if (f.kind !== "agy") {
       return this.dialogFrame(t, "agent-wipe", `Wipe ${f.name}?`, (cx) => this.doWipe(cx))
-        .child(div().pt(12).text_color(t.muted).child(`Closes it and moves its conversation to the Trash. History won't list it and it can't be resumed${working}.`))
+        .child(div().pt(12).text_color(t.muted).child(`Closes it and moves its conversation to the ${trashName()}. History won't list it and it can't be resumed${working}.`))
         .child(div().pt(10).text_size(11.5).text_color(t.dim).truncate().child(tilde(targets[0])))
         .when(Boolean(this.error), (el) => el.child(div().pt(8).text_size(11.5).text_color(t.blocked).child(this.error)))
         .child(div().flex_1())
@@ -1145,9 +1149,9 @@ export default class Agents extends View {
         if (running()) throw new Error("it's still running");
         if (f.pane && panes().some((x) => x.pane === f.pane)) run("pane.close", { pane: f.pane });
         const r = await exec("sh", ["-c", TRASH, "sh", `${home()}/.herdr/trash`, ...targets]);
-        if (r.code !== 0) throw new Error(String(r.stderr ?? "").trim() || "moving it to the Trash failed");
+        if (r.code !== 0) throw new Error(String(r.stderr ?? "").trim() || `moving it to the ${trashName()} failed`);
         const elsewhere = String(r.stdout ?? "").split("\n").map((l) => l.trim()).find((l) => l && l !== "Trash");
-        notify({ title: `Wiped ${f.name}`, body: elsewhere ? `Its conversation is in ${tilde(elsewhere)}.` : "Its conversation is in the Trash.", level: "success" });
+        notify({ title: `Wiped ${f.name}`, body: elsewhere ? `Its conversation is in ${tilde(elsewhere)}.` : `Its conversation is in the ${trashName()}.`, level: "success" });
         closeOverlay(p.overlay);
       } catch (e) {
         this.busy = false;

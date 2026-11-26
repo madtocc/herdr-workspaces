@@ -327,7 +327,7 @@ export function psRows(commOut, argsOut) {
   return rows;
 }
 
-const base = (p) => String(p ?? "").split("/").pop();
+const base = (p) => String(p ?? "").split(/[\\/]/).pop();
 // What an Antigravity process is: "agent" (an interactive agy, which keeps the lists in
 // memory and writes them back), "probe" (agy -p / --print: a one-off answer, like the
 // status bar's usage check), "helper" (agy agentapi, the editor bridge), or null when it

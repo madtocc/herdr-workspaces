@@ -1,0 +1,7 @@
+# Line ends as the scripts need them on every system: Git for Windows checks out
+# with CRLF by default, which sh scripts can't run. Windows' own .cmd and .ps1
+# files keep CRLF.
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.png binary

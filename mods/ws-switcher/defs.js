@@ -2,7 +2,8 @@
 // and what the automations runner starts. The switcher (main.js) and the
 // background runner (runner/main.js) both load these, so they agree.
 
-import { home, readTextFile, exec, window, shared } from "herdr";
+import { home, readTextFile, window, shared } from "herdr";
+import { exec } from "./posix.js";
 import * as fs from "fs/promises";
 import { readOrder, sortDefs } from "./arrange.js";
 
@@ -16,7 +17,7 @@ export function expand(p) {
 }
 export const tilde = (p) => (p === home() ? "~" : p.startsWith(home() + "/") ? "~" + p.slice(home().length) : p);
 export const under = (p, d) => Boolean(p && d) && (p === d || p.startsWith(d === "/" ? d : d + "/"));
-export const base = (p) => p.replace(/\/+$/, "").split("/").pop();
+export const base = (p) => p.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
 
 // A folder watch's paths that are all inside workspaces' notes/ folders (ws-notes saves
 // there as you type): nothing for a reload, which reads configs, presets and tasks.
@@ -120,7 +121,9 @@ export async function loadDefs(saved) {
 // one too); a workspace's own are ~/.herdr/workspaces/<id>/agents/<name>.md and
 // win by name. Same format as hc's: front matter `description` and `command` (a
 // shell line, values taken as written), instructions as the body.
-export const templatesDir = () => `${home()}/.config/herdr-core/templates`;
+// herdr-core's own folder (templates, config.toml): %APPDATA%\herdr-core on Windows.
+const coreDir = () => window()?.platform === "windows" ? `${home()}/AppData/Roaming/herdr-core` : `${home()}/.config/herdr-core`;
+export const templatesDir = () => `${coreDir()}/templates`;
 
 export function parsePreset(name, file, text, scope) {
   const t = text.replace(/\r\n/g, "\n");
@@ -199,9 +202,12 @@ export function presetLaunch(preset, task) {
 // The first message, for the launcher: as --task, not last on the command line where
 // Herdr would put it, so a restart brings the agent back without sending it again
 // (bin/herdr-ws-resume). Other commands keep Herdr's task.
+// Windows: herdr-core starts herdr-ws-agent through its .cmd, and cmd can't take a line break in an
+// argument, so the task's line breaks go as U+2028 (LINE SEPARATOR), which herdr-ws-agent turns back.
 export function withTask(argv, task) {
   let i = argv[0] === "env" ? 1 : 0;
   while (argv[i] && /^[A-Za-z_][A-Za-z0-9_]*=/.test(argv[i])) i++;
   if (!task || base(argv[i] ?? "") !== "herdr-ws-agent") return { argv, task };
-  return { argv: [...argv.slice(0, i + 1), "--task", task, ...argv.slice(i + 1)], task: "" };
+  const t = window()?.platform === "windows" ? String(task).replace(/\r\n?|\n/g, "\u2028") : task;
+  return { argv: [...argv.slice(0, i + 1), "--task", t, ...argv.slice(i + 1)], task: "" };
 }

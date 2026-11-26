@@ -16,7 +16,8 @@
 
 import { View, div, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { props, closeOverlay, run, theme, exec, appHome, checking, shared, setShared } from "herdr";
+import { props, closeOverlay, run, theme, appHome, checking, shared, setShared } from "herdr";
+import { exec } from "./posix.js";
 
 const DOT = { error: "blocked", warning: "working", success: "done", info: "accent" };
 

@@ -40,7 +40,8 @@
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input, TextareaState, Textarea, Popup, ScrollHandle } from "gpui-base";
-import { theme, shared, setShared, props, closeOverlay, home, appHome, readTextFile, writeTextFile, exec, notify, agents, terminals, run, knownAgents, window } from "herdr";
+import { theme, shared, setShared, props, closeOverlay, home, appHome, readTextFile, writeTextFile, notify, agents, terminals, run, knownAgents, window } from "herdr";
+import { exec } from "./posix.js";
 import { parseWhen, describe, nextAt, shortTime } from "./when.js";
 import { KNOBS, words, programOf, knobsIn, configModels, listable, keptModels, listModels, shownModels, knobsText, SHORT_LIST, typeahead, markSegments } from "./knobs.js";
 import { runCheck, runShellScript, checkEnv } from "./check.js";
@@ -48,6 +49,8 @@ import { splitFront, fieldValue, withFrontFields, normCheck, normScript, parseDu
 import { DRAFTER_NAMES, DRAFT_MODEL, DRAFT_TIMEOUT, SCHEMA, GUIDE, buildDraftCommand, parseDraftOutput, pickDrafters } from "./drafter.js";
 import { automationSetting, parseSettings, SETTINGS_FILE, platformWords } from "./settingsfacts.js";
 import * as fs from "fs/promises";
+// The system's trash by its name: the Recycle Bin on Windows, the Trash elsewhere.
+const trashName = () => (window()?.platform === "windows" ? "Recycle Bin" : "Trash");
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const MODEL_WORD = /^[A-Za-z0-9._:/@-]+$/;
@@ -711,7 +714,7 @@ export default class Automations extends View {
         if (r.code !== 0) throw new Error(r.stderr.trim() || `exit ${r.code}`);
         if (sel.scope === "global") updateGlobal(sel.name, null);
         if (!this.none() && (sel.scope !== "global" || !this.taken("workspace").has(sel.name))) updateShared(this.workspace, sel.name, null);
-        notify({ title: `Deleted the ${sel.name} automation${sel.scope === "global" ? " from every workspace" : ""}`, body: r.stdout.trim() === "Trash" ? "Its file is in the Trash." : `Its file is in ${tilde(r.stdout.trim())}.`, level: "success" });
+        notify({ title: `Deleted the ${sel.name} automation${sel.scope === "global" ? " from every workspace" : ""}`, body: r.stdout.trim() === "Trash" ? `Its file is in the ${trashName()}.` : `Its file is in ${tilde(r.stdout.trim())}.`, level: "success" });
         this.sel = null;
         this.snap = null;
       } catch (e) {

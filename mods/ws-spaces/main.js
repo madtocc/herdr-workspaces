@@ -14,7 +14,8 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout } from "herdr";
+import { spaces, machines, panes, run, openOverlay, hc, theme, shared, setShared, watchFolder, window, layout } from "herdr";
+import { exec } from "./posix.js";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -43,7 +44,7 @@ const RAIL_CELL = 32;
 const HOLD = 450; // ms the Spaces + is held before it asks for a name and folder
 const railCell = (el) => h_flex().flex_none().justify_center().child(el);
 const where = (s, ps) => JSON.stringify([s.machine ?? null, place(s, ps)]);
-const base = (path) => path.replace(/\/+$/, "").split("/").pop();
+const base = (path) => path.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
 // The name in a scratch folder's name ("2026-11-20-1020-bot-idea" -> "bot-idea"), null
 // for one made unnamed. The same rule as ws-switcher's scratchLabel() (scratch.js): change both.
 const scratchName = (folder) => base(folder).match(/^\d{4}-\d\d-\d\d-\d{4}-(?!\d$)(.+)$/)?.[1] ?? null;

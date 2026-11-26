@@ -8,6 +8,8 @@
 #   herdr-ws-resume --forget [T] don't bring back terminal T's agent (default: this terminal's)
 #   herdr-ws-resume --off | --on bring agents back after a restart, or not (on at first)
 #   herdr-ws-resume --status     whether it's on, how many come back, and whether it's set up
+#   herdr-ws-resume --agent      only this terminal's agent, if it has one, then return (Windows:
+#                                herdr-ws-resume.ps1, herdr-core's shell there, runs it)
 #   herdr-ws-resume --parent A F P [hooked]  the launcher's, in the background: notes who
 #                                started this terminal's agent (A, in folder F, preset P) when
 #                                it's an hc helper
@@ -53,7 +55,13 @@
 #   shell = ["/bin/sh", "-c", "r=\"$HOME/.config/herdr-app/mods/ws-switcher/bin/herdr-ws-resume\"; [ -x \"$r\" ] && exec \"$r\"; exec \"${SHELL:-/bin/sh}\" -l"]
 #
 # That shell starts every new terminal too. Without a note for its terminal it is
-# your usual one ($SHELL, a login shell on macOS, as herdr-core starts it).
+# your usual one ($SHELL, a login shell on macOS, as herdr-core starts it; on Windows
+# PowerShell, as herdr-core starts it, or $HERDR_WS_SHELL).
+#
+# On Windows herdr-core's config is %APPDATA%\herdr-core\config.toml and the shell is PowerShell,
+# through herdr-ws-resume.ps1 beside this script (it runs this one with --agent):
+#
+#   shell = ["powershell.exe", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", ". \"$env:USERPROFILE\\.config\\herdr-app\\mods\\ws-switcher\\bin\\herdr-ws-resume.ps1\""]
 #
 # --off writes "off" in ~/.herdr/resume/switch (--on: "on"; the Agent presets screen
 # has the same switch). While it's off, a lost terminal gets your usual shell and
@@ -61,11 +69,17 @@
 # so turning it on again brings back the agents that still run.
 
 dir=${HERDR_WS_RESUME_DIR:-$HOME/.herdr/resume}
-core=${HC_TERMINAL_SOCKET##*/}
+core=${HC_TERMINAL_SOCKET##*[/\\]}
 core=${core%.sock}
+case $HC_TERMINAL_SOCKET in '\\.\pipe\'*) core=${core#herdr-core-*-} ;; esac
 [ -n "$core" ] || core=default
 here=$(dirname "$0")
-config=${XDG_CONFIG_HOME:-$HOME/.config}/herdr-core/config.toml
+# herdr-core's own folder (config, templates): %APPDATA%\herdr-core on Windows, as herdr-core has it.
+case $(uname -s) in
+  MINGW* | MSYS* | CYGWIN*) hcdir=${XDG_CONFIG_HOME:-$(cygpath -m "${APPDATA:-$HOME/AppData/Roaming}")}/herdr-core ;;
+  *) hcdir=${XDG_CONFIG_HOME:-$HOME/.config}/herdr-core ;;
+esac
+config=$hcdir/config.toml
 
 off() { [ "$(sed -n 1p "$dir/switch" 2>/dev/null)" = off ]; }
 # How many agents come back, and whether herdr-core starts terminals through this.
@@ -83,9 +97,22 @@ status() {
 shell=${SHELL:-/bin/sh}
 l=
 [ "$(uname -s 2>/dev/null)" = Darwin ] && l=l
+# Windows (Git's sh): your usual shell is herdr-core's own, PowerShell (7 when it's installed),
+# with the prompt hook herdr-core gives it so hc sees the folder you cd to. HERDR_WS_SHELL
+# names another (a program on PATH, or Git's bash).
+win=
+case $(uname -s 2>/dev/null) in MINGW* | MSYS* | CYGWIN*) win=1 ;; esac
+winshell() {
+  if [ -n "${HERDR_WS_SHELL:-}" ]; then exec "$HERDR_WS_SHELL"; fi
+  ps=powershell.exe
+  command -v pwsh.exe >/dev/null 2>&1 && ps=pwsh.exe
+  hook='$global:__hc_prompt = $function:prompt; function global:prompt { $p = & $global:__hc_prompt; $l = $ExecutionContext.SessionState.Path.CurrentLocation; if ($l.Provider.Name -eq "FileSystem") { try { [Environment]::CurrentDirectory = $l.ProviderPath } catch {} }; $p }'
+  exec "$ps" -NoExit -EncodedCommand "$(printf '%s' "$hook" | iconv -f UTF-8 -t UTF-16LE | base64 | tr -d '\n')"
+}
 
 # A JSON string field of the hook's input (Claude's fields are flat strings).
-field() { printf '%s' "$input" | tr -d '\n' | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p"; }
+# A JSON \\ is one backslash (Windows paths: C:\\Users\\…).
+field() { printf '%s' "$input" | tr -d '\n' | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | sed 's/\\\\/\\/g'; }
 # The same, under Claude's name or else Antigravity's (camelCase): hook_event_name, hookEventName.
 either() { v=$(field "$1"); [ -n "$v" ] || v=$(field "$2"); printf '%s' "$v"; }
 
@@ -305,8 +332,11 @@ case "${1:-}" in
     exit 0
     ;;
   '') ;;
+  # Only this terminal's agent, then back to the caller: on Windows, herdr-ws-resume.ps1
+  # (PowerShell is the terminal's shell there, so herdr-core follows its folder).
+  --agent) agentonly=1 ;;
   *)
-    echo "usage: herdr-ws-resume [--hook | --list | --forget [terminal] | --on | --off | --status | --parent <agent> <folder> <preset>]" >&2
+    echo "usage: herdr-ws-resume [--hook | --list | --forget [terminal] | --on | --off | --status | --agent | --parent <agent> <folder> <preset>]" >&2
     exit 2
     ;;
 esac
@@ -336,7 +366,17 @@ if [ -n "${HC_TERMINAL_ID:-}" ] && ! off && [ -r "$note.cmd" ] && words=$(cat "$
       fi
     fi
   fi
+  if [ -n "${agentonly:-}" ]; then
+    trap : INT QUIT
+    "$@"
+    exit 0
+  fi
   # As Herdr's + menu starts an agent: from your shell, which stays when it ends.
+  if [ -n "$win" ]; then
+    trap : INT QUIT
+    "$@"
+    winshell
+  fi
   case "${shell##*/}" in
     fish) exec "$shell" -"$l"ic "command \$argv[2..]; exec \$argv[1] -${l}i" "$shell" "$@" ;;
     sh | bash | zsh | dash | ksh) exec "$shell" -"$l"ic "\"\$@\"; exec \"\$0\" -${l}i" "$shell" "$@" ;;
@@ -347,4 +387,6 @@ if [ -n "${HC_TERMINAL_ID:-}" ] && ! off && [ -r "$note.cmd" ] && words=$(cat "$
       ;;
   esac
 fi
+[ -z "${agentonly:-}" ] || exit 0
+[ -z "$win" ] || winshell
 exec "$shell" ${l:+-l}

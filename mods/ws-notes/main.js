@@ -25,12 +25,13 @@
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
-import {
-  theme, shared, props, home, watchFolder, readTextFile, writeTextFile, exec, notify, checking,
-} from "herdr";
+import { theme, shared, props, home, watchFolder, readTextFile, writeTextFile, notify, checking, window } from "herdr";
+import { exec } from "./posix.js";
 import * as fs from "fs/promises";
 import { matches, ago, cardOf, titleOf, touchesNotes } from "./notesfacts.js";
 import { NoteState } from "./notestate.js";
+// The system's trash by its name: the Recycle Bin on Windows, the Trash elsewhere.
+const trashName = () => (window()?.platform === "windows" ? "Recycle Bin" : "Trash");
 
 const PALETTE = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
 const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b7cf6", ansi2: "#3fae6a", ansi1: "#d9649a" };
@@ -345,13 +346,13 @@ export default class Notes extends View {
         }
         const r = await exec("sh", ["-c", TRASH, "sh", open.file, `${workspacesDir()}/.trash`]).catch((e) => ({ code: 1, stderr: message(e) }));
         if (r.code !== 0) {
-          this.error = `${id} is on the board, but the note couldn't go to the Trash: ${String(r.stderr ?? "").trim() || `exit ${r.code}`}`;
+          this.error = `${id} is on the board, but the note couldn't go to the ${trashName()}: ${String(r.stderr ?? "").trim() || `exit ${r.code}`}`;
           return;
         }
         const where = String(r.stdout ?? "").trim();
         notify({
           title: `Moved to the board as ${id}`,
-          body: where === "Trash" ? "The note is in the Trash." : `The note is in ${tilde(where)}.`,
+          body: where === "Trash" ? `The note is in the ${trashName()}.` : `The note is in ${tilde(where)}.`,
           level: "success",
           action: { name: `ws-switcher.show/board/${def.id}`, args: {} },
         });
@@ -379,7 +380,7 @@ export default class Notes extends View {
         const r = await exec("sh", ["-c", TRASH, "sh", open.file, `${workspacesDir()}/.trash`]);
         if (r.code !== 0) throw new Error(String(r.stderr ?? "").trim() || `exit ${r.code}`);
         const where = String(r.stdout ?? "").trim();
-        notify({ title: "Note deleted", body: where === "Trash" ? "Its file is in the Trash." : `Its file is in ${tilde(where)}.`, level: "success" });
+        notify({ title: "Note deleted", body: where === "Trash" ? `Its file is in the ${trashName()}.` : `Its file is in ${tilde(where)}.`, level: "success" });
         this.st.drop(open.file);
         this.openNext();
       } catch (e) {
@@ -483,14 +484,14 @@ export default class Notes extends View {
     const where = open?.file ? `notes/${open.name}` : "The first line is its title";
     const actions = this.confirming
       ? [
-        div().text_size(12).text_color(t.muted).child("Move this note to the Trash?"),
+        div().text_size(12).text_color(t.muted).child(`Move this note to the ${trashName()}?`),
         button("note-delete-cancel", "Cancel", (cx) => { this.confirming = false; cx.notify(); }),
-        button("note-delete-yes", "Move to Trash", (cx) => this.remove(cx), { tone: "blocked" }),
+        button("note-delete-yes", `Move to ${trashName()}`, (cx) => this.remove(cx), { tone: "blocked" }),
       ]
       : [
         ...(featureOn("board") ? [button("note-move", this.busy === "move" ? "Moving…" : "Move to the board", (cx) => this.moveToBoard(cx),
           { solid: has, off: !has, tip: has ? `Make it a card in ${label(first)} and take it out of Notes` : "Write something first", icon: "mods/ws-board/board.svg" })] : []),
-        ...(open?.file || has ? [button("note-delete", "Delete", (cx) => this.remove(cx), { tip: open?.file ? "Move it to the Trash" : "Throw away this new note", icon: "mods/ws-notes/trash.svg" })] : []),
+        ...(open?.file || has ? [button("note-delete", "Delete", (cx) => this.remove(cx), { tip: open?.file ? `Move it to the ${trashName()}` : "Throw away this new note", icon: "mods/ws-notes/trash.svg" })] : []),
       ];
     const bar = h_flex().h(narrow ? 36 : 48).flex_none().px(narrow ? 10 : 16).gap(8).items_center().border_b(1).border_color(t.border)
       .when(narrow, (el) => el.child(div().id("note-back").flex_none().text_size(12).text_color(t.muted).cursor_pointer()

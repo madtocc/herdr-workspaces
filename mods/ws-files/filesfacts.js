@@ -272,19 +272,19 @@ export function parseSearchOutput(stdout, root, maxMatches = 200) {
 // Editors with a command line, as Compozy lists them: id, name, the command, the macOS bundle
 // id, and how a line is passed ("colon": file:line, "goto": -g file:line, "line": --line n file).
 export const EDITOR_CATALOG = [
-  { id: "zed", label: "Zed", binary: "zed", bundle: "dev.zed.Zed", lineStyle: "colon", desktop: ["dev.zed.Zed.desktop", "zed.desktop"] },
-  { id: "cursor", label: "Cursor", binary: "cursor", bundle: "com.todesktop.230313mzl4w4u92", lineStyle: "goto", desktop: ["cursor.desktop"] },
-  { id: "vscode", label: "VS Code", binary: "code", bundle: "com.microsoft.VSCode", lineStyle: "goto", desktop: ["code.desktop"] },
-  { id: "vscode-insiders", label: "VS Code Insiders", binary: "code-insiders", bundle: "com.microsoft.VSCodeInsiders", lineStyle: "goto", desktop: ["code-insiders.desktop"] },
-  { id: "windsurf", label: "Windsurf", binary: "windsurf", bundle: "com.exafunction.windsurf", lineStyle: "goto", desktop: ["windsurf.desktop"] },
-  { id: "sublime", label: "Sublime Text", binary: "subl", bundle: "com.sublimetext.4", lineStyle: "colon", desktop: ["sublime_text.desktop"] },
-  { id: "idea", label: "IntelliJ IDEA", binary: "idea", bundle: "com.jetbrains.intellij", lineStyle: "line", desktop: ["jetbrains-idea.desktop", "jetbrains-idea-ce.desktop"] },
-  { id: "webstorm", label: "WebStorm", binary: "webstorm", bundle: "com.jetbrains.WebStorm", lineStyle: "line", desktop: ["jetbrains-webstorm.desktop"] },
-  { id: "goland", label: "GoLand", binary: "goland", bundle: "com.jetbrains.goland", lineStyle: "line", desktop: ["jetbrains-goland.desktop"] },
-  { id: "pycharm", label: "PyCharm", binary: "pycharm", bundle: "com.jetbrains.pycharm", lineStyle: "line", desktop: ["jetbrains-pycharm.desktop", "jetbrains-pycharm-ce.desktop"] },
+  { id: "zed", label: "Zed", binary: "zed", bundle: "dev.zed.Zed", lineStyle: "colon", desktop: ["dev.zed.Zed.desktop", "zed.desktop"], exe: "zed.exe" },
+  { id: "cursor", label: "Cursor", binary: "cursor", bundle: "com.todesktop.230313mzl4w4u92", lineStyle: "goto", desktop: ["cursor.desktop"], exe: "cursor.exe" },
+  { id: "vscode", label: "VS Code", binary: "code", bundle: "com.microsoft.VSCode", lineStyle: "goto", desktop: ["code.desktop"], exe: "code.exe" },
+  { id: "vscode-insiders", label: "VS Code Insiders", binary: "code-insiders", bundle: "com.microsoft.VSCodeInsiders", lineStyle: "goto", desktop: ["code-insiders.desktop"], exe: "code - insiders.exe" },
+  { id: "windsurf", label: "Windsurf", binary: "windsurf", bundle: "com.exafunction.windsurf", lineStyle: "goto", desktop: ["windsurf.desktop"], exe: "windsurf.exe" },
+  { id: "sublime", label: "Sublime Text", binary: "subl", bundle: "com.sublimetext.4", lineStyle: "colon", desktop: ["sublime_text.desktop"], exe: "sublime_text.exe" },
+  { id: "idea", label: "IntelliJ IDEA", binary: "idea", bundle: "com.jetbrains.intellij", lineStyle: "line", desktop: ["jetbrains-idea.desktop", "jetbrains-idea-ce.desktop"], exe: "idea64.exe" },
+  { id: "webstorm", label: "WebStorm", binary: "webstorm", bundle: "com.jetbrains.WebStorm", lineStyle: "line", desktop: ["jetbrains-webstorm.desktop"], exe: "webstorm64.exe" },
+  { id: "goland", label: "GoLand", binary: "goland", bundle: "com.jetbrains.goland", lineStyle: "line", desktop: ["jetbrains-goland.desktop"], exe: "goland64.exe" },
+  { id: "pycharm", label: "PyCharm", binary: "pycharm", bundle: "com.jetbrains.pycharm", lineStyle: "line", desktop: ["jetbrains-pycharm.desktop", "jetbrains-pycharm-ce.desktop"], exe: "pycharm64.exe" },
   { id: "xcode", label: "Xcode", binary: "xed", bundle: "com.apple.dt.Xcode", lineStyle: "xed" },
-  { id: "android-studio", label: "Android Studio", binary: "studio", bundle: "com.google.android.studio", lineStyle: "line", desktop: ["android-studio.desktop", "jetbrains-studio.desktop"] },
-  { id: "fleet", label: "Fleet", binary: "fleet", bundle: "fleet.app", lineStyle: "colon" },
+  { id: "android-studio", label: "Android Studio", binary: "studio", bundle: "com.google.android.studio", lineStyle: "line", desktop: ["android-studio.desktop", "jetbrains-studio.desktop"], exe: "studio64.exe" },
+  { id: "fleet", label: "Fleet", binary: "fleet", bundle: "fleet.app", lineStyle: "colon", exe: "fleet.exe" },
 ];
 const IMAGE_VIEWERS = new Set(["com.apple.Preview", "preview"]);
 const isTexty = (ext) => !IMAGES.has(ext) && ext !== "svg" ? !BINARY_EXTS.has(ext) : false;
@@ -306,13 +306,13 @@ export function mergeApps({ catalogInstalled = [], macApps = [], ext = "", platf
   };
   const installed = new Set(catalogInstalled);
   for (const e of EDITOR_CATALOG) if (installed.has(e.id)) add({ id: e.id, label: e.label, kind: "editor", binary: e.binary, bundle: e.bundle, lineStyle: e.lineStyle, cli: true });
-  if (platform === "macos" || platform === "linux") for (const a of macApps ?? []) {
+  if (platform === "macos" || platform === "linux" || platform === "windows") for (const a of macApps ?? []) {
     const path = String(a?.path ?? "");
     if (!a?.name || !path) continue;
     if (/\.app\/.+\.app/i.test(path) || /\.app\/Contents\//i.test(path)) continue;
     if (/ms-playwright|puppeteer|Google Chrome for Testing|\/Library\/Caches\/|\/\.cache\//i.test(path)) continue;
     const ab = String(a.bundle ?? "").toLowerCase();
-    const cat = ab ? EDITOR_CATALOG.find((e) => e.bundle.toLowerCase() === ab || (e.desktop ?? []).some((d) => d.toLowerCase() === ab)) : undefined;
+    const cat = ab ? EDITOR_CATALOG.find((e) => e.bundle.toLowerCase() === ab || (e.desktop ?? []).some((d) => d.toLowerCase() === ab) || e.exe === ab) : undefined;
     if (cat) {
       // Its command line was found already: keep it (line numbers), and note where the app is.
       const had = out.find((x) => x.id === cat.id);
@@ -323,6 +323,8 @@ export function mergeApps({ catalogInstalled = [], macApps = [], ext = "", platf
     add({ id: `app:${a.bundle || a.name}`, label: String(a.name).replace(/\.app$/i, ""), kind: "app", bundle: a.bundle || null, path });
   }
   const e = String(ext ?? "").toLowerCase(), image = IMAGES.has(e), texty = isTexty(e) || e === "svg";
+  // Windows lists no app for many text types (.md, .ts, no extension): Notepad opens any of them.
+  if (platform === "windows" && texty) add({ id: "app:notepad", label: "Notepad", kind: "app", binary: "notepad" });
   const rank = (a) => {
     const viewer = IMAGE_VIEWERS.has(String(a.bundle ?? "").toLowerCase()) || IMAGE_VIEWERS.has(String(a.bundle ?? "")) || a.label === "Preview";
     if (image) return viewer ? 0 : a.kind === "app" ? 1 : 2;
@@ -378,7 +380,18 @@ export function parsePrefs(text) {
 export const LINUX_LAUNCH_SH = 'command -v gio >/dev/null 2>&1 && exec gio launch "$1" "$2"; ' +
   'command -v gtk-launch >/dev/null 2>&1 && exec gtk-launch "$(basename "$1" .desktop)" "$2"; exec xdg-open "$2"';
 
-export function launchCommand(app, path, line, platform = "macos") {
+// A path as the system writes it: backslashes on Windows (explorer and Windows apps take no "/";
+// the mods join with "/" onto home(), which is C:\Users\…), as it is elsewhere.
+export const nativePath = (p, platform) => platform === "windows" ? String(p).replace(/\//g, "\\") : p;
+
+// Windows' own default for these runs them (a .js under Windows Script Host, a .bat in cmd): Default
+// app opens a script in Notepad instead, and shows a program in Explorer.
+const WIN_SCRIPTS = new Set(["js", "jse", "vbs", "vbe", "wsf", "wsh", "hta", "bat", "cmd", "reg", "ps1", "psm1", "sh"]);
+const WIN_PROGRAMS = new Set(["exe", "msi", "com", "scr", "pif", "cpl", "lnk", "appx", "msix", "application"]);
+
+// opts.winapps: ws-files' winapps.ps1 (Windows: an app Windows lists starts through its handler).
+export function launchCommand(app, path, line, platform = "macos", opts = {}) {
+  path = nativePath(path, platform);
   const at = line ? `${path}:${line}` : path;
   if (app?.id === "reveal") {
     if (platform === "macos") return { cmd: "open", args: ["-R", path] };
@@ -387,24 +400,41 @@ export function launchCommand(app, path, line, platform = "macos") {
   }
   if (!app || app.id === "system") {
     if (platform === "macos") return { cmd: "open", args: [path] };
-    if (platform === "windows") return { cmd: "explorer", args: [path] };
+    if (platform === "windows") {
+      const e = /\.([^.\\/]+)$/.exec(path)?.[1]?.toLowerCase() ?? "";
+      if (WIN_SCRIPTS.has(e)) return { cmd: "notepad", args: [path] };
+      if (WIN_PROGRAMS.has(e)) return { cmd: "explorer", args: [`/select,${path}`] };
+      return { cmd: "explorer", args: [path] };
+    }
     return { cmd: "xdg-open", args: [path] };
+  }
+  if (platform === "windows") {
+    // A code editor found on PATH starts through Git's sh (VS Code's `code` is a sh script, the
+    // JetBrains ones .cmd files); an app Windows lists through its handler, as Explorer does.
+    if (app.kind === "editor" && app.binary && app.cli) {
+      const c = editorCommand(app, path, line, at);
+      return { cmd: "sh", args: ["-c", 'b=$0; command -v "$b" >/dev/null 2>&1 || b=$b.cmd; exec "$b" "$@"', c.cmd, ...c.args] };
+    }
+    if (app.path && opts.winapps) return { cmd: "powershell", args: ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", nativePath(opts.winapps, platform), "open", path, app.path] };
+    if (app.binary) return { cmd: app.binary, args: [path] };
+    return { cmd: "explorer", args: [path] };
   }
   // Linux: an app found by its .desktop file (and no command line found for it) starts through it.
   const desktop = platform === "linux" && !app.cli && /\.desktop$/.test(String(app.path ?? ""));
   if (desktop) return { cmd: "sh", args: ["-c", LINUX_LAUNCH_SH, "open", app.path, path] };
-  if (app.kind === "editor" && app.binary && (platform !== "macos" || !app.path || app.cli)) {
-    if (app.lineStyle === "goto") return { cmd: app.binary, args: line ? ["-g", at] : [path] };
-    if (app.lineStyle === "line") return { cmd: app.binary, args: line ? ["--line", String(line), path] : [path] };
-    if (app.lineStyle === "xed") return { cmd: app.binary, args: line ? ["--line", String(line), path] : [path] };
-    return { cmd: app.binary, args: [at] };
-  }
+  if (app.kind === "editor" && app.binary && (platform !== "macos" || !app.path || app.cli)) return editorCommand(app, path, line, at);
   if (platform === "macos") {
     if (app.path) return { cmd: "open", args: ["-a", app.path, path] };
     if (app.bundle) return { cmd: "open", args: ["-b", app.bundle, path] };
   }
   if (app.binary) return { cmd: app.binary, args: [path] };
   return platform === "windows" ? { cmd: "explorer", args: [path] } : { cmd: "xdg-open", args: [path] };
+}
+
+function editorCommand(app, path, line, at) {
+  if (app.lineStyle === "goto") return { cmd: app.binary, args: line ? ["-g", at] : [path] };
+  if (app.lineStyle === "line" || app.lineStyle === "xed") return { cmd: app.binary, args: line ? ["--line", String(line), path] : [path] };
+  return { cmd: app.binary, args: [at] };
 }
 
 // An SVG's drawn size from its own text: width/height in px (or unitless), else its viewBox. Null when
@@ -482,7 +512,7 @@ export function menuLabel(id, platform = "macos") {
     "new-file": "New file…", "new-folder": "New folder…", "open-in": "Open in",
     reveal: platform === "macos" ? "Reveal in Finder" : platform === "windows" ? "Show in Explorer" : "Show in folder",
     terminal: "New terminal here", "copy-path": "Copy path", "copy-rel": "Copy relative path",
-    rename: "Rename…", duplicate: "Duplicate", trash: platform === "macos" ? "Move to Trash…" : "Move to trash…",
+    rename: "Rename…", duplicate: "Duplicate", trash: platform === "macos" ? "Move to Trash…" : platform === "windows" ? "Move to Recycle Bin…" : "Move to trash…",
   }[id] ?? id;
 }
 

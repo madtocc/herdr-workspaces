@@ -11,7 +11,7 @@
 export function programOf(argv) {
   let i = argv[0] === "env" ? 1 : 0;
   while (argv[i] && /^[A-Za-z_][A-Za-z0-9_]*=/.test(argv[i])) i++;
-  const base = (w) => String(w ?? "").split("/").pop();
+  const base = (w) => String(w ?? "").split(/[\\/]/).pop();
   if (base(argv[i]) === "herdr-ws-agent") i++;
   return base(argv[i]);
 }

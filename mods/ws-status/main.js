@@ -22,7 +22,8 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { spaces, agents, theme, run, window, keys, exec, home, shared, setShared, props, openOverlay, checking } from "herdr";
+import { spaces, agents, theme, run, window, keys, home, shared, setShared, props, openOverlay, checking } from "herdr";
+import { exec } from "./posix.js";
 import * as fs from "fs/promises";
 import { claudeReportRows, agyReportRows, claudeStatusRows, barRow, blocksOf, barText, hoverLines, resetsText, agoText, followFeature } from "./usagefacts.js";
 import { SETTINGS_FILE, parseSettings, featureOn } from "./settingsfacts.js";

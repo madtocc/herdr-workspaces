@@ -32,7 +32,12 @@ set -eu
 dir=$HOME/.herdr/workspaces
 global=$HOME/.herdr/automations
 index=$dir/.index
-templates=${XDG_CONFIG_HOME:-$HOME/.config}/herdr-core/templates
+# herdr-core's own folder (config, templates): %APPDATA%\herdr-core on Windows, as herdr-core has it.
+case $(uname -s) in
+  MINGW* | MSYS* | CYGWIN*) hcdir=${XDG_CONFIG_HOME:-$(cygpath -m "${APPDATA:-$HOME/AppData/Roaming}")}/herdr-core ;;
+  *) hcdir=${XDG_CONFIG_HOME:-$HOME/.config}/herdr-core ;;
+esac
+templates=$hcdir/templates
 tab=$(printf '\t')
 usage="usage: herdr-ws-run <workspace> <automation> [text... | -]
        herdr-ws-run --add (--at TIME | --when LINE) [--name NAME] [--agent NAME] [--model M] [--effort E] [--folder DIR] [--check CMD] [--card] [--keep] [--workspace ID | --global] prompt... | -

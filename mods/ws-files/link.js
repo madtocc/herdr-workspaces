@@ -6,7 +6,8 @@
 // The "files" settings in ~/.herdr/settings.jsonc, read fresh on each click: "cmd-click" "off"
 // passes every path (as without Files), "full" opens in Files full size; "catch" "everything"
 // takes binaries too (only a path that isn't there passes).
-import { exec, home, shared, setShared, window, readTextFile } from "herdr";
+import { home, shared, setShared, window, readTextFile } from "herdr";
+import { exec } from "./posix.js";
 import { parseRawLink, resolveTargetPath, shouldCatchLink, needsSniff, pushOpen } from "./filesfacts.js";
 import { SETTINGS_FILE, parseSettings, fileSetting } from "./settingsfacts.js";
 
@@ -14,14 +15,19 @@ import { SETTINGS_FILE, parseSettings, fileSetting } from "./settingsfacts.js";
 // path on that machine, and the path as its shell resolved it ("~/x" on another machine is only known
 // there). sniff: the extension isn't one Files knows as text (filesfacts.js needsSniff).
 async function lookup(path, on, sniff) {
-  if (!on && window()?.platform === "windows") {
+  const win = !on && window()?.platform === "windows";
+  const script = 'p=$1; case $p in "~") p=$HOME;; "~/"*) p=$HOME/${p#"~/"};; esac; ! command -v cygpath >/dev/null 2>&1 || p=$(cygpath -m "$p"); if [ -d "$p" ]; then printf "d\\n%s" "$p"; elif [ -f "$p" ]; then k=f; if [ "$2" = 1 ] && [ "$(head -c 8000 "$p" | tr -dc "\\000" | wc -c | tr -d " ")" != 0 ]; then k=b; fi; printf "%s\\n%s" "$k" "$p"; fi';
+  const r = await exec("sh", ["-c", script, "sh", win ? String(path).replace(/\\/g, "/") : path, sniff ? "1" : "0"], { on: on ?? null, timeout: 10000 }).catch(() => null);
+  if (r || !win) {
+    const [kind = "", resolved = ""] = String(r?.stdout ?? "").split("\n");
+    // Windows: the path as Windows writes it (sh printed it with "/").
+    return { kind: kind.trim(), path: !resolved ? path : win ? resolved.replace(/\//g, "\\") : resolved };
+  }
+  {
+    // No sh (Git for Windows isn't there): PowerShell.
     const r = await exec("powershell", ["-NoProfile", "-Command", "& { param($p) if (Test-Path -LiteralPath $p -PathType Container) { 'd' } elseif (Test-Path -LiteralPath $p -PathType Leaf) { 'f' } } '" + path.replace(/['‘’‚‛]/g, "$&$&") + "'"]).catch(() => null);
     return { kind: String(r?.stdout ?? "").trim(), path };
   }
-  const script = 'p=$1; case $p in "~") p=$HOME;; "~/"*) p=$HOME/${p#"~/"};; esac; if [ -d "$p" ]; then printf "d\\n%s" "$p"; elif [ -f "$p" ]; then k=f; if [ "$2" = 1 ] && [ "$(head -c 8000 "$p" | tr -dc "\\000" | wc -c | tr -d " ")" != 0 ]; then k=b; fi; printf "%s\\n%s" "$k" "$p"; fi';
-  const r = await exec("sh", ["-c", script, "sh", path, sniff ? "1" : "0"], { on: on ?? null, timeout: 10000 }).catch(() => null);
-  const [kind = "", resolved = ""] = String(r?.stdout ?? "").split("\n");
-  return { kind: kind.trim(), path: resolved || path };
 }
 
 export async function handleLink(click) {

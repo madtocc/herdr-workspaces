@@ -7,6 +7,22 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 
 ## [Unreleased]
 
+### New
+- **Windows, experimental.** Tried in a VM on Windows 11 (ARM64, Herdr's x64 build under emulation): every screen, automations and the background runner, Files, desktop notifications and Standard secrets work there; Protected secrets stay macOS-only. It needs Git for Windows, whose `sh` runs the scripts (each command has a `.cmd` beside it, so they work from PowerShell), and Node 20.6 or newer. The README's "On Windows" says what to set up. To update by hand: copy every `mods/ws-*` folder.
+- **Start at login on Windows**: a scheduled task (Task Scheduler, `\Herdr\herdr-ws-runner`) that starts the background runner when you sign in, with no window; Settings > Automations' switch adds and removes it.
+- **Desktop notifications on Windows**: a Windows toast for each of Herdr's while you're in another app.
+- **Open in on Windows** lists the apps Windows' Open with offers for the file, your code editors, and Notepad for text, and opens the file with the one you pick. Default app never runs a script: a `.js` or `.bat` opens in Notepad, a program is shown in Explorer.
+- **Files' New, Rename, Duplicate and Move to Recycle Bin on Windows**, which the right-click menu used to leave out there. Folders also list ten times faster.
+- **Standard secrets' key on Windows** is sealed for your Windows user (DPAPI) instead of kept in a `vault.key` file. A `vault.key` that's already there is still used.
+- **Agents come back after a restart on Windows**, with `herdr-ws-resume.ps1` as herdr-core's shell (PowerShell, as herdr-core's own, so Herdr still follows a `cd`).
+
+### Fixed
+- **Windows paths and names.** A new workspace was named after its whole path (`C:\Users\…`); Copy path mixed `/` and `\`; Show in Explorer opened the wrong folder with a "failed" toast; Worktrees didn't find the repo.
+- **Windows words**: "Show in Explorer", "Move to Recycle Bin", and the Recycle Bin in every dialog and toast that moves something away.
+- **Keys for Views on Windows.** The recipe gives a Windows set (Ctrl+Shift and Alt+Shift); its Linux set uses Ctrl+Alt, which is AltGr on Windows.
+- **Secrets can't be orphaned by a missing key.** When the Standard secrets are there but their key isn't found (a `vault.key` deleted, a Windows profile moved to another computer), saving a secret now stops with an error instead of making a new key, which would have left the others unreadable. On every system.
+- **No Node warning in the runner's log.** Node 22.15 and newer load the runner's stand-ins with `module.registerHooks()`, so it no longer warns that `module.register()` is deprecated.
+
 ## [0.30.0] - 2026-11-25
 
 ### New

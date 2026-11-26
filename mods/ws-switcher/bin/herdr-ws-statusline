@@ -22,8 +22,10 @@ input=$(cat)
 case "$input" in
   '{'*)
     if [ -n "${HC_TERMINAL_ID:-}" ] && [ -n "${HC_TERMINAL_SOCKET:-}" ]; then
-      core=${HC_TERMINAL_SOCKET##*/}
-      dir=${HERDR_WS_AGENTS_DIR:-$HOME/.herdr/agents}/${core%.sock}
+      core=${HC_TERMINAL_SOCKET##*[/\\]}
+      core=${core%.sock}
+      case $HC_TERMINAL_SOCKET in '\\.\pipe\'*) core=${core#herdr-core-*-} ;; esac
+      dir=${HERDR_WS_AGENTS_DIR:-$HOME/.herdr/agents}/$core
       if mkdir -p "$dir" 2>/dev/null; then
         tmp=$dir/.$HC_TERMINAL_ID.$$
         printf '{"at":%s,"status":%s}\n' "$(date +%s)" "$input" > "$tmp" 2>/dev/null && mv -f "$tmp" "$dir/$HC_TERMINAL_ID.json" 2>/dev/null

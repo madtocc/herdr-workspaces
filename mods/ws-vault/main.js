@@ -19,7 +19,8 @@
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input } from "gpui-base";
-import { theme, shared, setShared, props, closeOverlay, home, appHome, readTextFile, writeTextFile, exec, run, window, watchFolder, checking } from "herdr";
+import { theme, shared, setShared, props, closeOverlay, home, appHome, readTextFile, writeTextFile, run, window, watchFolder, checking } from "herdr";
+import { exec } from "./posix.js";
 import { parseMeta, exampleFor, lastUsedLabel, expiryDetail, TTL_CHOICES } from "./vaultfacts.js";
 import { vaultSetting, featureOn } from "./settingsfacts.js";
 import { VAULT_DIR, META, TIER_WORDS, COMMANDS_HINT, brokerUp, brokerFoot, listGroups, visibleEntries, newForm, formFrom, withTier, isDirty, formProblems, namesShell, blocked, saveSteps, saveAsks, answerOf, expiresSub, ttlShown, footNote, scopeName, screenState, escStep } from "./vaultview.js";
@@ -44,7 +45,8 @@ const COPY = `
 if command -v pbcopy >/dev/null 2>&1; then printf %s "$1" | pbcopy
 elif command -v wl-copy >/dev/null 2>&1; then printf %s "$1" | wl-copy
 elif command -v xclip >/dev/null 2>&1; then printf %s "$1" | xclip -selection clipboard
-else echo "no clipboard command (pbcopy, wl-copy, xclip)" >&2; exit 1; fi`;
+elif command -v powershell >/dev/null 2>&1; then HERDR_CLIP=$1 powershell -NoProfile -NonInteractive -Command 'for ($i = 0; $i -lt 5; $i++) { try { Set-Clipboard -Value $env:HERDR_CLIP -ErrorAction Stop; exit 0 } catch { Start-Sleep -Milliseconds 150 } }; exit 1'
+else echo "no clipboard command (pbcopy, wl-copy, xclip, PowerShell)" >&2; exit 1; fi`;
 
 export default class Vault extends View {
   init(_props, cx) {

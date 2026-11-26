@@ -353,19 +353,25 @@ leaves that file to you: new default shortcuts in its updates are added by hand.
   work; Protected secrets need macOS. Not yet tried on other desktops (KDE,
   Sway), other distributions, a real GPU, or with signed-in agents and GitHub.
   Please open an issue for what breaks.
-- **Windows**: not yet; it's being worked on.
+- **Windows**: experimental. Tried in a VM on Windows 11 (ARM64, running
+  Herdr's x64 build under emulation): every screen, the background runner and
+  Start at login, automations, Files, desktop notifications and Standard
+  secrets work; Protected secrets need macOS. It needs Git for Windows (its
+  `sh` runs the scripts) and Node 20.6 or newer. Not yet tried on an x64 PC or
+  with signed-in agents and GitHub. See "On Windows" under Install.
 
-What Linux uses in macOS's place:
+What Linux and Windows use in macOS's place:
 
-| | macOS | Linux |
-|---|---|---|
-| Start at login | a LaunchAgent | a systemd user unit (`systemctl --user`) |
-| Standard secrets' key | the login Keychain | the desktop keyring (`secret-tool`, package `libsecret-tools`), else a file |
-| Desktop notifications | `terminal-notifier`, else `osascript` | `notify-send` (`libnotify-bin`) |
-| Open in ▸ | the apps macOS offers | your editors and the `.desktop` apps for the file's type (`xdg-mime`, `gio`) |
-| Copy | `pbcopy` | `wl-copy` (`wl-clipboard`) or `xclip` |
-| Move to trash | `trash` | `gio trash`, else `~/.herdr/trash` |
-| Clicking a path in a terminal | Cmd-click | Ctrl-click |
+| | macOS | Linux | Windows |
+|---|---|---|---|
+| The scripts | `sh` | `sh` | Git for Windows' `sh`, through a `.cmd` beside each command |
+| Start at login | a LaunchAgent | a systemd user unit (`systemctl --user`) | a scheduled task (Task Scheduler) |
+| Standard secrets' key | the login Keychain | the desktop keyring (`secret-tool`, package `libsecret-tools`), else a file | sealed for your Windows user (DPAPI) |
+| Desktop notifications | `terminal-notifier`, else `osascript` | `notify-send` (`libnotify-bin`) | a Windows toast (a click does nothing) |
+| Open in ▸ | the apps macOS offers | your editors and the `.desktop` apps for the file's type (`xdg-mime`, `gio`) | your editors, the apps Windows' Open with lists, and Notepad |
+| Copy | `pbcopy` | `wl-copy` (`wl-clipboard`) or `xclip` | PowerShell's `Set-Clipboard` |
+| Move to trash | `trash` | `gio trash`, else `~/.herdr/trash` | the Recycle Bin |
+| Clicking a path in a terminal | Cmd-click | Ctrl-click | Ctrl-click |
 
 ## Install
 
@@ -428,6 +434,40 @@ says how), or by hand:
      helpers and the board): open Settings > Agents and pick **Write one**
      beside "Herdr guide for every agent", which writes the starter to
      `~/.herdr/AGENTS.md` and opens it. The switch beside it turns it off.
+
+### On Windows
+
+Herdr's folder is `%USERPROFILE%\.config\herdr-app` on Windows too, so step 1,
+and 4 to 6, are the same (with `~` as `%USERPROFILE%`). herdr-core's own folder
+is `%APPDATA%\herdr-core`: presets for every workspace go in its `templates`.
+In place of steps 2 and 3:
+
+1. Install Git for Windows and Node 20.6 or newer, for instance
+   `winget install Git.Git OpenJS.NodeJS.LTS`.
+2. Add `%USERPROFILE%\.config\herdr-app\mods\ws-switcher\bin` to your user
+   `Path` (Start, "Edit environment variables for your account", Path, New).
+   Each command has a `.cmd` file there that runs it with Git's `sh`, so
+   `herdr-ws-run`, `herdr-ws-secret` and the others work from PowerShell, and
+   `programs.json` is the same as in step 2. Quit and open Herdr again, so
+   herdr-core gets the new `Path`.
+3. To bring agents back after a restart, this line in
+   `%APPDATA%\herdr-core\config.toml` makes herdr-core start terminals through
+   `herdr-ws-resume.ps1`, which is PowerShell, as herdr-core's own shell, with
+   the terminal's agent first when it has one (`pwsh.exe` in place of
+   `powershell.exe` for PowerShell 7):
+   ```toml
+   shell = ["powershell.exe", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", ". \"$env:USERPROFILE\\.config\\herdr-app\\mods\\ws-switcher\\bin\\herdr-ws-resume.ps1\""]
+   ```
+4. Keys: the recipe's Linux set doesn't suit Windows (Ctrl+Alt is AltGr there);
+   it gives a Windows set.
+
+Outside those folders it registers an app id, "Herdr", for its toasts
+(`HKCU\Software\Classes\AppUserModelId\Herdr.Workspaces`), keeps two small
+compiled helpers (Open in's and the Recycle Bin's) in `%LOCALAPPDATA%\herdr-ws`, and Start at login adds a
+task under Task Scheduler's `\Herdr\`, which turning it off removes.
+
+An agent's own `hc run … herdr-ws-agent …` needs its task on one line there
+(cmd can't take a line break in an argument); the screens handle that for you.
 
 **What it touches:** it reads `~/.herdr/workspaces` and the folders of
 each workspace's root. The `foreman` preset writes its plan under

@@ -50,7 +50,7 @@ const FLAGS = {
 };
 const flagsOf = (program) => new Map((FLAGS[program] ?? "").split(" ").filter(Boolean).map((f) => (/[=*]$/.test(f) ? [f.slice(0, -1), f.slice(-1)] : [f, ""])));
 
-const base = (p) => p.replace(/\/+$/, "").split("/").pop();
+const base = (p) => p.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
 const LAUNCHER = "herdr-ws-agent";
 
 // A shell line as words (quotes and backslashes as sh reads them).

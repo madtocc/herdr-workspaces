@@ -312,16 +312,20 @@ export function handoffTabName(choice, source) {
 
 // Passes `task` through `herdr-ws-agent --task` when the command uses the launcher
 // (keeping it out of restart notes and handling agy's -i / pi's --); otherwise keeps Herdr's task.
-function withTaskArgv(argv, task) {
+// platform "windows": herdr-core starts herdr-ws-agent through its .cmd, and cmd can't take a line
+// break in an argument, so the task's go as U+2028 (LINE SEPARATOR), which herdr-ws-agent turns back.
+function withTaskArgv(argv, task, platform) {
   let i = argv[0] === "env" ? 1 : 0;
   while (argv[i] && /^[A-Za-z_][A-Za-z0-9_]*=/.test(argv[i])) i++;
   if (!task || tail(argv[i] ?? "") !== "herdr-ws-agent") return { argv, task };
-  return { argv: [...argv.slice(0, i + 1), "--task", task, ...argv.slice(i + 1)], task: "" };
+  const t = platform === "windows" ? String(task).replace(/\r\n?|\n/g, "\u2028") : task;
+  return { argv: [...argv.slice(0, i + 1), "--task", t, ...argv.slice(i + 1)], task: "" };
 }
 
 // Parameters for `tab.new` to launch a handoff agent or preset referencing `source`.
 // With `fallback.prefill`, launches idle (no `--task` / `task`) and returns `prefill` text
 // for ws-agents to paste into the prompt once the new agent reports ready.
+// `fallback.platform`: window().platform (Windows writes the task's line breaks as U+2028).
 // Optional `fallback.model`, `fallback.effort`, and `fallback.knobs` (from knobs.js KNOBS)
 // override or clear the model/effort flags on the agent or preset command.
 // Returns null when the choice has no runnable command.
@@ -337,7 +341,7 @@ export function handoffLaunch(choice, source, task, launcher = false, fallback =
     if (!base.length) return null;
     base = applyKnobs(base, fallback);
     if (prefill) { argv = base; prefillText = prompt; }
-    else ({ argv, task: outTask } = withTaskArgv(base, prompt));
+    else ({ argv, task: outTask } = withTaskArgv(base, prompt, fallback.platform));
   } else if (choice.kind === "preset") {
     let words = commandWords(choice.command);
     if (words[0] === "env") words = words.slice(1);
@@ -356,7 +360,7 @@ export function handoffLaunch(choice, source, task, launcher = false, fallback =
       : "";
     const msg = system ? prompt : [told, prompt].filter(Boolean).join("\n\n");
     if (prefill) { argv = cmd; prefillText = msg; }
-    else ({ argv, task: outTask } = withTaskArgv(cmd, msg));
+    else ({ argv, task: outTask } = withTaskArgv(cmd, msg, fallback.platform));
   } else {
     return null;
   }

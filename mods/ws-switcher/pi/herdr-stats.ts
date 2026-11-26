@@ -19,7 +19,9 @@ export default function herdrStats(pi: any) {
   const id = process.env.HC_TERMINAL_ID;
   const socket = process.env.HC_TERMINAL_SOCKET;
   if (!id || !socket || !/^[A-Za-z0-9._-]+$/.test(id)) return;
-  const core = path.basename(socket).replace(/\.sock$/, "");
+  // Windows: \\.\pipe\herdr-core-<user>-<session>.sock; elsewhere <session>.sock.
+  const pipe = socket.startsWith("\\\\.\\pipe\\");
+  const core = path.win32.basename(socket).replace(/\.sock$/, "").replace(pipe ? /^herdr-core-[A-Za-z0-9]*-/ : /^$/, "");
   const dir = path.join(process.env.HERDR_WS_AGENTS_DIR || path.join(os.homedir(), ".herdr", "agents"), core);
   const file = path.join(dir, `${id}.json`);
   // Why each compaction ran ("manual", "threshold", "overflow"), by its entry's id:

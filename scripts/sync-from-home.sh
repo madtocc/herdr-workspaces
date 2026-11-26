@@ -51,6 +51,14 @@ for mod in ws-agents ws-switcher ws-status ws-files ws-automations ws-vault; do
   }
 done
 
+# Every mod that runs commands reaches Windows' tools (Git's sh) the same way.
+for f in "$src"/mods/ws-*/posix.js; do
+  cmp -s "$src/mods/ws-switcher/posix.js" "$f" || {
+    echo "mods/ws-switcher/posix.js and ${f#"$src"/} differ: make them the same first" >&2
+    exit 1
+  }
+done
+
 # Settings > Automations shows the Automations screen's own icon.
 cmp -s "$src/mods/ws-automations/automations.svg" "$src/mods/ws-settings/automations.svg" || {
   echo "mods/ws-automations/automations.svg and mods/ws-settings/automations.svg differ: make them the same first" >&2

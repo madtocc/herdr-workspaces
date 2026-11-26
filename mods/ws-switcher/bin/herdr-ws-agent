@@ -137,6 +137,12 @@ if [ -z "$mode" ]; then
 "; fi
     shift 2
   done
+  # Windows: Herdr's screens write the task's line breaks as U+2028 (cmd, which starts this
+  # through its .cmd, can't take a line break in an argument); back to line breaks here.
+  case $(uname -s) in
+    MINGW* | MSYS* | CYGWIN*) [ -z "$task" ] || task=$(printf '%s' "$task" | sed 's/\xe2\x80\xa8/\
+/g') ;;
+  esac
   [ $# -ge 1 ] || { echo "$usage" >&2; exit 2; }
   # An option where the agent goes is a typo, not a program to start.
   case $1 in -*) echo "herdr-ws-agent: unknown option $1" >&2; echo "$usage" >&2; exit 2 ;; esac
@@ -268,7 +274,12 @@ told() {
          sub(/^[ \t\r\n]+/, "", s); sub(/[ \t\r\n]+$/, "", s); printf "%s", s }' "$1"
 }
 
-templates=${XDG_CONFIG_HOME:-$HOME/.config}/herdr-core/templates
+# herdr-core's own folder (config, templates): %APPDATA%\herdr-core on Windows, as herdr-core has it.
+case $(uname -s) in
+  MINGW* | MSYS* | CYGWIN*) hcdir=${XDG_CONFIG_HOME:-$(cygpath -m "${APPDATA:-$HOME/AppData/Roaming}")}/herdr-core ;;
+  *) hcdir=${XDG_CONFIG_HOME:-$HOME/.config}/herdr-core ;;
+esac
+templates=$hcdir/templates
 wsdir=$HOME/.herdr/workspaces/$ws
 # A front matter field of a preset file.
 front() { awk -v k="$2" 'NR == 1 && /^---[ \t\r]*$/ { h = 1; next } h && /^---[ \t\r]*$/ { exit }
@@ -677,8 +688,10 @@ done
 [ -n "$new" ] && [ -z "$merged" ] && set -- "$@" --settings "$new"
 if [ -n "$hooks$agynote" ]; then
   if [ -z "${HERDR_WS_AGENT_DRY:-}" ]; then
-    core=${HC_TERMINAL_SOCKET##*/}
-    notes=${HERDR_WS_RESUME_DIR:-$HOME/.herdr/resume}/${core%.sock}
+    core=${HC_TERMINAL_SOCKET##*[/\\]}
+    core=${core%.sock}
+    case $HC_TERMINAL_SOCKET in '\\.\pipe\'*) core=${core#herdr-core-*-} ;; esac
+    notes=${HERDR_WS_RESUME_DIR:-$HOME/.herdr/resume}/$core
     if mkdir -p "$notes" 2>/dev/null; then
       rm -f "$notes/$HC_TERMINAL_ID.session"
       printf '%s\n' "$note" > "$notes/$HC_TERMINAL_ID.cmd"

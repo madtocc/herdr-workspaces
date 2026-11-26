@@ -19,7 +19,8 @@
 // by the background runner when it's on, else by the switcher's sidebar copy. What it
 // remembers (what each card's agent was already told) is in ~/.herdr/runner/prs.json.
 
-import { agents, shared, setShared, readTextFile, writeTextFile, exec, hc, notify } from "herdr";
+import { agents, shared, setShared, readTextFile, writeTextFile, hc, notify } from "herdr";
+import { exec } from "./posix.js";
 import * as fs from "fs/promises";
 import { wsDir, tilde, message, exists, expand, boardOf, split, field, withFields, folderPath, Store } from "./automations.js";
 import { FIELDS, clean, parsePr, repoOfRemote, facts, chip, step, openColumn, mergeWakes, stillTrue, wakeText, wakeLines } from "./prfacts.js";

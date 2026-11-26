@@ -73,7 +73,8 @@
 // mod.clone itself rewrote the icon paths from mods/files/ to mods/ws-files/.
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState, TextView, InputState, Input, Popup, ScrollHandle, h_resizable, resizable_panel } from "gpui-base";
-import { spaces, panes, focused, exec, readTextFile, writeTextFile, watchFolder, theme, settings, window, props, shared, setShared, checking, machines, home, appHome, closeOverlay, openOverlay, run, nextCommand, notify } from "herdr";
+import { spaces, panes, focused, readTextFile, writeTextFile, watchFolder, theme, settings, window, props, shared, setShared, checking, machines, home, appHome, closeOverlay, openOverlay, run, nextCommand, notify } from "herdr";
+import { exec } from "./posix.js";
 import * as fs from "fs/promises";
 import { locate, toRemember } from "./follow.js";
 import {
@@ -81,8 +82,11 @@ import {
   canEdit, resolveRelativeLink, splitDirBase, relFromRoot, dirName, baseName, offsetForLine, filterEntries, parseSearchOutput,
   mergeApps, pickDefaultApp, rememberApp, parsePrefs, launchCommand, targetFor, svgSize, fitImage, sameFile,
   menuRows, menuLabel, nameProblem, stemEnd, copyName, movedPath, isUnder,
+  nativePath,
 } from "./filesfacts.js";
 import { SETTINGS_FILE, FILES_KEYS, FILES_DEFAULTS, parseSettings, fileSetting, LINUX_APPS_SH, parseLinuxApps, platformWords } from "./settingsfacts.js";
+// Windows' Open with list and launcher (see the file).
+const WINAPPS = () => `${appHome()}/mods/ws-files/winapps.ps1`;
 const PER_FOLDER = 500, TOTAL = 5000;
 const NARROW = 640, RAIL = 248;
 const PREFS_FILE = () => `${home()}/.herdr/files-prefs.json`;
@@ -96,8 +100,9 @@ const NEW_FOLDER = `mkdir -p -- "$(dirname -- "$1")" && ${FREE} && mkdir -- "$1"
 // $3 = 1: only the case changes (on macOS the new name "is there": it's the same entry).
 const RENAME = '{ [ "$3" = 1 ] || { [ ! -e "$2" ] && [ ! -L "$2" ]; } || exit 3; } && mv -- "$1" "$2"';
 const DUPLICATE = '{ [ ! -e "$2" ] && [ ! -L "$2" ] || exit 3; } && cp -Rp -- "$1" "$2"';
-// To the Trash (macOS 15+ has trash; Linux desktops gio), else into ~/.herdr/trash on that
-// machine, as the Agents menu's Wipe does. Prints where it went; exit 4: it isn't there.
+// To the Trash (macOS 15+ has trash; Linux desktops gio; on Windows posix.js gives sh a trash
+// that reaches the Recycle Bin), else into ~/.herdr/trash on that machine, as the Agents menu's Wipe does. Prints
+// where it went; exit 4: it isn't there.
 const TRASH = `[ -e "$1" ] || [ -L "$1" ] || exit 4
 if command -v trash >/dev/null 2>&1 && trash "$1"; then echo Trash; exit 0; fi
 if command -v gio >/dev/null 2>&1 && gio trash "$1"; then echo Trash; exit 0; fi
@@ -130,6 +135,10 @@ function iconOf(name, dir) {
   return "file";
 }
 
+// Windows: whether Git's sh started for this computer's last listing (null: not tried yet). The
+// right-click menu's write steps need it.
+let localSh = null;
+
 async function directory(path, on) {
   const windowsDirectory = async () => {
     // Windows PowerShell otherwise uses the console code page; exec decodes UTF-8.
@@ -141,12 +150,15 @@ async function directory(path, on) {
     const result = JSON.parse(r.stdout || "[]");
     return Array.isArray(result) ? result : [result];
   };
-  if (!on && window()?.platform === "windows") return windowsDirectory();
+  // Windows: Git's sh lists in a tenth of PowerShell's time; PowerShell only when there's no sh.
+  const local = !on && window()?.platform === "windows";
+  if (local) path = String(path).replace(/\\/g, "/");
   const script = 'n=0; for p in "$1"/* "$1"/.[!.]* "$1"/..?*; do [ -e "$p" ] || [ -L "$p" ] || continue; name=${p##*/}; [ "$name" = .git ] && continue; if [ -d "$p" ]; then kind=d; else kind=f; fi; printf "%s\\0%s\\0" "$kind" "$name"; n=$((n+1)); [ "$n" -gt 500 ] && break; done; test -d "$1"';
   let r;
-  try { r = await exec("sh", ["-c", script, "files", path], { on }); }
+  try { r = await exec("sh", ["-c", script, "files", path], { on }); if (local) localSh = true; }
   catch (e) {
-    if (on && String(e).includes("cannot start sh: program not found")) return windowsDirectory();
+    if (local) localSh = false;
+    if (local || (on && String(e).includes("cannot start sh: program not found"))) return windowsDirectory();
     throw e;
   }
   if (r.code !== 0) throw new Error(r.stderr || "Cannot list this folder");
@@ -158,9 +170,13 @@ async function directory(path, on) {
 // A file's size in bytes on its machine, or null when it isn't there (or isn't a file).
 async function sizeOf(path, on) {
   if (!on && window()?.platform === "windows") {
-    const r = await exec("powershell", ["-NoProfile", "-Command", "& { param($p) if (Test-Path -LiteralPath $p -PathType Leaf) { (Get-Item -LiteralPath $p).Length } } '" + path.replace(/['‘’‚‛]/g, "$&$&") + "'"]).catch(() => null);
+    const r = await exec("sh", ["-c", '[ -f "$1" ] && wc -c < "$1"', "files", String(path).replace(/\\/g, "/")]).catch(() => null);
     const n = Number(String(r?.stdout ?? "").trim());
-    return r?.code === 0 && String(r.stdout).trim() && Number.isFinite(n) ? n : null;
+    if (r) return r.code === 0 && String(r.stdout).trim() && Number.isFinite(n) ? n : null;
+    // No sh (Git for Windows isn't there): PowerShell.
+    const w = await exec("powershell", ["-NoProfile", "-Command", "& { param($p) if (Test-Path -LiteralPath $p -PathType Leaf) { (Get-Item -LiteralPath $p).Length } } '" + path.replace(/['‘’‚‛]/g, "$&$&") + "'"]).catch(() => null);
+    const m = Number(String(w?.stdout ?? "").trim());
+    return w?.code === 0 && String(w.stdout).trim() && Number.isFinite(m) ? m : null;
   }
   const r = await exec("sh", ["-c", '[ -f "$1" ] && wc -c < "$1"', "files", path], { on }).catch(() => null);
   const n = Number(String(r?.stdout ?? "").trim());
@@ -740,10 +756,12 @@ export default class Files extends View {
     const seq = ++this.assetSeq, rel = `${ASSETS}/preview-${this.id}-${seq}.${ext}`, dest = `${appHome()}/${rel}`;
     try {
       await fs.mkdir(`${appHome()}/${ASSETS}`, { recursive: true });
-      // Windows: a copy through PowerShell (the mod's fs reads only under home).
-      const r = window()?.platform === "windows"
+      // Windows: a copy (cp through Git's sh, else PowerShell; the mod's fs reads only under home).
+      const win = window()?.platform === "windows";
+      const cp = win ? await exec("cp", ["--", abs.replace(/\\/g, "/"), dest.replace(/\\/g, "/")]).catch(() => null) : null;
+      const r = cp ?? (win
         ? await exec("powershell", ["-NoProfile", "-Command", "& { param($a, $b) Copy-Item -LiteralPath $a -Destination $b } '" + abs.replace(/['‘’‚‛]/g, "$&$&") + "' '" + dest.replace(/['‘’‚‛]/g, "$&$&") + "'"])
-        : await exec("ln", ["-sf", abs, dest]);
+        : await exec("ln", ["-sf", abs, dest]));
       if (r.code !== 0) throw new Error(r.stderr);
     } catch (e) { if (mine()) this.imgError = String(e?.message ?? e); return; }
     if (!mine()) { this.dropAsset({ asset: rel }); return; }
@@ -920,7 +938,8 @@ export default class Files extends View {
     const platform = window()?.platform ?? "macos";
     if (!this.catalogIds) {
       const bins = EDITOR_CATALOG.map((e) => e.binary).join(" ");
-      const r = platform === "windows" ? null : await exec("sh", ["-c", `for b in ${bins}; do command -v "$b" >/dev/null 2>&1 && printf '%s\\n' "$b"; done; true`]).catch(() => null);
+      // Windows: the JetBrains commands are .cmd files, which sh's command -v finds only by that name.
+      const r = await exec("sh", ["-c", `for b in ${bins}; do { command -v "$b" || command -v "$b.cmd"; } >/dev/null 2>&1 && printf '%s\\n' "$b"; done; true`]).catch(() => null);
       const found = new Set(String(r?.stdout ?? "").split("\n").filter(Boolean));
       this.catalogIds = EDITOR_CATALOG.filter((e) => found.has(e.binary)).map((e) => e.id);
     }
@@ -933,6 +952,11 @@ export default class Files extends View {
     if (platform === "linux" && !dir) {
       // The desktop's apps for this type (their .desktop files), as macOS's list above.
       const r = await exec("sh", ["-c", LINUX_APPS_SH, "apps", abs], { timeout: 5000 }).catch(() => null);
+      ({ apps: macApps, system } = parseLinuxApps(r?.stdout));
+    }
+    if (platform === "windows" && !dir) {
+      // The apps Windows' Open with lists for this type (winapps.ps1), as macOS's list above.
+      const r = await exec("powershell", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", nativePath(WINAPPS(), platform), "list", nativePath(abs, platform)], { timeout: 8000 }).catch(() => null);
       ({ apps: macApps, system } = parseLinuxApps(r?.stdout));
     }
     const got = { apps: mergeApps({ catalogInstalled: this.catalogIds, macApps, ext: dir ? "" : ext, platform }), system, at: Date.now() };
@@ -966,11 +990,12 @@ export default class Files extends View {
   openWith(app, cx, explicit = false, target = null) {
     if (this.on || (!target && !this.file)) return;
     const abs = target?.abs ?? `${this.root}/${this.file}`, ext = target ? target.ext : extOf(this.file), platform = window()?.platform ?? "macos";
-    const { cmd, args } = launchCommand(app, abs, !target && app.kind === "editor" ? this.cursorLine() : null, platform);
+    const { cmd, args } = launchCommand(app, abs, !target && app.kind === "editor" ? this.cursorLine() : null, platform, { winapps: WINAPPS() });
     this.withOpen = false;
     cx.spawn(async cx => {
       const r = await exec(cmd, args, { timeout: 15000 }).catch((e) => ({ code: 1, stderr: String(e) }));
-      if (r.code !== 0) notify({ title: `Couldn't open ${baseName(abs)}`, body: String(r.stderr || "").trim().split("\n")[0] || `${cmd} failed`, level: "error" });
+      // explorer exits 1 even when it opened the file.
+      if (r.code !== 0 && !(cmd === "explorer" && r.code === 1)) notify({ title: `Couldn't open ${baseName(abs)}`, body: String(r.stderr || "").trim().split("\n")[0] || `${cmd} failed`, level: "error" });
       if (app.id === "reveal" || target?.dir || !ext) return; // a folder: nothing to remember
       const had = this.sharedPrefs();
       if (!explicit && had?.last === app.id) return; // nothing new to remember
@@ -989,7 +1014,7 @@ export default class Files extends View {
 
   copyPath(cx) {
     if (!this.file) return;
-    cx.write_to_clipboard(`${this.root}/${this.file}`);
+    cx.write_to_clipboard(nativePath(`${this.root}/${this.file}`, window()?.platform));
     this.copiedAt = Date.now();
     cx.notify();
   }
@@ -1050,7 +1075,7 @@ export default class Files extends View {
   // second Popup beside it (to its left when the window has no room on the right).
 
   // The write steps run in a shell on the folder's machine: not on Windows itself.
-  writes() { return Boolean(this.on) || window()?.platform !== "windows"; }
+  writes() { return Boolean(this.on) || window()?.platform !== "windows" || localSh !== false; }
 
   // Names that differ only in case are the same entry here (macOS, Windows), not on another machine.
   caseless() { return !this.on && window()?.platform !== "linux"; }
@@ -1058,7 +1083,9 @@ export default class Files extends View {
   // The names in a folder of the tree (relative, "" the root), as last listed.
   namesIn(dir) { return (this.entries.get(dir) ?? []).map((e) => e.name); }
 
+  // Paths go to sh with "/" (Git's sh on Windows takes C:/Users/…, and its dirname splits on "/").
   sh(script, args) {
+    if (!this.on && window()?.platform === "windows") args = args.map((a) => String(a).replace(/\\/g, "/"));
     return exec("sh", ["-c", script, "files", ...args], { on: this.on, timeout: 60000 }).catch((e) => ({ code: 1, stderr: String(e?.message ?? e), stdout: "" }));
   }
 
@@ -1099,8 +1126,8 @@ export default class Files extends View {
         run("tab.new", { ...(space ? { space } : {}), folder: m.dir ? abs : dirName(abs) });
         break;
       }
-      case "copy-path": this.copyText(abs, "Path copied", cx); break;
-      case "copy-rel": this.copyText(m.path, "Relative path copied", cx); break;
+      case "copy-path": this.copyText(nativePath(abs, window()?.platform), "Path copied", cx); break;
+      case "copy-rel": this.copyText(nativePath(m.path, window()?.platform), "Relative path copied", cx); break;
       case "rename": this.startRename(m.path, m.dir, cx); break;
       case "duplicate": this.duplicate(m, cx); break;
       case "trash":
@@ -1325,9 +1352,9 @@ export default class Files extends View {
     this.trashing = true; this.trashError = null;
     cx.notify();
     cx.spawn(async (cx) => {
-      const r = await exec("sh", ["-c", TRASH, "files", a.abs], { on: a.on ?? undefined, timeout: 60000 }).catch((e) => ({ code: 1, stderr: String(e?.message ?? e) }));
+      const r = await exec("sh", ["-c", TRASH, "files", a.on ? a.abs : String(a.abs).replace(/\\/g, "/")], { on: a.on ?? undefined, timeout: 60000 }).catch((e) => ({ code: 1, stderr: String(e?.message ?? e) }));
       this.trashing = false;
-      if (r.code !== 0 && r.code !== 4) { this.trashError = firstLine(r.stderr) || "Couldn't move it to the Trash."; cx.notify(); return; }
+      if (r.code !== 0 && r.code !== 4) { this.trashError = firstLine(r.stderr) || (window()?.platform === "windows" && !a.on ? "Couldn't move it to the Recycle Bin." : "Couldn't move it to the Trash."); cx.notify(); return; }
       setShared("workspaces.files.changed", { id: `trash-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, kind: "trash", from: a.abs, on: a.on ?? null, at: Date.now() });
       const where = String(r.stdout ?? "").trim();
       if (where && where !== "Trash") notify({ title: `${a.name} moved to ${where.replace(home() ?? "\0", "~")}`, body: "There's no Trash command here, so it went into that folder.", level: "info", timeout: 5000 });
@@ -1336,19 +1363,20 @@ export default class Files extends View {
   }
 
   trashView(cx) {
-    const t = theme(), a = props().trash, mac = window()?.platform === "macos";
+    const t = theme(), a = props().trash, mac = window()?.platform === "macos", win = !a.on && window()?.platform === "windows";
+    const bin = win ? "the Recycle Bin" : "the Trash";
     const n = this.trashCount;
     const what = a.dir ? (n == null ? `${a.name} and everything in it` : n === 0 ? `${a.name} (empty)` : `${a.name} and the ${n > 10000 ? "10,000+" : n.toLocaleString()} file${n === 1 ? "" : "s"} in it`) : a.name;
-    const back = a.on ? "If that machine has no Trash, it goes into ~/.herdr/trash there." : mac ? "You can put it back from the Trash in Finder." : "You can put it back from the trash.";
+    const back = a.on ? "If that machine has no Trash, it goes into ~/.herdr/trash there." : mac ? "You can put it back from the Trash in Finder." : win ? "You can put it back from the Recycle Bin." : "You can put it back from the trash.";
     const detail = [back, a.dirty ? "Its unsaved edits are lost too." : null].filter(Boolean).join(" ");
     const button = (id, label, bg, fg, border, onClick) => h_flex().id(id).h(30).px(14).items_center().rounded(7).border_1().border_color(border).bg(bg).text_color(fg).cursor_pointer().hover((s) => s.opacity(0.88)).on_click(onClick).child(label);
     return v_flex().id("ws-files-trash").track_focus(this.handle).size_full().min_h(0).p(18).gap(10).rounded(8).bg(t.popover).text_size(13).text_color(t.foreground)
       .on_key_down((e, cx) => { if (e.key === "enter") { cx.stop_propagation(); this.trashNow(cx); } else if (e.key === "escape") { cx.stop_propagation(); closeOverlay(props().overlay); } })
-      .child(div().text_size(14.5).font_semibold().child(`Move ${what} to the Trash?`))
+      .child(div().text_size(14.5).font_semibold().child(`Move ${what} to ${bin}?`))
       .child(div().flex_1().min_h(0).text_color(t.muted).child(this.trashError ? `Couldn't: ${this.trashError}` : detail))
       .child(h_flex().justify_end().gap(8).text_size(12.5)
         .child(button("ws-files-trash-no", "Cancel", t.raised, t.foreground, t.input, () => closeOverlay(props().overlay)))
-        .child(button("ws-files-trash-yes", this.trashing ? "Moving…" : "Move to Trash", t.ansi1, t.solid_foreground, t.ansi1, (_e, cx) => this.trashNow(cx))));
+        .child(button("ws-files-trash-yes", this.trashing ? "Moving…" : win ? "Move to Recycle Bin" : "Move to Trash", t.ansi1, t.solid_foreground, t.ansi1, (_e, cx) => this.trashNow(cx))));
   }
 
   // Pieces ---------------------------------------------------------------

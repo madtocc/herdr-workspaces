@@ -21,10 +21,15 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input, TextareaState, Textarea, Popup, ScrollHandle } from "gpui-base";
-import { theme, shared, setShared, props, openOverlay, closeOverlay, home, readTextFile, writeTextFile, exec, notify, spaces, focused, window, knownAgents } from "herdr";
+import { theme, shared, setShared, props, openOverlay, closeOverlay, home, readTextFile, writeTextFile, notify, spaces, focused, window, knownAgents } from "herdr";
+import { exec } from "./posix.js";
 import { KNOBS, words, joinWords, programOf, flagValue, configValue, withFlag, withEffort, swapProgram, configModels, listable, keptModels, listModels, shownModels, SHORT_LIST, typeahead, markSegments } from "./knobs.js";
+// The system's trash by its name: the Recycle Bin on Windows, the Trash elsewhere.
+const trashName = () => (window()?.platform === "windows" ? "Recycle Bin" : "Trash");
 
-const templatesDir = () => `${home()}/.config/herdr-core/templates`;
+// herdr-core's own folder (templates, config.toml): %APPDATA%\herdr-core on Windows.
+const coreDir = () => window()?.platform === "windows" ? `${home()}/AppData/Roaming/herdr-core` : `${home()}/.config/herdr-core`;
+const templatesDir = () => `${coreDir()}/templates`;
 const modKey = () => (window()?.platform === "macos" ? "⌘" : "Ctrl+");
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 // Moves a file to the Trash ($1), or into $2 where there's no Trash command. Prints where.
@@ -34,7 +39,7 @@ if command -v gio >/dev/null 2>&1; then gio trash "$1" && echo Trash && exit 0; 
 mkdir -p "$2" && mv "$1" "$2/" && echo "$2"`;
 
 const tilde = (p) => (p === home() ? "~" : p.startsWith(home() + "/") ? "~" + p.slice(home().length) : p);
-const base = (p) => p.replace(/\/+$/, "").split("/").pop();
+const base = (p) => p.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
 const oneLine = (s) => s.replace(/\s*\n\s*/g, " ").trim();
 const message = (e) => String(e?.message ?? e);
 const defOf = (id) => (shared("workspaces.defs") ?? []).find((d) => d.id === id) ?? null;
@@ -333,7 +338,7 @@ export default class Presets extends View {
         const r = await exec("sh", ["-c", TRASH, "sh", this.snap.file, `${home()}/.herdr/workspaces/.trash`]);
         if (r.code !== 0) throw new Error(r.stderr.trim() || `exit ${r.code}`);
         updateShared(sel.scope, this.workspace, sel.name, null);
-        notify({ title: `Deleted the ${sel.name} preset`, body: r.stdout.trim() === "Trash" ? "Its file is in the Trash." : `Its file is in ${tilde(r.stdout.trim())}.`, level: "success" });
+        notify({ title: `Deleted the ${sel.name} preset`, body: r.stdout.trim() === "Trash" ? `Its file is in the ${trashName()}.` : `Its file is in ${tilde(r.stdout.trim())}.`, level: "success" });
         this.sel = null;
         this.snap = null;
       } catch (e) {

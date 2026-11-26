@@ -9,13 +9,16 @@
 # macOS: terminal-notifier when it's installed (a click brings Herdr forward
 # and, with --do, runs that Herdr command, e.g. agent.focus '{"terminal":"t7"}');
 # else osascript's "display notification" (shown as Script Editor's, and a click
-# does nothing). Linux: notify-send. Anywhere else, or with none of them: nothing.
+# does nothing). Linux: notify-send. Windows: a toast from PowerShell, under an
+# app id "Herdr" it registers in HKCU (a click does nothing). Anywhere else, or
+# with none of them: nothing.
 #
 #   --unless-front   nothing when Herdr is the app in front: its own toast shows
-#                    there. macOS only; elsewhere it can't tell, so it notifies.
+#                    there. macOS and Windows; on Linux it can't tell, so it notifies.
 #   --sound          with the system's sound (Herdr plays its own while its
 #                    window is open, so the mod leaves this out)
-#   --group ID       a later one with the same ID replaces this one (terminal-notifier)
+#   --group ID       a later one with the same ID replaces this one (terminal-notifier,
+#                    Windows)
 #   --do NAME JSON   the Herdr command a click runs (terminal-notifier)
 #   --or NAME JSON   the command it runs when Herdr refuses that one: a mod's own
 #                    command isn't known while the mod isn't shown (a hidden sidebar)
@@ -41,10 +44,11 @@ case "${1:-}" in
     case "$(uname -s)" in
       Darwin) if command -v terminal-notifier >/dev/null 2>&1; then how="terminal-notifier (a click goes to Herdr)"; elif command -v osascript >/dev/null 2>&1; then how="osascript (shown as Script Editor's; brew install terminal-notifier for a click that goes to Herdr)"; fi ;;
       Linux) command -v notify-send >/dev/null 2>&1 && how=notify-send ;;
+      MINGW* | MSYS* | CYGWIN*) command -v powershell >/dev/null 2>&1 && how="a Windows toast (a click does nothing)" ;;
     esac
     echo "on, through $how"
     exit 0 ;;
-  --help | -h) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  --help | -h) sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 esac
 
 front= sound= group= do_name= do_args= or_name= or_args=
@@ -114,5 +118,36 @@ case "$(uname -s)" in
     fi ;;
   Linux)
     command -v notify-send >/dev/null 2>&1 && run notify-send -a Herdr -- "$title" "$body" ;;
+  MINGW* | MSYS* | CYGWIN*)
+    command -v powershell >/dev/null 2>&1 || exit 0
+    # The words go in through the environment and the script encoded, so no
+    # quoting reaches PowerShell. Herdr.Workspaces is registered once (HKCU only).
+    g=$(printf '%s' "${group:-$title}" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-60)
+    script=$(cat <<'PS'
+$ErrorActionPreference = 'Stop'
+if ($env:HERDR_NOTIFY_FRONT) {
+  Add-Type -Name Fg -Namespace HerdrWs -MemberDefinition '[DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow(); [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint p);'
+  $p = 0; [void][HerdrWs.Fg]::GetWindowThreadProcessId([HerdrWs.Fg]::GetForegroundWindow(), [ref]$p)
+  if ((Get-Process -Id $p -ErrorAction SilentlyContinue).ProcessName -eq 'herdr-app') { exit 0 }
+}
+$id = 'Herdr.Workspaces'
+$k = "HKCU:\Software\Classes\AppUserModelId\$id"
+if (-not (Test-Path $k)) { New-Item $k -Force | Out-Null; New-ItemProperty $k -Name DisplayName -Value 'Herdr' -Force | Out-Null }
+[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
+$e = { param($s) [Security.SecurityElement]::Escape([string]$s) }
+$lines = "<text>$(& $e $env:HERDR_NOTIFY_TITLE)</text>"
+if ($env:HERDR_NOTIFY_BODY) { $lines += "<text>$(& $e $env:HERDR_NOTIFY_BODY)</text>" }
+$audio = if ($env:HERDR_NOTIFY_SOUND) { '' } else { "<audio silent='true'/>" }
+$d = New-Object Windows.Data.Xml.Dom.XmlDocument
+$d.LoadXml("<toast><visual><binding template='ToastGeneric'>$lines</binding></visual>$audio</toast>")
+$t = [Windows.UI.Notifications.ToastNotification]::new($d)
+$t.Tag = $env:HERDR_NOTIFY_GROUP; $t.Group = 'herdr'
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($id).Show($t)
+PS
+)
+    enc=$(printf '%s' "$script" | iconv -f UTF-8 -t UTF-16LE | base64 | tr -d '\n')
+    export HERDR_NOTIFY_TITLE="$title" HERDR_NOTIFY_BODY="$body" HERDR_NOTIFY_SOUND="$sound" HERDR_NOTIFY_GROUP="$g" HERDR_NOTIFY_FRONT="$front"
+    run powershell -NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand "$enc" ;;
 esac
 exit 0

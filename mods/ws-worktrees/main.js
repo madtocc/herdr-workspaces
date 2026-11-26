@@ -27,10 +27,8 @@
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input } from "gpui-base";
-import {
-  spaces, panes, terminals, run, theme, shared, setShared, props, openOverlay, closeOverlay,
-  home, readTextFile, writeTextFile, exec, notify, checking,
-} from "herdr";
+import { spaces, panes, terminals, run, theme, shared, setShared, props, openOverlay, closeOverlay, home, readTextFile, writeTextFile, notify, checking } from "herdr";
+import { exec } from "./posix.js";
 import * as fs from "fs/promises";
 import { parseList, parseRefs, parsePrs, kindOf, labelOf, finished, ago, inside } from "./facts.js";
 import { loadScripts, saveScripts, allowScripts, runScript, markSetUp } from "./treescripts.js";
@@ -43,7 +41,7 @@ const SLOW = 6; // worktrees whose changes are read at once
 
 const defOf = (id) => (shared("workspaces.defs") ?? []).find((d) => d.id === id) ?? null;
 const tilde = (p) => (p === home() ? "~" : p.startsWith(home() + "/") ? "~" + p.slice(home().length) : p);
-const base = (p) => p.replace(/\/+$/, "").split("/").pop();
+const base = (p) => p.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
 const message = (e) => String(e?.message ?? e);
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 

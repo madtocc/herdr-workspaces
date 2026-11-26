@@ -41,13 +41,13 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
-import {
-  spaces, panes, agents, terminals, run, theme, shared, setShared, props, openOverlay, closeOverlay, window,
-  home, watchFolder, readTextFile, writeTextFile, exec, notify, knownAgents, checking,
-} from "herdr";
+import { spaces, panes, agents, terminals, run, theme, shared, setShared, props, openOverlay, closeOverlay, window, home, watchFolder, readTextFile, writeTextFile, notify, knownAgents, checking } from "herdr";
+import { exec } from "./posix.js";
 import * as fs from "fs/promises";
 import { setUp } from "./treescripts.js";
 import { programOf, startChoices, firstPick, overOf, whoStarts, firstMessage } from "./startfacts.js";
+// The system's trash by its name: the Recycle Bin on Windows, the Trash elsewhere.
+const trashName = () => (window()?.platform === "windows" ? "Recycle Bin" : "Trash");
 import {
   BOARD_QUERY, itemsQuery, parseBoard, repoOfRemote, shape, boardFrom, columnsOf, filterItems, reposOf, doneLike, shortRepo, refOf, whoOf,
   taskOf, takeColumn, taskBody, taskFields, withBoardLink, ago, ghError, ORDERS, sortItems, age, FRESH, keptText, keptBoard,
@@ -91,7 +91,7 @@ function expand(p) {
 }
 const tilde = (p) => (p === home() ? "~" : p.startsWith(home() + "/") ? "~" + p.slice(home().length) : p);
 const under = (p, d) => Boolean(p && d) && (p === d || p.startsWith(d + "/"));
-const base = (p) => p.replace(/\/+$/, "").split("/").pop();
+const base = (p) => p.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
 // Today's date where you are (toISOString would give UTC's).
 const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
 const label = (c) => c.charAt(0).toUpperCase() + c.slice(1).replace(/[-_]+/g, " ");
@@ -101,7 +101,7 @@ const message = (e) => String(e?.message ?? e);
 const keptFile = (ref) => `${home()}/.herdr/cache/github-boards/${ref.kind}-${ref.owner}-${ref.number}.json`;
 // Opens a GitHub page in the browser (nothing else: the links come from files and from GitHub).
 const openLink = (url) => {
-  if (/^https:\/\/github\.com\//.test(String(url ?? ""))) exec("sh", ["-c", 'command -v open >/dev/null 2>&1 && exec open "$1"; exec xdg-open "$1"', "sh", url]).catch(() => {});
+  if (/^https:\/\/github\.com\//.test(String(url ?? ""))) exec("sh", ["-c", 'command -v open >/dev/null 2>&1 && exec open "$1"; command -v explorer.exe >/dev/null 2>&1 && exec explorer.exe "$1"; exec xdg-open "$1"', "sh", url]).catch(() => {});
 };
 
 // --- the workspace's board settings ---
@@ -291,11 +291,14 @@ function words(line) {
 // The first message, for the launcher: as --task, not last on the command line where
 // Herdr would put it, so a restart brings the agent back without sending it again
 // (bin/herdr-ws-resume). Other commands keep Herdr's task.
+// Windows: herdr-core starts herdr-ws-agent through its .cmd, and cmd can't take a line break in an
+// argument, so the task's line breaks go as U+2028 (LINE SEPARATOR), which herdr-ws-agent turns back.
 function withTask(argv, task) {
   let i = argv[0] === "env" ? 1 : 0;
   while (argv[i] && /^[A-Za-z_][A-Za-z0-9_]*=/.test(argv[i])) i++;
   if (!task || base(argv[i] ?? "") !== "herdr-ws-agent") return { argv, task };
-  return { argv: [...argv.slice(0, i + 1), "--task", task, ...argv.slice(i + 1)], task: "" };
+  const t = window()?.platform === "windows" ? String(task).replace(/\r\n?|\n/g, "\u2028") : task;
+  return { argv: [...argv.slice(0, i + 1), "--task", t, ...argv.slice(i + 1)], task: "" };
 }
 
 function presetLaunch(preset, task) {
@@ -1392,7 +1395,7 @@ export default class Board extends View {
         const r = await exec("sh", ["-c", TRASH, "sh", p.task.file, `${workspacesDir()}/.trash`]);
         if (r.code !== 0) throw new Error(r.stderr.trim() || `exit ${r.code}`);
         const where = r.stdout.trim();
-        notify({ title: `Deleted ${p.task.id}`, body: where === "Trash" ? "Its file is in the Trash." : `Its file is in ${tilde(where)}.`, level: "success" });
+        notify({ title: `Deleted ${p.task.id}`, body: where === "Trash" ? `Its file is in the ${trashName()}.` : `Its file is in ${tilde(where)}.`, level: "success" });
         closeOverlay(p.overlay);
       } catch (e) {
         this.error = `Couldn't delete it: ${message(e)}`;

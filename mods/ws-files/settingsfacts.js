@@ -110,19 +110,19 @@ export const FILES_DEFAULTS = Object.fromEntries(FILES_SETTINGS.map((f) => [f.ke
 // Editors with a command line, as Files' Open in knows them: a copy of ws-files' filesfacts.js
 // EDITOR_CATALOG (keep them the same), so Settings > Files offers the same ids.
 export const EDITOR_CATALOG = [
-  { id: "zed", label: "Zed", binary: "zed", bundle: "dev.zed.Zed", lineStyle: "colon", desktop: ["dev.zed.Zed.desktop", "zed.desktop"] },
-  { id: "cursor", label: "Cursor", binary: "cursor", bundle: "com.todesktop.230313mzl4w4u92", lineStyle: "goto", desktop: ["cursor.desktop"] },
-  { id: "vscode", label: "VS Code", binary: "code", bundle: "com.microsoft.VSCode", lineStyle: "goto", desktop: ["code.desktop"] },
-  { id: "vscode-insiders", label: "VS Code Insiders", binary: "code-insiders", bundle: "com.microsoft.VSCodeInsiders", lineStyle: "goto", desktop: ["code-insiders.desktop"] },
-  { id: "windsurf", label: "Windsurf", binary: "windsurf", bundle: "com.exafunction.windsurf", lineStyle: "goto", desktop: ["windsurf.desktop"] },
-  { id: "sublime", label: "Sublime Text", binary: "subl", bundle: "com.sublimetext.4", lineStyle: "colon", desktop: ["sublime_text.desktop"] },
-  { id: "idea", label: "IntelliJ IDEA", binary: "idea", bundle: "com.jetbrains.intellij", lineStyle: "line", desktop: ["jetbrains-idea.desktop", "jetbrains-idea-ce.desktop"] },
-  { id: "webstorm", label: "WebStorm", binary: "webstorm", bundle: "com.jetbrains.WebStorm", lineStyle: "line", desktop: ["jetbrains-webstorm.desktop"] },
-  { id: "goland", label: "GoLand", binary: "goland", bundle: "com.jetbrains.goland", lineStyle: "line", desktop: ["jetbrains-goland.desktop"] },
-  { id: "pycharm", label: "PyCharm", binary: "pycharm", bundle: "com.jetbrains.pycharm", lineStyle: "line", desktop: ["jetbrains-pycharm.desktop", "jetbrains-pycharm-ce.desktop"] },
+  { id: "zed", label: "Zed", binary: "zed", bundle: "dev.zed.Zed", lineStyle: "colon", desktop: ["dev.zed.Zed.desktop", "zed.desktop"], exe: "zed.exe" },
+  { id: "cursor", label: "Cursor", binary: "cursor", bundle: "com.todesktop.230313mzl4w4u92", lineStyle: "goto", desktop: ["cursor.desktop"], exe: "cursor.exe" },
+  { id: "vscode", label: "VS Code", binary: "code", bundle: "com.microsoft.VSCode", lineStyle: "goto", desktop: ["code.desktop"], exe: "code.exe" },
+  { id: "vscode-insiders", label: "VS Code Insiders", binary: "code-insiders", bundle: "com.microsoft.VSCodeInsiders", lineStyle: "goto", desktop: ["code-insiders.desktop"], exe: "code - insiders.exe" },
+  { id: "windsurf", label: "Windsurf", binary: "windsurf", bundle: "com.exafunction.windsurf", lineStyle: "goto", desktop: ["windsurf.desktop"], exe: "windsurf.exe" },
+  { id: "sublime", label: "Sublime Text", binary: "subl", bundle: "com.sublimetext.4", lineStyle: "colon", desktop: ["sublime_text.desktop"], exe: "sublime_text.exe" },
+  { id: "idea", label: "IntelliJ IDEA", binary: "idea", bundle: "com.jetbrains.intellij", lineStyle: "line", desktop: ["jetbrains-idea.desktop", "jetbrains-idea-ce.desktop"], exe: "idea64.exe" },
+  { id: "webstorm", label: "WebStorm", binary: "webstorm", bundle: "com.jetbrains.WebStorm", lineStyle: "line", desktop: ["jetbrains-webstorm.desktop"], exe: "webstorm64.exe" },
+  { id: "goland", label: "GoLand", binary: "goland", bundle: "com.jetbrains.goland", lineStyle: "line", desktop: ["jetbrains-goland.desktop"], exe: "goland64.exe" },
+  { id: "pycharm", label: "PyCharm", binary: "pycharm", bundle: "com.jetbrains.pycharm", lineStyle: "line", desktop: ["jetbrains-pycharm.desktop", "jetbrains-pycharm-ce.desktop"], exe: "pycharm64.exe" },
   { id: "xcode", label: "Xcode", binary: "xed", bundle: "com.apple.dt.Xcode", lineStyle: "xed" },
-  { id: "android-studio", label: "Android Studio", binary: "studio", bundle: "com.google.android.studio", lineStyle: "line", desktop: ["android-studio.desktop", "jetbrains-studio.desktop"] },
-  { id: "fleet", label: "Fleet", binary: "fleet", bundle: "fleet.app", lineStyle: "colon" },
+  { id: "android-studio", label: "Android Studio", binary: "studio", bundle: "com.google.android.studio", lineStyle: "line", desktop: ["android-studio.desktop", "jetbrains-studio.desktop"], exe: "studio64.exe" },
+  { id: "fleet", label: "Fleet", binary: "fleet", bundle: "fleet.app", lineStyle: "colon", exe: "fleet.exe" },
 ];
 
 // What Settings > Files' Default external app lists, with the ids Files' Open in knows
@@ -134,10 +134,10 @@ export const EDITOR_CATALOG = [
 // text file with (system: its path) is tagged "system". current: the setting now; one
 // that isn't in the list (written by hand, or not installed here) is added at the end, tagged
 // "not found", so it's never hidden. Each: { id, label, tag }.
-// The catalog's editor for an app the system lists: by macOS bundle id or Linux desktop id.
+// The catalog's editor for an app the system lists: by macOS bundle id, Linux desktop id or Windows .exe name.
 const catalogFor = (bundle) => {
   const b = String(bundle ?? "").toLowerCase();
-  return b ? EDITOR_CATALOG.find((e) => e.bundle.toLowerCase() === b || (e.desktop ?? []).some((d) => d.toLowerCase() === b)) : undefined;
+  return b ? EDITOR_CATALOG.find((e) => e.bundle.toLowerCase() === b || (e.desktop ?? []).some((d) => d.toLowerCase() === b) || e.exe === b) : undefined;
 };
 
 export function appChoices({ catalogInstalled = [], macApps = [], system = null, current = null } = {}) {
@@ -819,7 +819,8 @@ for d in $dirs; do
 done
 true`;
 
-// LINUX_APPS_SH's output as the macOS list's shape: { apps: [{ name, path, bundle }], system } with
+// LINUX_APPS_SH's output (or ws-files' winapps.ps1 list on Windows: an .exe path or a packaged app's
+// name where the .desktop file is) as the macOS list's shape: { apps: [{ name, path, bundle }], system } with
 // path the .desktop file, bundle its desktop id ("org.gnome.TextEditor.desktop"), each id once
 // (the first found wins, as XDG_DATA_HOME comes first), system the default's .desktop file.
 export function parseLinuxApps(stdout) {
@@ -829,13 +830,13 @@ export function parseLinuxApps(stdout) {
     const [kind, a, b] = line.split("\t");
     if (kind === "default" && a && !system) system = a;
     if (kind !== "app" || !a || !b) continue;
-    const id = b.split("/").pop();
+    const id = b.split(/[\\/]/).pop();
     if (seen.has(id)) continue;
     seen.add(id);
     apps.push({ name: a, path: b, bundle: id });
   }
   if (system) {
-    const id = system.split("/").pop(), hit = apps.find((x) => x.bundle === id);
+    const id = system.split(/[\\/]/).pop(), hit = apps.find((x) => x.bundle === id);
     if (hit) system = hit.path;
   }
   return { apps, system };
