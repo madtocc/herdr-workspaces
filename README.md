@@ -375,7 +375,40 @@ What Linux and Windows use in macOS's place:
 
 ## Install
 
-Ask your agent to add this layout (Herdr's own guide, `~/.config/herdr-app/AGENTS.md`,
+One line, whether you have Herdr yet or not. On macOS and Linux:
+
+```sh
+curl -fsSL https://madtocc.github.io/herdr-workspaces/install.sh | sh
+```
+
+On Windows, in PowerShell:
+
+```powershell
+irm https://madtocc.github.io/herdr-workspaces/install.ps1 | iex
+```
+
+- **Herdr missing:** it's installed first, with Herdr's own installer, which
+  adds herdr-core too. (Herdr's installer has no build for Windows on ARM or
+  Intel Macs: install Herdr there yourself, then run the line.)
+- **Then the steps below, done for you:** the layout and mods copied, the
+  commands on your `PATH`, the agents you have added to `programs.json`, and
+  Herdr opening on the layout. It asks before two things: the line that brings
+  agents back after a restart, and the example presets. On Windows it also
+  offers Git for Windows and Node through winget.
+- **Run it again to update.** A file you changed is kept in
+  `~/.herdr/install/backup/` before the new one takes its place. Your
+  workspaces, tasks, presets and automations are never touched.
+- **Options:** `--dry-run` says what would change and changes nothing,
+  `--uninstall` takes it out again, `--yes` asks nothing
+  (`… | sh -s -- --yes`). The top of each script lists the rest, and
+  PowerShell's way to pass them.
+
+The two scripts download and run code. Read [install.sh](install.sh) or
+[install.ps1](install.ps1) first if you prefer. From a clone, `./install.sh`
+(Windows: `powershell -ExecutionPolicy Bypass -File install.ps1`) installs
+that copy.
+
+Or ask your agent to add this layout (Herdr's own guide, `~/.config/herdr-app/AGENTS.md`,
 says how), or by hand:
 
 1. Copy `layouts/workspaces.json` to `~/.config/herdr-app/layouts/` and the nineteen
@@ -468,6 +501,13 @@ task under Task Scheduler's `\Herdr\`, which turning it off removes.
 
 An agent's own `hc run … herdr-ws-agent …` needs its task on one line there
 (cmd can't take a line break in an argument); the screens handle that for you.
+
+**What the installer touches:** Herdr's folder (the layout, the `ws-*` mods,
+`programs.json`, and `shared.json` only when Herdr has never run), links in
+`~/.local/bin` (Windows: your user `Path`), herdr-core's `config.toml` and
+`templates` when you say yes, and `~/.herdr/install/` (the list of files it
+put in place, and the ones it replaced or took out). It reaches github.com for
+the package and, when Herdr is missing, releases.herdr.dev.
 
 **What it touches:** it reads `~/.herdr/workspaces` and the folders of
 each workspace's root. The `foreman` preset writes its plan under
@@ -664,6 +704,8 @@ one you have in `~/.config/herdr-app/mods/ws-switcher/VERSION` (none: older
 than 0.1.0's notes, so read them all). To hear about new versions, watch the
 repo on GitHub for releases (Watch → Custom → Releases).
 
+- **You used the installer:** run the same line again (see Install). It
+  replaces what changed and adds what's new.
 - **You copied the files as they are:** copy `layouts/workspaces.json` and the
   nineteen folders in `mods/` again, and do what the new versions' notes say
   (a new script to link, say). Your workspaces, tasks, presets and automations

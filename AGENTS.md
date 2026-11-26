@@ -18,8 +18,9 @@ touching a mod or the layout.
 3. Add a line under `## [Unreleased]` in `CHANGELOG.md` for anything a person would notice, in Herdr's format: `### New` or `### Fixed`, then `- **Headline.** detail`. Say what an existing install must do by hand (copy a new mod folder, link a new script). A new mod also changes the README's count of folders to copy.
 4. Redraw the picture when the look it shows changes (below).
 5. Run `scripts/sync-from-home.sh`. A new mod first needs adding to the list in that script, and a file copied between mods to its checks.
-6. Check the package for personal paths and names (`/Users/`, `/home/`, real workspace or client names, emails) before committing.
-7. Commit, push and release only when the person asks.
+6. Keep the installers (`install.sh`, and `install.ps1` for Windows) doing what the README's Install by hand says. They copy every `mods/ws-*` folder, so a new mod needs nothing there. A new command in `ws-switcher/bin` is added to `commands` in `install.sh` (on Windows the whole folder is on `Path`), and a new step of Install by hand to both scripts.
+7. Check the package for personal paths and names (`/Users/`, `/home/`, real workspace or client names, emails) before committing.
+8. Commit, push and release only when the person asks.
 
 ## The picture
 
