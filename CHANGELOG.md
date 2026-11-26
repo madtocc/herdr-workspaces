@@ -7,6 +7,8 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-11-26
+
 ### New
 - **Windows, experimental.** Tried in a VM on Windows 11 (ARM64, Herdr's x64 build under emulation): every screen, automations and the background runner, Files, desktop notifications and Standard secrets work there; Protected secrets stay macOS-only. It needs Git for Windows, whose `sh` runs the scripts (each command has a `.cmd` beside it, so they work from PowerShell), and Node 20.6 or newer. The README's "On Windows" says what to set up. To update by hand: copy every `mods/ws-*` folder.
 - **Start at login on Windows**: a scheduled task (Task Scheduler, `\Herdr\herdr-ws-runner`) that starts the background runner when you sign in, with no window; Settings > Automations' switch adds and removes it.
