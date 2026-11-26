@@ -7,6 +7,8 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-11-26
+
 ### New
 - **Install with one line.** `curl -fsSL https://madtocc.github.io/herdr-workspaces/install.sh | sh` on macOS and Linux, `irm https://madtocc.github.io/herdr-workspaces/install.ps1 | iex` in PowerShell on Windows. It installs Herdr first when it's missing (with Herdr's own installer), copies the layout and mods, puts the commands on your `PATH`, adds the agents you have to `programs.json`, asks before the restart line and the example presets, and has Herdr open on the layout. On Windows it offers Git for Windows and Node through winget. `--dry-run` changes nothing and `--uninstall` takes it out again.
 - **Update with the same line.** Run it again: it replaces what changed and adds what's new, a new mod or command included, and keeps a file you changed in `~/.herdr/install/backup/` first. An install made by hand can be updated this way too; the first time, every file that differs is backed up.
