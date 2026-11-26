@@ -768,6 +768,14 @@ export default class Automations extends View {
   }
 
   // Stops a run that's working, waiting on you or (a program) still open, by closing its tab; the first click asks.
+  // The 10-minute cap on a script without a tab: run it in a tab, or say 10 minutes. Saves at once
+  // unless the form already had other unsaved edits (then it only sets the field, and Save is yours).
+  fixCap(how, cx) {
+    const c = this.choice, had = this.dirty();
+    if (how === "tab") { c.terminal = true; c.keep = false; } else c.timeout = "10m";
+    if (had) cx.notify(); else this.save(cx);
+  }
+
   stop(r, cx) {
     if (this.stopping !== r.id) { this.stopping = r.id; cx.notify(); return; }
     this.stopping = null;
@@ -1342,7 +1350,13 @@ export default class Automations extends View {
         .child(div().pt(2).text_size(12).text_color(t.muted).child(`First, Herdr runs this in ${where}. Nothing ${shell ? "runs" : "starts"} unless it prints something${kind === "schedule" && w.kind !== "once" && c.dedupe !== "always" ? " new" : ""}:`))
         .child(div().mt(2).child(mono([...checkLines.slice(0, 4), ...(checkLines.length > 4 ? [`… ${checkLines.length - 4} more lines`] : [])], t.foreground))))
       .when(Boolean(noKnobs), (el) => el.child(div().text_size(11.5).text_color(t.working).child(knobs ? `${who} doesn't take an effort, so it's left out when it runs.` : `${who} doesn't take a model or effort here, so they're left out when it runs.`)))
-      .when(Boolean(saved?.warning) && !waits, (el) => el.child(div().text_size(11.5).text_color(t.working).child(saved.warning)))
+      // The cap, from the form as it is now, with its two fixes; the saved copy of that warning is left out.
+      .when(capped && !waits, (el) => el.child(v_flex().pt(2).gap(6)
+        .child(div().text_size(11.5).text_color(t.working).child("Without a tab its script is stopped after 10 min, whatever its timeout says."))
+        .child(h_flex().gap(6)
+          .child(small("a-cap-tab", "Run in a tab", (_e, cx) => this.fixCap("tab", cx), !this.busy))
+          .child(small("a-cap-10m", "Stop at 10 min", (_e, cx) => this.fixCap("10m", cx), !this.busy)))))
+      .when(Boolean(saved?.warning) && !waits && !String(saved?.warning).startsWith("Without a tab"), (el) => el.child(div().text_size(11.5).text_color(t.working).child(saved.warning)))
       // A check or script that came from outside this screen (an agent, the file): yours to allow, as it's saved.
       .when(waits, (el) => el
         .child(div().pt(4).text_size(12).text_color(t.working).child(waitsScript && waitsCheck ? "This script and its check were added outside this screen and haven't been allowed yet, so it won't run. Read them, then allow them."

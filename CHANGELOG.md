@@ -7,6 +7,9 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 
 ## [Unreleased]
 
+### New
+- **Fix the 10-minute cap in one click.** A script without a tab whose timeout is longer than 10 minutes (or none) still warns that it stops at 10 minutes, and the warning now has two buttons: Run in a tab (`terminal: true`) and Stop at 10 min. A click saves it. The warning also goes as soon as In a tab is chosen under Details, before Save. To update by hand: copy `mods/ws-automations`.
+
 ## [0.31.0] - 2026-11-26
 
 ### New
