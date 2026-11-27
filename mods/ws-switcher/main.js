@@ -971,7 +971,8 @@ export default class Workspaces extends View {
     // Herdr always shows a space. While the shown workspace has none of its own here
     // (its last one closed, or it was chosen empty), the empty block covers the other one's.
     const covered = this.loaded && Boolean(active) && (!shown || (this.known.has(shown) && ownerOf(shown) !== active));
-    this.coverWork(covered, sp.find((s) => s.id === shown), this.screen(active, `${shown}/${tabNow}`, now));
+    const paneNow = focused()?.pane ?? "";
+    this.coverWork(covered, sp.find((s) => s.id === shown), this.screen(active, `${shown}/${tabNow}/${paneNow}`, now));
   }
 
   // The screen to show in place of the tabs, or null. It goes back to the tabs when

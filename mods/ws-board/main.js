@@ -41,7 +41,7 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
-import { spaces, panes, agents, terminals, run, theme, settings, shared, setShared, props, openOverlay, closeOverlay, window, home, watchFolder, readTextFile, writeTextFile, notify, knownAgents, checking } from "herdr";
+import { spaces, panes, agents, terminals, run, theme, settings, shared, setShared, props, openOverlay, closeOverlay, window, home, appHome, watchFolder, readTextFile, writeTextFile, notify, knownAgents, checking } from "herdr";
 import { exec } from "./posix.js";
 import * as fs from "fs/promises";
 import { setUp } from "./treescripts.js";
@@ -362,19 +362,37 @@ async function herdr(command, args) {
   return out;
 }
 
+// Where Herdr's worktree menu puts new worktrees: `worktrees.directory` in settings.json,
+// else ~/.herdr/worktrees (Herdr 0.1.16).
+async function worktreeRoot() {
+  const userHome = home().replace(/\\/g, "/").replace(/\/$/, "");
+  const fallback = `${userHome}/.herdr/worktrees`;
+  const raw = await readTextFile(`${appHome()}/settings.json`).catch(() => null);
+  let dir = "~/.herdr/worktrees";
+  if (raw) { try { dir = JSON.parse(raw)?.worktrees?.directory ?? dir; } catch {} }
+  if (typeof dir !== "string" || !dir.trim()) return fallback;
+  let p = dir.trim().replace(/\\/g, "/");
+  if (p === "~" || p.startsWith("~/")) p = userHome + p.slice(1);
+  if (!p.startsWith("/") && !/^[A-Za-z]:\//.test(p)) return fallback;
+  return p.replace(/\/+$/, "");
+}
+
 // A branch and worktree for the task, where Herdr's worktree menu puts them.
 async function makeWorktree(folder, task) {
   const git = (args) => exec("git", ["-C", folder, ...args], { timeout: 600000 });
   const common = await git(["rev-parse", "--path-format=absolute", "--git-common-dir"]).catch(() => null);
   if (!common || common.code !== 0) throw new Error(`${tilde(folder)} isn't a git repository. Pick the task's repo first.`);
-  const repo = common.stdout.trim().replace(/\/\.git\/?$/, "");
+  const commonDir = common.stdout.trim().replace(/\/+$/, "");
+  const repo = commonDir.endsWith("/.git") ? commonDir.slice(0, -5) : commonDir;
+  // A bare repo hidden beside its worktrees (<project>/.bare) is named after its project (Herdr 0.1.17).
+  const name = base(repo) === ".bare" ? base(repo.slice(0, -6)) : base(repo);
   const branch = `task/${task.id.toLowerCase()}-${slug(task.title.toLowerCase()).slice(0, 40)}`.replace(/[-.]+$/, "");
-  const path = `${home()}/.herdr/worktrees/${base(repo)}/${slug(branch)}`;
-  if (await fs.exists(path)) return { path, branch, repo };
+  const path = `${await worktreeRoot()}/${name}/${slug(branch)}`;
+  if (await fs.exists(path)) return { path, branch, repo, name };
   const exists = (await git(["show-ref", "--verify", "--quiet", `refs/heads/${branch}`])).code === 0;
   const r = await git(exists ? ["worktree", "add", path, branch] : ["worktree", "add", "-b", branch, path, "HEAD"]);
   if (r.code !== 0) throw new Error(r.stderr.trim() || "git worktree add failed");
-  return { path, branch, repo };
+  return { path, branch, repo, name };
 }
 
 // The agent's first message: the task, then how to report back.
@@ -606,7 +624,7 @@ export default class Board extends View {
           const wt = await makeWorktree(folder, task);
           // The repo's setup script (the Worktrees screen's Scripts), once per worktree.
           // If it fails the agent doesn't start; Worktree again tries it again.
-          await setUp({ home, readTextFile, writeTextFile, exec }, { ws: def.id, repo: base(wt.repo), path: wt.path, main: wt.repo, branch: wt.branch });
+          await setUp({ home, readTextFile, writeTextFile, exec }, { ws: def.id, repo: wt.name, path: wt.path, main: wt.repo, branch: wt.branch });
           made = await herdr("space.new", { folder: wt.path, tab: task.id, argv, ...(first ? { task: first } : {}), ...(stay ? { focus: false } : {}) });
           extra = { worktree: tilde(wt.path), branch: wt.branch };
         } else {

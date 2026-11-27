@@ -10,7 +10,7 @@
 // ask: every path passes, as without Files.
 import { home, shared, setShared, window, readTextFile } from "herdr";
 import { exec } from "./posix.js";
-import { parseRawLink, resolveTargetPath, shouldCatchLink, needsSniff, pushOpen, switcherAway } from "./filesfacts.js";
+import { parseRawLink, linkPlace, resolveTargetPath, shouldCatchLink, needsSniff, pushOpen, switcherAway } from "./filesfacts.js";
 import { SETTINGS_FILE, parseSettings, fileSetting } from "./settingsfacts.js";
 
 // "d", "f", "b" (a file whose first 8000 bytes hold a NUL: binary, when sniff asks) or "" for the
@@ -42,6 +42,7 @@ export async function handleLink(click) {
   const cmdClick = fileSetting(cfg, "cmd-click"), catchMode = fileSetting(cfg, "catch");
   if (cmdClick === "off") return "pass";
   const parsed = parseRawLink(link.raw);
+  const { line, col } = linkPlace(link, parsed);
   const on = source.machine ?? null;
   const target = !on && link.path ? link.path : resolveTargetPath(parsed.path, source.cwd, Boolean(on), home());
   if (!target) return "pass";
@@ -51,7 +52,7 @@ export async function handleLink(click) {
   if (!shouldCatchLink(found.path, found.kind === "d", catchMode)) return "pass";
   const now = Date.now(), id = `${now}-link-${Math.random().toString(36).slice(2, 8)}`;
   setShared("workspaces.files.open", pushOpen(shared("workspaces.files.open"), {
-    path: found.path, isDir: found.kind === "d", line: parsed.line, col: parsed.col, on,
+    path: found.path, isDir: found.kind === "d", line, col, on,
     space: source.space ?? null, tab: source.tab ?? null, placement: cmdClick === "full" ? "full" : "beside",
   }, now, id));
   return "handled";

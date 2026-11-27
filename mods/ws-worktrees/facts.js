@@ -94,6 +94,45 @@ export function ago(unix, now = Date.now() / 1000) {
 
 export const inside = (p, dir) => Boolean(p && dir) && (p === dir || p.startsWith(dir + "/"));
 
+const normPath = (p) => String(p ?? "").replace(/\\/g, "/").replace(/\/+$/, "");
+const tail = (p) => normPath(p).split("/").pop() ?? "";
+
+// A repo's main path, git dir, project folder and display name from `git rev-parse --git-common-dir`:
+// a normal checkout (<project>/.git) or a hidden bare repo (<project>/.bare, Herdr 0.1.17).
+export function repoInfo(common) {
+  const c = normPath(common);
+  if (c.endsWith("/.git")) {
+    const main = c.slice(0, -5);
+    return { main, gitDir: c, projectDir: main, name: tail(main) };
+  }
+  if (c.endsWith("/.bare")) {
+    const projectDir = c.slice(0, -6);
+    return { main: c, gitDir: c, projectDir, name: tail(projectDir) };
+  }
+  return null;
+}
+
+// A repo's display name from its main path (<project>/.bare is named after <project>).
+export function repoName(main) {
+  const m = normPath(main);
+  return m.endsWith("/.bare") ? tail(m.slice(0, -6)) : tail(m);
+}
+
+// Whether `path` is marked `locked` in `git worktree list --porcelain` output:
+// null when unlocked or not listed (let git resolve mismatches), "" when locked with no reason,
+// or the lock reason string.
+export function lockedReason(porcelain, path) {
+  const want = normPath(path);
+  for (const block of String(porcelain ?? "").split(/\n\n+/)) {
+    const lines = block.split("\n");
+    const wt = lines.find((l) => l.startsWith("worktree "))?.slice(9);
+    if (!wt || normPath(wt) !== want) continue;
+    const lock = lines.find((l) => l === "locked" || l.startsWith("locked "));
+    return lock === undefined ? null : lock === "locked" ? "" : lock.slice(7).trim();
+  }
+  return null;
+}
+
 // A repo's Scripts panel holds lines that weren't saved: typed and saved are { setup, archive }.
 // Saving trims each line, so the spaces around one don't count.
 export const unsaved = (typed, saved) => ["setup", "archive"].some((k) => String(typed?.[k] ?? "").trim() !== String(saved?.[k] ?? "").trim());

@@ -7,6 +7,12 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 
 ## [Unreleased]
 
+### Fixed
+- **Terminal file links with `#L` anchors or line ranges jump to their line in Files.** `ws-files` now uses Herdr 0.1.18's `link.line` / `link.column` and parses `#L42`, `#L5-L12` and `:5-12` suffixes (including on remote terminals).
+- **Worktree removal checks locks and waits for terminals to exit.** Removing a worktree from the Worktrees screen now checks whether it is locked before closing its spaces, waits up to 10 seconds for closed space terminals to stop before running `git worktree remove`, and supports `<project>/.bare` repos (matching Herdr 0.1.17–0.1.18).
+- **Board worktrees follow `worktrees.directory`.** Starting a card in a worktree reads `worktrees.directory` from Herdr's `settings.json` (instead of hardcoding `~/.herdr/worktrees`) and names `<project>/.bare` repos after the project.
+- **Smaller Herdr 0.1.17–0.1.18 alignments.** Keeping a sub-agent from the Agents list picks a space on that sub-agent's own machine (falling back to peek if none exists); `agent.select` / `pane.focus` onto another pane in the same tab leaves a full-size view; `ws-spaces` guards `window()?.active` when no window is open.
+
 ## [0.34.0] - 2026-11-27
 
 ### New

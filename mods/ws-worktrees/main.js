@@ -30,7 +30,7 @@ import { h_flex, v_flex, InputState, Input } from "gpui-base";
 import { spaces, panes, terminals, run, theme, settings, shared, setShared, props, openOverlay, closeOverlay, home, readTextFile, writeTextFile, notify, checking, window } from "herdr";
 import { exec } from "./posix.js";
 import * as fs from "fs/promises";
-import { parseList, parseRefs, parsePrs, kindOf, labelOf, finished, ago, inside, unsaved, dotTip, removeLabel, removeReserve, readAgo, readAgain, opensLink } from "./facts.js";
+import { parseList, parseRefs, parsePrs, kindOf, labelOf, finished, ago, inside, unsaved, dotTip, removeLabel, removeReserve, readAgo, readAgain, opensLink, repoInfo, repoName, lockedReason } from "./facts.js";
 import { loadScripts, saveScripts, allowScripts, runScript, markSetUp } from "./treescripts.js";
 
 const io = { home, readTextFile, writeTextFile, exec };
@@ -67,11 +67,10 @@ async function reposOf(def) {
   const roots = [def.root, def.real?.[def.root]].filter(Boolean);
   const mains = [];
   places.forEach((place, i) => {
-    const common = (lines[i] ?? "").trim();
-    if (!common.endsWith("/.git")) return; // not in git, or a bare repo
-    const main = common.slice(0, -5);
-    const mine = roots.some((root) => inside(main, root)) || def.folders.includes(place);
-    if (mine && !mains.includes(main)) mains.push(main);
+    const info = repoInfo((lines[i] ?? "").trim());
+    if (!info) return; // not in git, or a bare repo outside <project>/.bare
+    const mine = roots.some((root) => inside(info.projectDir, root)) || def.folders.includes(place);
+    if (mine && !mains.includes(info.main)) mains.push(info.main);
   });
   return mains;
 }
@@ -87,13 +86,14 @@ async function readRepo(main) {
   if (!refs.ok) refs = await git(main, ["for-each-ref", "--format=%(refname:short)%09%(committerdate:unix)", "refs/heads"]);
   const facts = parseRefs(refs.out);
   // Where setup has run: the worktrees whose own git folder holds the mark.
-  const done = await exec("sh", ["-c", 'for d in "$1"/.git/worktrees/*/; do [ -e "$d/herdr-setup" ] && cat "$d/gitdir"; done; true', "sh", main]).catch(() => ({ stdout: "" }));
+  const gitDir = main.endsWith("/.bare") ? main : `${main}/.git`;
+  const done = await exec("sh", ["-c", 'for d in "$1"/worktrees/*/; do [ -e "$d/herdr-setup" ] && cat "$d/gitdir"; done; true', "sh", gitDir]).catch(() => ({ stdout: "" }));
   const setUp = new Set((done.stdout ?? "").split("\n").map((l) => l.trim().replace(/\/\.git$/, "")).filter(Boolean));
   const trees = parseList(list.out).filter((x) => !x.main).map((x) => ({
     ...x, repo: main, at: facts.get(x.branch)?.at ?? 0, ahead: facts.get(x.branch)?.ahead ?? null,
     pr: null, dirty: null, setUp: setUp.has(x.path),
   })).sort((a, b) => b.at - a.at);
-  return { main, name: base(main), base: baseRef, trees, prs: undefined };
+  return { main, name: repoName(main), base: baseRef, trees, prs: undefined };
 }
 
 // The workspace's board cards that have a worktree: path -> card id.
@@ -594,7 +594,7 @@ export default class Worktrees extends View {
     if (checking()) return;
     cx.spawn(async (cx) => {
       const scripts = await loadScripts(io, p.workspace);
-      for (const x of this.trees) this.archive[base(x.repo)] ??= scripts.scriptOf(base(x.repo), "archive");
+      for (const x of this.trees) this.archive[repoName(x.repo)] ??= scripts.scriptOf(repoName(x.repo), "archive");
       // One worktree, or ones picked by hand: look again, they may have changed
       // since the list was read, and what's uncommitted there is about to go.
       if (this.trees.length === 1 || p.picked) {
@@ -646,6 +646,7 @@ export default class Worktrees extends View {
       const one = this.trees.length === 1;
       const byHand = one || Boolean(p.picked);
       const failed = [];
+      let lockedFailed = false;
       let removed = 0;
       let at = 0;
       // Whatever happens in the loop, the dialog stops saying it's working (it's modal, and its
@@ -654,18 +655,42 @@ export default class Worktrees extends View {
         for (const x of this.trees) {
           if (this.stop) break;
           const name = x.branch ?? base(x.path);
-          const a = this.archive[base(x.repo)];
+          const a = this.archive[repoName(x.repo)];
           // Said before each one, and each step of it: deleting a big checkout takes a while.
           const say = (step) => { this.progress = { at, name, step, failed: failed.length }; cx.notify(); };
           at++;
+          // Refuse a locked worktree before running scripts or closing any spaces (Herdr 0.1.17).
+          const listed = await git(x.repo, ["-c", "core.quotePath=false", "worktree", "list", "--porcelain"]);
+          const lock = listed.ok ? lockedReason(listed.out, x.path) : null;
+          if (lock !== null) {
+            failed.push(`${name}: ${lock ? `this worktree is locked: ${lock}` : "this worktree is locked."}`);
+            lockedFailed = true;
+            continue;
+          }
           say(a?.line && !this.force ? "script" : "remove");
           if (a?.line && !this.force) {
             const r = await runScript(io, a.line, { path: x.path, main: x.repo, branch: x.branch, ws: p.workspace });
             if (!r.ok) { failed.push(`${name}: its before-removal script failed. ${r.tail}`); continue; }
             say("remove");
           }
-          // Spaces first: a shell sitting in the folder keeps it busy.
-          for (const id of byHand ? x.spaces : []) run("space.close", { id, confirmed: true });
+          // Spaces first, and wait for their programs to exit so running dev servers can't
+          // leave a half-deleted checkout behind or keep files locked (Herdr 0.1.18).
+          const closeIds = byHand ? x.spaces : [];
+          if (closeIds.length) {
+            const allSpaces = spaces();
+            const tabs = new Set(closeIds.flatMap((id) => (allSpaces.find((s) => s.id === id)?.tabs ?? []).map((t) => t.id)));
+            const closing = new Set(panes().filter((pn) => pn.terminal && tabs.has(pn.tab)).map((pn) => pn.terminal));
+            for (const id of closeIds) run("space.close", { id, confirmed: true });
+            const deadline = Date.now() + 10_000;
+            while (closing.size && terminals().some((t) => t.state === "live" && closing.has(t.address))) {
+              if (Date.now() >= deadline) break;
+              await cx.sleep(50);
+            }
+            if (closing.size && terminals().some((t) => t.state === "live" && closing.has(t.address))) {
+              failed.push(`${name}: the space's terminals haven't stopped yet.`);
+              continue;
+            }
+          }
           // The finished ones are never forced: only what git itself calls clean goes.
           // One picked by hand is, when the dialog said its changes would be lost.
           const force = (byHand && x.dirty > 0) || (one && this.force);
@@ -684,7 +709,7 @@ export default class Worktrees extends View {
       if (removed) setShared("workspaces.worktrees.changed", Date.now());
       if (one && failed.length) {
         this.error = failed[0];
-        this.force = true;
+        this.force = !lockedFailed;
         this.armedAt = Date.now(); // "Remove anyway" takes the button's place: stamped as it appears
         return cx.notify();
       }

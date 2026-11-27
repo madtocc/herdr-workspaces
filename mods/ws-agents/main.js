@@ -1581,8 +1581,18 @@ export default class Agents extends View {
     const now = Date.now();
     if (now - (this.keeping?.get(k.address) ?? 0) < 1500) return;
     (this.keeping ??= new Map()).set(k.address, now);
-    // terminal.keep puts the tab in the shown space: show the parent's first.
-    if (root && !spaces().some((s) => s.id === root.space && s.active)) run("pane.focus", { terminal: root.address });
+    // A pane stays on its terminal's machine (terminal.keep refuses another one's space, Herdr 0.1.17).
+    const machine = k.address?.includes("/") ? k.address.split("/")[0] : null;
+    const allSpaces = spaces();
+    const rootSpace = root ? allSpaces.find((s) => s.id === root.space) : null;
+    const target = (rootSpace && (rootSpace.machine ?? null) === machine) ? rootSpace
+      : allSpaces.find((s) => s.active && (s.machine ?? null) === machine)
+      ?? allSpaces.find((s) => (s.machine ?? null) === machine);
+    if (!target) return this.peek(k.address);
+    if (!target.active) {
+      if (rootSpace === target && root) run("pane.focus", { terminal: root.address });
+      else run("space.select", { id: target.id });
+    }
     run("terminal.keep", { terminal: k.address });
   }
 

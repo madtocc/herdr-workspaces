@@ -142,20 +142,42 @@ export function canEdit({ kind, truncated, remote }) {
   return (kind === "text" || kind === "markdown" || kind === "svg") && !truncated && !remote;
 }
 
-// A clicked link's text to { path, line, col }: a file:// URI decoded (its host dropped), and a
-// trailing ":line" or ":line:col" (also "(line,col)") taken off.
+// A clicked link's text to { path, line, col }: a file:// URI decoded (its host dropped),
+// and a trailing ":line", ":line:col", ":line-end", "#Lline", "#Lline-Lend", "#Lline-end",
+// or "(line,col)" (plus an optional trailing sentence period) taken off.
 export function parseRawLink(raw) {
   let path = String(raw ?? "").trim();
+  let line = null, col = null;
   if (/^file:\/\//i.test(path)) {
     path = path.replace(/^file:\/\/(localhost)?/i, "");
     if (!path.startsWith("/")) path = path.replace(/^[^/]*/, ""); // file://host/path: the host goes
+    const frag = /#([^?]*)$/.exec(path)?.[1] ?? "";
+    const hm = /^L(\d+)(?:-L?\d+)?\.?$/i.exec(frag);
+    if (hm) line = Number(hm[1]);
     path = path.replace(/[?#].*$/, "");
     try { path = decodeURIComponent(path); } catch { /* keep it as written */ }
+  } else {
+    const hm = /^(.*?)#L(\d+)(?:-L?\d+)?\.?$/i.exec(path);
+    if (hm && hm[1]) { path = hm[1]; line = Number(hm[2]); }
   }
-  let line = null, col = null;
-  const m = /^(.*?):(\d+)(?::(\d+))?:?$/.exec(path) ?? /^(.*?)\((\d+)(?:,\s*(\d+))?\)$/.exec(path);
-  if (m && m[1]) { path = m[1]; line = Number(m[2]); col = m[3] ? Number(m[3]) : null; }
+  if (line === null) {
+    const rm = /^(.*?):(\d+)-\d+\.?$/.exec(path);
+    if (rm && rm[1]) { path = rm[1]; line = Number(rm[2]); }
+  }
+  if (line === null) {
+    const m = /^(.*?):(\d+)(?::(\d+))?:?\.?$/.exec(path) ?? /^(.*?)\((\d+)(?:,\s*(\d+))?\)\.?$/.exec(path);
+    if (m && m[1]) { path = m[1]; line = Number(m[2]); col = m[3] ? Number(m[3]) : null; }
+  }
   return { path, line, col };
+}
+
+// The 1-based line and column of a clicked terminal file link: Herdr 0.1.18's link.line /
+// link.column first, else what parseRawLink() read from link.raw (remote links, "(line,col)").
+export function linkPlace(link, parsed = parseRawLink(link?.raw)) {
+  const hasLine = Number.isInteger(link?.line) && link.line > 0;
+  const line = hasLine ? link.line : parsed.line;
+  const col = Number.isInteger(link?.column) && link.column > 0 ? link.column : (hasLine ? null : parsed.col);
+  return { line, col };
 }
 
 // "." and ".." resolved out of an absolute POSIX path.
