@@ -7,6 +7,8 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-11-27
+
 ### New
 - **Workspaces in the command palette.** ⌘⇧P lists, under Workspaces, Switch workspace…, New scratch space…, Show Board, Notes, Worktrees, History, Changes and Files, Views…, Notifications, and the package's Settings sections ("Workspaces settings: Features" and the rest). A view whose add-on is off in Settings > Features says so in a toast ("Board is off"), and a click on it opens Features. With the sidebar hidden since Herdr started, what needs the switcher says "Show the sidebar to do this", and a click shows it.
 - **New space in an empty workspace.** A workspace with no spaces has a "New space in Acme" button under its message ("New scratch space…" in Scratch).
