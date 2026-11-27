@@ -7,6 +7,8 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 
 ## [Unreleased]
 
+## [0.34.1] - 2026-11-27
+
 ### Fixed
 - **Terminal file links with `#L` anchors or line ranges jump to their line in Files.** `ws-files` now uses Herdr 0.1.18's `link.line` / `link.column` and parses `#L42`, `#L5-L12` and `:5-12` suffixes (including on remote terminals).
 - **Worktree removal checks locks and waits for terminals to exit.** Removing a worktree from the Worktrees screen now checks whether it is locked before closing its spaces, waits up to 10 seconds for closed space terminals to stop before running `git worktree remove`, and supports `<project>/.bare` repos (matching Herdr 0.1.17–0.1.18).
