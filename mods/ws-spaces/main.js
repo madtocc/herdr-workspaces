@@ -20,6 +20,16 @@
 // is named after the project; a leading emoji is the whole avatar. The rail's cells have the space's
 // name as a tooltip, the + and the + menu's New space say where they start, and the empty
 // workspace's list says how many folders it leaves to the switcher menu.
+// The New space dialog's size counts the root's folders when the workspace has no "folders" list.
+// From Herdr 0.1.18's spaces: a red ⚠ on the header of a machine that stops its agents when you
+// disconnect (keeps_running_after_logout false), opening Herdr's machine-add dialog with the fix.
+// Also from there: a space's name and its git tail take Herdr's widths (SIDE_MIN), so a long name
+// shows whole in a wide sidebar and both give way when the row is full.
+// And: a machine that needs a login shows the command under its header with a Copy (in the
+// rail, its tooltip says it and a click opens the package's Settings on Machines, ws-switcher.settings/machines).
+// And its lighter git check: ref-only reads (rev-parse, symbolic-ref, rev-list) in place of a full
+// `git status`, six places at a time (AT_ONCE, both()), and a place or repo no space shows any more is
+// forgotten and its folder watch cancelled.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
@@ -51,6 +61,9 @@ function place(s, ps) {
 }
 const rowHeight = ({ tree }) => (tree ? 28 : 30);
 const RAIL_CELL = 32;
+// A space's name and its git tail never shrink below this, so a short one ("api")
+// stays readable instead of turning into an ellipsis next to a long branch (Herdr 0.1.18's).
+const SIDE_MIN = 48;
 const HOLD = 450; // ms the Spaces + is held before it asks for a name and folder
 const railCell = (el) => h_flex().flex_none().justify_center().child(el);
 const where = (s, ps) => JSON.stringify([s.machine ?? null, place(s, ps)]);
@@ -63,6 +76,18 @@ const scratchName = (folder) => base(folder).match(/^\d{4}-\d\d-\d\d-\d{4}-(?!\d
 // Changes made outside Herdr (an editor's save, a commit in another app): looked
 // for this often, in repos the list shows, while the window is in front.
 const FALLBACK = 60000;
+// Places looked at together (two git runs each), from Herdr 0.1.18's spaces. All at once, a few hundred
+// spaces run out of the app's open files (256 when started from the Dock on macOS) or past a machine
+// core's 16 running execs, and those spaces wait for FALLBACK.
+const AT_ONCE = 6;
+
+// Both runs, finished: a place isn't done while one of its runs still holds a slot.
+async function both(a, b) {
+  const done = await Promise.allSettled([a, b]);
+  const failed = done.find((d) => d.status === "rejected");
+  if (failed) throw failed.reason;
+  return done.map((d) => d.value);
+}
 
 // What a stored color name looks like on an avatar (the same in every mod
 // that draws space avatars): one strong color per hue, light and dark alike.
@@ -96,7 +121,7 @@ export default class Spaces extends View {
     this.busy = {}; // pane -> an agent working or a program in front of its shell
     this.ready = {}; // machine -> its layout was readable at the last look
     this.at = {}; // space -> its where() at the last look
-    this.watching = new Set(); // local repos' git folders
+    this.watching = new Map(); // local repos' git folders -> the pending watch (cancelled when no space shows the repo)
     // Spaces made while this runs wait (at most a moment) for their git, so a
     // worktree appears under its repo instead of jumping there.
     this.shown = new Set(spaces().map((s) => s.id));
@@ -116,8 +141,7 @@ export default class Spaces extends View {
     try { this.folded = new Set(JSON.parse(localStorage.getItem("machines.folded") ?? "[]")); } catch { this.folded = new Set(); }
     this.refreshMachines(cx);
     cx.timer.every(15000, cx => this.refreshMachines(cx));
-    // `git status` walks the whole tree, on another machine a process there:
-    // only when its answer could have changed (see `due`).
+    // Refresh only when the refs could have changed (see `due`).
     cx.timer.every(250, (cx) => this.checkNew(cx));
   }
 
@@ -138,6 +162,17 @@ export default class Spaces extends View {
     const at = {};
     for (const s of sp) at[s.id] = where(s, ps);
     const keys = new Set(Object.values(at).filter((k) => JSON.parse(k)[1]));
+    // A place no space is in any more is forgotten, and a repo none of them is in is no longer watched.
+    for (const k of Object.keys(this.git)) if (!keys.has(k)) {
+      delete this.git[k];
+      delete this.checked[k];
+      this.unsure.delete(k);
+    }
+    const repos = new Set(Object.values(this.git).filter(Boolean).map((g) => g.repo));
+    for (const [repo, pending] of this.watching) if (!repos.has(JSON.stringify([null, repo]))) {
+      this.watching.delete(repo);
+      pending?.cancel?.(); // a watch has cancel() from Herdr 0.1.16 on
+    }
     const due = new Set([...keys].filter((k) => !(k in this.git)));
     for (const [id, k] of Object.entries(at)) if (this.at[id] && this.at[id] !== k && keys.has(k)) due.add(k);
     this.at = at;
@@ -233,10 +268,11 @@ export default class Spaces extends View {
       while (this.pending.size) {
         const keys = [...this.pending];
         this.pending.clear();
-        for (const key of keys) await this.check(key, cx);
+        let next = 0;
+        await Promise.all(Array.from({ length: Math.min(AT_ONCE, keys.length) }, async () => {
+          while (next < keys.length) await this.check(keys[next++], cx);
+        }));
       }
-      const used = new Set(Object.values(this.git).filter(Boolean).map((g) => JSON.parse(g.repo)).filter(([on]) => !on).map(([, repo]) => repo));
-      for (const repo of this.watching) if (!used.has(repo)) this.watching.delete(repo);
       this.refreshing = false;
       cx.notify();
     });
@@ -248,31 +284,29 @@ export default class Spaces extends View {
     this.checked[key] = Date.now();
     this.unsure.delete(key);
     try {
-      // No optional locks: a status that touched the index would wake the watch again.
-      // Writes nothing under .git (index lock, fsmonitor cookie): watch() would wake on it.
-      const r = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v2", "--branch"], { cwd, on });
-      if (r.code !== 0) {
+      // Ref-only reads avoid scanning the worktree or waking its index watch.
+      // Two reads: a folder name may itself contain a newline.
+      const [r, common] = await both(
+        exec("git", ["rev-parse", "--path-format=absolute", "--show-toplevel"], { cwd, on }),
+        exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd, on }),
+      );
+      if (r.code !== 0 || common.code !== 0) {
         // Only git's own "no" is remembered as no repo; anything else is asked again.
-        if (!/not a git repository/i.test(r.stderr)) {
+        if (!/not a git repository/i.test(r.code !== 0 ? r.stderr : common.stderr)) {
           this.unsure.add(key);
           this.git[key] ??= null;
         } else this.git[key] = null;
         return;
       }
       // The repo's own .git folder names it; a worktree's top differs from it.
-      const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on });
-      const common = await exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd, on });
-      const repo = common.stdout.trim();
+      const top = r.stdout.replace(/\n$/, ""), repo = common.stdout.replace(/\n$/, "");
+      const [branch, counts] = await both(
+        exec("git", ["symbolic-ref", "-q", "HEAD"], { cwd, on }),
+        exec("git", ["rev-list", "--left-right", "--count", "HEAD...@{upstream}"], { cwd, on }),
+      );
       const name = repoName(repo);
-      const info = { name, branch: null, ahead: 0, behind: 0, repo: JSON.stringify([on, repo]), linked: repo !== `${top.stdout.trim()}/.git` };
-      for (const line of r.stdout.split("\n")) {
-        if (line.startsWith("# branch.head ")) info.branch = line.slice(14);
-        else if (line.startsWith("# branch.ab ")) {
-          const [a, b] = line.slice(12).split(" ");
-          info.ahead = Math.abs(parseInt(a, 10)) || 0;
-          info.behind = Math.abs(parseInt(b, 10)) || 0;
-        }
-      }
+      const [ahead, behind] = counts.code === 0 ? counts.stdout.trim().split(/\s+/).map(Number) : [0, 0];
+      const info = { name, branch: branch.code === 0 ? branch.stdout.trim().replace(/^refs\/heads\//, "") : "(detached)", ahead, behind, repo: JSON.stringify([on, repo]), linked: repo !== `${top}/.git` };
       this.git[key] = info;
       if (!on) this.watch(repo, cx);
     } catch {
@@ -284,15 +318,23 @@ export default class Spaces extends View {
 
   watch(repo, cx) {
     if (this.watching.has(repo)) return;
-    this.watching.add(repo);
+    const pending = watchFolder(repo);
+    this.watching.set(repo, pending);
     cx.spawn(async (cx) => {
+      let current = pending;
       try {
-        while (this.watching.has(repo)) {
-          await watchFolder(repo);
+        for (;;) {
+          await current;
+          if (this.watching.get(repo) !== current) return;
           const mine = JSON.stringify([null, repo]);
-          if (this.watching.has(repo)) this.refreshGit(Object.keys(this.git).filter((k) => this.git[k]?.repo === mine), cx);
+          const keys = Object.keys(this.git).filter((k) => this.git[k]?.repo === mine);
+          if (!keys.length) break;
+          this.refreshGit(keys, cx);
+          current = watchFolder(repo);
+          this.watching.set(repo, current);
         }
-      } catch { this.watching.delete(repo); }
+      } catch {}
+      if (this.watching.get(repo) === current) this.watching.delete(repo);
     });
   }
 
@@ -376,21 +418,29 @@ export default class Spaces extends View {
       const machine = this.machines.find(k => k.name === m) ?? repair?.machine;
       const connected = !m || machine?.state === "connected";
       const rebuilt = this.rebuilt(machine) || !!repair;
+      // From Herdr 0.1.18's spaces: a machine that needs a login says what to run.
+      const login = machine?.state === "needs_login" ? `hc machine login ${m}` : null;
       const folded = this.folded.has(m);
       const icon = svg(`mods/workspace-chrome/${m ? "server" : "monitor"}.svg`).size(13).flex_none();
       const badge = div().absolute().right(-3).bottom(-2).size(6).rounded(3).border_1().border_color(t.chrome).bg(connected ? t.ansi2 : t.dim);
       const head = h_flex().id(`machine-${m ?? "local"}`).h(26).flex_none().px(collapsed ? 0 : 8).gap(7).items_center().text_size(11).text_color(t.dim)
-        .when(collapsed, el => el.mt(4).w(RAIL_CELL).justify_center().rounded(6).tooltip(m ? `${m} · ${connected ? "connected" : (machine?.state ?? "asleep").replace(/_/g, " ")}` : "This computer"))
+        .when(collapsed, el => el.mt(4).w(RAIL_CELL).justify_center().rounded(6).tooltip(login ? `${m} needs a login: run ${login}. Click for Copy.` : m ? `${m} · ${connected ? "connected" : (machine?.state ?? "asleep").replace(/_/g, " ")}` : "This computer"))
         .cursor_pointer().hover(s => s.bg(t.hover))
         .on_click((_e, cx) => {
+          // The package's Settings window (ws-settings, through the switcher), on Machines; Herdr's own has none of its sections.
+          if (collapsed && login) { run("ws-switcher.settings/machines", {}); return; }
           folded ? this.folded.delete(m) : this.folded.add(m);
           localStorage.setItem("machines.folded", JSON.stringify([...this.folded]));
           cx.notify();
         })
+        // From Herdr 0.1.18's spaces: a machine that stops its agents when you disconnect says so (modal here).
+        .when(machine?.keeps_running_after_logout === false, el => el.child(div().id(`machine-logout-${m}`)
+          .flex_none().text_color(t.blocked).tooltip("Agents stop when you disconnect. Click for the fix.")
+          .on_click((_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "machine-add", kind: "dialog", modal: true, width: 560 }); }).child("⚠")))
         .when(!collapsed, el => el.child(icon))
         .when(collapsed, el => el.child(div().relative().flex_none().child(icon).when(Boolean(m), el => el.child(badge))))
         .when(!collapsed, el => el.child(div().flex_1().truncate().child(m ?? "This computer"))
-          .when(!connected && !rebuilt, el => el.child(div().flex_none().child((machine?.state ?? "asleep").replace(/_/g, " "))))
+          .when(!connected && !rebuilt && !login, el => el.child(div().flex_none().child((machine?.state ?? "asleep").replace(/_/g, " "))))
           .when(rebuilt, el => el.child(h_flex().flex_none().gap(3).items_center()
             .child(div().max_w(140).truncate().child(repair?.error || "rebuilt ·"))
             .child(div().id(`machine-connect-${m}`).text_color(repair?.error ? t.blocked : t.muted)
@@ -413,9 +463,19 @@ export default class Spaces extends View {
       // Another machine with nothing in the shown workspace stays out of it.
       if (ws && m && !mine.length) return [];
       const cell = collapsed ? railCell : (el) => el;
-      const items = [cell(head), ...(folded ? [] : mine.length ? mine.map(draw) : [loading(m) ? loadingRow(m) : cell(empty)])];
+      // Herdr's rows under the header: the login command and a Copy, which keeps "Copied"'s width from the start.
+      const copyLabel = (shown, other) => v_flex().items_center().child(div().child(shown)).child(div().h(0).overflow_hidden().invisible().child(other));
+      const guidance = !collapsed && login ? [v_flex().px(8).pb(6).gap(3).flex_none()
+        .child(div().text_size(11).text_color(t.blocked).child("needs a login: run"))
+        .child(h_flex().gap(5).items_center()
+          .child(div().flex_1().min_w(0).truncate().tooltip(login).text_size(11).text_color(t.muted).child(login))
+          .child(div().id(`machine-login-copy-${m}`).flex_none().px(5).py(2).rounded(4)
+            .text_size(11).text_color(t.foreground).bg(t.raised).cursor_pointer().hover(s => s.bg(t.hover))
+            .on_click((_e, cx) => { cx.stop_propagation(); cx.write_to_clipboard(login); this.copiedLogin = login; cx.notify(); })
+            .child(this.copiedLogin === login ? copyLabel("Copied", "Copy") : copyLabel("Copy", "Copied"))))] : [];
+      const items = [cell(head), ...guidance, ...(folded ? [] : mine.length ? mine.map(draw) : [loading(m) ? loadingRow(m) : cell(empty)])];
       const first = folded ? -1 : mine.findIndex((r) => r.w.active);
-      if (first >= 0) this.activeAt = before + 1 + first;
+      if (first >= 0) this.activeAt = before + 1 + guidance.length + first;
       before += items.length;
       return items;
     });
@@ -431,8 +491,8 @@ export default class Spaces extends View {
     const repo = tree || same(g.name) ? "" : g.name;
     const where = [repo, branch].filter(Boolean).join(" \u00b7 ");
     return h_flex()
-      .flex_1()
-      .min_w(0)
+      .flex_auto()
+      .min_w(where ? SIDE_MIN : 0)
       .gap(5)
       .justify_end()
       .items_center()
@@ -495,7 +555,7 @@ export default class Spaces extends View {
           .items_center()
           .when(Boolean(tree), el => el.pl(22).child(svg("mods/workspace-chrome/branch.svg").size(13).text_color(t.dim)))
           .when(!tree, el => el.child(h_flex().size(18).flex_none().rounded(5).bg(fill).items_center().justify_center().text_size(10.5).font_bold().text_color("#ffffff").child(spaceAvatar(w.name))))
-          .child(div().id(`space-name-${w.id}`).flex_shrink(0).max_w(150).truncate().text_color(t.foreground)
+          .child(div().id(`space-name-${w.id}`).flex_initial().min_w(SIDE_MIN).truncate().text_color(t.foreground)
             .tooltip([w.name, [tildePath(place(w, ps)), g?.branch].filter(Boolean).join(" · ")].filter(Boolean).join("\n")).child(w.name))
           .child(g ? this.gitTail(g, tree, w.name, t) : div().flex_1()),
       );
@@ -524,7 +584,7 @@ export default class Spaces extends View {
   // Choose…) where they wrap: about 7px a letter at 11.5px, 16px padding and a 6px gap each, in 424px.
   askNewSpace() {
     const ws = workspace();
-    const picks = ws && !ws.scratch ? [ws.root, ...ws.folders].filter(Boolean).slice(0, 6) : [];
+    const picks = ws && !ws.scratch ? [ws.root, ...(ws.folders.length ? ws.folders : (ws.children ?? []).map((c) => `${ws.root}/${c}`))].filter(Boolean).slice(0, 6) : [];
     const labels = [...picks.map((f) => (f === ws.root ? `${base(f)} (root)` : base(f))), "Choose…"];
     let lines = 1, x = 0;
     for (const l of labels) { const w = 16 + 7 * l.length; if (x && x + w > 424) { lines++; x = 0; } x += w + 6; }

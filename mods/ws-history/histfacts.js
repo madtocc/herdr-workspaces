@@ -339,6 +339,16 @@ export function presetOf(session) {
   return i >= 0 && words[i + 1] ? words[i + 1].split("/").pop().replace(/\.md$/, "") : "";
 }
 
+// An opened conversation's "Agent" line: the agent, its model (modelLabel()) and the preset it
+// was started from, those that are known, as "Claude Code · opus-5-5 · implementer".
+export function agentLine(name, model = "", preset = "") {
+  return [name, model ? modelLabel(model) : "", preset].filter(Boolean).join(" · ");
+}
+
+// Its "It said" line: the start of what the agent said last, on one line (scan.js keeps it as
+// `said`, already cut with "…" when longer). "" when it said nothing.
+export const saidStart = (s) => clean(s?.said ?? "", 240);
+
 export const inside = (p, dir) => Boolean(p && dir) && (p === dir || p.startsWith(dir + "/"));
 const base = (p) => String(p ?? "").replace(/[\\/]+$/, "").split(/[\\/]/).pop();
 
@@ -483,11 +493,64 @@ export function compactionsTip(n, last) {
 // The runs the switcher publishes (shared "workspaces.automation.runs", newest first;
 // mods/ws-switcher/automations.js), as History's Automations list shows them.
 
+// What the resume command's Copy puts on the clipboard: a cd to the conversation's folder, then
+// the command, so it resumes wherever it's pasted. Windows PowerShell 5.1 has no "&&": there the
+// two are parted by ";" and the folder is quoted PowerShell's way.
+export function pasteLine(cwd, command, platform = "") {
+  if (!cwd) return command;
+  if (platform === "windows") return `cd '${String(cwd).replace(/'/g, "''")}'; ${command}`;
+  const q = /^[A-Za-z0-9_\/.:=@%+-]+$/.test(cwd) ? cwd : `'${String(cwd).replace(/'/g, "'\\''")}'`;
+  return `cd ${q} && ${command}`;
+}
+
+// What a Copy's toast says (`kind`: "id", "command" or "report"; `text`: what was copied): its
+// title when it worked, the title when it didn't, and the body, which shows what went (a
+// report's first line, cut).
+export function copyWords(kind, text = "") {
+  const noun = kind === "command" ? "resume command" : kind === "report" ? "report" : "conversation id";
+  const first = String(text).split("\n").find((l) => l.trim()) ?? "";
+  const body = kind === "report" ? (first.length > 80 ? `${first.slice(0, 79)}…` : first) : String(text);
+  return { ok: `${noun[0].toUpperCase()}${noun.slice(1)} copied`, fail: `Couldn't copy the ${noun}`, body };
+}
+
+// Which chip a tree of the Conversations list waits behind, by its first row `s`: "gone" (its
+// folder isn't there any more), "automation" (an automation's run started it), or null (it
+// shows). `showGone`, `showAuto`: those chips are on; `auto`: whether an automation started it;
+// `live`: whether anything in the tree is open in a terminal (a tree that is, shows).
+export function behindChip(s, { showGone = false, showAuto = false, auto = false, live = false } = {}) {
+  if (live) return null;
+  if (s?.gone && !showGone) return "gone";
+  if (auto && !showAuto) return "automation";
+  return null;
+}
+// The chip for the conversations automations started, as "Folder gone": "Automation runs" with
+// how many wait behind it while they're hidden, "Hide automation runs" while they show.
+export function autoChip(show, n = 0) {
+  return show ? { on: true, label: "Hide automation runs", count: null } : { on: false, label: "Automation runs", count: n > 0 ? n : null };
+}
+// The conversations the automations' runs started, by key: only those a run's own record names
+// (`r.conv`, which the runner notes) and that are listed. runSessions() also pairs a run with no
+// note by folder and time, which is only a guess: a conversation guessed at stays in the list.
+export function autoKeys(runs, sessions) {
+  const listed = new Set((sessions ?? []).map(keyOf));
+  return new Set((runs ?? []).filter((r) => r?.status === "started" && r.conv?.id && PROVIDERS[r.conv.provider])
+    .map((r) => `${r.conv.provider}/${r.conv.id}`).filter((k) => listed.has(k)));
+}
+
+// The Automations side's quiet-runs chip, which works as the Conversations side's "Folder gone":
+// off while they're hidden ("Quiet runs", with how many when there are any), on while they show
+// ("Hide quiet runs"). `hidden`: whether quiet runs are hidden; `n`: how many the search let through.
+export function quietChip(hidden, n = 0) {
+  return hidden ? { on: false, label: "Quiet runs", count: n > 0 ? n : null } : { on: true, label: "Hide quiet runs", count: null };
+}
+// The list's line when every run it would show is a quiet one, hidden.
+export const onlyQuietLine = (n) => `Only quiet runs here. Quiet runs ${n} shows them.`;
+
 // A run's state in words, and its color by the Automations screen's rule (working:
 // the working color; needs you, failures, misses: the blocked one; the rest dim).
 // `ran: false`: an entry for a run that never started (its check, a miss, a skip kept it
 // from starting). `quiet`: one of those that needs no look (a check with nothing new, a
-// skip), drawn quieter and hidden behind "Hide quiet runs"; a check that failed or isn't
+// skip), drawn quieter and hidden until the "Quiet runs" chip shows them; a check that failed or isn't
 // allowed and a miss aren't quiet: they show, in the blocked color.
 // now: { status, live, open, found, said, outcome, records }: its agent's status word (null when
 // nothing reports), whether its terminal is alive, whether its tab is still there,

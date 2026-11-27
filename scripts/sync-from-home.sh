@@ -79,6 +79,12 @@ for mod in ws-settings ws-vault; do
   }
 done
 
+# Secrets' Copy example and Settings > Agents' Copy the shell line draw the same copy icon.
+cmp -s "$src/mods/ws-vault/copy.svg" "$src/mods/ws-settings/copy.svg" || {
+  echo "mods/ws-vault/copy.svg and mods/ws-settings/copy.svg differ: make them the same first" >&2
+  exit 1
+}
+
 # History's Wipe moves the same files to the Trash as the Agents list's (wipeTargets()) and draws its menu the same size.
 cmp -s "$src/mods/ws-agents/menufacts.js" "$src/mods/ws-history/menufacts.js" || {
   echo "mods/ws-agents/menufacts.js and mods/ws-history/menufacts.js differ: make them the same first" >&2

@@ -11,7 +11,14 @@ export function lookup(names, who, use) {
   const now = Date.now();
   return names.map((name) => {
     const entry = resolveEntry(entries, who.ws, name);
-    if (!entry) throw fail("not_found", `no secret named ${name}${who.ws ? ` in ${who.ws} or every workspace` : " in every workspace"} (herdr-ws-secret list shows them)`);
+    if (!entry) {
+      // Another workspace keeps one by that name: say which, and the flag that reaches it.
+      const where = `no secret named ${name}${who.ws ? ` in ${who.ws} or every workspace` : " in every workspace"}`;
+      const ids = [...new Set(entries.filter((e) => e.name === name && e.scope.startsWith("ws:") && e.scope !== `ws:${who.ws}`).map((e) => e.scope.slice(3)))];
+      throw fail("not_found", ids.length === 1 ? `${where}. Workspace ${ids[0]} has one: add --workspace ${ids[0]}`
+        : ids.length > 1 ? `${where}. Workspaces ${ids.join(", ")} each have one: add --workspace and one of them`
+        : `${where} (herdr-ws-secret list shows them)`);
+    }
     if (isExpired(entry, now)) {
       if (use) noteAttempt([{ name, entry }], { ...use, who, why: "expired" });
       throw fail("expired", `${name} has expired; ask the person to replace it or extend it in Secrets`);

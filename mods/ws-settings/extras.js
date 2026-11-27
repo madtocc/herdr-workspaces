@@ -45,6 +45,7 @@ import { SETTINGS_FILE, EXPERIMENTS, FEATURES, FILES_SETTINGS, EDITOR_CATALOG, L
 import { BROKER_OPS, STATUS_ARGS, parseBrokerStatus, actionError, brokerView, pressBroker } from "./brokerfacts.js";
 import { HIDDEN, hiddenFile, parseHidden, saveHidden, shownAgents, countLine, notInstalledLine } from "./hidefacts.js";
 import { DESK_TITLE, DESK_ABOUT, parseDeskStatus, deskLine } from "./deskfacts.js";
+import { resumeLine, COPY } from "./resumefacts.js";
 
 // Our sections in the window's list, after Herdr's.
 export const PACKAGE_SECTIONS = [
@@ -90,8 +91,8 @@ function watchAway(x, cx) {
   if (x.awayWatch) return;
   x.awayWatch = true;
   const tick = (cx) => {
-    if ((x.runnerAway || x.guideAway) && !switcherHere()) cx.timer.after(2000, tick);
-    else { x.awayWatch = false; x.runnerAway = null; x.guideAway = false; }
+    if ((x.runnerAway || x.guideAway || x.openAway) && !switcherHere()) cx.timer.after(2000, tick);
+    else { x.awayWatch = false; x.runnerAway = null; x.guideAway = false; x.openAway = null; }
     cx.notify();
   };
   cx.timer.after(2000, tick);
@@ -105,6 +106,19 @@ function openInFiles(path) {
   const ask = { path, isDir: false, line: null, on: null, placement: "beside", id: `${now}-settings-${Math.random().toString(36).slice(2, 8)}`, at: now };
   setShared("workspaces.files.open", [...(Array.isArray(queue) ? queue : []).filter((a) => a && typeof a === "object" && now - (a.at ?? 0) < 15000), ask].slice(-64));
 }
+
+// A file of ours opened in Files from a page (settings.jsonc from its red box, the broker's log), as
+// the guide's Edit: Files opens beside the terminal and this window closes. With the switcher away
+// nothing would open it: the line under the button says so and the window stays. which: the
+// button's own key, so only its line shows.
+function openFile(x, which, path, cx) {
+  if (!switcherHere()) { x.openAway = which; watchAway(x, cx); cx.notify(); return; }
+  x.openAway = null;
+  openInFiles(path);
+  if (props()?.overlay) closeOverlay(props().overlay);
+}
+// The away line under a button that opens a file, while the switcher is away.
+const openAway = (x, which) => x.openAway === which && !switcherHere();
 
 // From the window's init: read the settings file, switches and installed agents once,
 // then re-read the files every 3 seconds so CLI flips and external edits show while open.
@@ -515,6 +529,17 @@ function editGuide(x, cx) {
   });
 }
 
+// Copy the shell line: the config.toml line for this platform on the clipboard; "Copied" on the
+// button for 1.5 s, or the clipboard command's error as a toast.
+function copyResume(x, cx) {
+  cx.spawn(async (cx) => {
+    const r = await exec("sh", ["-c", COPY, "sh", resumeLine(window()?.platform ?? "macos")]).catch((e) => ({ code: 1, stdout: "", stderr: errMsg(e) }));
+    if (r.code === 0) { x.resumeCopiedAt = Date.now(); cx.timer.after(1600, (cx) => cx.notify()); }
+    else notify({ title: "Couldn't copy it", body: String(r.stderr || r.stdout || "").trim() || "The clipboard command failed.", level: "error" });
+    cx.notify();
+  });
+}
+
 // Bring agents back after a restart, or not: herdr-ws-resume --on / --off.
 function flipResume(x, cx) {
   const on = !(x.resume?.on ?? true);
@@ -588,6 +613,24 @@ function segmented(t, id, values, now, onPick, off = false) {
       .child(v.label)));
 }
 
+// A page whose add-on is off in Features (Secrets, Automations): one line under its sentence, with
+// the way to Features (the window's own section switch).
+function offLine(t, view, title) {
+  return h_flex().id("wsx-off").flex_wrap().gap_x(4).pb(14).text_size(12.5).line_height("18px")
+    .child(div().text_color(t.working).child(`${title} is off in Settings > Features.`))
+    .child(div().id("wsx-off-features").text_color(t.accent).cursor_pointer().hover((s) => s.opacity(0.8))
+      .on_click((_e, cx) => { view.section = "features"; view.picking = null; cx.notify(); }).child("Open Features"));
+}
+
+// The red box of a settings file that isn't valid JSONC, with Open the file at its right.
+function badFile(t, x, words, top, bottom) {
+  return h_flex().id("wsx-bad-file").mt(top).mb(bottom).p(10).gap(10).items_start().rounded(8).bg(t.blocked + "1f")
+    .child(v_flex().flex_1().min_w(0).gap(4)
+      .child(div().text_size(12.5).line_height("18px").text_color(t.blocked).child(words))
+      .when(openAway(x, "settings"), (el) => el.child(div().text_size(12).line_height("17px").text_color(t.muted).child(AWAY))))
+    .child(button(t, "wsx-bad-file-open", "Open the file", (_e, cx) => openFile(x, "settings", file(), cx)));
+}
+
 function button(t, id, label, onClick, tip = "") {
   return div().id(id).px(12).py(5).rounded(7).border_1().border_color(t.border).bg(t.raised).cursor_pointer()
     .text_size(13).text_color(t.foreground).hover((s) => s.bg(t.hover))
@@ -610,6 +653,15 @@ function agentsPage(t, x) {
     : !r.on ? "Off: tabs come back as shells"
     : r.count === 1 ? "On: 1 agent would come back" : `On: ${r.count} agents would come back`;
 
+  // Not set up: Copy the shell line under the note. "Copy the shell line" always holds the width;
+  // "Copied" sits over it while it shows, so the button never changes size.
+  const copied = Date.now() - (x.resumeCopiedAt ?? 0) < 1500;
+  const resumeCopy = h_flex().id("wsx-s-resume-copy").relative().h(24).px(9).gap(5).items_center().rounded(6).border_1().border_color(t.input)
+    .text_size(11.5).text_color(t.muted).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
+    .on_click((_e, cx) => copyResume(x, cx))
+    .child(svg("mods/ws-settings/copy.svg").size(12).flex_none())
+    .child(div().when(copied, (el) => el.text_color("#00000000")).child("Copy the shell line"))
+    .when(copied, (el) => el.child(div().absolute().left(26).child("Copied")));
   const hidden = shared(HIDDEN) ?? x.hidden ?? [];
   const installed = x.known.filter((a) => a.installed);
   const shown = new Set(shownAgents(installed, hidden).map((a) => a.key));
@@ -620,6 +672,9 @@ function agentsPage(t, x) {
     : (a.tint ? svg(a.icon).text_color(t.foreground) : image(a.icon)).size(16).flex_none().rounded(3);
 
   return v_flex().w_full()
+    .child(div().pb(4).text_size(18).font_semibold().text_color(t.foreground).child("Agents"))
+    .child(div().pb(14).text_size(12.5).line_height("18px").text_color(t.dim)
+      .child("What agents started through the launcher get, and which agents the + menu lists."))
     .child(heading(t, "Starting agents"))
     .child(row(t, "wsx-s-guide", "Herdr guide for every agent",
       "Agents started through the launcher get ~/.herdr/AGENTS.md, how to use automations, helpers and the board, before the workspace's own instructions.",
@@ -629,7 +684,7 @@ function agentsPage(t, x) {
         .child(toggle(t, "wsx-s-guide-switch", g.on, (_e, cx) => flipGuide(x, cx)))))
     .child(row(t, "wsx-s-resume", "Bring agents back after a restart",
       "Claude and Antigravity agents started through the launcher continue their conversation after a reboot or a logout.",
-      resumeNote,
+      x.resume && !r.ready ? v_flex().items_start().gap(8).child(div().child(resumeNote)).child(resumeCopy) : resumeNote,
       toggle(t, "wsx-s-resume-switch", r.on, (_e, cx) => flipResume(x, cx)),
       Boolean(x.resume && !r.ready && r.on)))
     .child(div().h(22))
@@ -678,8 +733,9 @@ function askRunner(x, key, want, cx) {
 // hours and the drafter from "automations" in the settings file. A broken file: one note, those
 // three greyed at their defaults (what the runner uses until it's fixed); the runner's switches
 // still work, since they don't live in the file.
-function automationsPage(t, x) {
+function automationsPage(t, x, view) {
   const broken = x.settings.error;
+  const off_ = !featureOn(x.settings, "automations");
   const off = Boolean(broken) || x.busy;
   const runner = shared("workspaces.runner") ?? { on: false, running: false };
   // An ask still on its way: the switch shows what was asked.
@@ -727,10 +783,10 @@ function automationsPage(t, x) {
   const drafters = [{ value: "auto", label: "Auto" }, { value: "claude", label: "Claude" }, { value: "codex", label: "Codex" }, { value: "agy", label: "Antigravity" }, { value: "pi", label: "Pi" }];
   return v_flex().w_full()
     .child(div().pb(4).text_size(18).font_semibold().text_color(t.foreground).child("Automations"))
-    .child(div().pb(14).text_size(12.5).line_height("18px").text_color(t.dim)
+    .child(div().pb(off_ ? 6 : 14).text_size(12.5).line_height("18px").text_color(t.dim)
       .child(`Background runner, limits, quiet hours and drafter defaults. Saves to ${tilde(file())}.`))
-    .when(Boolean(broken), (el) => el.child(div().mb(14).p(10).rounded(8).bg(t.blocked + "1f").text_size(12.5).line_height("18px").text_color(t.blocked)
-      .child(`${tilde(file())} isn't valid JSONC (${broken}). Defaults stay in effect until it's fixed.`)))
+    .when(off_, (el) => el.child(offLine(t, view, "Automations")))
+    .when(Boolean(broken), (el) => el.child(badFile(t, x, `${tilde(file())} isn't valid JSONC (${broken}). Defaults stay in effect until it's fixed.`, 0, 14)))
     .child(heading(t, "While Herdr is closed"))
     .child(row(t, "wsx-s-runner", "Keep running",
       "Automations and board cards' pull requests keep running in a background process after you close Herdr. Turning it off turns off Start at login too.",
@@ -761,11 +817,10 @@ function automationsPage(t, x) {
 function experimentalPage(t, x) {
   const broken = x.settings.error;
   return v_flex().w_full()
-    .child(heading(t, "Experimental"))
+    .child(div().pb(4).text_size(18).font_semibold().text_color(t.foreground).child("Experimental"))
     .child(div().pb(6).text_size(12.5).line_height("18px").text_color(t.dim)
       .child("Features that lean on things other programs don't promise to keep the same. Each is off until you turn it on, and says why it's experimental."))
-    .when(Boolean(broken), (el) => el.child(div().my(8).p(10).rounded(8).bg(t.blocked + "1f").text_size(12.5).line_height("18px").text_color(t.blocked)
-      .child(`${tilde(file())} isn't valid JSONC (${broken}). These stay off until it's fixed.`)))
+    .when(Boolean(broken), (el) => el.child(badFile(t, x, `${tilde(file())} isn't valid JSONC (${broken}). These stay off until it's fixed.`, 8, 8)))
     .children(EXPERIMENTS.map((e) => {
       const on = experimentOn(x.settings, e.key);
       return row(t, `wsx-x-${e.key}`, e.title, e.what, `Why it's experimental: ${e.why.charAt(0).toLowerCase()}${e.why.slice(1)}`,
@@ -796,8 +851,7 @@ function featuresPage(t, x) {
     .child(div().pb(4).text_size(18).font_semibold().text_color(t.foreground).child("Features"))
     .child(div().pb(18).text_size(12.5).line_height("18px").text_color(t.dim)
       .child("Turn off what you don't use. Off hides it everywhere and stops its background work; nothing is deleted, so on brings it back as it was."))
-    .when(Boolean(broken), (el) => el.child(div().mb(14).p(10).rounded(8).bg(t.blocked + "1f").text_size(12.5).line_height("18px").text_color(t.blocked)
-      .child(`${tilde(file())} isn't valid JSONC (${broken}). Everything stays on until it's fixed.`)))
+    .when(Boolean(broken), (el) => el.child(badFile(t, x, `${tilde(file())} isn't valid JSONC (${broken}). Everything stays on until it's fixed.`, 0, 14)))
     .children(groups.map((g, i) => v_flex().w_full()
       .when(i > 0, (el) => el.child(div().h(22)))
       .child(heading(t, g.name))
@@ -875,8 +929,7 @@ function filesPage(t, x, view) {
     .child(v_flex().pb(14).text_size(12.5).line_height("18px").text_color(t.dim)
       .child(div().child(words("Defaults for the Files view and Cmd-clicked paths.")))
       .child(div().child(`Changes apply immediately and save to ${tilde(file())}.`)))
-    .when(Boolean(broken), (el) => el.child(div().mb(14).p(10).rounded(8).bg(t.blocked + "1f").text_size(12.5).line_height("18px").text_color(t.blocked)
-      .child(`${tilde(file())} isn't valid JSONC (${broken}). Defaults stay in effect until it's fixed.`)))
+    .when(Boolean(broken), (el) => el.child(badFile(t, x, `${tilde(file())} isn't valid JSONC (${broken}). Defaults stay in effect until it's fixed.`, 0, 14)))
     .child(heading(t, "Viewing"))
     .child(choiceRow("markdown"))
     .child(row(t, "wsx-files-default-app", app.title, app.what, "", appPicker(t, x, view, val("default-app"), off), false, Boolean(broken)))
@@ -903,8 +956,9 @@ function actButton(t, id, label, kind, enabled, onClick) {
 // Vault: the broker's row (brokerfacts.js brokerView), then the defaults for new secrets and the
 // bell, from "vault" in the settings file. A broken file: one note, those three greyed at their
 // defaults; the broker's row still works, since it doesn't live in the file.
-function vaultPage(t, x) {
+function vaultPage(t, x, view) {
   const broken = x.settings.error;
+  const off_ = !featureOn(x.settings, "vault");
   const off = Boolean(broken) || x.busy;
   const b = x.broker ?? (x.broker = newBroker());
   const v = brokerView(b.status, { mac: isMac(), busy: b.busy, error: b.error, readError: b.readError, confirm: b.confirm, home: home() });
@@ -921,7 +975,13 @@ function vaultPage(t, x) {
       .when(v.factParts.length > 0, (el) => el.child(h_flex().flex_wrap().gap_x(5).text_size(12).line_height("17px").text_color(t.muted)
         .children(v.factParts.map((part, i) => div().whitespace_nowrap().child(i < v.factParts.length - 1 ? `${part} ·` : part)))))
       .when(Boolean(v.note), (el) => el.child(div().text_size(12).line_height("17px").text_color(t.working).child(v.note)))
-      .when(Boolean(v.error), (el) => el.child(div().text_size(12).line_height("17px").text_color(t.blocked).child(v.error))))
+      .when(Boolean(v.error), (el) => el.child(h_flex().flex_wrap().gap_x(8).gap_y(4).items_center()
+        .child(div().text_size(12).line_height("17px").text_color(t.blocked).child(v.error))
+        // The log it names opens in Files, as Open the file does.
+        .when(Boolean(v.log), (el) => el.child(div().id("wsx-v-broker-log").h(24).px(9).flex().items_center().rounded(6).border_1().border_color(t.input)
+          .text_size(11.5).text_color(t.muted).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
+          .on_click((_e, cx) => openFile(x, "log", v.log, cx)).child("Open log")))))
+      .when(openAway(x, "log"), (el) => el.child(div().text_size(12).line_height("17px").text_color(t.muted).child(AWAY))))
     .when(v.buttons.length > 0, (el) => el.child(h_flex().flex_none().gap(8).items_center()
       .children(v.buttons.map((btn) => actButton(t, `wsx-v-broker-${btn.op}`, btn.label, btn.kind, btn.enabled, (_e, cx) => brokerAct(x, btn.op, cx))))));
   const s = (key) => VAULT_SETTINGS.find((a) => a.key === key);
@@ -933,10 +993,10 @@ function vaultPage(t, x) {
     false, Boolean(broken) || tierOff(key));
   return v_flex().w_full()
     .child(div().pb(4).text_size(18).font_semibold().text_color(t.foreground).child("Secrets"))
-    .child(div().pb(14).text_size(12.5).line_height("18px").text_color(t.dim)
+    .child(div().pb(off_ ? 6 : 14).text_size(12.5).line_height("18px").text_color(t.dim)
       .child(`Defaults and the Protected broker for write-only secrets. These settings are kept in ${tilde(file())}.`))
-    .when(Boolean(broken), (el) => el.child(div().mb(14).p(10).rounded(8).bg(t.blocked + "1f").text_size(12.5).line_height("18px").text_color(t.blocked)
-      .child(`${tilde(file())} isn't valid JSONC (${broken}). Defaults stay in effect until it's fixed.`)))
+    .when(off_, (el) => el.child(offLine(t, view, "Secrets")))
+    .when(Boolean(broken), (el) => el.child(badFile(t, x, `${tilde(file())} isn't valid JSONC (${broken}). Defaults stay in effect until it's fixed.`, 0, 14)))
     .child(heading(t, "Protected broker (macOS)"))
     .child(brokerRow)
     .child(div().h(14))
@@ -952,5 +1012,5 @@ function vaultPage(t, x) {
 export function packagePage(view) {
   const t = theme();
   const x = view.wsx ?? (view.wsx = { text: null, settings: parseSettings(null), resume: null, guide: null, known: [], hidden: [], busy: false, gen: 0, hiding: 0, loading: null, apps: null, appsLoading: false, quietFrom: null, quietTo: null, broker: newBroker() });
-  return view.section === "features" ? featuresPage(t, x) : view.section === "automations" ? automationsPage(t, x) : view.section === "files" ? filesPage(t, x, view) : view.section === "vault" ? vaultPage(t, x) : view.section === "experimental" ? experimentalPage(t, x) : agentsPage(t, x);
+  return view.section === "features" ? featuresPage(t, x) : view.section === "automations" ? automationsPage(t, x, view) : view.section === "files" ? filesPage(t, x, view) : view.section === "vault" ? vaultPage(t, x, view) : view.section === "experimental" ? experimentalPage(t, x) : agentsPage(t, x);
 }

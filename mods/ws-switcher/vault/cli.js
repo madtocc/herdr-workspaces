@@ -8,18 +8,20 @@ import { redact } from "../vaultfacts.js";
 const HELP = `herdr-ws-secret: use secrets from Herdr's Secrets without seeing them. No command
 prints a value; you name a secret and it's filled in where it's used.
 
-  herdr-ws-secret list [--json]
+  herdr-ws-secret list [--json] [--workspace ID | --global | --all]
       The secrets you can use here (this workspace's, then every workspace's).
 
-  herdr-ws-secret http <url> [-X METHOD] [-H 'K: V']… [-d DATA | -d @file | -d @-] [-b 'k=v']
-                       [-i] [-o FILE] [-f] [--no-location] [--max-time SECONDS]
+  herdr-ws-secret http <url> [--workspace ID | --global] [-X METHOD] [-H 'K: V']…
+                       [-d DATA | -d @file | -d @-] [-b 'k=v'] [-i] [-o FILE] [-f]
+                       [--no-location] [--max-time SECONDS]
       Like curl. {{secret:NAME}} may stand in the URL's query, -H, -b and -d:
         herdr-ws-secret http https://develop.example.com/api -H 'Cookie: {{secret:develop-admin-cookie}}'
       Body to stdout; "HTTP <status>" and notes to stderr; -i adds the headers, -f exits 22 on
       4xx/5xx. Redirects are followed (a secret header is dropped for another host). Every form
       of a secret in the answer (plain, URL-encoded, base64, hex) shows as [secret:NAME].
 
-  herdr-ws-secret run [--env VAR=NAME]… [--file VAR=NAME]… [--timeout SECONDS] -- <command…>
+  herdr-ws-secret run [--workspace ID | --global] [--env VAR=NAME]… [--file VAR=NAME]…
+                      [--timeout SECONDS] -- <command…>
       Runs the command with the secret in VAR (--file: VAR is the path of a 0600 file holding it,
       removed afterwards). Its output comes back redacted. A secret can't stand in the command's
       own words. Exits with the command's code; 125 when it couldn't start it.
@@ -35,9 +37,10 @@ For the person (and Herdr's Secrets screen), --json on each:
   herdr-ws-secret put <name> [--workspace ID | --global] [--tier standard|protected] [--mode http|http+cli]
                   [--hosts h1,h2] [--commands c1,c2] [--allow-shells] [--ttl 4h|24h|7d|30d|never] [--note TEXT]
                   (--value-stdin, or it asks with echo off)
-  herdr-ws-secret edit <name> [scope] [--mode …] [--hosts …] [--commands …] [--[no-]allow-shells] [--ttl …] [--note …]
-  herdr-ws-secret migrate <name> [scope] --tier standard|protected
-  herdr-ws-secret rm <name> [scope]
+  herdr-ws-secret edit <name> [--workspace ID | --global] [--mode …] [--hosts …] [--commands …]
+                  [--[no-]allow-shells] [--ttl …] [--note …]
+  herdr-ws-secret migrate <name> [--workspace ID | --global] --tier standard|protected
+  herdr-ws-secret rm <name> [--workspace ID | --global]
   herdr-ws-secret sync                         refresh the list of Protected secrets from the broker
   herdr-ws-secret broker install [--rebuild]|status|restart|uninstall
 

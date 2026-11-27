@@ -219,11 +219,15 @@ holds() { case "$1/" in "$2"/*) return 0 ;; esac; return 1; }
 # herdr worktree (~/.herdr/worktrees/<repo>/<branch>), its repo's. As herdr-ws-agent.
 workspace_of() {
   [ -r "$index" ] || return 0
-  found= best=-1
-  while IFS=$tab read -r kind id path _; do
+  # On a tie a workspace's root (its line ends in "root") wins over another's listed folder.
+  found= best=-1 rooted=
+  while IFS=$tab read -r kind id path flag _; do
     [ "$kind" = dir ] || continue
     path=$(real "$path")
-    if holds "$1" "$path" && [ ${#path} -gt $best ]; then found=$id; best=${#path}; fi
+    holds "$1" "$path" || continue
+    if [ ${#path} -gt $best ] || { [ ${#path} -eq $best ] && [ "$flag" = root ] && [ -z "$rooted" ]; }; then
+      found=$id; best=${#path}; rooted=; [ "$flag" = root ] && rooted=1
+    fi
   done < "$index"
   trees=$(real "$HOME/.herdr/worktrees")
   if [ -z "$found" ] && holds "$1" "$trees"; then
@@ -542,7 +546,7 @@ $usage" ;;
     esac
   fi
   [ -n "$name" ] || die "give a repeating automation a --name"
-  case $name in -*|*[!A-Za-z0-9_-]*) die "a name is letters, digits, - and _" ;; esac
+  case $name in [!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) die "a name is letters, digits, dots, dashes or underscores, starting with a letter or digit" ;; esac
 
   if [ -n "$agent" ]; then
     case $agent in */*|.*) die "\"$agent\" is a preset or program name, not a path" ;; esac
@@ -669,9 +673,11 @@ fi
 [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }
 ws=$1 name=$2
 shift 2
+case $ws in -*) echo "herdr-ws-run: unknown option $ws (herdr-ws-run --help shows them)" >&2; exit 2 ;; esac
 case "$ws/$name" in
   */*/*|.*|*/.*) echo "herdr-ws-run: \"$ws\" and \"$name\" are names, not paths" >&2; exit 2 ;;
 esac
+[ -d "$dir/$ws" ] || { echo "herdr-ws-run: there's no workspace \"$ws\" (ls ~/.herdr/workspaces)" >&2; exit 1; }
 [ -f "$dir/$ws/automations/$name.md" ] || { [ -d "$dir/$ws" ] && [ -f "$global/$name.md" ]; } || {
   echo "herdr-ws-run: there's no automation \"$name\" in \"$ws\" (herdr-ws-run --list shows them)" >&2
   exit 1

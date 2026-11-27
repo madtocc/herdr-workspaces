@@ -27,10 +27,10 @@
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input } from "gpui-base";
-import { spaces, panes, terminals, run, theme, settings, shared, setShared, props, openOverlay, closeOverlay, home, readTextFile, writeTextFile, notify, checking } from "herdr";
+import { spaces, panes, terminals, run, theme, settings, shared, setShared, props, openOverlay, closeOverlay, home, readTextFile, writeTextFile, notify, checking, window } from "herdr";
 import { exec } from "./posix.js";
 import * as fs from "fs/promises";
-import { parseList, parseRefs, parsePrs, kindOf, labelOf, finished, ago, inside, unsaved, dotTip, removeLabel, removeReserve } from "./facts.js";
+import { parseList, parseRefs, parsePrs, kindOf, labelOf, finished, ago, inside, unsaved, dotTip, removeLabel, removeReserve, readAgo, readAgain, opensLink } from "./facts.js";
 import { loadScripts, saveScripts, allowScripts, runScript, markSetUp } from "./treescripts.js";
 
 const io = { home, readTextFile, writeTextFile, exec };
@@ -43,6 +43,10 @@ const defOf = (id) => (shared("workspaces.defs") ?? []).find((d) => d.id === id)
 const tilde = (p) => (p === home() ? "~" : p.startsWith(home() + "/") ? "~" + p.slice(home().length) : p);
 const base = (p) => p.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
 const message = (e) => String(e?.message ?? e);
+// A pull request's page, in the system's browser (only a GitHub link).
+const openLink = (url) => {
+  if (opensLink(url)) exec("sh", ["-c", 'command -v open >/dev/null 2>&1 && exec open "$1"; command -v explorer.exe >/dev/null 2>&1 && exec explorer.exe "$1"; exec xdg-open "$1"', "sh", url]).catch(() => {});
+};
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 async function git(cwd, args, timeout) {
@@ -129,7 +133,7 @@ function mark(def, t, size) {
     .text_size(Math.round(size * 0.55)).font_bold().text_color("#ffffff").child([...def.name][0]?.toUpperCase() ?? "?");
 }
 
-const STALE = 60e3; // ms after which the screen, shown again, reads the worktrees again
+const STALE = 60e3; // ms after which the screen, shown again, reads the worktrees again (shown all along: facts.js SHOWN_STALE)
 const ROW_MIN = 560; // a worktree row's least width in a narrow tab or pane: it scrolls sideways
 // Full size, a window narrower than this gets the narrow tab's layout (wrapping header, rows that scroll).
 const WIDE_MIN = 760;
@@ -172,7 +176,10 @@ export default class Worktrees extends View {
         this.reset();
         this.load(cx);
         cx.notify();
-      } else if (changed !== this.changed || (back && !this.reading && Date.now() - this.readAt > STALE)) { this.changed = changed; this.load(cx); }
+      } else if (changed !== this.changed || readAgain({ back, reading: this.reading, readAt: this.readAt, now: Date.now(), away: STALE, seen: this.follow && window()?.visible !== false })) { this.changed = changed; this.load(cx); }
+      // "Read 4m ago" moves on by itself.
+      const said = readAgo(this.readAt, Date.now());
+      if (said !== this.said) { this.said = said; cx.notify(); }
     });
   }
 
@@ -222,7 +229,7 @@ export default class Worktrees extends View {
         for (const path of [...this.selected]) if (!there.has(path)) this.selected.delete(path);
         cx.notify();
         await Promise.all(repos.filter((r) => r.trees.length).map(async (r) => {
-          const out = await exec("gh", ["pr", "list", "--state", "all", "--limit", "300", "--json", "headRefName,state,number,url,headRefOid,isCrossRepository"], { cwd: r.main, timeout: 30000 })
+          const out = await exec("gh", ["pr", "list", "--state", "all", "--limit", "300", "--json", "headRefName,state,number,url,headRefOid,isCrossRepository,title"], { cwd: r.main, timeout: 30000 })
             .catch(() => ({ code: 1 }));
           if (turn !== this.turn) return;
           r.prs = out.code === 0 ? parsePrs(out.stdout) : null; // null: gh couldn't say
@@ -437,6 +444,7 @@ export default class Worktrees extends View {
       .child(div().min_w(0).truncate().text_size(12).text_color(t.dim).child(this.loaded ? `${all.length} in ${plural(this.repos.length, "repo")}` : "Reading…"))
       .when(this.reading && this.loaded, (el) => el.child(svg("mods/workspace-chrome/spinner.svg").size(13).text_color(t.dim).spin(900)))
       .child(div().flex_1())
+      .when(this.loaded && !this.reading, (el) => el.child(div().flex_none().text_size(11.5).text_color(t.dim).child(readAgo(this.readAt, Date.now()))))
       .child(button("wt-refresh", "Refresh", (cx) => this.load(cx), { tip: "Read git and GitHub again" }))
       .when(picked.length > 0, (el) => el
         .child(button("wt-unpick", "Clear", (cx) => { this.selected.clear(); cx.notify(); }, { tip: "Untick every row" }))
@@ -518,6 +526,12 @@ export default class Worktrees extends View {
     const busy = this.busy[x.path];
     const tag = (text, c, tip) => div().flex_none().h(20).px(6).flex().items_center().rounded(5).bg(t.raised).text_size(11.5).text_color(c)
       .when(Boolean(tip), (el) => el.tooltip(tip)).child(text);
+    // A tag that opens what it names: the pull request on GitHub, the card on the board.
+    const link = (id, text, c, tip, open) => div().id(id).flex_none().h(20).px(6).flex().items_center().rounded(5).bg(t.raised).text_size(11.5).text_color(c)
+      .cursor_pointer().hover((s) => s.bg(t.hover)).tooltip(tip)
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).on_click((_e, cx) => { cx.stop_propagation(); open(); }).child(text);
+    // The card opens through the switcher, which isn't there while the sidebar is hidden.
+    const switcherHere = Date.now() - (shared("workspaces.switcher.alive")?.at ?? 0) < 15000;
     const act = (id, text, action, tip, danger) => div().id(id).h(24).px(8).flex().flex_none().items_center().rounded(6).border_1().border_color(t.input)
       .text_size(11.5).text_color(danger ? t.blocked : t.muted).cursor_pointer().hover((s) => s.bg(t.hover).text_color(danger ? t.blocked : t.foreground))
       .when(true, (el) => this.tip(el, id, tip)).on_click((_e, cx) => { this.tipGone = id; action(cx); cx.notify(); }).child(text);
@@ -535,12 +549,15 @@ export default class Worktrees extends View {
         .when(Boolean(dotTip(on?.status, inUse)), (el) => el.tooltip(dotTip(on?.status, inUse))))
       .child(div().id(`wt-name-${x.path}`).flex_none().max_w(420).truncate().tooltip(x.branch ?? base(x.path)).child(x.branch ?? base(x.path)))
       .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).tooltip(tilde(x.path)).child(this.where(x.path)))
-      .when(Boolean(card), (el) => el.child(tag(card, t.muted, "A board card runs here")))
+      .when(Boolean(card), (el) => el.child(switcherHere
+        ? link(`wt-card-${x.path}`, card, t.muted, `${card} runs here · click opens its card`, () => run(`ws-switcher.show/board/${this.workspace}/${card}`))
+        : tag(card, t.muted, `${card} runs here. Show the sidebar to open its card.`)))
       .when(inUse, (el) => el.child(tag(on.spaces.length ? "in a space" : plural(on.terminals, "terminal"), t.accent,
         on.spaces.length ? `Shown as the space “${on.spaces[0].name}”` : "A terminal is in it, outside any space")))
       .when(x.dirty > 0, (el) => el.child(tag(`${x.dirty} uncommitted`, t.blocked, "Files changed or added and not committed")))
       // Until GitHub has answered the first time (r.prs undefined), "…": not "no PR", which may be untrue.
       .child(r.prs === undefined ? tag("…", t.dim, "Asking GitHub about its pull request")
+        : opensLink(x.pr?.url) ? link(`wt-pr-${x.path}`, labelOf(x), color, `#${x.pr.number}${x.pr.title ? ` ${x.pr.title}` : ""} · click opens it`, () => openLink(x.pr.url))
         : tag(labelOf(x), color, r.prs === null ? "Pull requests couldn't be read for this repo" : null))
       .child(div().w(34).flex_none().text_size(11.5).text_color(t.dim).child(ago(x.at)))
       .when(Boolean(setup?.line && setup.allowed && !x.setUp), (el) => el.child(busy

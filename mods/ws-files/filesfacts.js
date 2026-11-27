@@ -382,8 +382,8 @@ export function mergeApps({ catalogInstalled = [], macApps = [], ext = "", platf
 // The app to offer first for an extension: the one remembered for it, else the "default-app"
 // setting (settings.jsonc "files", when it names "system" or an app of the list), else the last
 // one used, else the first code editor that isn't Xcode (text), else the first app; with none,
-// the system's opener ("system"). Returns an app of apps, or { id: "system", label: "Default app", kind: "system" }.
-export const SYSTEM_APP = { id: "system", label: "Default app", kind: "system" };
+// the system's opener ("system"). Returns an app of apps, or { id: "system", label: "System default", kind: "system" }.
+export const SYSTEM_APP = { id: "system", label: "System default", kind: "system" };
 export function pickDefaultApp(apps, prefs, ext, defaultApp = null) {
   const list = apps ?? [], e = String(ext ?? "").toLowerCase();
   const byId = (id) => (id === "system" ? SYSTEM_APP : list.find((a) => a.id === id));
@@ -568,11 +568,15 @@ const sameName = (a, b, caseless) => (caseless ? a.toLowerCase() === b.toLowerCa
 // What's wrong with a name typed in the tree's edit row, or null. mode: "file" or "folder" (a new
 // one: "a/b.js" makes the folders on the way) or "rename" (one name, no "/"). taken: the names in
 // the folder it goes in; old: the name being renamed (a rename that only changes case is fine).
-export function nameProblem(name, { mode = "file", taken = [], old = null, caseless = true } = {}) {
+// A rename may give a path too ("lib/auth.js" moves it into lib, made when it isn't there); isDir:
+// a folder can't go inside itself.
+export function nameProblem(name, { mode = "file", taken = [], old = null, caseless = true, isDir = false, windows = false } = {}) {
   const n = String(name ?? "");
   if (!n.trim()) return "Type a name";
+  // On Windows a "\" is a folder step the shell turns into "/", past these checks ("..\..\x").
+  if (windows && n.includes("\\")) return "Use / between folders";
   if (n !== n.trim()) return "A name can't start or end with a space";
-  if (mode === "rename" && n.includes("/")) return "A name can't have / in it";
+  if (mode === "rename" && n.endsWith("/")) return "Type a name after the /";
   if (n.startsWith("/")) return "Type a name, not a path from /";
   const parts = n.split("/");
   if (parts.some((p, i) => !p && i < parts.length - 1)) return "Two / in a row";
@@ -580,6 +584,8 @@ export function nameProblem(name, { mode = "file", taken = [], old = null, casel
   if (n.includes("\0")) return "A name can't have that character";
   const first = parts.filter(Boolean)[0];
   if (mode === "rename") {
+    if (isDir && old != null && parts.length > 1 && sameName(parts[0], old, caseless)) return "A folder can't go inside itself";
+    if (parts.length > 1) return null; // a move: a name taken there is the shell step's to refuse
     if (old != null && n === old) return null; // unchanged: Enter just closes
     if (old != null && sameName(n, old, caseless)) return null; // only the case changes
     if (taken.some((t) => sameName(t, n, caseless))) return `${n} is already there`;
@@ -657,7 +663,7 @@ export function switcherAway(alive, now) {
   return !Number.isFinite(at) || now - at > SWITCHER_FRESH;
 }
 
-// The filter box's flat list (D6-a) ---------------------------------------------------------
+// The filter box's flat list ---------------------------------------------------------
 // Every file under the folder, names only, for the filter box: git's own list in a repo (tracked and
 // untracked, not ignored; ignored ones too while Show ignored is on), else find (no dot folders or
 // node_modules while it's off). Folders come from the files' paths, so an empty folder isn't listed.
@@ -732,7 +738,7 @@ export function findNames(paths, query, limit = 200) {
 // A count with thousands marked ("1,240"): the mods' toLocaleString doesn't group.
 export const grouped = (n) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 
-// The recovery copy of an unsaved draft (D6) -----------------------------------------------
+// The recovery copy of an unsaved draft -----------------------------------------------
 // Written under appHome()/data/ws-files/drafts/<draftKey>.json while a file has unsaved edits:
 // { v: 1, abs, on, text, base (textHash of the file as it was read), at }. Gone on save, discard,
 // reload, or when the edits are typed back to the file.
@@ -795,4 +801,20 @@ export function draftWhen(at, now) {
   const y = new Date(n.getFullYear(), n.getMonth(), n.getDate() - 1);
   if (day(d) === day(y)) return `Yesterday ${hm}`;
   return `${MONTHS[d.getMonth()]} ${d.getDate()} ${hm}`;
+}
+
+// A menu's lit row after ↑ or ↓ (wrapping), or null for any other key; n rows, at the lit one.
+export function stepRow(at, n, key) {
+  if (!(n > 0) || (key !== "up" && key !== "down")) return null;
+  const i = Number.isInteger(at) && at >= 0 && at < n ? at : 0;
+  return key === "down" ? (i + 1) % n : (i + n - 1) % n;
+}
+
+// Discard's two presses: the first arms it ("Discard changes?"), a press within 500 ms of that
+// doesn't count (a double-click only asks), a later one discards. A clock set back counts.
+export const ASK_WAIT = 500;
+export function discardStep(armedAt, now) {
+  if (!armedAt) return "arm";
+  const d = now - armedAt;
+  return d >= 0 && d < ASK_WAIT ? "wait" : "discard";
 }

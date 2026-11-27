@@ -16,6 +16,8 @@
 // Also (small round, 2026-11-27): no space (so no branch) while the workspace has none
 // (shared "workspaces.covered"); the agent count's hover says it counts every workspace and
 // where the ones waiting on you are (countTip()); the usage's tooltip goes once it's clicked.
+// Also (options round, 2026-11-27): "· 1 needs you" goes to the first agent waiting, in any
+// workspace (usagefacts.js firstWaiting()); the panel's Refresh is a 22 px box.
 // Antigravity's limits come in pools (Gemini models; Claude and GPT models): the bar shows
 // its own models' pool, the 5-hour limit unless one of that pool's is full (barRow()), the panel
 // draws each pool once, its 5-hour and weekly limits side by side (poolBlock()), and the
@@ -34,7 +36,7 @@ import { h_flex, v_flex } from "gpui-base";
 import { spaces, agents, theme, run, window, keys, home, shared, setShared, props, openOverlay, checking } from "herdr";
 import { exec } from "./posix.js";
 import * as fs from "fs/promises";
-import { claudeReportRows, agyReportRows, claudeStatusRows, barRow, blocksOf, barText, hoverLines, resetsText, agoText, staleOf, followFeature } from "./usagefacts.js";
+import { claudeReportRows, agyReportRows, claudeStatusRows, barRow, blocksOf, barText, hoverLines, resetsText, agoText, staleOf, followFeature, firstWaiting } from "./usagefacts.js";
 import { SETTINGS_FILE, parseSettings, featureOn } from "./settingsfacts.js";
 
 // The plans the bar shows, in its order: how to ask each agent for its usage without
@@ -249,8 +251,9 @@ export default class WorkspaceStatus extends View {
     return v_flex().w_full().px(14).py(12).gap(12).text_size(12).text_color(t.foreground)
       .child(h_flex().items_center()
         .child(div().flex_1().text_color(t.muted).child("Plan usage limits"))
-        .when(plans.length > 0, (el) => el.child(div().id("usage-refresh").text_size(11).text_color(t.dim).cursor_pointer()
-          .hover((s) => s.text_color(t.foreground))
+        // A 22 px box, so it's more than its letters to hit; -6 keeps the word where it was.
+        .when(plans.length > 0, (el) => el.child(div().id("usage-refresh").h(22).px(6).mr(-6).flex().items_center().rounded(5).text_size(11).text_color(t.dim).cursor_pointer()
+          .hover((s) => s.bg(t.hover).text_color(t.foreground))
           .on_click(() => setShared("workspaces.usage.ask", { at: Date.now() }))
           .child(reading ? "Reading…" : "Refresh"))))
       .when(!plans.length, (el) => el.child(div().text_color(t.dim).child("No plan usage yet")))
@@ -302,14 +305,26 @@ export default class WorkspaceStatus extends View {
     const space = shared("workspaces.covered") ? null : spaces().find(s => s.active);
     const list = agents();
     const needs = list.filter(a => a.status === "blocked").length;
+    const tabs = needs ? new Map(spaces().flatMap(s => s.tabs ?? []).map(tb => [tb.id, tb])) : null;
+    const wait = needs ? firstWaiting(list, a => tabs.get(a.tab), shared("workspaces.assigned") ?? {}, shared("workspaces.defs") ?? []) : null;
     const plans = followFeature(this.usageOn, this.heard, usageShared()) ? this.plans() : [];
     const label = (icon, text) => h_flex().gap(6).items_center().child(svg(`mods/workspace-chrome/${icon}.svg`).size(13)).child(text);
     return h_flex().size_full().px(14).gap(16).items_center().bg(t.chrome).border_t(1).border_color(t.border).text_size(11.8).text_color(t.muted)
       .child(label(space?.machine ? "server" : "monitor", space?.machine ?? "This computer"))
       .when(Boolean(space?.branch), el => el.child(label("branch", space.branch)))
       // Every workspace's agents, where the Agents list beside it shows one workspace's: the hover says so.
-      .child(h_flex().id("agent-count").gap(6).items_center().tooltip(countTip(list)).child(div().size(6).rounded(3).bg(t.dim)).child(`${list.length} ${list.length === 1 ? "agent" : "agents"}`)
-        .when(needs > 0, el => el.child(div().text_color(t.blocked).child(`· ${needs} ${needs === 1 ? "needs" : "need"} you`))))
+      // "· 1 needs you" goes to the first one waiting (firstWaiting()), in whichever workspace.
+      .child(h_flex().gap(6).items_center()
+        .child(h_flex().id("agent-count").gap(6).items_center().tooltip(countTip(list)).child(div().size(6).rounded(3).bg(t.dim)).child(`${list.length} ${list.length === 1 ? "agent" : "agents"}`))
+        .when(needs > 0, el => el.child(div().id("agent-needs").ml(-4).px(4).rounded(4).text_color(t.blocked)
+          .when(Boolean(wait), el => el.cursor_pointer().hover(s => s.bg(t.hover)).tooltip(wait.tip)
+            .on_click(() => {
+              if (shared("workspaces.screen")) setShared("workspaces.screen", null);
+              // Its workspace first (firstWaiting()'s owner), so an empty one's block gives way.
+              if ((shared("workspaces.active") ?? null) !== wait.owner) setShared("workspaces.active", wait.owner);
+              run("pane.focus", { pane: wait.pane });
+            }))
+          .child(`· ${needs} ${needs === 1 ? "needs" : "need"} you`))))
       .child(div().flex_1())
       .when(plans.length > 0, el => el.child(this.usage(t, plans)))
       .child(div().id("palette").text_color(t.dim).on_click(() => run("app.palette")).child(this.hint(t)));

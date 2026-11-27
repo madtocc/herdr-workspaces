@@ -23,7 +23,7 @@ import { theme, shared, setShared, props, closeOverlay, home, appHome, readTextF
 import { exec } from "./posix.js";
 import { parseMeta, exampleFor, lastUsedLabel, expiryDetail, TTL_CHOICES } from "./vaultfacts.js";
 import { vaultSetting, featureOn } from "./settingsfacts.js";
-import { VAULT_DIR, META, TIER_WORDS, COMMANDS_HINT, LINE_BREAK_WORDS, LINE_BREAK_CMD, brokerUp, brokerFoot, listGroups, visibleEntries, newForm, formFrom, withTier, isDirty, formProblems, namesShell, blocked, saveSteps, saveAsks, answerOf, expiresSub, ttlShown, footNote, scopeName, screenState, touched, escAction, blockWords, unreadable, valueSub, moveKey, LATE_MS, UNFINISHED, lateWords, unfinishedRecord, readUnfinished, stepWhat, stepAsks, tierBlocks } from "./vaultview.js";
+import { VAULT_DIR, META, TIER_WORDS, COMMANDS_HINT, LINE_BREAK_WORDS, LINE_BREAK_CMD, brokerUp, brokerFoot, listGroups, visibleEntries, newForm, formFrom, withTier, isDirty, formProblems, namesShell, blocked, saveSteps, saveAsks, answerOf, expiresSub, ttlShown, allowedAutomations, extendTtl, extendBlockWords, discardStep, enterQuiet, footNote, scopeName, screenState, touched, escAction, blockWords, unreadable, valueSub, moveKey, LATE_MS, UNFINISHED, lateWords, unfinishedRecord, readUnfinished, stepWhat, stepAsks, tierBlocks } from "./vaultview.js";
 
 const vaultDir = () => `${home()}/${VAULT_DIR}`;
 const secretBin = () => `${appHome()}/mods/ws-switcher/bin/herdr-ws-secret`;
@@ -35,7 +35,7 @@ const errText = (e) => String(e?.message ?? e);
 // A control's own press kept from the dialog root, whose on_mouse_down takes back a question asked once.
 const STOP = (_e, cx) => cx.stop_propagation();
 const ARM_GUARD = 500; // ms after Delete arms in which a press on Cancel or Delete “name” does nothing
-// The delete question's line (D2): the same for both tiers, and it can't be taken back.
+// The delete question's line: the same for both tiers, and it can't be taken back.
 const DELETE_LINE = "It can't be undone. Agents and automations that name it will be refused.";
 
 // herdr-ws-secret with these arguments (never a value), as { code, stdout, stderr }.
@@ -73,7 +73,9 @@ export default class Vault extends View {
     this.busy = null; // "save" | "delete" while the CLI works
     this.waiting = false; // the broker's macOS dialog is up
     this.said = null; // the last outcome: { kind: "error"|"denied"|"saved"|"note", message, field }
-    this.confirming = false; // Delete pressed once: the footer holds only the question (D2)
+    this.confirming = false; // Delete pressed once: the footer holds only the question
+    this.discardAsked = null; // Discard pressed once: when (its label asks "Discard changes?")
+    this.tookBackAt = null; // when a key last took Discard's or Delete's question back (Enter then isn't Save)
     this.armedAt = 0; // when it was armed: a press on the pair within ARM_GUARD of it is ignored (a double-click)
     this.escAsked = false; // Esc (or the ×) pressed once with something typed or changed
     this.pending = null; // a pick clicked once over unsaved changes
@@ -94,7 +96,7 @@ export default class Vault extends View {
     this.focusedIn = null;
     this.searchIn.on("change", (_e, cx) => { this.calm(); cx.notify(); });
     // Enter in the search box opens the first match.
-    this.searchIn.on("submit", (_e, cx) => this.openFirstMatch(cx));
+    this.searchIn.on("submit", (_e, cx) => { if (!this.enterQuiet()) this.openFirstMatch(cx); });
     for (const input of [this.searchIn, this.nameIn, this.valueIn, this.hostsIn, this.cmdsIn, this.noteIn]) {
       input.on("focus", (_e, cx) => { this.focusedIn = input; cx.notify(); });
       input.on("blur", (_e, cx) => { if (this.focusedIn === input) this.focusedIn = null; cx.notify(); });
@@ -106,7 +108,7 @@ export default class Vault extends View {
         cx.notify();
       });
       // Enter in a one-line field saves, when Save can.
-      input.on("submit", (_e, cx) => { if (this.canSave()) this.save(cx); });
+      input.on("submit", (_e, cx) => { if (!this.enterQuiet() && this.canSave()) this.save(cx); });
     }
     if (checking()) return;
     cx.spawn(async (cx) => {
@@ -215,15 +217,21 @@ export default class Vault extends View {
     this.escAsked = false;
     this.pending = null;
     this.leaving = null;
-    if (!this.busy) this.confirming = false; // an armed Delete, too (D2: anything typed or clicked drops it)
+    if (!this.busy) this.confirming = false; // an armed Delete, too (anything typed or clicked drops it)
+    this.discardAsked = null; // and Discard's question
     if (this.said?.kind === "note") this.said = null;
+  }
+
+  // Enter in a box does nothing while Discard's or Delete's question is up (enterQuiet).
+  enterQuiet() {
+    return enterQuiet({ discardAsked: this.discardAsked, confirming: this.confirming, busy: this.busy, tookBackAt: this.tookBackAt });
   }
 
   // A press anywhere in the dialog takes back a question asked once (the root's on_mouse_down).
   // The controls that answer one (the ×, a list row, New secret, Open Settings) stop their own
   // press from getting here, so their second click still goes.
   pressAnywhere(cx) {
-    if (!this.escAsked && !this.pending && !this.leaving && !(this.confirming && !this.busy)) return;
+    if (!this.escAsked && !this.pending && !this.leaving && !(this.confirming && !this.busy) && this.discardAsked === null) return;
     this.calm();
     cx.notify();
   }
@@ -263,6 +271,7 @@ export default class Vault extends View {
     this.valueIn.set_value("");
     this.shown = false;
     this.confirming = false;
+    this.discardAsked = null;
     this.escAsked = false;
     this.leaving = null;
     this.start = form;
@@ -353,19 +362,35 @@ export default class Vault extends View {
     }
   }
 
-  save(cx) {
-    const f = this.fv();
+  // Extend on an expired secret: only its new expiry is saved (an edit with the ttl, the value
+  // never sent); anything else unsaved in the form stays as it is, still unsaved. When Protected
+  // can't be changed now (the broker down, still checking, not macOS), it says why in the footer.
+  extend(ttl, cx) {
+    const e = this.entry();
+    if (!e || this.busy) return;
+    this.save(cx, { ...formFrom(e), ttlPick: ttl });
+  }
+
+  // only: a form to save in place of what's on screen (Extend's), whose success leaves the screen's
+  // other edits alone.
+  save(cx, only = null) {
+    const f = only ?? this.fv();
     const e = this.entry();
     if (!f || this.busy) return;
-    this.unarm(); // Enter in a box while Delete asks: the save's problems or error must be seen
-    if (blocked(f, { status: this.status, mac: macHere() })) return;
-    if (this.problems().length) { this.shown = true; cx.notify(); return; }
+    this.unarm(); // a question still up goes, so the save's problems or error are seen (Enter in a box never gets here then: enterQuiet)
+    const block = blocked(f, { status: this.status, mac: macHere() });
+    if (block) {
+      // Save isn't offered then (the tier picker says why); Extend is, so it says why itself.
+      if (only) { this.said = { kind: "error", op: "save", message: extendBlockWords(block, this.status) }; cx.notify(); }
+      return;
+    }
+    if (!only && this.problems().length) { this.shown = true; cx.notify(); return; }
     const s = shared("workspaces.settings");
-    const steps = saveSteps(f, e, { valueLen: this.valueLen(), defaultTtl: vaultSetting(s, "default-ttl") });
+    const steps = saveSteps(f, e, { valueLen: only ? 0 : this.valueLen(), defaultTtl: vaultSetting(s, "default-ttl") });
     if (!steps.length) return;
     const asks = saveAsks(f, e).asks;
     let value = steps.some((x) => x.withValue) ? this.valueIn.value() : null;
-    this.valueIn.set_value(""); // sent: the field keeps nothing
+    this.valueIn.set_value(""); // sent: the field keeps nothing (Extend is never offered while a value is typed)
     this.busy = "save";
     this.waiting = asks;
     this.said = null;
@@ -398,11 +423,16 @@ export default class Vault extends View {
       if (failed) {
         // The form keeps the edit (a value must be typed again: it was sent).
         this.said = { kind: failed.kind === "denied" ? "denied" : "error", op: "save", message: failed.message, field: failed.field };
+      } else if (only && this.sel !== job.key) {
+        // Extend, and another secret was picked while it saved: that one's screen stays as it is.
+        this.clearUnfinished(job.key);
       } else {
         this.sel = `${f.scope}/${f.name}`;
         this.clearUnfinished(job.key);
         const saved = this.entry();
-        if (saved) this.load(formFrom(saved));
+        // Extend: the rest of the screen's edits stay (the chip it picked isn't one of them).
+        if (only) { if (this.form && !this.form.isNew) this.form = { ...this.form, ttlPick: null }; }
+        else if (saved) this.load(formFrom(saved));
         this.said = { kind: "saved", message: "Saved." };
       }
       cx.notify();
@@ -415,6 +445,7 @@ export default class Vault extends View {
   // other question may be asked while the armed footer hides the line that says it.
   unarm() {
     if (!this.busy) this.confirming = false;
+    this.discardAsked = null;
   }
 
   // The armed question's Cancel (also within ARM_GUARD it does nothing: a double-click on Delete lands here).
@@ -424,10 +455,14 @@ export default class Vault extends View {
     cx.notify();
   }
 
-  // Discard (D7): an existing secret's edits dropped, as it's saved; no question (they're on screen).
+  // Discard: an existing secret's edits dropped, as it's saved. The first press asks in place
+  // (discardStep); taken back by any key, typing, a press elsewhere, Esc, Save and another secret.
   discard(cx) {
     const e = this.entry();
     if (!e || this.busy) return;
+    const step = discardStep(this.discardAsked);
+    if (step === "wait") return;
+    if (step === "ask") { this.calm(); this.discardAsked = Date.now(); cx.notify(); return; }
     this.said = null;
     this.pending = null;
     this.load(formFrom(e));
@@ -522,6 +557,7 @@ export default class Vault extends View {
     // An armed Delete is a level: Esc (or Cmd/Ctrl+W) takes the question back first. The × takes it
     // back and goes on (it closes, or asks with the normal footer showing).
     if (how !== "x" && this.confirming && !this.busy) { this.confirming = false; cx.notify(); return; }
+    if (how !== "x" && this.discardAsked !== null) { this.discardAsked = null; cx.notify(); return; }
     if (how === "x") this.unarm();
     // Late, a close is let through at once: what it leaves is said above the footer.
     const late = this.late();
@@ -539,8 +575,10 @@ export default class Vault extends View {
   }
 
   onKey(e, cx) {
-    // Any key while Delete is armed takes the question back (D2); the key does nothing else.
-    if (this.confirming && !this.busy) { this.confirming = false; cx.stop_propagation(); cx.notify(); return; }
+    // Any key while Delete is armed takes the question back; the key does nothing else.
+    if (this.confirming && !this.busy) { this.confirming = false; this.tookBackAt = Date.now(); cx.stop_propagation(); cx.notify(); return; }
+    // Any key while Discard asks takes its question back, the same.
+    if (this.discardAsked !== null) { this.discardAsked = null; this.tookBackAt = Date.now(); cx.stop_propagation(); cx.notify(); return; }
     // No Esc here: in a dialog Herdr's Esc comes as its action overlay.close (and Cmd/Ctrl+W as
     // tab.close / pane.close), never as a key: render()'s on_action calls tryClose.
     // ↑ ↓ move through the listed secrets, from the search box or with no box focused.
@@ -638,7 +676,7 @@ export default class Vault extends View {
       .when(Boolean(label), (el) => el.child(this.button(t, "v-middle", label, "primary", action, true, buttonIcon)));
   }
 
-  // kind: primary (solid), plain, danger (red words), fill (the danger fill: D2's Delete “name”).
+  // kind: primary (solid), plain, danger (red words), fill (the danger fill: the delete question's Delete “name”).
   // dim: the opacity while it can't be pressed.
   button(t, id, label, kind, action, enabled = true, icon = null, dim = 0.42) {
     return h_flex().id(id).h(32).px(13).gap(6).flex_none().items_center().rounded(8).border_1()
@@ -775,11 +813,14 @@ export default class Vault extends View {
         .when(Boolean(this.ws), (el) => el.child(h_flex().gap(6)
           .child(chip("v-scope-ws", wsName, f.scope !== "global", () => set({ scope: `ws:${this.ws}` }), !this.busy))
           .child(chip("v-scope-global", "Every workspace", f.scope === "global", () => set({ scope: "global" }), !this.busy)))))
-      .when(!f.isNew, (el) => el.child(div().text_size(14.5).font_semibold().font_family("JetBrains Mono").child(f.name))
-        .child(pill(scopeLabel, t.muted, t.raised))
+      // An existing one: the scope can't be changed, so it says so under its pill (the row's
+      // items at the top, so the line only adds below).
+      .when(!f.isNew, (el) => el.items_start().child(div().text_size(14.5).line_height("22px").font_semibold().font_family("JetBrains Mono").child(f.name))
+        .child(v_flex().flex_none().items_start().gap(3).child(pill(scopeLabel, t.muted, t.raised))
+          .child(div().id("v-scope-fixed").text_size(11).text_color(t.dim).whitespace_nowrap().child("Fixed when made")))
         .child(expired ? pill(expiryDetail(e, now), t.blocked, t.blocked + "24")
           : e.tier === "protected" ? pill("Protected", t.accent, t.accent + "21", "shield") : pill("Standard", t.muted, t.raised, "vault"))
-        .when(dirty, (el) => el.child(div().text_size(11.5).text_color(t.working).child("Unsaved")))
+        .when(dirty, (el) => el.child(div().text_size(11.5).line_height("22px").text_color(t.working).child("Unsaved")))
         .child(div().flex_1()));
 
     // The value: masked while typed; an existing one only as bullets and Saved.
@@ -807,6 +848,8 @@ export default class Vault extends View {
     const ex = !f.isNew && e ? exampleFor(e) : null;
     const copied = Date.now() - this.copiedAt < 1500;
     const used = e ? lastUsedLabel(e, now) : "";
+    const allowed = e ? allowedAutomations(e) : "";
+    const ext = expired ? extendTtl(e, vaultSetting(shared("workspaces.settings"), "default-ttl")) : null;
 
     // Blocked by the broker: the reason at the tier picker, with the way to Settings > Secrets.
     const bw = blockWords(block, { isNew: f.isNew, status: this.status });
@@ -823,7 +866,10 @@ export default class Vault extends View {
       .when(Boolean(uf && uf.key === this.sel), (el) => el.child(notice("warn", uf.title, uf.words, null)))
       .when(expired, (el) => el.child(notice("err", `This secret ${expiryDetail(e, now).replace(/^Expired/, "expired")}`,
         "Agents calling herdr-ws-secret are refused until you replace the value, or pick how long it lasts under Expires and Save.",
-        f.replacing ? null : this.button(t, "v-expired-replace", "Replace value", "primary", (_e, cx) => { set({ replacing: true }); this.valueIn.focus(); cx.notify(); }, !this.busy))))
+        f.replacing ? null : v_flex().gap(6).items_stretch()
+          .child(this.button(t, "v-expired-replace", "Replace value", "primary", (_e, cx) => { set({ replacing: true }); this.valueIn.focus(); cx.notify(); }, !this.busy))
+          // Extend: its own length again from now, saved at once; only the expiry (extend()).
+          .child(this.button(t, "v-expired-extend", `Extend ${TTL_LABEL[ext]}`, "plain", (_e, cx) => this.extend(ext, cx), !this.busy)))))
       .when(f.isNew, (el) => el.child(label("Name", "Lowercase letters, digits, . _ - · what agents pass to herdr-ws-secret")).child(box(this.nameIn, "name", 2)).child(errorLine("name")))
       .child(label("Value", valueSub(f, valueLen)))
       .child(valueRow)
@@ -856,7 +902,8 @@ export default class Vault extends View {
       .child(h_flex().gap(6).flex_wrap().items_center()
         .children(TTL_CHOICES.map((c) => chip(`v-ttl-${c}`, TTL_LABEL[c], ttlOn === c, () => set({ ttlPick: c }), !this.busy))))
       .child(errorLine("ttl"))
-      .when(f.isNew, (el) => el.child(label("Note", "Optional")).child(box(this.noteIn, "note", 6, false)).child(errorLine("note")))
+      // The note, new or existing (Save sends a changed one); shown only here, not again below.
+      .child(label("Note", "Optional")).child(box(this.noteIn, "note", 6, false)).child(errorLine("note"))
       .when(Boolean(ex), (el) => el.child(v_flex().mt(14).px(12).py(10).gap(6).rounded(8).bg(t.surface).border_1().border_color(t.border)
         .child(h_flex().items_center().justify_between()
           .child(div().text_size(11.5).text_color(t.dim).child("How agents use it"))
@@ -866,8 +913,8 @@ export default class Vault extends View {
             .child(svg(ICON("copy")).size(12)).child(copied ? "Copied" : "Copy example")))
         .child(div().text_size(11.5).line_height("17px").font_family("JetBrains Mono").text_color(t.foreground).child(ex))
         .child(h_flex().gap(10).flex_wrap().text_size(11.5).text_color(t.muted)
-          .child(div().child(used.startsWith("Used") ? `Last used${used.slice(4)}${e.lastUsedFor ? ` · ${e.lastUsedFor}` : ""}` : used))
-          .when(Boolean(e?.note), (el) => el.child(div().child("·")).child(div().child(`Note: ${e.note}`))))));
+          .child(div().child(used.startsWith("Used") ? `Last used${used.slice(4)}${e.lastUsedFor ? ` · ${e.lastUsedFor}` : ""}` : used)))
+        .when(Boolean(allowed), (el) => el.child(div().text_size(11.5).line_height("16px").text_color(t.muted).child(`Allowed automations: ${allowed}`)))));
 
     // The footer: Delete (or Cancel for a new one), the line that says what Save will do or did, Save.
     // An error that isn't about one field goes in a notice above it instead, where it wraps.
@@ -885,7 +932,7 @@ export default class Vault extends View {
       : problems.length ? { text: "Fix what's marked above to save.", color: t.blocked }
       : { text: footNote(f, { status: this.status, mac }), color: t.dim };
     const saveLabel = saving ? "Saving…" : f.isNew ? "Save secret" : "Save";
-    // D2 armed: the footer holds only the question. Cancel where Delete was (a double-click lands on
+    // Delete armed: the footer holds only the question. Cancel where Delete was (a double-click lands on
     // it), Delete “name” in the danger fill beside it, the line after them (it may wrap). Save and
     // Discard step aside. The pair keeps its own press from the root (which would take it back).
     const armed = !f.isNew && Boolean(e) && (this.confirming || this.busy === "delete");
@@ -902,8 +949,14 @@ export default class Vault extends View {
           ? this.button(t, "v-cancel", "Cancel", "plain", (_e, cx) => { this.valueIn.set_value(""); this.pending = null; this.pickFirst(); this.said = null; cx.notify(); }, !this.busy)
           : this.button(t, "v-delete", "Delete", "danger", (_e, cx) => this.remove(cx), !this.busy))
         .child(div().id("v-foot-note").flex_1().min_w(0).truncate().text_size(11.5).text_color(note.color).tooltip(note.text).child(note.text))
-        // D7: Discard while an existing secret has unsaved changes (Files' Discard and Save pair).
-        .when(!f.isNew && dirty, (el) => el.child(this.button(t, "v-discard", "Discard", "plain", (_e, cx) => this.discard(cx), !this.busy)))
+        // Discard while an existing secret has unsaved changes (Files' Discard and Save pair).
+        // Its question is its label, "Discard changes?" in blocked; that label, unseen, holds the
+        // width from the start, so Save never moves. It keeps its own press from the root.
+        .when(!f.isNew && dirty, (el) => el.child(this.button(t, "v-discard",
+          div().relative().child(div().opacity(0).child("Discard changes?"))
+            .child(h_flex().absolute().inset_0().items_center().justify_center()
+              .when(this.discardAsked !== null, (el) => el.text_color(t.blocked)).child(this.discardAsked !== null ? "Discard changes?" : "Discard")),
+          "plain", (_e, cx) => this.discard(cx), !this.busy).on_mouse_down("left", STOP)))
         .child(this.button(t, "v-save", saveLabel, "primary", (_e, cx) => this.save(cx), this.canSave()));
 
     const errTitle = { save: "Couldn't save", delete: "Couldn't delete", copy: "Couldn't copy the example" }[errBox?.op] ?? "Something went wrong";

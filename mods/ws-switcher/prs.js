@@ -117,7 +117,11 @@ export class PrWatcher {
     const out = {};
     for (const t of Object.values(this.tasks)) {
       const e = this.state.items[t.file];
-      if (!e?.f) continue;
+      if (!e?.f) {
+        // Never read: the board shows "?" with the reason, for a card that names its pull request.
+        if (t.pr && e?.err) out[t.file] = { number: null, url: null, label: "", tone: "dim", tip: e.err, unread: true, ws: t.ws, taskId: t.id, terminal: t.terminal ?? null, tab: t.tab ?? null, waking: false };
+        continue;
+      }
       const stale = e.err && now - (e.at ?? 0) > STALE ? e.err : null;
       // waking: news is waiting to be sent to the card's agent (deliver()), so the bell holds off.
       out[t.file] = { ...chip(e.f, stale), ws: t.ws, taskId: t.id, terminal: t.terminal ?? null, tab: t.tab ?? null, waking: Boolean(e.queue?.length) };

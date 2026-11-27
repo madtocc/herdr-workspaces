@@ -75,7 +75,7 @@ export function scratchWhen(state, now, trashWord = "Trash") {
   return { tail: `${days} ${days === 1 ? "day" : "days"} left`, tip: `goes to the ${trashWord} on ${d.getDate()} ${MONTHS[d.getMonth()]} unless you keep it` };
 }
 
-// The Delete Scratch dialog's button: it says what else it does, closing its spaces (D2).
+// The Delete Scratch dialog's button: it says what else it does, closing its spaces.
 export const scratchDeleteButton = (open, trashWord = "Trash") =>
   open > 0 ? `Close ${open} ${open === 1 ? "space" : "spaces"} and move to ${trashWord}` : `Move to ${trashWord}`;
 

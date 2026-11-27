@@ -206,3 +206,31 @@ export function followFeature(was, heard, now) {
   if (now !== undefined && now !== heard) return now !== false;
   return was ?? now !== false;
 }
+
+// Not usage, the status bar's other rule: "· 1 needs you" goes to the first agent waiting on
+// you (agents() order), and its hover names it as its Agents row does: "Go to migrate in Globex".
+// `tabOf(a)` is the agent's tab ({ name, named }, spaces()). Null while none waits.
+// `owner` is the workspace its space belongs to (null: none, so every space), for the switcher to
+// show first: while the shown workspace is empty, Herdr may already show that very space under the
+// empty block, so focusing the pane changes nothing the switcher could follow.
+export function firstWaiting(list, tabOf = () => null, assigned = {}, defs = []) {
+  const a = (list ?? []).find((x) => x?.status === "blocked" && x.pane);
+  if (!a) return null;
+  const name = agentName(tabOf(a), a) || "it";
+  const ws = assigned?.[a.space];
+  const owner = ws && (defs ?? []).some((d) => d?.id === ws) ? ws : null;
+  return { pane: a.pane, owner, tip: `Go to ${name}${a.space_name ? ` in ${a.space_name}` : ""}` };
+}
+
+// An agent's name as ws-agents' row gives it (its title() and clean(), Herdr 0.1.15-0.1.17): the
+// tab's name when someone named it (and it isn't just the program's), else the terminal's title
+// when it tells something (not a path, an address, a login or the program), else the program.
+const cleanTitle = (s) => (s ?? "").replace(/^(?:\[ [!.] \] |[✋⏳]\uFE0F?(?=\s)|(?!(?:\p{Emoji}\uFE0F|[#*]\u20E3))[^\p{L}\p{N}\p{Ps}\p{Pi}\p{Emoji_Presentation}])+/u, "").trim();
+export function agentName(tab, a) {
+  const prog = a?.program?.name;
+  if (tab?.named && tab.name && tab.name !== prog) return tab.name;
+  const live = cleanTitle(a?.title);
+  const path = /^[~/]|^[A-Za-z]:\\/.test((a?.title ?? "").replace(/^[^\p{L}\p{N}~/]+/u, ""));
+  const telling = live && live !== a?.address && live !== prog && !path && !live.includes("@") && live.toLowerCase() !== a?.program?.key;
+  return telling ? live : prog || null;
+}

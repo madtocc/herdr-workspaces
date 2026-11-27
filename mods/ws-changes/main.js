@@ -48,13 +48,18 @@
 //    filter takes the keyboard (and gives it back when the picker's button closes it) and Enter takes the
 //    first checkout that matches (repos.js firstMatch); no tooltip on the picker while
 //    it's open; the filter's × is a 20px target.
+//    Options the owner accepted: new files' rows and the header count their lines (repos.js
+//    NEW_LINES_SH, one bounded run per load); ↑ ↓ step through the files where Changes has the
+//    keyboard (nextFile); a file's right-click menu has Open in Files, Copy path and Discard changes…,
+//    which asks in place and restores the file from HEAD or moves a new one to the Trash
+//    (rowMenuItems, discardPlan, discardAsk).
 // 9. The git brake, from Herdr 0.1.18's Changes (gitscan.js, copied in ws-files): the checkout's
 //    status and every worktree's count go through one shared git status per repo; a file event
 //    reads again only once the last status allows, the repos and counts on the poll (10s, longer
 //    after a slow status), nothing while the window is behind; with only new files, no HEAD or
 //    numstat runs.
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list, Popup, h_resizable, resizable_panel } from "gpui-base";
+import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list, Popup, h_resizable, resizable_panel, ScrollHandle } from "gpui-base";
 import { spaces, panes, focused, readTextFile, watchFolder, theme, settings, props, shared, setShared, checking, machines, home, window } from "herdr";
 import { exec } from "./posix.js";
 import { locate, toRemember, placeKey } from "./follow.js";
@@ -63,13 +68,24 @@ import {
   SKIP_DIRS, MAX_REPOS, MAX_DIRS, FILTER_THRESHOLD,
   normPath, baseName, maxScanDepth,
   parseWorktrees, countPorcelainZ, parseScanOutput, posixScanScript,
-  buildGroups, pickInitial, filterGroups, firstMatch, stopWords,
+  buildGroups, pickInitial, filterGroups, firstMatch, stopWords, NEW_LINES_SH, NEW_LINES_MAX, newLinesArgs, parseNewLines, nextFile, parseGitlinks,
+  rowMenuItems, discardPlan, discardAsk,
 } from "./repos.js";
 
 const NARROW = 640, RAIL = 248, SLOW = 6;
 // Reads write nothing under .git (no index refresh or lock, no fsmonitor cookie):
 // the folder watch would see it, and every refresh would start the next one.
 const READ = ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "diff.autoRefreshIndex=false"];
+// The pointer's place as a key: a move at the same place is no move (the menus' pointer rule, as the
+// Agents list and History have it).
+const pointKey = (p) => (p && Number.isFinite(p.x) && Number.isFinite(p.y) ? `${p.x},${p.y}` : undefined);
+// To the Trash, as Files' right-click menu does it (a copy of ws-files/main.js' TRASH): trash (macOS 15
+// and later), else gio, else ~/.herdr/trash on that machine. Exit 4: it wasn't there.
+const TRASH = `[ -e "$1" ] || [ -L "$1" ] || exit 4
+if command -v trash >/dev/null 2>&1 && trash "$1"; then echo Trash; exit 0; fi
+if command -v gio >/dev/null 2>&1 && gio trash "$1"; then echo Trash; exit 0; fi
+dest="$HOME/.herdr/trash"; mkdir -p "$dest" && mv -- "$1" "$dest/$(basename -- "$1")-$(date +%s)" && echo "$dest"`;
+const ASK_WAIT = 500;
 const countLines = (text) => text ? text.split("\n").length - Number(text.endsWith("\n")) : 0;
 const wideGlyph = /[\p{Ideographic}\p{Emoji_Presentation}\p{Extended_Pictographic}\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\ufe10-\ufe19\ufe30-\ufe6f\uff01-\uff60\uffe0-\uffe6]/gu;
 const fade = (c, a) => (/^#[0-9a-f]{6}$/i.test(String(c)) ? `${c}${Math.round(a * 255).toString(16).padStart(2, "0")}` : c);
@@ -123,7 +139,7 @@ function windowsScanArgs(cwd, maxDepth) {
 export default class Changes extends View {
   init(_props, cx) {
     this.files = []; this.rows = []; this.longest = 0; this.gutterChars = 4; this.message = ""; this.handle = cx.focus_handle();
-    this.size = null; this.railW = RAIL;
+    this.size = null; this.railW = RAIL; this.listScroll = ScrollHandle.new();
     this.groups = []; this.flat = []; this.selectedPath = null; this.followedRoot = null; this.branch = null;
     this.userPicked = false; this.popOpen = false; this.scanning = false; this.noRepos = false;
     this.loadSeq = 0; this.drafts = new Map();
@@ -139,7 +155,8 @@ export default class Changes extends View {
       }
       if (hadMessage !== Boolean(this.message.trim())) cx.notify();
     });
-    this.input.on("submit", (_e, cx) => this.commit(cx));
+    // Not while the row menu or its question is up, nor right after Enter answered it: that Enter was theirs.
+    this.input.on("submit", (_e, cx) => { const d = Date.now() - (this.rowKeyAt ?? 0); if (this.rowMenu || (d >= 0 && d < 300)) return; this.commit(cx); });
     this.input.on("focus", (_e, cx) => { this.typing = true; cx.notify(); });
     this.input.on("blur", (_e, cx) => { this.typing = false; cx.notify(); });
     this.filterInput = InputState.new({ placeholder: "Filter repos & worktrees…" });
@@ -200,7 +217,7 @@ export default class Changes extends View {
     const seen = this.seen();
     if (!seen) this.held = null;
     this.remember(seen);
-    if (!seen) { if (this.shown) { this.shown = false; this.popOpen = false; this.popTook = false; this.unwatch(); } return; }
+    if (!seen) { if (this.shown) { this.shown = false; this.popOpen = false; this.popTook = false; this.rowMenu = null; this.unwatch(); } return; }
     const back = !this.shown;
     this.shown = true;
     if (back && props()?.screen) this.handle.focus();
@@ -341,7 +358,7 @@ export default class Changes extends View {
     if (!path || !this.context) return;
     const wasPop = this.popOpen, back = this.popTook && this.popBack;
     this.userPicked = true;
-    this.popOpen = false; this.popTook = false;
+    this.popOpen = false; this.popTook = false; this.rowMenu = null;
     // A pick from the picker: the keyboard where it was when the picker opened (the message box), else the view.
     if (wasPop) { if (back) this.input.focus(); else this.handle.focus(); }
     if (path === this.selectedPath && this.root === path) { cx.notify(); return; }
@@ -380,7 +397,7 @@ export default class Changes extends View {
       this.context = { key: next, cwd, on, stash, dirtyAt: 0 };
       this.root = null; this.on = on; this.branch = null; this.files = []; this.open = null;
       this.groups = []; this.flat = []; this.selectedPath = null; this.followedRoot = null;
-      this.userPicked = false; this.popOpen = false; this.popTook = false; this.noRepos = false; this.scanning = false;
+      this.userPicked = false; this.popOpen = false; this.popTook = false; this.rowMenu = null; this.noRepos = false; this.scanning = false;
       this.filterQuery = ""; this.filterInput.set_value(""); this.scanStop = null;
       this.setLines([]); this.message = ""; this.input.set_value(""); this.error = null; this.note = null;
       this.unwatch(); this.closed = false; this.limited = false; this.loading = false;
@@ -531,7 +548,23 @@ export default class Changes extends View {
         const conflict = xy.includes("U") || xy === "AA" || xy === "DD";
         const s = conflict ? "U" : xy.includes("D") ? "D" : fresh || xy.includes("A") ? "A" : "M";
         const stat = stats[path] ?? { add: 0, del: 0 };
-        files.push({ path, status: s, fresh, ...stat });
+        files.push({ path, status: s, fresh, xy, ...stat });
+      }
+      // A staged new path that is a repository of its own (a gitlink, mode 160000: what Commit's git add -A
+      // leaves after a hook failed) gets no Discard changes… (repos.js rowMenuItems).
+      const added = files.filter((f) => !f.fresh && f.xy.includes("A")).slice(0, NEW_LINES_MAX).map((f) => f.path);
+      if (added.length) {
+        const r = await exec("git", [...READ, "--literal-pathspecs", "ls-files", "-s", "-z", "--", ...added], { cwd: root, on }).catch(() => null);
+        const links = r?.code === 0 ? parseGitlinks(r.stdout) : new Set();
+        for (const f of files) if (links.has(f.path)) f.gitlink = true;
+      }
+      // New files' lines (numstat leaves untracked ones out), one bounded run, so their rows and the
+      // header count them (repos.js NEW_LINES_SH). A failure only leaves them uncounted.
+      const fresh = files.filter((f) => f.fresh || (head.code !== 0 && f.status === "A" && !f.add)).slice(0, NEW_LINES_MAX);
+      if (fresh.length) {
+        const r = await exec("sh", ["-c", NEW_LINES_SH, "lines", ...newLinesArgs(fresh.map((f) => f.path))], { cwd: root, on }).catch(() => null);
+        const counts = r?.code === 0 ? parseNewLines(r.stdout, fresh.map((f) => f.path)) : {};
+        for (const f of fresh) if (counts[f.path] !== undefined) f.add = counts[f.path];
       }
       if (!this.current(context) || this.loadSeq !== seq) return;
 
@@ -547,6 +580,7 @@ export default class Changes extends View {
       }
       this.root = root; this.on = on; this.branch = entry?.branchLabel ?? this.branch;
       this.hasHead = head.code === 0; this.files = files; this.limited = entries.length > 1000; this.error = null;
+      if (this.rowMenu && !files.some((f) => f.path === this.rowMenu.path)) this.rowMenu = null; // its file left the list
       this.watch(root, cx);
       if (this.open && !files.some((f) => f.path === this.open)) { this.open = null; this.setLines([]); }
       // The first file's diff shows until you pick another.
@@ -577,7 +611,7 @@ export default class Changes extends View {
         lines = [`@@ -0,0 +1,${file.add} @@`, ...text.slice(0, 400000).replace(/\n$/, "").split("\n").slice(0, DIFF_LINES).map(l => `+${l}`)];
       }
     } else {
-      const r = await exec("git", [...READ, "diff", ...(this.hasHead ? ["HEAD"] : []), "--no-ext-diff", "--no-textconv", "--no-color", "--", path], { cwd: root, on });
+      const r = await exec("git", [...READ, "--literal-pathspecs", "diff", ...(this.hasHead ? ["HEAD"] : []), "--no-ext-diff", "--no-textconv", "--no-color", "--", path], { cwd: root, on });
       if (r.code !== 0) throw new Error(r.stderr);
       const all = r.stdout.replace(/\n$/, "").split("\n"), first = all.findIndex((l) => l.startsWith("@@"));
       lines = first < 0 ? [file.binary ? "Binary file changed" : "No text diff available"] : all.slice(first);
@@ -611,8 +645,170 @@ export default class Changes extends View {
     setShared("workspaces.files.open", [...(Array.isArray(queue) ? queue : []).filter((a) => a && typeof a === "object" && now - (a.at ?? 0) < 15000), ask].slice(-64));
   }
 
-  pick(path, cx) {
-    this.open = this.open === path ? null : path; this.setLines([]); this.note = null; this.noteTone = null;
+  // A changed file's right-click menu: Open in Files, Copy path, Discard changes… (repos.js
+  // rowMenuItems), a Popup at the pointer. The right-click doesn't take the keyboard (the row stops the
+  // mouse-down, so a terminal beside Changes keeps it); its keys work where Changes already has it.
+  // One lit row, which Enter runs; the pointer takes it only once it moves from the press.
+  openRowMenu(e, f, cx) {
+    cx.stop_propagation();
+    if (this.busy || this.discarding) return;
+    const zoom = Number(settings().zoom) > 0 ? Number(settings().zoom) : 1;
+    const at = e.local_position ?? { x: 24 * zoom, y: 14 * zoom };
+    this.rowMenu = { path: f.path, x: at.x / zoom, y: at.y / zoom, at: 0, askAt: 0 };
+    this.pointerLast = pointKey(e.position);
+    cx.notify();
+  }
+
+  closeRowMenu() { this.rowMenu = null; }
+
+  pointerRow(i, e, cx) {
+    const here = pointKey(e?.position);
+    if (here === undefined || here === this.pointerLast) return;
+    const first = this.pointerLast === undefined;
+    this.pointerLast = here;
+    if (first || !this.rowMenu) return; // no press known: the first move is only where it rests
+    if (this.rowMenu.at !== i) { this.rowMenu.at = i; cx.notify(); }
+  }
+
+  rowMenuView(t, f) {
+    const m = this.rowMenu, name = baseName(f.path);
+    const items = rowMenuItems(f).filter((id) => id !== null), plan = discardPlan(f.xy, this.hasHead, f.path);
+    const label = { open: "Open in Files", copy: "Copy path", discard: "Discard changes…" };
+    const box = v_flex().id("ch-row-menu").p(5).rounded(8).shadow_md().border_1().border_color(t.border).bg(t.popover).text_size(12.5).text_color(t.foreground)
+      .on_mouse_down_out((_e, cx) => { this.closeRowMenu(); cx.notify(); })
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation());
+    let content;
+    if (m.askAt) {
+      // Discard changes… asks in place, naming the file; a press within 500 ms doesn't count.
+      const ask = discardAsk(name, plan);
+      content = box.w(280).p(10).gap(8)
+        .child(div().font_medium().child(ask.title))
+        .child(div().text_size(11.5).text_color(t.muted).child(ask.body))
+        .child(h_flex().gap(8).justify_end()
+          .child(h_flex().id("ch-row-ask-no").h(26).px(10).items_center().rounded(6).cursor_pointer().text_color(t.muted).hover((x) => x.bg(t.hover)).on_click((_e, cx) => { this.closeRowMenu(); cx.notify(); }).child("Cancel"))
+          .child(h_flex().id("ch-row-ask-yes").h(26).px(10).items_center().rounded(6).cursor_pointer().bg(t.blocked).text_color(t.solid_foreground).hover((x) => x.opacity(0.9))
+            .on_click((_e, cx) => this.confirmDiscard(f, plan, cx)).child(ask.button)));
+    } else {
+      let k = 0;
+      content = box.w(200).children(rowMenuItems(f).map((id) => {
+        if (id === null) return div().h(1).my(4).bg(t.border);
+        const i = k++;
+        return h_flex().id(`ch-row-${id}`).h(28).px(8).items_center().rounded(6).cursor_pointer()
+          .when(id === "discard", (el) => el.text_color(t.blocked))
+          .when(i === m.at, (el) => el.bg(t.selected))
+          .on_mouse_move((e, cx) => this.pointerRow(i, e, cx))
+          .on_click((_e, cx) => this.rowMenuPick(id, f, cx))
+          .child(label[id]);
+      }));
+    }
+    return Popup.new("ch-row-popup", div().size(0)).absolute().left(m.x).top(m.y).anchor("top_left").content(content);
+  }
+
+  rowMenuPick(id, f, cx) {
+    if (id === "open") { this.closeRowMenu(); this.openInFiles(f.path, cx); }
+    else if (id === "copy") {
+      this.closeRowMenu();
+      const p = `${this.root}/${f.path}`;
+      cx.write_to_clipboard(!this.on && window()?.platform === "windows" ? p.replace(/\//g, "\\") : p);
+    }
+    else if (id === "discard") { this.rowMenu.askAt = Date.now(); }
+    cx.notify();
+  }
+
+  confirmDiscard(f, plan, cx) {
+    if (this.busy || this.discarding) return; // never beside a commit's git add -A
+    const d = Date.now() - (this.rowMenu?.askAt ?? 0);
+    if (!this.rowMenu?.askAt || (d >= 0 && d < ASK_WAIT)) return; // a double-click only asks
+    this.closeRowMenu();
+    // Another row whose path differs only in case (or in Unicode spelling) may be the same file on this
+    // disk (a caseless one: git mv Foo foo, or core.ignorecase off); discardFile's step asks the disk.
+    const fold = (p) => p.normalize("NFC").toLowerCase();
+    const twin = this.files.find((o) => o.path !== f.path && fold(o.path) === fold(f.path))?.path ?? null;
+    this.discardFile(f.path, plan, cx, twin);
+    cx.notify();
+  }
+
+  // Esc closes it; ↑ ↓ move the lit row and Enter runs it (not a held one). While it asks, Enter
+  // (after 500 ms, not held) discards and any other key takes the question back.
+  rowMenuKey(e, cx) {
+    const m = this.rowMenu, f = this.files.find((x) => x.path === m.path);
+    if (!f) { this.closeRowMenu(); return false; }
+    cx.stop_propagation();
+    if (e.key === "enter") this.rowKeyAt = Date.now(); // the message box's submit then knows it was the menu's
+    if (e.key === "escape") { this.closeRowMenu(); cx.notify(); return true; }
+    if (m.askAt) {
+      if (e.key === "enter") { if (!e.is_held) this.confirmDiscard(f, discardPlan(f.xy, this.hasHead, f.path), cx); return true; }
+      this.closeRowMenu(); cx.notify(); return true;
+    }
+    const items = rowMenuItems(f).filter((id) => id !== null), n = items.length;
+    if (e.key === "down") m.at = (m.at + 1) % n;
+    else if (e.key === "up") m.at = (m.at + n - 1) % n;
+    else if (e.key === "enter") { if (!e.is_held) this.rowMenuPick(items[Math.min(m.at, n - 1)], f, cx); return true; }
+    else return true; // the menu has the keys while it's open
+    cx.notify();
+    return true;
+  }
+
+  // Discard changes…, answered: git checkout HEAD -- path (the file as the last commit has it), or a
+  // new file to the Trash (out of the index first when it was staged). The list reads again after.
+  discardFile(path, plan, cx, twin = null) {
+    const root = this.root, on = this.on, context = this.context, name = baseName(path);
+    if (!root || !plan) return;
+    this.discarding = true; this.note = null; this.noteTone = null;
+    cx.spawn(async (cx) => {
+      let note = null;
+      try {
+        // Nothing but the named path may change. The step asks the disk: 0 a real folder at the path (a
+        // repository of its own, a submodule, a folder that took a deleted file's name, whose new files git
+        // checkout would delete); 3 the row that differs only in case is this same file on this disk; 2 a
+        // file or link at any name above the path (git would delete it to make the folder; it prints which);
+        // 1 go on. It guards a delete, so it fails closed: anything but 1 (a throw, a timeout) stops.
+        const g = await exec("sh", ["-c", '[ -d "$1" ] && [ ! -L "$1" ] && exit 0; [ -n "${3:-}" ] && [ -e "$1" ] && [ "$1" -ef "$3" ] && exit 3; p=${1%/*}; while [ "${#p}" -gt "${#2}" ]; do if [ -L "$p" ] || { [ -e "$p" ] && [ ! -d "$p" ]; }; then printf "%s" "${p#"$2"/}"; exit 2; fi; p=${p%/*}; done; exit 1', "changes", `${root}/${path}`, root, twin ? `${root}/${twin}` : ""], { on, timeout: 15000 }).catch(() => null);
+        if (g?.code === 0) note = `${name} is a folder here: not discarded.`;
+        else if (g?.code === 3) note = `${twin} is the same file here: ${path} not discarded.`;
+        else if (g?.code === 2) note = `${String(g.stdout ?? "").trim() || "A folder above it"} is a file here: ${path} not discarded.`;
+        else if (g?.code !== 1) note = `Couldn't check ${name}: not discarded.`;
+        else if (plan === "restore") {
+          // --literal-pathspecs: "pages/[id].tsx" is that file, not a pattern that also takes pages/i.tsx.
+          const r = await exec("git", ["--literal-pathspecs", "checkout", "HEAD", "--", path], { cwd: root, on });
+          if (r.code !== 0) throw new Error(r.stderr || r.stdout);
+        } else {
+          if (plan === "untrack") {
+            const r = await exec("git", ["--literal-pathspecs", "rm", "--cached", "-f", "-q", "--", path], { cwd: root, on });
+            if (r.code !== 0) throw new Error(r.stderr || r.stdout);
+          }
+          const r = await exec("sh", ["-c", TRASH, "changes", `${root}/${path}`], { on, timeout: 60000 });
+          if (r.code !== 0 && r.code !== 4) throw new Error(r.stderr || r.stdout);
+          const where = String(r.stdout ?? "").trim();
+          if (where && where !== "Trash") note = `${name} went to ${where.replace(home() ?? "\0", "~")} (there's no Trash command here).`;
+        }
+      } catch (e) {
+        const said = String(e?.message ?? e).split("\n").map((l) => l.trim()).filter(Boolean);
+        note = `Couldn't discard ${name}: ${said[0] ?? "git failed"}`;
+      } finally {
+        this.discarding = false;
+        if (this.current(context)) {
+          if (note) { this.note = note; this.noteTone = note.startsWith("Couldn't") || note.endsWith("not discarded.") ? null : "quiet"; }
+          await this.loadCheckout(this.selectedPath ?? root, context, cx);
+        }
+        cx.notify();
+      }
+    });
+  }
+
+  showHeld(path, cx) {
+    this.open = path; this.closed = false; this.setLines([]);
+    const mark = this.heldMark = (this.heldMark ?? 0) + 1;
+    cx.spawn(async (cx) => {
+      await cx.sleep(150);
+      if (this.heldMark === mark && this.open === path) this.pick(path, cx, true);
+    });
+    cx.notify();
+  }
+
+  // A click on a row shows its diff, or hides it when it's the one shown; keep: ↑ ↓ (always shows).
+  pick(path, cx, keep = false) {
+    this.open = this.open === path && !keep ? null : path; this.setLines([]); this.note = null; this.noteTone = null;
     this.closed = !this.open;
     const context = this.context, seq = this.loadSeq;
     if (this.open) cx.spawn(async (cx) => {
@@ -629,7 +825,7 @@ export default class Changes extends View {
   // add -A ran out (nothing committed, what's staged unknown), or the commit did, which HEAD read
   // before and after tells apart (a slow post-commit hook: the commit was made).
   commit(cx) {
-    if (!this.message.trim() || !this.root || !this.files.length || this.busy || this.loading || this.context?.key !== this.key()) return;
+    if (!this.message.trim() || !this.root || !this.files.length || this.busy || this.loading || this.discarding || this.context?.key !== this.key()) return;
     const root = this.root, on = this.on, context = this.context, message = this.message.trim();
     const what = `Committed ${this.countWords()}${this.branch ? ` to ${this.branch}` : ""}`;
     this.busy = true; this.note = null; this.noteTone = null;
@@ -926,14 +1122,18 @@ export default class Changes extends View {
       .when(!this.noRepos, (e) => e
         // overflow_y_scrollbar() wraps the list, so its flex sizing never reached the panel's layout.
         .child(div().flex_1().min_h(44).max_h(this.files.length * 28 + 12).relative().border_b(1).border_color(t.border)
-          .child(v_flex().id("changes-list").absolute().inset_0().overflow_y_scroll().p(6).children(this.files.map((f) => {
+          .child(v_flex().id("changes-list").absolute().inset_0().overflow_y_scroll().track_scroll(this.listScroll).p(6).children(this.files.map((f) => {
             const parts = f.path.split("/"), name = parts.pop();
-            return h_flex().id(`change-${f.path}`).h(28).flex_none().px(8).gap(8).items_center().rounded(7).cursor_pointer().when(this.open === f.path, (el) => el.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.pick(f.path, cx))
+            const menu = this.rowMenu?.path === f.path;
+            return h_flex().id(`change-${f.path}`).h(28).flex_none().px(8).gap(8).items_center().rounded(7).cursor_pointer().relative().when(this.open === f.path, (el) => el.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.pick(f.path, cx))
+              .when(menu, (el) => el.border_1().border_color(t.accent))
+              .on_mouse_down("right", (e, cx) => this.openRowMenu(e, f, cx))
+              .when(menu, (el) => el.child(this.rowMenuView(t, f)))
               .child(div().w(14).text_size(11).text_color(f.status === "A" ? t.ansi2 : f.status === "D" ? t.ansi1 : f.status === "U" ? t.ansi1 : t.blocked).child(f.status))
-              .child(h_flex().id(`change-name-${f.path}`).flex_1().min_w(0).tooltip(f.path).child(div().text_color(t.dim).truncate().child(parts.length ? parts.join("/") + "/" : "")).child(div().max_w(260).min_w(0).truncate().child(name)))
+              .child(h_flex().id(`change-name-${f.path}`).flex_1().min_w(0).when(!menu, (el) => el.tooltip(f.path)).child(div().text_color(t.dim).truncate().child(parts.length ? parts.join("/") + "/" : "")).child(div().max_w(260).min_w(0).truncate().child(name)))
               .when(f.add > 0, (el) => el.child(div().text_size(11).text_color(t.ansi2).child(`+${f.add}`))).when(f.del > 0, (el) => el.child(div().text_size(11).text_color(t.ansi1).child(`−${f.del}`)))
               .when(this.open === f.path && f.status !== "D", (el) => el.child(div().id(`change-files-${f.path}`).size(20).flex_none().flex().items_center().justify_center().rounded(5).text_color(t.muted)
-                .hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip("Open in Files")
+                .hover((s) => s.bg(t.hover).text_color(t.foreground)).when(!menu, (el) => el.tooltip("Open in Files"))
                 .on_click((_e, cx) => { cx.stop_propagation(); this.openInFiles(f.path, cx); })
                 .child(svg("mods/ws-files/external-link.svg").size(12))));
           })).when(!this.files.length, (el) => el.child(div().p(8).text_color(t.dim).child(this.error || (this.loading || this.scanning ? "Loading changes…" : this.root ? "No uncommitted changes" : "No folder")))))
@@ -988,7 +1188,24 @@ export default class Changes extends View {
         cx.notify();
       })
       .on_key_down((e, cx) => {
+        if (this.rowMenu && this.rowMenuKey(e, cx)) return;
         if (e.key === "escape" && this.popOpen) { this.closePop(); cx.stop_propagation(); cx.notify(); return; }
+        // ↑ ↓ step through the changed files, each one's diff shown, where Changes itself has the
+        // keyboard (after a click in the list), not the message box or a filter, nor while the picker's open.
+        const mods = e.modifiers ?? {};
+        if ((e.key === "up" || e.key === "down") && !mods.platform && !mods.control && !mods.alt && !mods.shift
+          && !this.popOpen && this.handle.is_focused()) {
+          const paths = this.files.map((f) => f.path), next = nextFile(paths, this.open, e.key);
+          if (next) {
+            cx.stop_propagation();
+            if (next !== this.open) {
+              // A held key moves the row at once, its diff read once the key stops (150 ms), not one git per repeat.
+              if (e.is_held) this.showHeld(next, cx); else this.pick(next, cx, true);
+              this.listScroll.scroll_to_item(paths.indexOf(next));
+            }
+            return;
+          }
+        }
         if (e.key === "escape" && this.typing) { this.typing = false; this.handle.focus(); cx.stop_propagation(); cx.notify(); }
       })
       .child(body);

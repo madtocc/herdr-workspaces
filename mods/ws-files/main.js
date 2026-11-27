@@ -28,7 +28,7 @@
 //    640px (a pane beside a terminal, at first) one column: the rail, or the file with ←.
 // 6. Editing: text, code, Markdown and SVG are edited in place (Source, and Split's left side)
 //    with an explicit Save (⌘S / Ctrl+S) and Discard, never saved on its own. writeTextFile
-//    rejects a save when the file changed on disk: the draft stays, with Overwrite and Reload
+//    rejects a save when the file changed on disk: the draft stays, with Keep mine (overwrite) and Take theirs (reload)
 //    from disk. A file changed on disk reloads when nothing is unsaved, and a file deleted on
 //    disk keeps an unsaved draft (Save as new). Read-only: files cut at 400 KB (over 1 MiB
 //    Herdr can't read them whole) and files on another machine (writeTextFile is local only).
@@ -98,6 +98,13 @@
 //    menu first, keeping the text; preview links it won't follow say so (their scheme only); tooltips on Read-only, Unsaved (while the draft holds the folder), Source and
 //    Preview (⌘⇧V), none on + and ▾ while their menu is open; "Only ignored files here."; the
 //    filter boxes' × is a 20px target; ← over a draft asks "Discard & go back" / "Save & go back".
+// 16. Options the owner accepted: the conflict strip's answers are "Keep mine" and "Take theirs", both
+//    outlined, each with a tooltip saying what goes; Discard asks in place ("Discard changes?", a press
+//    within 500 ms doesn't count, filesfacts discardStep), keeping its widest width; narrow, ← brings the
+//    tree up over the open file (railUp) and a pick lowers it; the right-click menu and Open in ▸ have
+//    one lit row with ↑ ↓ Enter → ← and the pointer rule (where Files already has the keyboard);
+//    Rename takes a path and moves the entry (nameProblem, RENAME makes the folder); "System default"
+//    for the system's opener.
 // mod.clone itself rewrote the icon paths from mods/files/ to mods/ws-files/.
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState, TextView, InputState, Input, Popup, ScrollHandle, h_resizable, resizable_panel } from "gpui-base";
@@ -107,7 +114,7 @@ import * as fs from "fs/promises";
 import { locate, toRemember } from "./follow.js";
 import { repoStatus, dueNow, statusRequest, settleRequest } from "./gitscan.js";
 import {
-  DISPLAY_LIMIT, API_LIMIT, IMAGE_LIMIT, EDITOR_CATALOG, SYSTEM_APP, extOf, fileKind, previewKind, languageOf, indentStyle, linkScheme, keptFile, afterTrash, typeName, formatSize,
+  DISPLAY_LIMIT, API_LIMIT, IMAGE_LIMIT, EDITOR_CATALOG, SYSTEM_APP, extOf, fileKind, previewKind, languageOf, indentStyle, linkScheme, stepRow, discardStep, keptFile, afterTrash, typeName, formatSize,
   canEdit, resolveRelativeLink, splitDirBase, relFromRoot, dirName, baseName, offsetForLine, filterEntries, parseSearchOutput,
   mergeApps, pickDefaultApp, rememberApp, parsePrefs, launchCommand, targetFor, svgSize, fitImage, sameFile,
   menuRows, menuLabel, nameProblem, stemEnd, copyName, movedPath, isUnder,
@@ -121,7 +128,7 @@ const NARROW = 640, RAIL = 248;
 const PREFS_FILE = () => `${home()}/.herdr/files-prefs.json`;
 const ASSETS = "data/ws-files";
 const APPS_FRESH = 60000;
-// Recovery copies of unsaved drafts (D6): appHome()/data/ws-files/drafts/<draftKey>.json.
+// Recovery copies of unsaved drafts: appHome()/data/ws-files/drafts/<draftKey>.json.
 const DRAFTS = () => `${appHome()}/${ASSETS}/drafts`;
 const DRAFT_AFTER = 800; // ms after an unsaved edit before its copy is written
 // The drafts a copy has open unsaved now (draftKey -> { id, at }), shared by the copies (one VM), so a
@@ -137,8 +144,10 @@ const CALM = 500; // ms a strip's buttons ignore presses after they came up unde
 const FREE = '{ [ ! -e "$1" ] && [ ! -L "$1" ] || exit 3; }';
 const NEW_FILE = `mkdir -p -- "$(dirname -- "$1")" && ${FREE} && set -C && : > "$1"`;
 const NEW_FOLDER = `mkdir -p -- "$(dirname -- "$1")" && ${FREE} && mkdir -- "$1"`;
-// $3 = 1: only the case changes (on macOS the new name "is there": it's the same entry).
-const RENAME = '{ [ "$3" = 1 ] || { [ ! -e "$2" ] && [ ! -L "$2" ]; } || exit 3; } && mv -- "$1" "$2"';
+// $3 = 1: only the case changes (on macOS the new name "is there": it's the same entry). A new name
+// with a folder in it moves the entry there, the folder made first (after the check, so a refused
+// name leaves no folder behind).
+const RENAME = '{ [ "$3" = 1 ] || { [ ! -e "$2" ] && [ ! -L "$2" ]; } || exit 3; } && mkdir -p -- "$(dirname -- "$2")" && mv -- "$1" "$2"';
 const DUPLICATE = '{ [ ! -e "$2" ] && [ ! -L "$2" ] || exit 3; } && cp -Rp -- "$1" "$2"';
 // To the Trash (macOS 15+ has trash; Linux desktops gio; on Windows posix.js gives sh a trash
 // that reaches the Recycle Bin), else into ~/.herdr/trash on that machine, as the Agents menu's Wipe does. Prints
@@ -149,6 +158,9 @@ if command -v gio >/dev/null 2>&1 && gio trash "$1"; then echo Trash; exit 0; fi
 dest="$HOME/.herdr/trash"; mkdir -p "$dest" && mv -- "$1" "$dest/$(basename -- "$1")-$(date +%s)" && echo "$dest"`;
 const COUNT = 'find "$1" -type f 2>/dev/null | head -n 10001 | wc -l';
 const MENU_W = 228, SUB_W = 244;
+// The pointer's place as a key: a move at the same place is no move (the menus' pointer rule, as
+// the Agents list and History have it).
+const pointKey = (p) => (p && Number.isFinite(p.x) && Number.isFinite(p.y) ? `${p.x},${p.y}` : undefined);
 const SCAN = { exec, active: () => window()?.active !== false };
 const firstLine = (s) => String(s ?? "").trim().split("\n")[0];
 const showTabs = () => { if (shared("workspaces.screen")) setShared("workspaces.screen", null); };
@@ -236,8 +248,8 @@ export default class Files extends View {
     this.rail = "files";
     this.filter = InputState.new({ placeholder: "Filter files…" });
     this.filter.on("change", (_e, cx) => { this.flatSel = 0; this.listAll(cx); cx.notify(); });
-    this.filter.on("submit", (_e, cx) => { if (this.flatMode()) { const rows = this.flatRows().rows; this.openFound(rows[Math.min(this.flatSel ?? 0, rows.length - 1)], cx); } });
-    // The filter's flat list (D6-a): every name under the folder ({ key, busy, paths, cut, error }).
+    this.filter.on("submit", (_e, cx) => { const d = Date.now() - (this.menuEnterAt ?? 0); if (this.menu || (d >= 0 && d < 300)) return; if (this.flatMode()) { const rows = this.flatRows().rows; this.openFound(rows[Math.min(this.flatSel ?? 0, rows.length - 1)], cx); } });
+    // The filter's flat list: every name under the folder ({ key, busy, paths, cut, error }).
     this.found = null; this.foundStale = false; this.flatSel = 0;
     this.finder = InputState.new({ placeholder: "Search in files…" });
     this.finder.on("change", (_e, cx) => { this.searchAt = Date.now(); cx.notify(); });
@@ -251,7 +263,9 @@ export default class Files extends View {
     this.nameInput.on("change", (_e, cx) => { if (this.edit) { this.edit.error = null; cx.notify(); } });
     this.nameInput.on("submit", (_e, cx) => this.commitEdit(cx));
     // Clicking away cancels (not while its step runs).
-    this.nameInput.on("blur", (_e, cx) => { if (this.edit && !this.edit.busy && Date.now() - (this.edit.at ?? 0) > 300) { this.edit = null; cx.notify(); } });
+    // nameKeys: whether the name box has the keyboard (editKeyBack gives it back only then).
+    this.nameInput.on("focus", () => { this.nameKeys = true; });
+    this.nameInput.on("blur", (_e, cx) => { this.nameKeys = false; if (this.edit && !this.edit.busy && Date.now() - (this.edit.at ?? 0) > 300) { this.edit = null; cx.notify(); } });
     // The "files" settings as last seen (defaults until shared "workspaces.settings" says).
     this.fcfg = { ...FILES_DEFAULTS }; this.fcfgKnown = false;
     const fnow = this.filesNow();
@@ -679,6 +693,7 @@ export default class Files extends View {
   // The open file asked for again (the tree, a search match, a Cmd-click, Changes): never reloaded, so
   // an unsaved draft stays; with a line, Markdown and SVG go to Source and the cursor goes there.
   jumpTo(w, cx) {
+    this.railUp = false; // the same file asked for again: the narrow tree goes down to show it
     if (!this.code) { cx.notify(); return; }
     if (w.line) {
       if (previewKind(this.file) && !this.truncated && this.mode !== "source") this.mode = "source";
@@ -699,7 +714,7 @@ export default class Files extends View {
   }
 
   resetFile() {
-    this.code?.release(); this.code = null;
+    this.code?.release(); this.code = null; this.discardArmed = 0;
     this.file = null; this.fk = null; this.fileError = null; this.fileGone = false; this.fileSize = null; this.loadingFile = false;
     this.truncated = false; this.snapshot = null; this.dirty = false; this.conflict = false; this.saveError = null; this.saving = false;
     this.mdText = ""; this.img = null; this.withOpen = false; this.apps = null; this.pendingSwitch = null; this.editedAt = 0;
@@ -709,6 +724,7 @@ export default class Files extends View {
 
   // Opens a file (path under the root), or none. A file with unsaved edits asks first (pick()).
   show(path, cx, opts = {}) {
+    if (path) this.railUp = false; // a file shown (a target, a Cmd-click, a link) lowers the narrow tree
     const old = this.img;
     this.resetFile();
     if (old) this.dropAsset(old);
@@ -790,6 +806,7 @@ export default class Files extends View {
 
   // A file picked in the tree, search or a Markdown link: with unsaved edits, asks first.
   pick(path, cx, opts = {}) {
+    this.railUp = false; // narrow: picking a file lowers the tree it brought up (its unsaved strip shows)
     if (path === this.file && (this.code || this.loadingFile)) { this.jumpTo(opts, cx); return; }
     if (this.dirty) { this.pendingSwitch = { path, opts }; cx.notify(); return; }
     this.show(path, cx, opts);
@@ -815,6 +832,7 @@ export default class Files extends View {
   // Typing: dirty or not, the preview a moment later, a stale save error gone.
   edited(cx) {
     if (!this.code || this.snapshot === null) return;
+    this.discardArmed = 0; // typing takes Discard's question back
     const dirty = this.code.value() !== this.snapshot;
     if (dirty && !this.draftDue) this.draftDue = Date.now();
     if (!dirty && this.dirty) this.dropDraft(); // typed back to the file: nothing to recover
@@ -918,7 +936,7 @@ export default class Files extends View {
         if (this.recovery) this.recovery.changed = this.recovery.base !== textHash(text);
         if (this.fk === "svg") this.livePreview(cx);
         cx.notify();
-      } else if (!this.conflict) { this.conflict = true; cx.notify(); }
+      } else if (!this.conflict) { this.conflict = true; this.answeredAt = Date.now(); cx.notify(); } // its answers wait 500 ms (calm())
     });
   }
 
@@ -927,6 +945,7 @@ export default class Files extends View {
   // what's on disk now (Overwrite); asNew: the file was deleted, write it again.
   async save(cx, { force = false, asNew = false } = {}) {
     if (!this.code || this.snapshot === null || this.saving || this.on) return false;
+    this.discardArmed = 0;
     if (!this.dirty && !force && !asNew && !this.fileGone) return true;
     const path = this.file, abs = `${this.root}/${path}`, text = this.code.value();
     this.saving = true;
@@ -944,7 +963,7 @@ export default class Files extends View {
     } catch (e) {
       const msg = String(e?.message ?? e);
       if (this.file === path) {
-        if (/changed outside Herdr|changed while saving/i.test(msg)) this.conflict = true;
+        if (/changed outside Herdr|changed while saving/i.test(msg)) { this.conflict = true; this.answeredAt = Date.now(); } // Keep mine / Take theirs wait 500 ms
         else this.saveError = msg.replace(/^`[^`]*`:\s*/, "").replace(/([^.])$/, "$1.");
       }
       return false;
@@ -981,7 +1000,7 @@ export default class Files extends View {
     });
   }
 
-  // The recovery copy (D6) ------------------------------------------------
+  // The recovery copy ------------------------------------------------
   // While a file has unsaved edits, a copy of the draft sits in DRAFTS() (filesfacts draftKey), written
   // DRAFT_AFTER ms after an edit and when the view closes. It goes on save, discard, reload, or when the
   // edits are typed back. Opened again with a copy there that isn't the file as it is, the file shows the
@@ -1131,9 +1150,9 @@ export default class Files extends View {
   }
 
   // A strip that moved up when the one over it was answered: its buttons wait CALM ms.
-  calm() { return Date.now() - (this.answeredAt ?? 0) < CALM; }
+  calm() { const d = Date.now() - (this.answeredAt ?? 0); return d >= 0 && d < CALM; } // a clock set back can't freeze it
 
-  // The filter's flat list (D6-a) -------------------------------------------
+  // The filter's flat list -------------------------------------------
   // While the filter box has text, it lists every file and folder under the folder whose name holds it
   // (filesfacts LIST_ALL_SH, findNames), not only the open folders. The names are listed when the box
   // gets text and again after the folder changed while it has text; a listing that fails (no sh on
@@ -1186,7 +1205,7 @@ export default class Files extends View {
     cx.notify();
   }
 
-  // D3-3: the folder's menu from the + in the tree's header, under the button (to its left when the
+  // The folder's menu from the + in the tree's header, under the button (to its left when the
   // window has no room on the right). A click on it while that menu is open closes it.
   plusMenu(cx) {
     const shut = this.menuShut;
@@ -1263,7 +1282,7 @@ export default class Files extends View {
   }
 
   // The apps for a file with this extension ({ apps, system }, kept a minute). A folder (dir): the
-  // code editors installed only (they open it as a project); Finder is the menu's Default app.
+  // code editors installed only (they open it as a project); Finder is the menu's System default.
   async findApps(ext, abs, dir = false) {
     const key = dir ? "/" : ext;
     const cached = this.appsCache.get(key);
@@ -1352,7 +1371,15 @@ export default class Files extends View {
     cx.notify();
   }
 
-  // Back to the folder (the ← and the file-gone screen).
+  // Narrow (beside a terminal), ←: the tree comes up over the open file, which keeps its place, cursor
+  // and draft; picking a file (it again, or another, which asks first over a draft) lowers it.
+  raiseTree(cx) {
+    this.railUp = true;
+    if (this.file) { this.expandTo(this.file, cx); this.reveal = this.file; }
+    cx.notify();
+  }
+
+  // Back to the folder (the file-gone screen).
   closeFile(cx) {
     if (this.dirty) { this.pendingSwitch = { close: true }; cx.notify(); return; }
     this.show(null);
@@ -1375,7 +1402,8 @@ export default class Files extends View {
   // save or the edit row's step runs, nothing.
   dialogClose(cx) {
     if (this.saving || this.edit?.busy) return;
-    if (this.menu || this.edit) { this.closeMenu(); this.edit = null; cx.notify(); return; }
+    if (this.discardArmed) { this.disarm(cx); return; } // Discard's question first
+    if (this.menu || this.edit) { const ed = this.edit; this.closeMenu(); this.edit = null; if (ed) this.editKeyBack(ed); cx.notify(); return; }
     if (this.withOpen) { this.withOpen = false; cx.notify(); return; }
     if (this.pendingSwitch?.closeDialog) { this.settleSwitch("discard", cx); return; }
     if (this.pendingSwitch) { this.pendingSwitch = null; cx.notify(); return; }
@@ -1408,6 +1436,8 @@ export default class Files extends View {
 
   keyDown(e, cx) {
     const m = e.modifiers ?? {}, cmd = m.platform || m.control;
+    // Any key takes Discard's question back; Esc does only that.
+    if (this.discardArmed) { this.disarm(cx); if (e.key === "escape") { cx.stop_propagation(); return; } }
     if (cmd && !m.shift && !m.alt && e.key === "s") {
       cx.stop_propagation();
       if (this.dirty && !this.conflict) cx.spawn(async (cx) => this.save(cx, { asNew: this.fileGone }));
@@ -1418,13 +1448,15 @@ export default class Files extends View {
       this.setMode(this.mode === "source" ? "preview" : "source", cx);
       return;
     }
+    if (this.menu && ["up", "down", "left", "right", "enter"].includes(e.key) && this.menuKey(e, cx)) return;
     if (["up", "down", "left", "right", "enter"].includes(e.key) && !cmd && !m.shift && !m.alt && this.treeHasKeys()) {
       cx.stop_propagation();
       this.treeKey(e.key, cx);
       return;
     }
     if (e.key === "escape" && (this.menu || this.edit)) {
-      this.closeMenu(); this.edit = null; cx.stop_propagation(); cx.notify(); return;
+      const ed = this.edit;
+      this.closeMenu(); this.edit = null; if (ed) this.editKeyBack(ed); cx.stop_propagation(); cx.notify(); return;
     }
     // Esc as a key: only in a pane or full size. In the dialog Herdr's Esc comes as overlay.close
     // (dialogClose()), never here.
@@ -1467,6 +1499,8 @@ export default class Files extends View {
     try { const vw = globalThis.window?.viewport_size?.()?.width; if (vw) roomRight = e.position.x + (MENU_W + SUB_W + 8) * zoom <= vw; } catch { /* assume room */ }
     this.menu = { rowId, path: r.path, name: baseName(r.path || this.root), dir: Boolean(r.dir), where, x: at.x / zoom, y: at.y / zoom, left: !roomRight };
     this.menuSub = false; this.menuSubIn = false; this.menuApps = null;
+    // One lit row, the first, which Enter runs; the pointer takes it only once it moves from the press.
+    this.menu.at = 0; this.menu.subAt = 0; this.pointerLast = pointKey(e.position);
     if (!this.on) {
       const m = this.menu, abs = r.path ? `${this.root}/${r.path}` : this.root;
       cx.spawn(async (cx) => {
@@ -1513,12 +1547,22 @@ export default class Files extends View {
   // Rename waits while the open file (or one inside the folder) has unsaved edits.
   blocksRename(path) { return Boolean(this.dirty && this.file && isUnder(this.file, path)); }
 
+  // The edit row's box had the keyboard; once the row is gone (made, renamed, Esc) nothing drawn holds
+  // it, so it goes back to the editor it came from, or to Files itself (its tree's and menus' keys). Not
+  // after a blur: the keyboard went somewhere of the person's choosing then.
+  editKeyBack(ed) {
+    if (!this.nameKeys) return; // the keyboard went somewhere of the person's choosing (a terminal clicked while the step ran)
+    this.nameKeys = false;
+    if (ed?.back && ed.back === this.code) ed.back.focus();
+    else this.handle.focus();
+  }
+
   // The edit row: a new file or folder in `dir` (relative, "" the root).
   startNew(mode, dir, cx) {
     this.rail = "files";
     this.filter.set_value("");
     if (dir) this.expandTo(dir, cx, true);
-    this.edit = { mode, dir, path: null, isDir: mode === "folder", at: Date.now(), focusAgain: true };
+    this.edit = { mode, dir, path: null, isDir: mode === "folder", at: Date.now(), focusAgain: true, back: this.codeFocused ? this.code : null };
     this.nameInput.set_value("");
     this.nameInput.focus();
     cx.notify();
@@ -1532,7 +1576,7 @@ export default class Files extends View {
     this.expandTo(path, cx);
     this.reveal = path;
     const name = baseName(path);
-    this.edit = { mode: "rename", dir: dirName(path), path, isDir, at: Date.now(), focusAgain: true };
+    this.edit = { mode: "rename", dir: dirName(path), path, isDir, at: Date.now(), focusAgain: true, back: this.codeFocused ? this.code : null };
     this.nameInput.set_value(name);
     this.nameInput.focus();
     this.nameInput.set_selected_range({ start: 0, end: stemEnd(name, isDir) });
@@ -1543,7 +1587,7 @@ export default class Files extends View {
   editProblem(name) {
     const ed = this.edit;
     if (!ed) return null;
-    const p = nameProblem(name, { mode: ed.mode === "rename" ? "rename" : ed.mode, taken: this.namesIn(ed.dir), old: ed.path ? baseName(ed.path) : null, caseless: this.caseless() });
+    const p = nameProblem(name, { mode: ed.mode === "rename" ? "rename" : ed.mode, taken: this.namesIn(ed.dir), old: ed.path ? baseName(ed.path) : null, caseless: this.caseless(), isDir: ed.isDir, windows: !this.on && window()?.platform === "windows" });
     return p === "Type a name" && !ed.tried ? null : p;
   }
 
@@ -1554,7 +1598,7 @@ export default class Files extends View {
     const name = this.nameInput.value();
     ed.tried = true;
     if (this.editProblem(name)) { cx.notify(); return; }
-    if (ed.mode === "rename" && name === baseName(ed.path)) { this.edit = null; cx.notify(); return; }
+    if (ed.mode === "rename" && name === baseName(ed.path)) { this.edit = null; this.editKeyBack(ed); cx.notify(); return; }
     const rel = ed.dir ? `${ed.dir}/${name}` : name, abs = `${this.root}/${rel}`, context = this.context;
     ed.busy = true;
     cx.notify();
@@ -1566,14 +1610,21 @@ export default class Files extends View {
       if (this.context !== context) return;
       if (r.code !== 0) {
         ed.busy = false;
-        ed.error = r.code === 3 ? `${name} is already there` : firstLine(r.stderr) || (ed.mode === "rename" ? "Couldn't rename it" : `Couldn't make the ${ed.mode}`);
+        // The step's own line, its paths from the folder shown (not from /).
+        let said = firstLine(r.stderr);
+        for (const root of new Set([this.root, String(this.root).replace(/\\/g, "/")])) {
+          if (!root || /^([A-Za-z]:)?[\\/]?$/.test(root)) continue; // Files on / (or C:\) itself: the paths stay whole
+          said = said.split(`${root}/`).join("").split(root).join(".");
+        }
+        ed.error = r.code === 3 ? `${name} is already there` : said || (ed.mode === "rename" ? "Couldn't rename it" : `Couldn't make the ${ed.mode}`);
         if (this.edit === ed) { ed.focusAgain = true; } else { this.edit = ed; ed.focusAgain = true; }
         cx.notify();
         return;
       }
-      if (this.edit === ed) this.edit = null;
+      if (this.edit === ed) { this.edit = null; this.editKeyBack(ed); }
       await this.loadFolder(ed.dir, context).catch(() => {});
       if (ed.mode === "rename") {
+        if (name.includes("/")) this.expandTo(rel, cx); // a move: the tree opens down to where it went
         this.followRename(ed.path, rel, cx);
         setShared("workspaces.files.changed", { id: `${this.id}-${Date.now()}`, kind: "rename", from: old, to: abs, on: this.on ?? null, at: Date.now(), by: this.id });
       } else if (ed.mode === "file") { this.expandTo(rel, cx); this.reveal = rel; this.pick(rel, cx); }
@@ -1637,17 +1688,24 @@ export default class Files extends View {
     const platform = window()?.platform ?? "macos";
     const rows = menuRows({ where: m.where, remote: Boolean(this.on), writes: this.writes(), platform });
     let top = 5, subTop = 5;
+    const keyed = this.menuItems(m, platform);
     const items = rows.map((id, i) => {
       if (id === null) { top += 9; return div().h(1).my(4).bg(t.border); }
       if (id === "open-in") subTop = top;
       top += 28;
       const why = id === "rename" && this.blocksRename(m.path) ? "Save first" : null;
       const sub = id === "open-in";
+      const k = keyed.indexOf(id);
+      // One lit row (the keys' and the pointer's; no hover fill of its own), which Enter runs.
       return h_flex().id(`ws-files-menu-${id}`).h(28).px(8).gap(8).items_center().rounded(6)
-        .when(!why, (s) => s.cursor_pointer().hover((x) => x.bg(t.hover)))
+        .when(!why, (s) => s.cursor_pointer())
         .when(Boolean(why), (s) => s.text_color(t.dim))
-        .when(sub && this.menuSub, (s) => s.bg(t.hover))
+        .when(k >= 0 && k === m.at, (s) => s.bg(t.selected))
         .on_hover((h, cx) => { if (h && this.menuSub !== sub) { this.menuSub = sub; cx.notify(); } })
+        .when(k >= 0, (s) => s.on_mouse_move((e, cx) => {
+          this.pointerRow("at", k, e, cx);
+          if (!sub && this.menuSub && this.menu?.at === k) { this.menuSub = false; cx.notify(); } // one lit row: Open in's list goes
+        }))
         .on_click((_e, cx) => { if (why) return; if (sub) { this.menuSub = !this.menuSub; cx.notify(); return; } this.menuAct(id, cx); })
         .child(div().flex_1().min_w(0).truncate().child(menuLabel(id, platform)))
         .when(Boolean(why), (s) => s.child(div().flex_none().text_size(11).child(why)))
@@ -1668,20 +1726,83 @@ export default class Files extends View {
   subMenu(t, m, platform) {
     const got = this.menuApps, ext = m.dir ? "" : extOf(m.path), abs = m.path ? `${this.root}/${m.path}` : this.root;
     const chosen = !m.dir && got ? pickDefaultApp(got.apps, this.sharedPrefs(), ext, this.fcfg["default-app"]) : null;
-    const row = (rid, name, app, hint = "", checked = false) => h_flex().id(rid).h(28).px(8).gap(8).rounded(6).items_center().cursor_pointer().hover((s) => s.bg(t.hover))
+    const row = (rid, name, app, hint = "", checked = false, k = 0) => h_flex().id(rid).h(28).px(8).gap(8).rounded(6).items_center().cursor_pointer()
+      .when(k === m.subAt, (s) => s.bg(t.selected))
+      .on_mouse_move((e, cx) => this.pointerRow("subAt", k, e, cx))
       .on_click((_e, cx) => { this.closeMenu(); this.openWith(app, cx, !m.dir, { abs, ext, dir: m.dir }); cx.notify(); })
       .child(div().flex_1().min_w(0).truncate().child(name))
       .when(Boolean(hint), (s) => s.child(div().flex_none().text_size(11).text_color(t.dim).child(hint)))
       .when(checked, (s) => s.child(svg("mods/ws-files/check.svg").size(13).flex_none().text_color(t.accent)));
     const apps = (got?.apps ?? []).slice(0, 12);
     const caption = m.dir ? "Open the folder with" : ext ? `Open .${ext} with${this.sharedPrefs().byExt?.[ext] ? " (remembered)" : ""}` : "Open with";
-    const finder = m.dir && platform === "macos" ? "Finder" : "Default app";
+    const finder = m.dir && platform === "macos" ? "Finder" : "System default";
     return v_flex().id("ws-files-menu-sub-list").w(SUB_W).p(5).rounded(8).shadow_md().border_1().border_color(t.border).bg(t.popover).text_size(12.5).text_color(t.foreground)
       .on_hover((h, cx) => { if (this.menuSubIn !== h) { this.menuSubIn = h; cx.notify(); } })
       .child(div().px(8).pt(3).pb(5).text_size(11).text_color(t.dim).child(caption))
       .when(!got, (s) => s.child(div().px(8).py(6).text_color(t.dim).child("Looking for apps…")))
-      .children(apps.map((a, i) => row(`ws-files-sub-${i}`, a.label, a, a.path && a.path === got?.system ? "system" : "", chosen?.id === a.id)))
-      .when(Boolean(got), (s) => s.child(row("ws-files-sub-system", finder, SYSTEM_APP, "", chosen?.id === "system")));
+      .children(apps.map((a, i) => row(`ws-files-sub-${i}`, a.label, a, a.path && a.path === got?.system ? "system" : "", chosen?.id === a.id, i)))
+      .when(Boolean(got), (s) => s.child(row("ws-files-sub-system", finder, SYSTEM_APP, "", chosen?.id === "system", apps.length)));
+  }
+
+  // The rows the keys can light: no line, no row waiting on a save (Rename's "Save first").
+  menuItems(m, platform = window()?.platform ?? "macos") {
+    return menuRows({ where: m.where, remote: Boolean(this.on), writes: this.writes(), platform })
+      .filter((id) => id !== null && !(id === "rename" && this.blocksRename(m.path)));
+  }
+
+  // Open in ▸'s apps in its order, the system's last (what Enter there opens).
+  subApps() {
+    const got = this.menuApps;
+    return got ? [...(got.apps ?? []).slice(0, 12), SYSTEM_APP] : [];
+  }
+
+  // A row under a pointer that moves becomes the keys' row. pointerLast starts at the press that
+  // opened the menu and follows every move; a move at the same place as the last one is no move (a
+  // resting pointer, or one re-sent with no movement), so it never takes the row. which: "at" for the
+  // menu, "subAt" for Open in ▸.
+  pointerRow(which, i, e, cx) {
+    const here = pointKey(e?.position);
+    if (here === undefined || here === this.pointerLast) return;
+    const first = this.pointerLast === undefined;
+    this.pointerLast = here;
+    if (first || !this.menu) return; // no press known: the first move is only where it rests
+    if (this.menu[which] !== i) { this.menu[which] = i; cx.notify(); }
+  }
+
+  // ↑ ↓ move the lit row, Enter runs it (not a held one), → or Enter on Open in opens its list and
+  // ← closes it. Only where Files already has the keyboard: a right-click doesn't take it.
+  menuKey(e, cx) {
+    const m = this.menu, mods = e.modifiers ?? {};
+    if (!m || mods.platform || mods.control || mods.alt || mods.shift) return false;
+    if (this.menuSub) {
+      const apps = this.subApps(), n = apps.length;
+      if (e.key === "left") this.menuSub = false;
+      else if (!n) { if (!["up", "down", "enter", "right"].includes(e.key)) return false; }
+      else if (e.key === "down" || e.key === "up") m.subAt = stepRow(m.subAt, n, e.key);
+      else if (e.key === "enter") {
+        cx.stop_propagation();
+        if (e.is_held) return true;
+        this.menuEnterAt = Date.now();
+        const app = apps[Math.min(m.subAt, n - 1)], abs = m.path ? `${this.root}/${m.path}` : this.root;
+        this.closeMenu(); this.openWith(app, cx, !m.dir, { abs, ext: m.dir ? "" : extOf(m.path), dir: m.dir }); cx.notify();
+        return true;
+      } else if (e.key !== "right") return false;
+      cx.stop_propagation(); cx.notify(); return true;
+    }
+    const items = this.menuItems(m), n = items.length;
+    if (!n) return false;
+    const id = items[Math.min(m.at, n - 1)];
+    if (e.key === "down" || e.key === "up") m.at = stepRow(m.at, n, e.key);
+    else if (e.key === "right" && id === "open-in") { this.menuSub = true; m.subAt = 0; }
+    else if (e.key === "enter") {
+      cx.stop_propagation();
+      if (e.is_held) return true;
+      this.menuEnterAt = Date.now(); // the filter box's submit then knows this Enter was the menu's
+      if (id === "open-in") { this.menuSub = true; m.subAt = 0; cx.notify(); return true; }
+      this.menuAct(id, cx); cx.notify();
+      return true;
+    } else return false;
+    cx.stop_propagation(); cx.notify(); return true;
   }
 
   // The edit row in the tree (a new file or folder, or a rename), with what's wrong under it.
@@ -1692,12 +1813,12 @@ export default class Files extends View {
     const icon = ed.isDir ? "folder" : iconOf(value || "x", false);
     const where = ed.dir || baseName(this.root ?? "") || "the folder";
     const hint = ed.busy ? (ed.mode === "rename" ? "Renaming…" : "Making it…")
-      : ed.mode === "rename" ? "Enter renames it · Esc cancels"
+      : ed.mode === "rename" ? (value.includes("/") ? `Enter moves it to ${ed.dir ? `${ed.dir}/` : ""}${value} · Esc cancels` : "Enter renames it · Esc cancels")
       : `New ${ed.mode} in ${where} · Enter ${ed.mode === "file" ? "makes and opens it" : "makes it"} · Esc cancels`;
     const pad = 6 + depth * 14;
     return v_flex().id("ws-files-edit").flex_none()
       .child(h_flex().id("ws-files-edit-row").h(26).pl(pad).pr(6).gap(6).items_center().rounded(6).border_1().border_color(problem ? t.ansi1 : t.accent).bg(t.background)
-        .on_key_down((e, cx) => { if (e.key === "escape") { cx.stop_propagation(); if (!ed.busy) { this.edit = null; cx.notify(); } } })
+        .on_key_down((e, cx) => { if (e.key === "escape") { cx.stop_propagation(); if (!ed.busy) { this.edit = null; this.editKeyBack(ed); cx.notify(); } } })
         .child(div().w(12).flex_none())
         .child(svg(`mods/ws-files/${icon}.svg`).size(14).flex_none().text_color(t.muted))
         .child(div().flex_1().min_w(0).child(Input.new(this.nameInput).text_size(12.5))))
@@ -1767,12 +1888,38 @@ export default class Files extends View {
       .child(svg(`mods/ws-files/${icon}.svg`).size(14));
   }
 
+  // Discard asks in place: the first press turns it into "Discard changes?" in `blocked`, a press
+  // within 500 ms of that doesn't count (discardStep), the next one puts the saved text back. Any key,
+  // typing, a press elsewhere, Esc, a save or another file takes the question back. Its widest label
+  // is laid out unseen inside it, so it never changes width and Save beside it never moves.
+  discardButton(t) {
+    const armed = Boolean(this.discardArmed);
+    return h_flex().id("ws-files-discard").h(26).px(10).flex_none().items_center().rounded(6).cursor_pointer().text_size(12.5).relative()
+      .text_color(armed ? t.blocked : t.muted).hover((x) => x.bg(t.hover))
+      .on_mouse_down_out((_e, cx) => this.disarm(cx))
+      .on_click((_e, cx) => this.discardPress(cx))
+      .child(div().opacity(0).child("Discard changes?"))
+      .child(div().absolute().inset_0().flex().items_center().justify_center().child(armed ? "Discard changes?" : "Discard"));
+  }
+
+  discardPress(cx) {
+    const step = discardStep(this.discardArmed, Date.now());
+    if (step === "wait") return;
+    if (step === "arm") { this.discardArmed = Date.now(); cx.notify(); return; }
+    this.discardArmed = 0;
+    this.answeredAt = Date.now(); // what slides into Discard's place waits (calm())
+    this.discard(cx);
+  }
+
+  disarm(cx) { if (this.discardArmed) { this.discardArmed = 0; cx.notify(); } }
+
   // kind: "solid" (the one primary), "outline", "quiet".
-  textButton(t, id, label, onClick, kind = "quiet", extra = null) {
+  textButton(t, id, label, onClick, kind = "quiet", extra = null, tip = null) {
     return h_flex().id(id).h(26).px(10).gap(6).flex_none().items_center().rounded(6).cursor_pointer().text_size(12.5)
       .when(kind === "solid", (s) => s.bg(t.solid).text_color(t.solid_foreground).hover((x) => x.opacity(0.9)))
       .when(kind === "outline", (s) => s.border_1().border_color(t.border).text_color(t.foreground).hover((x) => x.bg(t.hover)))
       .when(kind === "quiet", (s) => s.text_color(t.muted).hover((x) => x.bg(t.hover).text_color(t.foreground)))
+      .when(Boolean(tip), (s) => s.tooltip(tip))
       .on_click((_e, cx) => onClick(cx))
       .child(label)
       .when(Boolean(extra), (s) => s.child(div().text_size(11).opacity(0.6).child(extra)));
@@ -1787,13 +1934,13 @@ export default class Files extends View {
     const half = (s) => s.h(26).flex().items_center().cursor_pointer().when(solid, (x) => x.bg(t.solid).hover((y) => y.opacity(0.9))).when(!solid, (x) => x.hover((y) => y.bg(t.hover)));
     const trigger = h_flex().flex_none().rounded(6).overflow_hidden().text_size(12.5).text_color(fg).when(!solid, (x) => x.border_1().border_color(t.border))
       .child(half(h_flex().id(`${id}-go`).px(10).gap(6)).tooltip(`Open ${this.file} in ${app.label}`)
-        .on_click((_e, cx) => this.openWith(app, cx))
+        .on_click((_e, cx) => { if (!this.calm()) this.openWith(app, cx); })
         .child(svg("mods/ws-files/external-link.svg").size(13)).child(label))
       .child(half(div().id(`${id}-more`).w(22).justify_center().border_l(1).border_color(solid ? fade(t.solid_foreground, 0.25) : t.border)).when(!this.withOpen, (x) => x.tooltip("Open with…"))
         // A press on ▾ while the list is open is a press outside the list, which closed it in the same
         // press (capture runs first): the click that follows mustn't open it again.
         .on_mouse_down("left", () => { this.withSkip = Boolean(this.withShut) && Date.now() - this.withShut < 100; })
-        .on_click((_e, cx) => { if (this.withSkip) { this.withSkip = false; return; } this.withOpen = !this.withOpen; cx.notify(); })
+        .on_click((_e, cx) => { if (this.withSkip) { this.withSkip = false; return; } if (this.calm()) return; this.withOpen = !this.withOpen; cx.notify(); })
         .child(svg("mods/ws-files/chevron-down.svg").size(12)));
     const row = (rid, icon, name, onClick, hint = "", checked = false) => h_flex().id(rid).h(28).px(8).gap(8).rounded(6).items_center().cursor_pointer().hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => onClick(cx))
@@ -1808,7 +1955,7 @@ export default class Files extends View {
       .child(div().px(8).pt(3).pb(5).text_size(11).text_color(t.dim).child(ext ? `Open .${ext} with${this.sharedPrefs().byExt?.[ext] ? " (remembered)" : ""}` : "Open with"))
       .when(!this.apps, (s) => s.child(div().px(8).py(6).text_color(t.dim).child("Looking for apps…")))
       .children(apps.map((a, i) => row(`${id}-app-${i}`, mark(a), a.label, (cx) => this.openWith(a, cx, true), a.path && a.path === this.systemApp ? "system" : "", a.id === app.id)))
-      .child(row(`${id}-app-system`, div().size(16).flex_none(), "Default app", (cx) => this.openWith(SYSTEM_APP, cx, true), "", app.id === "system"))
+      .child(row(`${id}-app-system`, div().size(16).flex_none(), SYSTEM_APP.label, (cx) => this.openWith(SYSTEM_APP, cx, true), "", app.id === "system"))
       .child(div().h(1).my(4).bg(t.border))
       .child(row(`${id}-reveal`, svg("mods/ws-files/folder.svg").size(14).flex_none().text_color(t.muted), mac ? "Reveal in Finder" : window()?.platform === "windows" ? "Show in Explorer" : "Show in folder", (cx) => this.openWith({ id: "reveal" }, cx)))
       .child(row(`${id}-copy`, svg("mods/ws-files/copy.svg").size(14).flex_none().text_color(t.muted), "Copy path", (cx) => { this.withOpen = false; this.copyPath(cx); }));
@@ -1857,7 +2004,7 @@ export default class Files extends View {
   // box or the editor), with no menu, edit row, strip or list open over it.
   treeHasKeys() {
     return this.rail === "files" && !this.menu && !this.edit && !this.pendingSwitch && !this.withOpen && !this.flatMode()
-      && !(this.narrowNow && this.file) && Boolean(this.handle?.is_focused());
+      && !(this.narrowNow && this.file && !this.railUp) && Boolean(this.handle?.is_focused());
   }
 
   // A key on the tree (filesfacts treeStep): the cursor moves, kept in sight (reveal); a folder opens
@@ -1877,6 +2024,7 @@ export default class Files extends View {
   filterKey(e, rows, cx) {
     // With the right-click menu open (a right-click leaves the keyboard in the box), Esc closes the menu, not the box's text.
     if (e.key === "escape" && this.menu) { this.closeMenu(); cx.stop_propagation(); cx.notify(); }
+    else if (this.menu && ["up", "down", "left", "right", "enter"].includes(e.key)) this.menuKey(e, cx); // the open menu's keys, not the list's
     else if (e.key === "escape" && this.filter.value()) { this.filter.set_value(""); cx.stop_propagation(); cx.notify(); }
     else if ((e.key === "up" || e.key === "down") && this.flatMode()) {
       cx.stop_propagation();
@@ -1904,7 +2052,7 @@ export default class Files extends View {
         .when(Boolean(this.branch), (s) => s.child(h_flex().flex_1().min_w(0).gap(3).items_center().text_size(11.5).text_color(t.dim)
           .child(svg("mods/ws-files/git-branch.svg").size(11).flex_none()).child(div().min_w(0).truncate().child(this.branch))))
         .when(!this.branch, (s) => s.child(div().flex_1()))
-        // D3-3: the folder's menu (New file…, New folder…) from a button, where the right-click is hidden.
+        // The folder's menu (New file…, New folder…) from a button, where the right-click is hidden.
         .when(Boolean(this.root) && this.writes(), (s) => s.child(this.withMenu(this.iconButton(t, "ws-files-plus", "plus", "New file or folder", (cx) => this.plusMenu(cx), { on: this.menu?.rowId === "root-plus", open: this.menu?.rowId === "root-plus" }), "root-plus", t)))
         .child(this.iconButton(t, "ws-files-ignored", this.showIgnored ? "eye" : "eye-off", this.git ? (this.showIgnored ? "Hide ignored files" : "Show ignored files") : (this.showIgnored ? "Hide hidden files" : "Show hidden files"),
           (cx) => { this.showIgnored = !this.showIgnored; this.keep("ignored", this.showIgnored ? "1" : "0", String(this.fcfg["show-ignored"] === true)); this.listAll(cx); cx.notify(); }, { on: this.showIgnored }))
@@ -1930,7 +2078,7 @@ export default class Files extends View {
         .when(this.limited, (s) => s.child(div().p(8).text_size(11).text_color(t.dim).child("File list limited to 500 entries per folder and 5,000 total")))), "root", t));
   }
 
-  // D6-a: the filter's flat list, one row per match (name, then its folder), the selected one in
+  // The filter's flat list, one row per match (name, then its folder), the selected one in
   // t.selected, and a line under it saying how many and where.
   flatList(t, folder) {
     const f = this.found, q = this.filter.value().trim(), { rows, total } = this.flatRows();
@@ -2070,28 +2218,31 @@ export default class Files extends View {
       .when(mode !== "split", (s) => s.tooltip(`${window()?.platform === "macos" ? "⌘⇧V" : "Ctrl+Shift+V"} switches Source and Preview`))
       .on_click((_e, cx) => this.setMode(mode, cx)).child(label);
     const copied = Boolean(this.copiedAt);
-    const copy = this.iconButton(t, "ws-files-copy", copied ? "check" : "copy", copied ? "Copied" : `Copy path`, (cx) => this.copyPath(cx));
+    // The clean bar's buttons slide in where Discard and Save were: they wait out calm() after a discard.
+    const calmly = (fn) => (cx) => { if (!this.calm()) fn(cx); };
+    const copy = this.iconButton(t, "ws-files-copy", copied ? "check" : "copy", copied ? "Copied" : `Copy path`, calmly((cx) => this.copyPath(cx)));
     const save = window()?.platform === "macos" ? "⌘S" : "Ctrl+S";
     const actions = [];
+    if (this.pendingSwitch && this.discardArmed) this.discardArmed = 0; // a strip that asks takes Discard's question back
     if (this.pendingSwitch) { /* the strip under the bar holds the answers */ }
     else if (st === "gone" || st === "binary" || st === "error") actions.push(copy);
     else if (st === "loading" || st === "empty") { /* nothing yet */ }
-    else if (failed) actions.push(this.textButton(t, "ws-files-discard", "Discard", (cx) => this.discard(cx)));
-    else if (this.dirty) actions.push(this.textButton(t, "ws-files-discard", "Discard", (cx) => this.discard(cx)), this.textButton(t, "ws-files-save", this.saving ? "Saving…" : "Save", (cx) => cx.spawn(async (cx) => this.save(cx, { asNew: this.fileGone })), "solid", narrow ? null : save));
+    else if (failed) actions.push(this.discardButton(t));
+    else if (this.dirty) actions.push(this.discardButton(t), this.textButton(t, "ws-files-save", this.saving ? "Saving…" : "Save", (cx) => cx.spawn(async (cx) => this.save(cx, { asNew: this.fileGone })), "solid", narrow ? null : save));
     else if (this.truncated || st === "image") {
       actions.push(copy);
-      if (!narrow) actions.push(this.iconButton(t, "ws-files-refresh", "refresh", "Reload from disk", (cx) => this.show(this.file, cx)));
+      if (!narrow) actions.push(this.iconButton(t, "ws-files-refresh", "refresh", "Reload from disk", calmly((cx) => this.show(this.file, cx))));
       if (!this.on) actions.push(this.openIn(t, "ws-files-open", "solid", narrow));
     } else {
       actions.push(copy);
-      if (!narrow) actions.push(this.iconButton(t, "ws-files-reveal", "reveal", "Reveal in tree", (cx) => this.revealInTree(cx)), this.iconButton(t, "ws-files-refresh", "refresh", "Reload from disk", (cx) => this.recheck(cx)));
+      if (!narrow) actions.push(this.iconButton(t, "ws-files-reveal", "reveal", "Reveal in tree", calmly((cx) => this.revealInTree(cx))), this.iconButton(t, "ws-files-refresh", "refresh", "Reload from disk", calmly((cx) => this.recheck(cx))));
       if (!this.on) actions.push(this.openIn(t, "ws-files-open", "outline", narrow));
     }
     const sized = !narrow && this.fileSize !== null && (st === "text" || st === "image");
     const held = this.dirty && this.context && this.key() !== this.context.key ? `Unsaved changes. Files stays in ${baseName(this.root ?? "") || this.root} until you save or discard them.` : "";
     const font = settings();
     return h_flex().h(38).flex_none().pl(narrow ? 6 : 12).pr(8).gap(8).items_center().border_b(1).border_color(t.border)
-      .when(narrow && Boolean(this.file), (s) => s.child(this.iconButton(t, "ws-files-back", "arrow-left", "Back to the folder", (cx) => this.closeFile(cx))))
+      .when(narrow && Boolean(this.file), (s) => s.child(this.iconButton(t, "ws-files-back", "arrow-left", "Back to the folder", (cx) => this.raiseTree(cx))))
       // Clipped: squeezed to nothing (a narrow pane, an edited Markdown file), it paints over nothing.
       .child(h_flex().flex_1().min_w(0).overflow_hidden().items_center().gap(8)
         .child(h_flex().id("ws-files-path").min_w(0).flex_shrink(1).font_family(font.font_family).text_size(12.5).tooltip(this.file ? `${this.root}/${this.file}` : "")
@@ -2133,7 +2284,7 @@ export default class Files extends View {
         this.textButton(t, "ws-files-sw-save", `Save & ${how}`, (cx) => { if (!this.calm()) cx.spawn(async (cx) => this.settleSwitch("save", cx)); }, "solid"),
       ]));
     }
-    // D6: a recovery copy of a draft left unsaved (the file opened again after its view closed).
+    // A recovery copy of a draft left unsaved (the file opened again after its view closed).
     if (this.recovery && !this.pendingSwitch) {
       const rec = this.recovery;
       out.push(strip("ws-files-draft", "warn", t.working, draftTitle(rec.at, Date.now()),
@@ -2148,8 +2299,9 @@ export default class Files extends View {
       ]));
     } else if (this.conflict) {
       out.push(strip("ws-files-conflict", "warn", t.blocked, "File changed on disk while you were editing.", "Your unsaved changes are still in the editor below.", [
-        this.textButton(t, "ws-files-overwrite", "Overwrite", (cx) => { if (!this.calm()) cx.spawn(async (cx) => this.save(cx, { force: true })); }, "outline"),
-        this.textButton(t, "ws-files-reload", "Reload from disk", (cx) => { if (!this.calm()) this.reload(cx); }, "solid"),
+        // Notes' pair, neither the primary: the strip is the question, each answer says what goes.
+        this.textButton(t, "ws-files-overwrite", "Keep mine", (cx) => { if (!this.calm()) cx.spawn(async (cx) => this.save(cx, { force: true })); }, "outline", null, "Write what you typed over the file"),
+        this.textButton(t, "ws-files-reload", "Take theirs", (cx) => { if (!this.calm()) this.reload(cx); }, "outline", null, "Show the file as it is now; what you typed goes"),
       ]));
     } else if (this.saveError) {
       out.push(strip("ws-files-save-error", "warn", t.ansi1, `Couldn't save ${name}.`, `${this.saveError} Your changes are still in the editor.`, [
@@ -2248,12 +2400,14 @@ export default class Files extends View {
     const width = this.size?.width ?? 0, height = this.size?.height ?? 600;
     const narrow = width > 0 ? width < NARROW : Boolean(p.beside);
     this.narrowNow = narrow; // the tree's keys (treeHasKeys) need it; not state that redraws
+    if (!narrow) this.railUp = false; // wide, the tree and the file are side by side
     // The room the viewer has, in the units sizes are given in (the measured size is zoomed; .w() isn't yet).
     const zoom = Number(settings().zoom) > 0 ? Number(settings().zoom) : 1;
     const railW = this.railW ?? RAIL;
     const room = { w: Math.max(200, (narrow ? width : width - railW * zoom) / zoom), h: Math.max(160, height / zoom - 38) };
     const body = narrow
-      ? (this.file ? this.viewer(t, true, room) : this.railView(t, true))
+      // The raised tree gives way while a strip asks (its question lives in the viewer).
+      ? (this.file && (!this.railUp || this.pendingSwitch) ? this.viewer(t, true, room) : this.railView(t, true))
       : h_resizable("ws-files-main").size_full().on_resize((sizes, cx) => { this.railW = sizes[0]; cx.notify(); })
         .child(resizable_panel().size(RAIL).size_range(180, 420).child(this.railView(t, false)))
         .child(resizable_panel().child(this.viewer(t, false, room)));

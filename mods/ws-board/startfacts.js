@@ -56,3 +56,41 @@ export function firstMessage(text, task) {
   const s = String(text ?? "");
   return /^\s*-/.test(s) ? `${task.id}: ${task.title}\n\n${s}` : s;
 }
+
+// A card's Worktree button says "Start in worktree" when its column is this wide or more
+// (px, the mod's units): room for Start, Start in worktree and Start with… on one line.
+export const WIDE_COLUMN = 290;
+// A column's width on the board: the columns share the board's width (`width`, already
+// divided by the zoom) after its 12px padding, 10px gaps and a folded last column's 96px
+// strip; squeezed, each keeps COL_MIN (200). 0 while the width isn't known yet.
+export function columnWidth({ width, columns, folded, squeezed, min = 200 }) {
+  if (squeezed) return min;
+  if (!(width > 0) || !(columns > 0)) return 0;
+  const open = columns - (folded ? 1 : 0);
+  if (open < 1) return 0;
+  return (width - 24 - 10 * (columns - 1) - (folded ? 96 : 0)) / open;
+}
+
+// The task dialog's Agent chips, [value, label]: Default, the presets, then the installed
+// agents (as Start with… lists them, by their key, which is what `agent:` holds), and the
+// card's own agent when it's none of those, as one more, so the dialog shows what Start runs.
+export function agentChips(presets, agents, own) {
+  const out = [["", "Default"]];
+  const seen = new Set([""]);
+  for (const c of startChoices(presets, agents)) {
+    if (seen.has(c.name)) continue;
+    seen.add(c.name);
+    out.push([c.name, c.name]);
+  }
+  if (own && !seen.has(own)) out.push([own, own]);
+  return out;
+}
+
+// The task dialog's Folder chips, [value, label], with the card's own folder as one more
+// when it isn't one of them (a subfolder, or a path outside the workspace): its value as
+// written, a full path from `~`. `place` turns a value into the folder it names, so a card
+// whose folder is written another way (its full path) still lights the chip it names.
+export function folderChips(chips, own, tilde = (p) => p, place = (v) => v) {
+  if (!own || chips.some(([v]) => v === own || place(v) === place(own))) return chips;
+  return [...chips, [own, own.startsWith("/") ? tilde(own) : own]];
+}

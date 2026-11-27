@@ -12,8 +12,9 @@
 //     agent that used a Vault secret (quiet: logged here, never a toast; usageEvent), an agent that finished, an automation run that finished (not "nothing to do"; as the run's
 //     `notify` level allows: a shell run only with results or all, none of any with none), a card's pull
 //     request ready to merge, merged or closed, and a few things only the system says (a machine
-//     needs a login, the background runner didn't start, Settings fell back), and every error toast,
-//     whole. A run that needs a look (failed, timed out, its check failed or isn't allowed, missed,
+//     needs a login, the background runner didn't start, Settings fell back), every error toast,
+//     whole, and every toast that carries an undo (an Antigravity wipe's Put it back: undoOf), with its
+//     button until the thing is put back, then "Put back “…”" (store.restored). A run that needs a look (failed, timed out, its check failed or isn't allowed, missed,
 //     didn't start, or "no outcome": asked for its Outcome line and ended without one) is drawn in
 //     the blocked colour wherever it is.
 // Everything else (working or idle agents, runs still going, quiet or skipped checks, drafts,
@@ -28,6 +29,11 @@ export const ACT_KEY = "workspaces.notifications.act";
 export const PUSH_KEY = "workspaces.notifications.push";
 export const STORE_KEY = "workspaces.notifications.store";
 export const BADGE_KEY = "workspaces.notifications.badge";
+// What an undo became, by its key (ws-agents writes it: { [key]: { state, why, title, at } }, state
+// "running" | "waiting" | "done" | "failed"), and whether ws-agents is there to take a press ({ at },
+// every 5 s; missing or older than 15 s: away).
+export const RESTORES_KEY = "workspaces.agents.restores";
+export const AGENTS_ALIVE_KEY = "workspaces.agents.alive";
 // The same event said again within this long (a background runner's note shown as a toast too)
 // is one event.
 export const SAME_MS = 10 * 60e3;
@@ -40,9 +46,12 @@ export const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi
 const own = (o, k) => o != null && typeof o === "object" && Object.hasOwn(o, k);
 const obj = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v : {});
 
-// --- the log: { read: { id: when }, dismissed: { id or dedupe key: when }, events: [...] } ---
+// --- the log: { read: { id: when }, dismissed: { id or dedupe key: when }, restored: { undo key: when },
+// events: [...] } ---
 
 export const emptyStore = () => ({ read: {}, dismissed: {}, events: [] });
+// `restored` only once there is a mark in it, as `usage`.
+const withRestored = (store, restored) => (restored && Object.keys(restored).length ? { ...store, restored } : store);
 
 // How far ~/.herdr/vault/usage.jsonl has been read: { at, keys } (the newest line's time, and the lines
 // of that same millisecond already taken), or null before the first read.
@@ -59,7 +68,7 @@ export function parseStore(text) {
   const s = obj(raw);
   const times = (m) => Object.fromEntries(Object.entries(obj(m)).filter(([, v]) => typeof v === "number" && isFinite(v)));
   const events = (Array.isArray(s.events) ? s.events : []).filter((e) => e && typeof e === "object" && typeof e.id === "string" && typeof e.at === "number");
-  return withUsage({ read: times(s.read), dismissed: times(s.dismissed), events }, usageCursor(s.usage));
+  return withUsage(withRestored({ read: times(s.read), dismissed: times(s.dismissed), events }, times(s.restored)), usageCursor(s.usage));
 }
 
 // Older than 7 days goes (marks and events); at most MAX_EVENTS events, the newest.
@@ -67,7 +76,7 @@ export function pruneStore(store, now) {
   const s = store ?? emptyStore();
   const keep = (m) => Object.fromEntries(Object.entries(obj(m)).filter(([, at]) => now - at < EXPIRE_MS));
   const events = (s.events ?? []).filter((e) => now - e.at < EXPIRE_MS).sort((a, b) => b.at - a.at).slice(0, MAX_EVENTS);
-  return withUsage({ read: keep(s.read), dismissed: keep(s.dismissed), events }, usageCursor(s.usage));
+  return withUsage(withRestored({ read: keep(s.read), dismissed: keep(s.dismissed), events }, keep(s.restored)), usageCursor(s.usage));
 }
 
 export const markRead = (store, id, now) => ({ ...store, read: { ...store.read, [id]: now } });
@@ -115,7 +124,7 @@ export function mergeStore(a, b) {
   // The usage cursor that has read further.
   const ux = usageCursor(x.usage), uy = usageCursor(y.usage);
   const usage = !ux ? uy : !uy ? ux : uy.at > ux.at ? uy : ux;
-  return withUsage({ read: marks(x.read, y.read), dismissed, events: events.filter((e) => !own(dismissed, e.id)).sort((p, q) => q.at - p.at) }, usage);
+  return withUsage(withRestored({ read: marks(x.read, y.read), dismissed, events: events.filter((e) => !own(dismissed, e.id)).sort((p, q) => q.at - p.at) }, marks(x.restored, y.restored)), usage);
 }
 
 // --- Vault's usage notes: a secret used, as usage.jsonl says (CONTRACT: the CLI and the broker append) ---
@@ -251,6 +260,56 @@ const CARD_ACTION = /^ws-switcher\.show\/board\/([A-Za-z0-9][A-Za-z0-9._-]*)(?:\
 // A notify() payload ({ title, body, level, action, at }, from ws-toast or a background runner's
 // note) as an event for the log, or null when it isn't one: what live state already shows (agents,
 // automation runs, pull requests that need someone are drawn from what's published), and noise.
+// A notification's undo, checked: { label, name, key, command, ws, place, done, opens } or null. name
+// is the mod command a press runs (ws-agents.restore/<backup folder>), key what its outcome is filed
+// under (RESTORES_KEY), command the same thing to paste (the bell's fallback, never on the toast), done
+// the words once it's put back ("In Antigravity and History again."), opens what a click on the
+// put-back row runs ({ name, args }: History at that conversation, ws-switcher.history-at/…).
+export function undoOf(u) {
+  const o = obj(u);
+  const str = (v, n) => (typeof v === "string" && v.trim() ? v.trim().slice(0, n) : null);
+  const name = str(o.name, 200), key = str(o.key, 200);
+  if (!name || !key) return null;
+  const opensName = str(obj(o.opens).name, 300);
+  const opens = opensName ? { name: opensName, args: obj(obj(o.opens).args) } : null;
+  return { label: str(o.label, 40) ?? "Put it back", name, key, command: str(o.command, 1000), ws: str(o.ws, 100), place: str(o.place, 100), done: str(o.done, 200), opens };
+}
+
+// What a press shows, from the outcome filed under its key (ws-agents: { state: "running" | "done" |
+// "failed", why, again, title, at }) and the press made here (pressedAt, or null):
+//   "done"   put back by this press or another (why null): the toast closes, the row says "Put back"
+//   "busy"   running, or pressed and nothing back yet, for up to PRESS_WAIT_MS ("Putting back…")
+//   "note"   failed and it can be pressed again (again: true, "Close Antigravity first."): why, button
+//   "said"   failed for good, or done before ("Already put back"): why, no button
+//   "ready"  the button
+// An outcome older than this press is the last press's, not this one's.
+export const PRESS_WAIT_MS = 15000;
+export function undoState(entry, pressedAt, now) {
+  const e = entry && typeof entry === "object" ? entry : null;
+  const fresh = e && (pressedAt == null || (e.at ?? 0) >= pressedAt);
+  const why = fresh && e.why ? String(e.why) : null;
+  if (fresh && e.state === "done") return why ? { state: "said", why } : { state: "done", why: null };
+  if (fresh && e.state === "running") return { state: "busy", why: null };
+  if (pressedAt != null && !fresh && now - pressedAt < PRESS_WAIT_MS) return { state: "busy", why: null };
+  if (fresh && e.state === "failed") return e.again ? { state: "note", why: why ?? "Press it again." } : { state: "said", why: why ?? "It can't be put back." };
+  return { state: "ready", why: null };
+}
+
+// The log's "put back" marks: an undo event whose key the outcome says is done gets one (when it was
+// done), so the row still says "Put back" once Herdr restarts and the shared outcome is gone.
+export function markRestored(store, restores, now) {
+  const s = store ?? emptyStore();
+  const r = obj(restores), restored = { ...obj(s.restored) };
+  let changed = false;
+  for (const ev of s.events ?? []) {
+    const key = ev?.kind === "undo" ? ev.undo?.key : null;
+    if (!key || own(restored, key) || obj(r[key]).state !== "done") continue;
+    restored[key] = typeof r[key].at === "number" ? r[key].at : now;
+    changed = true;
+  }
+  return changed ? { ...s, restored } : s;
+}
+
 export function classifyToast(toast) {
   const n = obj(toast);
   const title = String(n.title ?? "").trim();
@@ -267,6 +326,14 @@ export function classifyToast(toast) {
   }
   if (title === "Settings shows only the package's sections for now") {
     return ev("sys:settings", { kind: "system", tone: "warn", title: "Settings fell back to the package's sections", detail: "Herdr's Settings changed; the package needs an update", place: "Settings", target: { kind: "action", name: "ws-switcher.settings" } });
+  }
+  // A toast with an undo (a wipe's Put it back), whatever its level: kept with the button.
+  const undo = undoOf(n.undo);
+  if (undo) {
+    return ev(`undo:${undo.key}`, {
+      kind: "undo", tone: n.level === "error" ? "blocked" : "done", title: title.slice(0, 200), detail: body.replace(/\s+/g, " ").trim().slice(0, 2000),
+      ws: undo.ws, place: undo.place ?? "Shown as a toast", undo, target: null,
+    });
   }
   // A card's pull request: ready, merged, closed, or news nobody was told.
   const card = act ? CARD_ACTION.exec(act.name) : null;
@@ -344,7 +411,7 @@ function cardOf(file, e) {
 //   | { kind: "board", ws, taskId } | { kind: "automation", ws, name } | { kind: "vault", ws } | { kind: "action", name, args }
 //   | null. goneNote: what's no longer there ("Tab closed"); with a fallbackLabel a click does that
 // ("Open in History"), else the row is gone (gone: true) and a click does nothing.
-export function buildItems({ agents = [], terminals = [], spaces = [], defs = [], assigned = {}, runs = [], automations = {}, prs = null, store = null, features = {}, now = Date.now() } = {}) {
+export function buildItems({ agents = [], terminals = [], spaces = [], defs = [], assigned = {}, runs = [], automations = {}, prs = null, store = null, restores = null, features = {}, now = Date.now() } = {}) {
   const on = (k) => obj(features)[k] !== false;
   if (!on("notifications")) return [];
   const s = store ?? emptyStore();
@@ -539,6 +606,17 @@ export function buildItems({ agents = [], terminals = [], spaces = [], defs = []
     if (ev.target?.kind === "agent" && !liveTerms.has(String(ev.target.terminal))) gone = { gone: true, goneNote: "Agent ended" };
     if (ev.target?.kind === "action" && ev.target.args?.name === "ws-automations" && !on("automations")) continue;
     if (ev.kind === "vault" && !on("vault")) continue;
+    if (ev.kind === "undo" && ev.undo?.key) {
+      const u = ev.undo, entry = obj(restores)[u.key];
+      const doneAt = own(obj(s.restored), u.key) ? s.restored[u.key] : obj(entry).state === "done" ? entry.at ?? now : null;
+      if (doneAt != null) {
+        const name = obj(entry).title || /“(.+)”/.exec(ev.title)?.[1] || "";
+        add({ id: ev.id, group: "updates", tone: "done", title: name ? `Put back “${name}”` : "Put back", detail: u.done ?? "", ...wsInfo(ev.ws), place: ev.place ?? "", at: doneAt, target: u.opens ? { kind: "action", name: u.opens.name, args: u.opens.args } : null, undo: null });
+      } else {
+        add({ id: ev.id, group: "updates", tone: ev.tone ?? "done", title: ev.title, detail: [ev.detail, u.command ? `Or: ${u.command}` : ""].filter(Boolean).join(" "), ...wsInfo(ev.ws), place: ev.place ?? "", at: ev.at, target: null, undo: { label: u.label, name: u.name, key: u.key } });
+      }
+      continue;
+    }
     add({ id: ev.id, group: "updates", tone: ev.tone ?? "done", title: ev.title, detail: ev.detail ?? "", ...wsInfo(ev.ws), place: ev.place ?? "", at: ev.kind === "vault" ? ev.lastAt ?? ev.at : ev.at, target: ev.target ?? null, ...gone });
   }
 
@@ -587,8 +665,9 @@ export function summaryOf(items) {
 // The heights the list draws at (main.js uses these), so the popup is as tall as what it shows.
 // head: the title row with its padding; summary and scope: the lines under it; a row with a detail
 // line (row) or without (rowShort); foot: the key hints and Clear read; empty: the caught-up note.
-export const SIZES = { width: 392, max: 556, head: 43, summary: 20, scope: 30, listPad: 12, section: 28, row: 72, rowShort: 53, foot: 35, empty: 196, frame: 2 };
-export const rowHeight = (it) => (it.detail || it.goneNote ? SIZES.row : SIZES.rowShort);
+// undoRow: a row with an undo's button on its place line (20px, where the line is 16).
+export const SIZES = { width: 392, max: 556, head: 43, summary: 20, scope: 30, listPad: 12, section: 28, row: 72, rowShort: 53, undoRow: 76, foot: 35, empty: 196, frame: 2 };
+export const rowHeight = (it) => (it.undo ? SIZES.undoRow : it.detail || it.goneNote ? SIZES.row : SIZES.rowShort);
 export const headHeight = ({ summary = false, multiWs = false } = {}) => SIZES.head + (summary ? SIZES.summary : 0) + (multiWs ? SIZES.scope : 0);
 // The popup's height for these items: header, sections and rows, footer; at most SIZES.max.
 export function panelHeight(items, { multiWs = false } = {}) {

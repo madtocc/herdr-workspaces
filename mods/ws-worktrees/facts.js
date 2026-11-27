@@ -40,7 +40,7 @@ export function parsePrs(text) {
   try { list = JSON.parse(text); } catch { return map; }
   for (const p of Array.isArray(list) ? list : []) {
     if (p.isCrossRepository || !p.headRefName || map.has(p.headRefName)) continue;
-    map.set(p.headRefName, { state: p.state, number: p.number, url: p.url, head: p.headRefOid ?? null });
+    map.set(p.headRefName, { state: p.state, number: p.number, url: p.url, head: p.headRefOid ?? null, title: String(p.title ?? "") });
   }
   return map;
 }
@@ -115,3 +115,30 @@ export function removeLabel({ working, force, armed, one, lost }) {
   return "Remove";
 }
 export const removeReserve = ({ one, lost }) => ["Remove", "Removing…", ...(one || lost > 0 ? ["Remove anyway"] : []), ...(one && lost > 0 ? [`Remove and lose ${changes(lost)}`] : [])];
+
+// A link the screen opens in the browser: GitHub's own pages only. Anything else (a GitHub
+// Enterprise host) is drawn as a plain tag, not as a link that does nothing.
+export const opensLink = (url) => /^https:\/\/github\.com\//.test(String(url ?? ""));
+
+// "Read 4m ago" beside Refresh, in the words the board's GitHub side uses.
+export function readAgo(at, now) {
+  const m = Math.floor((now - at) / 60000);
+  if (m < 1) return "Read just now";
+  if (m < 60) return `Read ${m}m ago`;
+  const h = Math.floor(m / 60);
+  return h < 24 ? `Read ${h}h ago` : `Read ${Math.floor(h / 24)}d ago`;
+}
+
+// Whether the screen, shown, reads git and GitHub again by itself: when shown again after
+// a minute away (`back`), or, while someone can see it (`seen`: the layout's screen in a
+// visible window), when what it shows is 5 minutes old. Never while a read is under way.
+// A clock set back behind the last read counts as due, so it can't stall. A tab or a pane
+// copy isn't `seen` here: it reads when opened, on Refresh and after a removal, as before.
+export const SHOWN_STALE = 300e3;
+export function readAgain({ back, reading, readAt, now, away = 60e3, seen = true }) {
+  if (reading) return false;
+  if (!back && !seen) return false;
+  const d = now - readAt;
+  if (d < 0) return true;
+  return back ? d > away : d >= SHOWN_STALE;
+}

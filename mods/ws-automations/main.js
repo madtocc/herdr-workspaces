@@ -48,7 +48,7 @@ import { runCheck, runShellScript, checkEnv } from "./check.js";
 import { splitFront, fieldValue, withFrontFields, normCheck, normScript, parseDuration, formatDuration, effectiveTimeout, effectiveNotify, SHELLS } from "./autofacts.js";
 import { DRAFTER_NAMES, DRAFT_MODEL, DRAFT_TIMEOUT, SCHEMA, GUIDE, buildDraftCommand, parseDraftOutput, pickDrafters } from "./drafter.js";
 import { automationSetting, parseSettings, SETTINGS_FILE, platformWords, featureOn } from "./settingsfacts.js";
-import { lookWord, noOutcome, soonAfter } from "./lookfacts.js";
+import { lookWord, noOutcome, soonAfter, tryLimit, scriptStops, followersLine, allowAsk, allowParts, carrySource, staleParts } from "./lookfacts.js";
 import * as fs from "fs/promises";
 // The system's trash by its name: the Recycle Bin on Windows, the Trash elsewhere.
 const trashName = () => (window()?.platform === "windows" ? "Recycle Bin" : "Trash");
@@ -61,6 +61,8 @@ const GO_ASK = "Click again to go there and drop what you typed.";
 // Delete's and Stop's question: a press on its pair this soon after the one that asked is the
 // rest of a double-click, so it's ignored (the second click lands on Cancel or Keep running).
 const SECOND_PRESS_MS = 500;
+// Thrown when the file a rename would move changed on disk since it was opened: Save's "changed" case.
+const CHANGED = new Error("it changed on disk");
 // The switcher's sidebar copy says it's there every 5 s; missing or older than 15 s, it's away, and an ask
 // for it (Log's "open") would wait for nobody.
 const switcherHere = () => Date.now() - (shared("workspaces.switcher.alive")?.at ?? 0) < 15000;
@@ -311,6 +313,7 @@ export default class Automations extends View {
     this.details = false; // the fields shown, not just the summary
     this.manual = false;  // a new one being filled in by hand, before any draft
     this.drafting = null; // the selection a draft is for, while Claude works
+    this.draftJob = 0;    // counts drafts asked; Cancel moves it on, so a late answer (or the next CLI's) is dropped
     this.drafted = false; // the editor holds a draft not saved yet
     this.draftNote = null;
     this.draftError = null;
@@ -320,6 +323,13 @@ export default class Automations extends View {
     this.triedScript = null;   // { script, folder, code, timedOut, durationMs, combined }: what it did here
     this.preview = null;       // Preview's panel: { sel, loading, check: { out } | { error } | null, text, vars, folder }
     this.askText = false;      // Run now on a `link` one: the {{text}} strip is open
+    this.copiedCmd = null;     // the command "Copy" put on the clipboard: the button reads "Copied" for 2 s
+    this.renaming = false;     // Rename…: the Name box shows under Details, and Save moves the file to the new name
+    this.conflict = false;     // Save found the file changed on disk: Overwrite / Reload from disk in the footer
+    this.overwriting = false;  // Overwrite asked: Cancel and "Overwrite “name”" in its place
+    this.conflictKeep = false; // the save the file refused was an On / Off or a 10-minute fix: Overwrite keeps too
+    this.dropAsk = null;       // Discard ("discard") or Reload from disk ("reload") asked: it reads "Discard changes?"
+    this.dropAt = 0;           // when it asked: a press under 500 ms after doesn't count
     this.ranNow = null;        // { key, at }: the last Run now asked here; the same one again within SECOND_PRESS_MS is a double click
     // The settings file as read when the screen opened, for the Drafter when Settings hasn't shared it.
     this.fileSettings = null;
@@ -416,7 +426,7 @@ export default class Automations extends View {
   dirty() {
     const s = this.snap, c = this.choice;
     if (!s) return false;
-    return (this.sel?.isNew && this.nameIn.value().trim() !== s.name)
+    return ((this.sel?.isNew || this.renaming) && this.nameIn.value().trim() !== s.name)
       || this.descIn.value() !== s.description || this.whenIn.value() !== s.when || this.bodyIn.value().trim() !== s.body
       || normCheck(this.checkIn.value()) !== s.check
       || c.agent !== s.agent || c.model !== s.model || c.effort !== s.effort || c.folder !== s.folder || c.card !== s.card || c.keep !== s.keep || c.enabled !== s.enabled
@@ -437,6 +447,8 @@ export default class Automations extends View {
   calm(keep = null) {
     if (keep !== "delete" && !this.busy) this.confirming = false;
     if (keep !== "stop") this.stopping = null;
+    if (keep !== "overwrite") this.overwriting = false;
+    if (keep !== "drop") this.dropAsk = null;
     this.leaveAsk = null;
     this.awayNote = null;
   }
@@ -444,11 +456,11 @@ export default class Automations extends View {
   // The run Stop asks about can still be stopped (its pair is drawn).
   stopAsks() {
     const r = (shared("workspaces.automation.runs") ?? []).find((x) => x.id === this.stopping);
-    return Boolean(r) && stoppableRun(r, agents(), terminals());
+    return Boolean(r) && (stoppableRun(r, agents(), terminals()) || r.status === "queued");
   }
 
   // Delete or Stop asked (armedAt is when) and a press on its pair came too soon after: ignored.
-  tooSoon() { return Date.now() - (this.armedAt ?? 0) < SECOND_PRESS_MS; }
+  tooSoon() { return soonAfter(this.armedAt, Date.now(), SECOND_PRESS_MS); }
 
   // Esc and Cmd/Ctrl+W, as Herdr sends them to a dialog (overlay.close, tab.close, pane.close; never
   // as keys): with the model list open, Esc closes the list and the dialog stays; otherwise leave().
@@ -463,10 +475,10 @@ export default class Automations extends View {
     }
     // Stop asking about a run that has ended by itself: its pair isn't drawn, so there's no question left.
     if (this.stopping && !this.stopAsks()) this.stopping = null;
-    // Delete or Stop asking: Esc, or Cmd/Ctrl+W, takes the question back and the dialog stays.
-    if (!this.busy && (this.confirming || this.stopping)) {
+    // Delete, Stop or Overwrite asking: Esc, or Cmd/Ctrl+W, takes the question back and the dialog stays.
+    if (!this.busy && (this.confirming || this.stopping || this.overwriting || this.dropAsk)) {
       this.confirming = false;
-      this.stopping = null;
+      this.stopping = null; this.overwriting = false; this.dropAsk = null;
       cx.notify();
       return;
     }
@@ -478,7 +490,7 @@ export default class Automations extends View {
   leave(cx, how) {
     if (this.busy) return;
     this.confirming = false;
-    this.stopping = null;
+    this.stopping = null; this.overwriting = false; this.dropAsk = null;
     if (this.unsaved() && this.leaveAsk !== "esc" && this.leaveAsk !== "x") {
       this.leaveAsk = how;
       cx.notify();
@@ -494,7 +506,7 @@ export default class Automations extends View {
     if (this.busy) return;
     // Like any other press, it takes back Delete's and Stop's question (not this one's, so a second click goes).
     this.confirming = false;
-    this.stopping = null;
+    this.stopping = null; this.overwriting = false; this.dropAsk = null;
     if (kind === "log" && !switcherHere()) { this.awayNote = AWAY; cx.notify(); return; }
     const key = `${kind}:${r.id}`;
     if (this.unsaved() && this.leaveAsk !== key) { this.leaveAsk = key; cx.notify(); return; }
@@ -516,8 +528,10 @@ export default class Automations extends View {
     this.pending = null;
     this.error = null;
     this.notice = null;
+    this.conflict = false; this.conflictKeep = false;
+    this.renaming = false;
     this.confirming = false;
-    this.stopping = null;
+    this.stopping = null; this.overwriting = false; this.dropAsk = null;
     this.leaveAsk = null;
     this.drafting = null;
     this.draftStale = null;
@@ -644,9 +658,10 @@ export default class Automations extends View {
   }
 
   // A draft from the first CLI that gives one; when none does, the first one's reason.
-  async askDraft(text, cx) {
+  async askDraft(text, cx, job) {
     let first = null;
     for (const cli of this.drafters()) {
+      if (job !== this.draftJob) throw new Error("cancelled"); // Cancel: no next CLI
       this.drafter = cli;
       cx?.notify(); // the busy line names the one asked now
       try { return await this.askDrafter(cli, text); }
@@ -677,6 +692,7 @@ export default class Automations extends View {
     // The fields as they were when it asked: changed meanwhile, the draft isn't used (it'd overwrite them).
     const before = JSON.stringify(this.current());
     this.drafting = sel;
+    const job = ++this.draftJob;
     this.draftError = null;
     this.draftNote = null;
     this.draftStale = null;
@@ -685,11 +701,11 @@ export default class Automations extends View {
     cx.notify();
     cx.spawn(async (cx) => {
       try {
-        let d = await this.askDraft(this.request(def, ask, current, null), cx);
+        let d = await this.askDraft(this.request(def, ask, current, null), cx, job);
         const w = parseWhen(oneLine(d.when));
-        if (w.kind === "error") d = await this.askDraft(this.request(def, ask, current, { when: d.when, problem: w.error }), cx);
-        // Opened another one meanwhile: this draft was for the one before.
-        if (this.sel !== sel) return;
+        if (w.kind === "error" && job === this.draftJob) d = await this.askDraft(this.request(def, ask, current, { when: d.when, problem: w.error }), cx, job);
+        // Cancelled, or opened another one meanwhile: this draft was for the one before.
+        if (job !== this.draftJob || this.sel !== sel) return;
         if (JSON.stringify(this.current()) !== before) {
           this.draftStale = "You changed it while the draft was being written, so the draft wasn't used. Ask again.";
           return;
@@ -699,12 +715,21 @@ export default class Automations extends View {
         this.draftNote = oneLine(d.note) || null;
         input.set_value("");
       } catch (e) {
-        if (this.sel === sel) this.draftError = `Couldn't draft it: ${message(e)}`;
+        if (job === this.draftJob && this.sel === sel) this.draftError = `Couldn't draft it: ${message(e)}`;
       } finally {
-        if (this.drafting === sel) this.drafting = null;
+        if (job === this.draftJob && this.drafting === sel) this.drafting = null;
         cx.notify();
       }
     });
+  }
+
+  // Cancel in the drafting line: stops waiting. What was typed stays in the box; the CLI asked
+  // finishes in the background (an exec can't be stopped) and its answer is dropped.
+  cancelDraft(cx) {
+    if (!this.drafting) return;
+    this.draftJob++;
+    this.drafting = null;
+    cx.notify();
   }
 
   // A draft into the editor, kept to what this workspace has: anything else stays as it was.
@@ -751,18 +776,24 @@ export default class Automations extends View {
     };
   }
 
-  save(cx) {
+  // force: Overwrite, after a save found the file changed on disk: written over what's there now.
+  // keepAllow: the On / Off chips and the 10-minute fixes: written, but nothing becomes allowed (allowAsk).
+  save(cx, force = false, keepAllow = false) {
     const sel = this.sel, def = this.def();
     if (!sel || !def || this.busy) return;
     this.calm();
     this.draftStale = null;
-    const name = sel.isNew ? this.nameIn.value().trim() : sel.name;
+    const name = sel.isNew || this.renaming ? this.nameIn.value().trim() : sel.name;
+    // Rename… with a new name: written as a new file, and the old one goes to the Trash.
+    const renamed = !sel.isNew && this.renaming && name !== sel.name;
+    // Only its case changes: on a caseless disk that's the same file, so it's moved, not written anew.
+    const recased = renamed && name.toLowerCase() === sel.name.toLowerCase();
     const when = oneLine(this.whenIn.value());
     const trigger = parseWhen(when);
     const showDetails = (why) => { this.error = why; this.details = true; cx.notify(); };
     if (!NAME.test(name)) return showDetails("A name is letters, digits, dots, dashes or underscores, starting with a letter or digit.");
     const scope = sel.scope, global = scope === "global";
-    if (sel.isNew && this.taken(scope).has(name)) return showDetails(`There's already an automation called "${name}"${global ? " for every workspace" : ` in ${def.name}`}.`);
+    if ((sel.isNew || renamed) && this.taken(scope).has(name)) return showDetails(`There's already an automation called "${name}"${global ? " for every workspace" : ` in ${def.name}`}.`);
     if (trigger.kind === "error") return showDetails(trigger.error);
     const c = this.choice;
     const shell = c.run === "shell";
@@ -777,24 +808,63 @@ export default class Automations extends View {
     // A global one's `off:` line: the other workspaces as they were, and this one as chosen.
     const off = global ? [...(this.snap.off ?? []).filter((w) => w !== def.id), ...(c.offHere ? [def.id] : [])] : [];
     // A script has no agent, model, effort or card: those lines go.
-    const text = automationText(sel.isNew ? null : this.snap.text, {
+    // A duplicate starts from its original's text (`base`), so lines this screen doesn't edit (secret_env) come along.
+    const text = automationText(sel.isNew ? (this.snap?.base ?? null) : this.snap.text, {
       description: this.descIn.value(), when, run: shell ? "shell" : null, shell: shell ? c.shell : null, terminal: shell && c.terminal ? true : null,
       agent: shell ? null : c.agent, model: shell ? null : c.model, effort: shell ? null : c.effort, folder: c.folder,
       check, dedupe: c.dedupe, timeout: c.timeout, notify: c.notify, missed: c.missed,
       card: !shell && c.card ? true : null, keep: c.keep ? true : null, enabled: c.enabled ? null : false, ...(global ? { off: off.join(", ") } : {}),
     }, body);
+    // How many secrets it hands over, read before a rename takes the old record out of the list.
+    const before = this.lookup(sel);
+    const secretsBefore = (before?.secretEnv ?? []).length;
+    // What becomes allowed (lookfacts.js allowAsk): a rename or a duplicate carries its source's allowance.
+    const how = renamed || this.snap?.source ? "carry" : keepAllow ? "keep" : "save";
+    // No record (its file gone meanwhile): carrySource answers not allowed for every part, so nothing carries.
+    const source = this.snap?.source ?? carrySource(before, this.snap ?? {}, normScript);
+    const ask = allowAsk(how, { check: check || "", script: script || "" }, source);
+    // What the screen's record says: a part asked is allowed; under keep, an untouched part keeps what the
+    // record vouched for its text; any other part waits.
+    const partOk = (text, asked, ok) => !text || asked !== null || (how === "keep" && ok === true);
+    const checkFlag = partOk(check, ask.check, source.checkOk), scriptFlag = partOk(script, ask.script, source.scriptOk);
+    const flags = { allowed: checkFlag && scriptFlag, checkAllowed: checkFlag, scriptAllowed: scriptFlag };
     this.busy = true;
     cx.spawn(async (cx) => {
       try {
-        // You've read it here and saved it: that check and script may run. Said first, so the runner knows when it reads the file.
-        if (check || script) setShared("workspaces.automation.allow", { workspace: global ? "*" : def.id, name, check: check || null, script, at: Date.now() });
-        await writeTextFile(file, text, sel.isNew ? null : this.snap.text);
+        // You've read it here and saved it: that check and script may run (only what allowAsk says). Said
+        // first, so the runner knows when it reads the file.
+        if (ask.check || ask.script) setShared("workspaces.automation.allow", { workspace: global ? "*" : def.id, name, check: ask.check, script: ask.script, at: Date.now() });
+        // Renamed: the old file must still be what was opened (as Save checks), unless it's Overwrite.
+        if (renamed && !force && (await readTextFile(this.snap.file)) !== this.snap.text) throw CHANGED;
+        let oldLeft = null;
+        if (recased) {
+          // Moved to the new case through a name of its own, then written there. On a disk that tells case
+          // apart the new name can be another automation's file: the step refuses a target that isn't this file.
+          const was = force ? await readTextFile(this.snap.file) : this.snap.text;
+          const r = await exec("sh", ["-c", 'if [ -e "$2" ] && ! [ "$1" -ef "$2" ]; then echo "${2##*/} is already there" >&2; exit 3; fi; mv -- "$1" "$2.renaming" && mv -- "$2.renaming" "$2"', "sh", this.snap.file, file]);
+          if (r.code !== 0) throw new Error(r.stderr.trim() || `exit ${r.code}`);
+          await writeTextFile(file, text, was);
+        } else await writeTextFile(file, text, sel.isNew || renamed ? null : force ? await readTextFile(file) : this.snap.text);
+        // Renamed: the old file to the Trash and its record out of the list. A Trash that fails leaves both
+        // files, so both would run: said in the footer, and the old record stays listed.
+        if (renamed && !recased) {
+          try {
+            const r = await exec("sh", ["-c", TRASH, "sh", this.snap.file, `${home()}/.herdr/workspaces/.trash`]);
+            if (r.code !== 0) oldLeft = r.stderr.trim() || `exit ${r.code}`;
+          } catch (e) { oldLeft = message(e); }
+        }
+        if (renamed && !oldLeft) {
+          if (global) {
+            updateGlobal(sel.name, null);
+            if (!def.none && !this.taken("workspace").has(sel.name)) updateShared(def.id, sel.name, null);
+          } else updateShared(def.id, sel.name, null);
+        }
         const record = {
           name, file, scope, description: oneLine(this.descIn.value()), when, trigger, summary: describe(trigger),
           agent: shell ? null : c.agent || null, model: shell ? null : c.model || null, effort: shell ? null : c.effort || null, folder: c.folder || null, check: check || null,
           card: !shell && c.card, keep: c.keep, enabled: c.enabled,
           run: c.run, shell: shell ? c.shell : null, terminal: shell && c.terminal, timeout: c.timeout || null, notify: c.notify || null, missed: c.missed || "run", dedupe: c.dedupe || "changed",
-          body: normScript(body), error: null, next: null, warning: null, allowed: true, checkAllowed: true, scriptAllowed: true,
+          body: normScript(body), error: null, next: null, warning: null, ...flags,
         };
         record.timeoutMs = effectiveTimeout(record);
         record.notifyLevel = effectiveNotify(record);
@@ -809,15 +879,31 @@ export default class Automations extends View {
         this.drafted = false;
         this.draftNote = null;
         this.error = null;
+        this.conflict = false; this.conflictKeep = false;
+        this.renaming = false;
         const others = off.filter((w) => w !== def.id).map((w) => defOf(w)?.name ?? w);
         this.notice = !c.enabled ? `Saved. It's off${global ? " in every workspace" : ""}: only Run now and herdr-ws-run start it.`
           : !global ? "Saved. It's on."
           : c.offHere ? `Saved. It's off in ${def.name}, and on in the other workspaces${others.length ? ` but ${others.join(", ")}` : ""}.`
           : `Saved. It's on in every workspace${others.length ? ` but ${others.join(", ")}` : ""}.`;
+        if (renamed) {
+          // Nothing silent: the ones that run after it wait on the old name, and a Protected secret's grant is by name.
+          const pool = global ? [...Object.values(shared("workspaces.automations") ?? {}).flat(), ...this.globals()] : this.list();
+          const followers = pool.filter((a) => a && a.name !== sel.name && a.trigger?.kind === "chain" && a.trigger.target === sel.name).map((a) => a.name);
+          const line = followersLine(followers, sel.name, name);
+          const after = line ? ` ${line}` : "";
+          const secrets = secretsBefore ? " If it uses a Protected secret, macOS asks again on its next run, and Secrets lists that grant under the old name." : "";
+          this.notice = `Renamed to "${name}". Its earlier runs keep the name "${sel.name}".${after}${secrets}`;
+          if (oldLeft) this.error = `Saved as "${name}", but its old file is still there, so both run: ${oldLeft}. Move ${tilde(this.dirOf(scope))}/${sel.name}.md to the ${trashName()}.${after}`;
+        }
       } catch (e) {
-        this.error = sel.isNew
+        // Changed on disk since it was opened (a run turning a one-time one off, herdr-ws-run --off, an
+        // agent): what you typed stays, and the footer offers Overwrite or Reload from disk.
+        const disk = sel.isNew || renamed ? null : await readTextFile(file).catch(() => null);
+        if (e === CHANGED || (!sel.isNew && !renamed && disk !== this.snap.text)) { this.conflict = true; this.conflictKeep = keepAllow; this.error = null; }
+        else this.error = sel.isNew || renamed
           ? `Couldn't save: an automation called "${name}" may already be there (${message(e)}).`
-          : `Couldn't save: it changed on disk since you opened it. Open it again. (${message(e)})`;
+          : `Couldn't save: ${message(e)}`;
       }
       this.busy = false;
       cx.notify();
@@ -856,6 +942,43 @@ export default class Automations extends View {
     this.pending = JSON.stringify(s);
     this.discarding = true;
     this.pick(s, null, cx);
+  }
+
+  // Overwrite (after Save found the file changed on disk): the first press asks in its place, Cancel and
+  // "Overwrite “name”"; that press, not too soon after, writes what you typed over what's there now.
+  overwrite(cx) {
+    if (!this.conflict || this.busy) return;
+    if (!this.overwriting) { this.calm(); this.overwriting = true; this.armedAt = Date.now(); cx.notify(); return; }
+    if (this.tooSoon()) return;
+    this.overwriting = false;
+    this.save(cx, true, this.conflictKeep); // after a refused On / Off or 10-minute fix it allows nothing either
+  }
+
+  // Reload from disk: the file as it is now, dropping what you typed (Discard's way, so Run now and
+  // Preview, which may move under the pointer, wait their half second).
+  reloadDisk(cx) {
+    if (!this.conflict || this.busy || !this.dropPress("reload", cx)) return;
+    this.conflict = false; this.conflictKeep = false;
+    this.discard(cx);
+  }
+
+  // Reload from disk beside "changed on disk since you opened it": the file again; with unsaved edits it
+  // asks "Discard changes?" first, as Discard does.
+  reloadStale(cx) {
+    if (this.busy || !this.sel || this.sel.isNew) return;
+    if (this.dirty() && !this.dropPress("stale", cx)) return;
+    this.dropAsk = null;
+    this.discard(cx);
+  }
+
+  // Discard, and Reload from disk, drop what you typed: the first press asks ("Discard changes?" in
+  // the button), and a press 500 ms or more later drops it. Any key, typing, a press elsewhere, Esc,
+  // Save or opening another one takes the question back (calm and the root's handlers).
+  dropPress(which, cx) {
+    if (this.dropAsk !== which) { this.calm(); this.dropAsk = which; this.dropAt = Date.now(); cx.notify(); return false; }
+    if (soonAfter(this.dropAt, Date.now(), SECOND_PRESS_MS)) return false;
+    this.dropAsk = null;
+    return true;
   }
 
   // Discard leaves the row once the saved one is back, and Run now or Preview slides under the
@@ -931,15 +1054,19 @@ export default class Automations extends View {
   fixCap(how, cx) {
     const c = this.choice, had = this.dirty();
     if (how === "tab") { c.terminal = true; c.keep = false; } else c.timeout = "10m";
-    if (had) cx.notify(); else this.save(cx);
+    if (had) cx.notify(); else this.save(cx, false, true); // allows nothing: Allow this script stays yours
   }
 
   // The first press asks (Keep running / Stop it in the row); Stop it, not too soon after, closes the tab.
   stop(r, cx) {
     if (this.stopping !== r.id) { this.calm(); this.stopping = r.id; this.armedAt = Date.now(); cx.notify(); return; }
     if (this.tooSoon()) return;
-    this.stopping = null;
-    run("tab.close", { id: r.tab, confirmed: true });
+    this.stopping = null; this.overwriting = false; this.dropAsk = null;
+    // A queued run: the switcher passes the ask to the runner, which takes it out of its queue and notes it
+    // as skipped (with the sidebar hidden nobody would read it: said, as Log says it). Otherwise its tab closes.
+    if (r.status === "queued" && !switcherHere()) { this.awayNote = AWAY; cx.notify(); return; }
+    if (r.status === "queued") setShared("workspaces.automation.cancel", { workspace: r.ws, name: r.name, id: r.id, at: Date.now() });
+    else run("tab.close", { id: r.tab, confirmed: true });
     cx.notify();
   }
 
@@ -948,13 +1075,16 @@ export default class Automations extends View {
     const def = this.def(), sel = this.sel;
     const saved = this.lookup(sel);
     if (!def || !saved) return;
-    const check = saved.checkAllowed === false && saved.check ? saved.check : null;
-    const script = saved.run === "shell" && saved.scriptAllowed === false && saved.body ? saved.body : null;
-    if (!check && !script && saved.allowed !== false) return;
+    // Exactly what the strip names: a waiting part the editor shows as the record has it (allowParts).
+    const { check, script } = allowParts(saved, { check: normCheck(this.checkIn.value()), script: normScript(this.bodyIn.value()), shell: this.choice.run === "shell" });
+    if (!check && !script) return;
     const global = scopeOf(saved) === "global";
-    setShared("workspaces.automation.allow", { workspace: global ? "*" : def.id, name: saved.name, check: check ?? saved.check ?? null, script, at: Date.now() });
-    const ok = { allowed: true, checkAllowed: true, scriptAllowed: true };
-    if (!saved.replaced && !def.none) updateShared(def.id, saved.name, { ...saved, ...ok, warning: null });
+    setShared("workspaces.automation.allow", { workspace: global ? "*" : def.id, name: saved.name, check, script, at: Date.now() });
+    // Only what was allowed changes; a part that still waits keeps waiting.
+    const checkOk = check ? true : !(saved.checkAllowed === false || (saved.allowed === false && saved.checkAllowed === undefined && Boolean(saved.check)));
+    const scriptOk = script ? true : saved.scriptAllowed !== false;
+    const ok = { allowed: checkOk && scriptOk, checkAllowed: checkOk, scriptAllowed: scriptOk };
+    if (!saved.replaced && !def.none) updateShared(def.id, saved.name, { ...saved, ...ok, ...(ok.allowed ? { warning: null } : {}) });
     if (global) { const g = this.globals().find((x) => x.name === saved.name); if (g) updateGlobal(g.name, { ...g, ...ok }); }
     this.error = null;
     this.notice = script && check ? "Allowed. Its check and its script run from now on." : script ? "Allowed. Its script runs from now on." : "Allowed. Its check runs before each start from now on.";
@@ -1022,7 +1152,7 @@ export default class Automations extends View {
     cx.notify();
     cx.spawn(async (cx) => {
       const vars = { ...this.runVars(def, sel, folder, "Tried from the Automations screen", false), folder, workspace_id: def.id };
-      const res = await runShellScript(exec, { shell: c.shell, script, folder, vars, timeoutMs: effectiveTimeout({ run: "shell", timeout: c.timeout }), secret: this.secretOf(def, sel) });
+      const res = await runShellScript(exec, { shell: c.shell, script, folder, vars, timeoutMs: tryLimit(effectiveTimeout({ run: "shell", timeout: c.timeout })), secret: this.secretOf(def, sel) });
       this.tryingScript = false;
       if (this.sel === sel) this.triedScript = { script, folder, ...res };
       cx.notify();
@@ -1075,6 +1205,33 @@ export default class Automations extends View {
     closeOverlay(props().overlay);
   }
 
+  // Rename…: the Name box under Details, with the name in it; Save writes the new file and trashes the old.
+  rename(cx) {
+    if (!this.sel || this.sel.isNew || this.busy) return;
+    this.renaming = true;
+    this.details = true;
+    this.nameIn.focus();
+    cx.notify();
+  }
+
+  // Duplicate: a new one filled in from the saved one, in the same place, named "<name>-copy"
+  // (then -copy-2, …). Nothing is written until Create.
+  duplicate(cx) {
+    const s = this.snap, sel = this.sel;
+    if (!s || !sel || sel.isNew || this.busy || this.dirty()) return;
+    const taken = this.taken(sel.scope);
+    let name = `${s.name}-copy`;
+    for (let i = 2; taken.has(name); i++) name = `${s.name}-copy-${i}`;
+    this.pick({ scope: sel.scope, name: "", isNew: true }, {
+      name, description: s.description, when: s.when, agent: s.agent, model: s.model, effort: s.effort, folder: s.folder,
+      check: s.check, card: s.card, keep: s.keep ?? false, enabled: s.enabled, body: s.body, off: s.off ?? [], offHere: s.offHere ?? false, base: s.text,
+      // What was allowed of the original: a copy doesn't allow what the original still waits for.
+      source: carrySource(this.lookup(sel), s, normScript),
+      ...Object.fromEntries(Object.keys(SHELL_DEFAULTS).map((k) => [k, s[k] ?? SHELL_DEFAULTS[k]])),
+    }, cx);
+    this.manual = true;
+  }
+
   // A global one, as a new one of the same name for this workspace only: saved, it
   // replaces the global one here.
   copyHere(cx) {
@@ -1084,6 +1241,8 @@ export default class Automations extends View {
       name: s.name, description: s.description, when: s.when, agent: s.agent, model: s.model, effort: s.effort, folder: s.folder,
       check: s.check, card: s.card, keep: s.keep ?? false, enabled: true, body: s.body,
       ...Object.fromEntries(Object.keys(SHELL_DEFAULTS).map((k) => [k, s[k] ?? SHELL_DEFAULTS[k]])),
+      // As Duplicate: this workspace's copy doesn't allow what the global one still waits for.
+      source: carrySource(this.lookup(this.sel), s, normScript),
     }, cx);
     this.manual = true;
   }
@@ -1096,6 +1255,8 @@ export default class Automations extends View {
     if (this.dirty()) { this.error = "Save it first: Run now starts what's saved."; cx.notify(); return; }
     const saved = this.lookup(this.sel);
     if (saved?.replaced) { this.error = `${this.def()?.name ?? "This workspace"} has its own "${saved.name}", which is the one that runs here. Open that one to run it.`; cx.notify(); return; }
+    const stale = staleParts(saved, this.snap, normScript);
+    if (saved?.allowed === false && (stale.check || stale.script)) { this.error = "It changed on disk since you opened it: Reload from disk, then allow it."; cx.notify(); return; }
     if (saved?.allowed === false) { this.error = `Allow its ${saved.scriptAllowed === false ? "script" : "check"} first: it doesn't start until then.`; cx.notify(); return; }
     if (saved?.trigger?.kind === "link" && !go) { this.askText = true; this.textIn.focus(); cx.notify(); return; }
     const text = go ? this.textIn.value().trim() : "";
@@ -1218,10 +1379,10 @@ export default class Automations extends View {
       // A press anywhere takes the closing question back (the ×, Go to and Log keep theirs, so a second click goes),
       // and Delete's and Stop's (their pairs keep theirs). Not while deleting.
       .on_mouse_down("left", (_e, cx) => {
-        const armed = !this.busy && (this.confirming || this.stopping);
+        const armed = !this.busy && (this.confirming || this.stopping || this.overwriting || this.dropAsk);
         if (!this.leaveAsk && !armed) return;
         this.leaveAsk = null;
-        if (armed) { this.confirming = false; this.stopping = null; }
+        if (armed) { this.confirming = false; this.stopping = null; this.overwriting = false; this.dropAsk = null; }
         cx.notify();
       })
       // Esc, and Cmd/Ctrl+W, reach a dialog as Herdr's actions, never as keys: claimed here, so the
@@ -1232,7 +1393,7 @@ export default class Automations extends View {
       .on_key_down((e, cx) => {
         const m = e.modifiers ?? {};
         // Any key typed takes Delete's and Stop's question back.
-        if (!this.busy && (this.confirming || this.stopping)) { this.confirming = false; this.stopping = null; cx.notify(); }
+        if (!this.busy && (this.confirming || this.stopping || this.overwriting || this.dropAsk)) { this.confirming = false; this.stopping = null; this.overwriting = false; this.dropAsk = null; cx.notify(); }
         // No Esc branch: Herdr's Esc comes as overlay.close (above), never as a key here.
         // ⌘S (Ctrl+S elsewhere) is Save, or Create, when that button would take a click.
         if ((m.platform || m.control) && !m.shift && !m.alt && e.key === "s") {
@@ -1257,16 +1418,19 @@ export default class Automations extends View {
       ...this.globals().filter((g) => own.some((o) => o.name === g.name)).map((g) => ({ ...g, replaced: true, everywhere: g.enabled, enabled: false, next: null }))];
     const runs = (shared("workspaces.automation.runs") ?? []).filter((r) => r.ws === def.id);
     const ag = agents(), tm = terminals();
-    // On or off at a click: a track with its knob at the right when it's on.
-    const toggle = (a) => h_flex().id(`a-sw-${scopeOf(a)}-${a.name}`).w(26).h(15).p(2).flex_none().rounded_full().items_center().cursor_pointer()
-      .bg(a.enabled ? t.accent : t.input).when(a.enabled, (el) => el.justify_end())
+    // On or off at a click: a track with its knob at the right when it's on, in a 36 by 30 box that
+    // takes the click and the tooltip (the track alone is a small target in a row that opens it).
+    // The box reaches 5px past the track on each side, so the track sits where it always did.
+    const toggle = (a) => div().id(`a-sw-${scopeOf(a)}-${a.name}`).w(36).h(30).ml(-5).mr(-5).flex().flex_none().items_center().justify_center().cursor_pointer()
       .tooltip(def.none ? (a.enabled ? "On. Click to turn it off in every workspace" : "Off in every workspace. Click to turn it on")
         : scopeOf(a) !== "global" ? (a.enabled ? "On. Click to turn it off" : "Off. Click to turn it on")
         : a.enabled ? `On in ${def.name}. Click to turn it off here; the other workspaces keep it`
         : a.everywhere === false ? `Off in every workspace. Click to turn it on in ${def.name} only`
         : `Off in ${def.name}. Click to turn it on here`)
       .on_click((_e, cx) => { cx.stop_propagation(); this.toggle(a, cx); })
-      .child(div().size(11).rounded_full().bg(t.background));
+      .child(h_flex().w(26).h(15).p(2).rounded_full().items_center()
+        .bg(a.enabled ? t.accent : t.input).when(a.enabled, (el) => el.justify_end())
+        .child(div().size(11).rounded_full().bg(t.background)));
     const item = (a) => {
       const on = this.same(a);
       const dot = a.error || (a.allowed === false && a.enabled) ? t.blocked : a.enabled ? t.done : t.dim;
@@ -1388,11 +1552,32 @@ export default class Automations extends View {
     const small = (id, text, action, enabled = true) => div().id(id).flex_none().px(9).h(24).flex().items_center().rounded(6).border_1().border_color(t.input)
       .text_size(11.5).text_color(t.muted).when(!enabled, (el) => el.opacity(0.45))
       .when(enabled, (el) => el.cursor_pointer().hover((st) => st.bg(t.hover).text_color(t.foreground)).on_click((e, cx) => { this.calm(); action(e, cx); })).child(text);
+    // Discard and Reload from disk: the first press reads "Discard changes?" (blocked) in the same
+    // button, laid out at that width from the start so nothing beside it moves. `tiny`: the 24px kind.
+    const dropButton = (id, text, which, tiny, act) => {
+      const asked = this.dropAsk === which;
+      return div().id(id).relative().flex_none().h(tiny ? 24 : 32).px(tiny ? 9 : 13).flex().items_center().rounded(tiny ? 6 : 8).border_1()
+        .border_color(asked ? t.blocked : t.input).bg(tiny ? t.popover : t.raised).text_size(tiny ? 11.5 : 12.5).when(!tiny, (el) => el.font_medium())
+        .when(this.busy, (el) => el.opacity(0.45))
+        .when(!this.busy, (el) => el.cursor_pointer().hover((st) => st.opacity(0.88)))
+        .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+        .on_click((_e, cx) => { if (!this.busy) act(cx); })
+        .child(div().opacity(0).child("Discard changes?"))
+        .child(div().absolute().inset_0().flex().items_center().justify_center()
+          .text_color(asked ? t.blocked : tiny ? t.muted : t.foreground).child(asked ? "Discard changes?" : text));
+    };
     // A choice chip: highlighted when it's the one chosen.
     const pick = (id, text, on, action) => div().id(id).h(26).px(10).flex().items_center().rounded(13).border_1()
       .border_color(on ? t.accent : t.input).bg(on ? t.selected : t.background).text_size(12)
       .text_color(on ? t.foreground : t.muted).cursor_pointer().hover((st) => st.text_color(t.foreground))
-      .on_click((_e, cx) => { this.calm(); action(); cx.notify(); }).child(text);
+      .on_click((_e, cx) => { this.calm(); action(cx); cx.notify(); }).child(text);
+    // On / Off on a saved one: saved at once when nothing else is unsaved, like the list's switch
+    // (with other edits it's one more edit, and Save is yours), as the 10-minute fix does.
+    const onOff = (set) => (cx) => {
+      const had = this.dirty();
+      set();
+      if (!had && !this.sel?.isNew && this.dirty()) this.save(cx, false, true); // writes on/off; allows nothing
+    };
     const chips = (...kids) => h_flex().gap(6).flex_wrap().items_center().children(kids);
     // A label and its chips on one line (Safety & delivery).
     const row = (text, ...kids) => h_flex().pt(6).gap(8).items_center().child(div().w(96).flex_none().text_size(11.5).text_color(t.dim).child(text)).child(chips(...kids));
@@ -1490,11 +1675,18 @@ export default class Automations extends View {
       : `Starts ${who}${knobText ? ` ${knobText}` : ""} in ${where}${timeoutLabel ? ` · ${timeoutLabel} timeout` : ""} · ${notifyLabel}${c.card ? " · with a board card" : ""}.`;
     const noKnobs = !shell && ((!knobs && (c.model || c.effort)) || (Boolean(knobs) && !knobs.effort && c.effort));
     // Waiting to be allowed: the saved check or script, as it's still shown here.
-    const waitsCheck = Boolean(saved) && (saved.checkAllowed === false || (saved.allowed === false && saved.checkAllowed === undefined)) && Boolean(saved.check) && checkCmd === saved.check;
-    const waitsScript = Boolean(saved) && saved.run === "shell" && saved.scriptAllowed === false && shell && script === saved.body;
-    const waits = !dirty && (waitsCheck || waitsScript);
+    // What the strip names, and Allow allows (allowParts): a waiting part shown as the record has it. It's up
+    // whatever else was edited (Save, like Allow, would allow what it names, so it mustn't be hidden).
+    const named = allowParts(saved, { check: checkCmd, script, shell });
+    const waitsCheck = Boolean(named.check);
+    const waitsScript = Boolean(named.script);
+    const waits = waitsCheck || waitsScript;
     const allowText = waitsCheck && waitsScript ? "Allow check and script" : waitsScript ? "Allow this script" : "Allow this check";
+    // A waiting part that isn't what the editor opened: said, with Reload from disk.
+    const stale = staleParts(saved, this.snap, normScript);
 
+    // How another app or a script calls it (and what its Copy puts on the clipboard).
+    const callCmd = saved ? `herdr-ws-run ${def.none ? "<workspace>" : def.id} ${saved.name} "optional text"` : "";
     const runs = saved && !saved.replaced ? (shared("workspaces.automation.runs") ?? []).filter((r) => r.ws === def.id && r.name === saved.name).slice(0, 4) : [];
     const ag = agents(), tm = terminals();
     const took = (ms) => (ms < 1000 ? `${ms} ms` : ms < 60e3 ? `${(ms / 1000).toFixed(ms < 10e3 ? 1 : 0)} s` : `${Math.round(ms / 60e3)} min`);
@@ -1504,33 +1696,37 @@ export default class Automations extends View {
       const color = state === "working" || state === "running" ? t.working : bad ? t.blocked : r.kind === "shell" && /^exit 0$/.test(state ?? "") ? t.done : t.dim;
       const live = state !== "closed" && !r.closed && r.status === "started" && r.tab;
       const text = r.note ? `${r.why}. ${r.note}` : r.kind === "shell" && r.durationMs != null ? `${r.why} · ${took(r.durationMs)}` : r.why;
-      const stoppable = stoppableRun(r, ag, tm);
+      // A queued run has Cancel, asked the same way as Stop ("Keep waiting" / "Cancel it").
+      const queued = r.status === "queued";
+      const stoppable = stoppableRun(r, ag, tm) || queued;
       const asking = stoppable && this.stopping === r.id;
+      // A script in the background can't be stopped from here: its row says when it stops by itself.
+      const stateWords = state === "running" && r.kind === "shell" ? `running · stops at ${formatDuration(scriptStops(saved?.timeoutMs))}` : state;
       return h_flex().id(`a-run-${r.id}`).h(26).gap(10).items_center().text_size(12)
         .child(div().w(70).flex_none().text_color(t.dim).child(shortTime(r.at)))
         .child(div().id(`a-run-text-${r.id}`).flex_1().min_w(0).truncate().text_color(t.muted).tooltip(text).child(text))
-        .child(div().flex_none().text_color(color).child(state))
+        .child(div().flex_none().text_color(color).child(stateWords))
         .when(stoppable && !asking, (el) => el.child(div().id(`a-stop-${r.id}`).flex_none().px(8).h(22).flex().items_center()
-          .rounded(6).border_1().border_color(t.input).text_size(11.5).text_color(t.blocked).cursor_pointer().hover((st) => st.bg(t.hover))
-          .on_click((_e, cx) => this.stop(r, cx)).child("Stop")))
+          .rounded(6).border_1().border_color(t.input).text_size(11.5).text_color(queued ? t.foreground : t.blocked).cursor_pointer().hover((st) => st.bg(t.hover))
+          .on_click((_e, cx) => this.stop(r, cx)).child(queued ? "Cancel" : "Stop")))
         // Stop asked: the row holds only the question ("Cancel" beside a running job would read as cancelling it).
         .when(stoppable && asking, (el) => el
           .child(div().id(`a-stop-keep-${r.id}`).flex_none().px(9).h(24).flex().items_center().rounded(6).border_1().border_color(t.input)
             .text_size(11.5).text_color(t.muted).cursor_pointer().hover((st) => st.bg(t.hover).text_color(t.foreground))
             .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-            .on_click((_e, cx) => { if (this.tooSoon()) return; this.stopping = null; cx.notify(); }).child("Keep running"))
+            .on_click((_e, cx) => { if (this.tooSoon()) return; this.stopping = null; this.overwriting = false; cx.notify(); }).child(queued ? "Keep waiting" : "Keep running"))
           .child(div().id(`a-stop-yes-${r.id}`).flex_none().px(9).h(24).flex().items_center().rounded(6).border_1().border_color(t.blocked)
             .text_size(11.5).text_color(t.blocked).cursor_pointer().hover((st) => st.bg(t.hover))
             .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-            .on_click((_e, cx) => this.stop(r, cx)).child("Stop it")))
+            .on_click((_e, cx) => this.stop(r, cx)).child(queued ? "Cancel it" : "Stop it")))
         .when(Boolean(live) && !asking, (el) => el.child(div().id(`a-go-${r.id}`).flex_none().px(8).h(22).flex().items_center().rounded(6).border_1().border_color(t.input)
           .text_size(11.5).cursor_pointer().hover((st) => st.bg(t.hover)).on_mouse_down("left", (_e, cx) => cx.stop_propagation())
           .on_click((_e, cx) => this.leaveFor("go", r, cx)).child("Go to")))
-        // A script's run that ended: what it printed is in History.
-        .when(r.kind === "shell" && Boolean(r.closed) && !live, (el) => el.child(div().id(`a-log-${r.id}`).flex_none().px(8).h(22).flex().items_center().rounded(6).border_1().border_color(t.input)
+        // A run that ended (a script's or an agent's): what it printed, or its last message and outcome, is in History.
+        .when((Boolean(r.closed) || state === "closed") && !live, (el) => el.child(div().id(`a-log-${r.id}`).flex_none().px(8).h(22).flex().items_center().rounded(6).border_1().border_color(t.input)
           .text_size(11.5).cursor_pointer().hover((st) => st.bg(t.hover))
           // The switcher away: still Log, dimmed, and a click says why in the footer line instead.
-          .when(!switcherHere(), (el) => el.opacity(0.45)).tooltip(switcherHere() ? "Open this run in History, with what it printed" : AWAY)
+          .when(!switcherHere(), (el) => el.opacity(0.45)).tooltip(!switcherHere() ? AWAY : r.kind === "shell" ? "Open this run in History, with what it printed" : "Open this run in History, with its last message and outcome")
           .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
           .on_click((_e, cx) => this.leaveFor("log", r, cx)).child("Log")));
     };
@@ -1539,7 +1735,9 @@ export default class Automations extends View {
     const drafterName = DRAFTER_NAMES[this.drafter ?? this.drafters()[0]] ?? "An agent";
     const working = h_flex().gap(8).items_center()
       .child(svg("mods/workspace-chrome/spinner.svg").size(13).text_color(t.working).spin(900))
-      .child(div().text_size(11.5).text_color(t.muted).child(`${drafterName}${(this.drafter ?? this.drafters()[0]) === "claude" ? ` (${DRAFT_MODEL})` : ""} is drafting it…`));
+      .child(div().text_size(11.5).text_color(t.muted).child(`${drafterName}${(this.drafter ?? this.drafters()[0]) === "claude" ? ` (${DRAFT_MODEL})` : ""} is drafting it…`))
+      .child(div().id("a-draft-cancel").flex_none().text_size(11.5).text_color(t.dim).cursor_pointer().hover((st) => st.text_color(t.foreground))
+        .on_click((_e, cx) => { this.calm(); this.cancelDraft(cx); }).child("Cancel"));
     const canDraft = !drafting && Boolean(ask.value().trim());
     const askBox = blank
       ? v_flex().pt(4)
@@ -1577,12 +1775,15 @@ export default class Automations extends View {
           : mono("a-check-lines", [...checkLines.slice(0, 4), ...(checkLines.length > 4 ? [`… ${checkLines.length - 4} more lines`] : [])], t.foreground))))
       .when(Boolean(noKnobs), (el) => el.child(div().text_size(11.5).text_color(t.working).child(knobs ? `${who} doesn't take an effort, so it's left out when it runs.` : `${who} doesn't take a model or effort here, so they're left out when it runs.`)))
       // The cap, from the form as it is now, with its two fixes; the saved copy of that warning is left out.
-      .when(capped && !waits, (el) => el.child(v_flex().pt(2).gap(6)
+      .when(capped && (!waits || dirty), (el) => el.child(v_flex().pt(2).gap(6)
         .child(div().text_size(11.5).text_color(t.working).child("Without a tab its script is stopped after 10 min, whatever its timeout says."))
         .child(h_flex().gap(6)
           .child(small("a-cap-tab", "Run in a tab", (_e, cx) => this.fixCap("tab", cx), !this.busy))
           .child(small("a-cap-10m", "Stop at 10 min", (_e, cx) => this.fixCap("10m", cx), !this.busy)))))
-      .when(Boolean(saved?.warning) && !waits && !String(saved?.warning).startsWith("Without a tab"), (el) => el.child(div().text_size(11.5).text_color(t.working).child(saved.warning)))
+      .when((stale.check || stale.script) && !waits, (el) => el.child(v_flex().pt(4).gap(6)
+        .child(div().text_size(12).text_color(t.working).child(`Its ${stale.check && stale.script ? "check and script" : stale.check ? "check" : "script"} changed on disk since you opened it, and ${stale.check && stale.script ? "wait" : "waits"} to be allowed. Reload from disk to read ${stale.check && stale.script ? "them" : "it"} here, then allow ${stale.check && stale.script ? "them" : "it"}.`))
+        .child(h_flex().child(dropButton("a-reload-stale", "Reload from disk", "stale", true, (cx) => this.reloadStale(cx))))))
+      .when(Boolean(saved?.warning) && !waits && !(stale.check || stale.script) && !String(saved?.warning).startsWith("Without a tab"), (el) => el.child(div().text_size(11.5).text_color(t.working).child(saved.warning)))
       // A check or script that came from outside this screen (an agent, the file): yours to allow, as it's saved.
       .when(waits, (el) => el
         .child(div().pt(4).text_size(12).text_color(t.working).child(waitsScript && waitsCheck ? "This script and its check were added outside this screen and haven't been allowed yet, so it won't run. Read them, then allow them."
@@ -1634,7 +1835,7 @@ export default class Automations extends View {
           .bg(t.background).text_size(12.5).text_color(t.foreground).font_family("JetBrains Mono")))
         .child(div().pt(6).text_size(11.5).text_color(t.dim).child(`Variables: ${vars.map((v) => `$HERDR_${v}`).join(" ")} (never put into the script itself).`))
         // A check's Try it only reads; a script's is the whole job, done now.
-        .when(!def.none, (el) => el.child(div().pt(2).text_size(11.5).text_color(t.muted).child(`Try it runs this script for real in ${tilde(this.folderNow(def))}, with what sets it off left empty.`)))
+        .when(!def.none, (el) => el.child(div().pt(2).text_size(11.5).text_color(t.muted).child(`Try it runs this script for real in ${tilde(this.folderNow(def))}, with what sets it off left empty, and stops it after ${formatDuration(tryLimit(limitMs))}.`)))
         .when(Boolean(ts), (el) => el.child(v_flex().mt(8).px(10).py(8).gap(4).rounded(6).bg(t.raised)
           .child(div().text_size(11.5).text_color(ts.outcome === "failed" ? t.blocked : t.done)
             .child(`Ran in ${tilde(ts.folder)} · ${ts.timedOut ? "timed out" : `exit ${ts.code ?? "?"}`} · ${took(ts.durationMs ?? 0)}${tsLines.length ? "" : " · it printed nothing"}`))
@@ -1695,8 +1896,10 @@ export default class Automations extends View {
     const notifies = NOTIFIES.map(([v, text]) => pick(`a-nt-${v}`, text, (c.notify || defNotify) === v, () => { c.notify = v === defNotify ? "" : v; }));
     const misses = MISSES.map(([v, text]) => pick(`a-ms-${v}`, text, (c.missed || "run") === v, () => { c.missed = v === "run" ? "" : v; }));
 
+    const secretPairs = saved?.secretEnv ?? [];
+    const secretWords = `Secrets: ${secretPairs.map((p) => `${p.env} from ${p.name}`).join(", ")}`;
     const details = v_flex()
-      .when(sel.isNew, (el) => el.child(label_("Name: its file's name, and what herdr-ws-run calls it")).child(box(this.nameIn)))
+      .when(sel.isNew || this.renaming, (el) => el.child(label_("Name: its file's name, and what herdr-ws-run calls it")).child(box(this.nameIn)))
       .child(label_("Description")).child(box(this.descIn))
       .child(label_("Runs as"))
       .child(chips(pick("a-run-agent", "Agent", !shell, () => { c.run = "agent"; c.terminal = false; }),
@@ -1748,6 +1951,10 @@ export default class Automations extends View {
       .when(capped && limitMs !== 120e3, (el) => el.child(div().pt(4).text_size(11.5).text_color(t.working).child("Without a tab a script stops at 10 minutes: choose In a tab for longer.")))
       .child(row("Notifications", ...notifies))
       .when(kind === "schedule" && w.kind !== "once", (el) => el.child(row("If missed", ...misses)))
+      // The secrets its saved file hands over (secret_env), by name: read-only here.
+      .when(secretPairs.length > 0, (el) => el.child(v_flex().pt(10).gap(2)
+        .child(div().id("a-secrets").truncate().text_size(12).text_color(t.foreground).tooltip(secretWords).child(secretWords))
+        .child(div().text_size(11.5).text_color(t.dim).child("Set with herdr-ws-run --add --secret-env VAR=name"))))
       .when(!shell, (el) => el
         .child(label_("Each run"))
         .child(chips(pick("a-card-no", "Just its tab", !c.card, () => { c.card = false; }), pick("a-card-yes", "A tab and a board card", c.card, () => { c.card = true; })))
@@ -1774,7 +1981,7 @@ export default class Automations extends View {
           .child(svg("mods/workspace-chrome/terminal.svg").size(12).text_color(t.accent)).child("Shell")))
         .when(dirty && !blank, (el) => el.child(div().text_size(11.5).text_color(t.working).child(this.drafted ? "drafted, not saved" : "unsaved")))
         .child(div().flex_1())
-        .when(!blank && !global, (el) => el.child(chips(pick("a-on", "On", c.enabled, () => { c.enabled = true; }), pick("a-off", "Off", !c.enabled, () => { c.enabled = false; })))))
+        .when(!blank && !global, (el) => el.child(chips(pick("a-on", "On", c.enabled, onOff(() => { c.enabled = true; })), pick("a-off", "Off", !c.enabled, onOff(() => { c.enabled = false; }))))))
       // A new one: where it runs. Changing it keeps only what the other kind can have.
       .when(sel.isNew && !def.none, (el) => el.child(h_flex().pt(10).pb(6).gap(8).items_center()
         .child(div().text_size(11.5).text_color(t.dim).child("Runs in"))
@@ -1788,9 +1995,9 @@ export default class Automations extends View {
       // A global one: on, off here, or off everywhere.
       .when(global && !blank, (el) => el.child(h_flex().pt(10).gap(8).items_center()
         .child(chips(...[
-          pick("a-on", "On", c.enabled && !c.offHere, () => { c.enabled = true; c.offHere = false; }),
-          !def.none && pick("a-off-here", `Off in ${def.name}`, c.enabled && c.offHere, () => { c.enabled = true; c.offHere = true; }),
-          pick("a-off", "Off everywhere", !c.enabled, () => { c.enabled = false; })].filter(Boolean)))
+          pick("a-on", "On", c.enabled && !c.offHere, onOff(() => { c.enabled = true; c.offHere = false; })),
+          !def.none && pick("a-off-here", `Off in ${def.name}`, c.enabled && c.offHere, onOff(() => { c.enabled = true; c.offHere = true; })),
+          pick("a-off", "Off everywhere", !c.enabled, onOff(() => { c.enabled = false; }))].filter(Boolean)))
         .when(c.enabled && offElsewhere.length > 0, (el) => el.child(div().id("a-off-elsewhere").min_w(0).truncate().text_size(11.5).text_color(t.dim)
           .tooltip(`${def.none ? "Off" : "Also off"} in ${offElsewhere.join(", ")}`).child(`${def.none ? "Off" : "Also off"} in ${offElsewhere.join(", ")}`)))))
       .when(Boolean(sel.isNew && sel.starter), (el) => el.child(div().pt(8).text_size(11.5).text_color(t.dim)
@@ -1813,11 +2020,26 @@ export default class Automations extends View {
           .when(!runs.length, (el) => el.child(div().text_size(12).text_color(t.dim).child(def.none ? "Each workspace lists its own runs of it." : "None yet.")))
           .children(runs.map(runRow))
           .child(label_("From another app or a script"))
-          .child(div().text_size(11.5).text_color(t.muted).font_family("JetBrains Mono").child(`herdr-ws-run ${def.none ? "<workspace>" : def.id} ${saved.name} "optional text"`))));
+          .child(h_flex().gap(8).items_center()
+            .child(div().id("a-call").flex_1().min_w(0).truncate().text_size(11.5).text_color(t.muted).font_family("JetBrains Mono").tooltip(callCmd).child(callCmd))
+            // Copy, then "Copied" for a moment; wide enough for either, so nothing moves. Not with no
+            // workspace shown: "<workspace>" pasted in a shell is a redirect.
+            .when(!def.none, (el) => el.child(div().id("a-copy-call").flex_none().w(62).h(24).flex().items_center().justify_center().rounded(6).border_1().border_color(t.input)
+              .text_size(11.5).text_color(t.muted).cursor_pointer().hover((st) => st.bg(t.hover).text_color(t.foreground))
+              .on_click((_e, cx) => {
+                this.calm();
+                cx.write_to_clipboard(callCmd);
+                const at = Date.now();
+                this.copiedCmd = { text: callCmd, at };
+                cx.timer.after(2000, (cx) => { if (this.copiedCmd?.at === at) { this.copiedCmd = null; cx.notify(); } });
+                cx.notify();
+              })
+              .child(this.copiedCmd?.text === callCmd ? "Copied" : "Copy"))))));
     // Run now waits while something waits to be allowed; Save stays for an edit (saving allows what's written).
     const canRun = !saved?.replaced && saved?.allowed !== false;
     // runNow()'s own words for why it waits.
     const runWhy = saved?.replaced ? `${def.name} has its own "${saved.name}", which is the one that runs here`
+      : saved?.allowed === false && (stale.check || stale.script) ? "It changed on disk since you opened it: Reload from disk, then allow it"
       : saved?.allowed === false ? `Allow its ${saved.scriptAllowed === false ? "script" : "check"} first: it doesn't start until then` : null;
     // Log pressed while the switcher was away: said until the next press, typing, or the switcher's back.
     const away = this.awayNote && !switcherHere() ? this.awayNote : null;
@@ -1848,8 +2070,26 @@ export default class Automations extends View {
         // Closing would drop something: the question, in place of any other line.
         .when(Boolean(this.leaveAsk), (el) => el.child(div().pb(8).text_size(11.5).text_color(t.working).child(LEAVE_ASK[this.leaveAsk] ?? GO_ASK)))
         .when(!this.leaveAsk && Boolean(away), (el) => el.child(div().pb(8).text_size(11.5).text_color(t.muted).child(away)))
+        // Save found the file changed on disk: say so, with Overwrite and Reload from disk (Overwrite asks first).
+        .when(!this.leaveAsk && !away && this.conflict && !sel.isNew, (el) => el.child(v_flex().pb(8).gap(6)
+          .child(div().text_size(11.5).text_color(t.blocked).child("The file changed on disk while you were editing."))
+          .child(h_flex().gap(8).items_center()
+            .when(!this.overwriting, (el) => el
+              .child(small("a-overwrite", "Overwrite", (_e, cx) => this.overwrite(cx), !this.busy))
+              .child(dropButton("a-reload", "Reload from disk", "reload", true, (cx) => this.reloadDisk(cx))))
+            .when(this.overwriting, (el) => el
+              .child(div().id("a-overwrite-cancel").flex_none().px(9).h(24).flex().items_center().rounded(6).border_1().border_color(t.input)
+                .text_size(11.5).text_color(t.muted).cursor_pointer().hover((st) => st.bg(t.hover).text_color(t.foreground))
+                .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+                .on_click((_e, cx) => { if (this.tooSoon()) return; this.overwriting = false; cx.notify(); }).child("Cancel"))
+              .child(div().id("a-overwrite-yes").flex_none().min_w(0).max_w(300).px(9).h(24).flex().items_center().rounded(6).border_1().border_color(t.blocked)
+                .text_size(11.5).text_color(t.blocked).cursor_pointer().hover((st) => st.bg(t.hover))
+                .when(sel.name.length > 30, (el) => el.tooltip(`Overwrite “${sel.name}”`))
+                .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+                .on_click((_e, cx) => this.overwrite(cx)).child(div().min_w(0).truncate().child(`Overwrite “${sel.name}”`)))))))
+        // Under the strip too: a question (picking another one over your edits) or Save's own reason must show.
         .when(!this.leaveAsk && !away && Boolean(this.error), (el) => el.child(div().pb(8).text_size(11.5).text_color(t.blocked).child(this.error)))
-        .when(!this.leaveAsk && !away && !this.error && Boolean(this.notice), (el) => el.child(div().pb(8).text_size(11.5).text_color(t.done).child(this.notice)))
+        .when(!this.leaveAsk && !away && !this.conflict && !this.error && Boolean(this.notice), (el) => el.child(div().pb(8).text_size(11.5).text_color(t.done).child(this.notice)))
         // Run now on a `link` one: the {{text}} it gets, if any; Enter or Start runs it.
         .when(this.askText && !sel.isNew, (el) => el.child(h_flex().pb(8).gap(8).items_center()
           .child(div().flex_1().min_w(0).child(box(this.textIn)))
@@ -1857,12 +2097,17 @@ export default class Automations extends View {
           .child(small("a-run-cancel", "Cancel", (_e, cx) => { this.askText = false; this.textIn.set_value(""); cx.notify(); }))))
         .child(h_flex().gap(8).items_center()
           .when(!sel.isNew, (el) => el.child(button("a-delete", "Delete", "danger", (_e, cx) => this.remove(cx))))
+          // Rename… and Duplicate while nothing is unsaved (Duplicate copies what's saved; with edits,
+          // Discard takes their room, so the footer fits as it did).
+          .when(!sel.isNew && !dirty, (el) => el
+            .child(button("a-rename", "Rename…", "plain", (_e, cx) => this.rename(cx)))
+            .child(button("a-duplicate", "Duplicate", "plain", (_e, cx) => this.duplicate(cx))))
           .when(!sel.isNew && global && !replacedHere && !def.none, (el) => el.child(button("a-custom", `Change for ${def.name}`, "plain", (_e, cx) => this.copyHere(cx), !dirty, null, "Save or discard its changes first")))
           .child(div().id("a-file").flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).when(Boolean(fileLine), (el) => el.tooltip(fileLine)).child(fileLine))
           .when(!blank && !def.none, (el) => el.child(button("a-preview", pv ? "Preview again" : "Preview", "plain", (_e, cx) => { if (!this.justSlid()) this.previewRun(cx); }, !pv?.loading)))
           .when(!sel.isNew && !def.none && !this.askText, (el) => el.child(button("a-run", "Run now", "plain", (_e, cx) => { if (!this.justSlid()) this.runNow(cx); }, canRun, null, runWhy)))
           // Discard while there are unsaved edits, Cancel on a new one: directly left of Save.
-          .when(!sel.isNew && dirty, (el) => el.child(button("a-discard", "Discard", "plain", (_e, cx) => this.discard(cx))))
+          .when(!sel.isNew && dirty, (el) => el.child(dropButton("a-discard", "Discard", "discard", false, (cx) => { if (this.dropPress("discard", cx)) this.discard(cx); })))
           .when(sel.isNew, (el) => el.child(button("a-cancel", "Cancel", "plain", (_e, cx) => this.cancelNew(cx))))
           .child(button("a-save", sel.isNew ? "Create" : "Save", "primary", (_e, cx) => this.save(cx), !blank && (sel.isNew || dirty), saveKey)))));
   }

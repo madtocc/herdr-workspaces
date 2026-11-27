@@ -23,11 +23,13 @@ export function workspaceFor(cwd) {
   const rows = text.split("\n").filter((l) => l && !l.startsWith("#")).map((l) => l.split("\t"));
   const here = real(cwd);
   let ws = null;
-  let best = -1;
-  for (const [kind, id, p] of rows) {
+  let best = -1, rooted = false;
+  // On a tie a workspace's root (its line ends in "root") wins over another's listed folder.
+  for (const [kind, id, p, flag] of rows) {
     if (kind !== "dir" || !id || !p) continue;
-    const root = real(p);
-    if (holds(here, root) && root.length > best) { ws = id; best = root.length; }
+    const root = real(p), isRoot = flag === "root";
+    if (!holds(here, root)) continue;
+    if (root.length > best || (root.length === best && isRoot && !rooted)) { ws = id; best = root.length; rooted = isRoot; }
   }
   if (!ws) {
     const trees = real(path.join(home, ".herdr", "worktrees"));

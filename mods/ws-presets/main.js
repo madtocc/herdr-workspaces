@@ -631,9 +631,6 @@ export default class Presets extends View {
       .text_size(12.5).font_medium().when(!enabled || this.busy, (el) => el.opacity(0.45))
       .when(enabled, (el) => el.cursor_pointer().hover((s) => s.opacity(0.88)).on_click(action))
       .when(!enabled && Boolean(why), (el) => el.tooltip(why)).child(text);
-    const chip = (id, text, action) => div().id(id).h(24).px(9).flex().items_center().rounded(12).border_1().border_color(t.input)
-      .text_size(11.5).text_color(t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground).bg(t.hover))
-      .on_click((_e, cx) => { action(); cx.notify(); }).child(text);
     // The agents this computer has: the + menu's list, then what knownAgents() said (init).
     const agents = this.known.filter((a) => a.installed && Array.isArray(a.run));
     const where = sel.scope === "global" ? "Every workspace" : `Only in ${def?.name ?? "this workspace"}`;
@@ -663,12 +660,15 @@ export default class Presets extends View {
         .child(iconOf(this.cmdIn.value(), 20))
         .when(!sel.isNew, (el) => el.child(div().text_size(16).font_semibold().child(sel.name)))
         .when(sel.isNew, (el) => el.child(div().text_size(16).font_semibold().child("New preset")))
-        .child(div().px(8).h(22).flex().items_center().rounded(11).bg(t.raised).text_size(11.5).text_color(t.muted).child(where))
+        // A new preset's place is asked below (Where), not said here as well; with no workspace
+        // there's nothing to ask, so the pill says it.
+        .when(!sel.isNew || !def, (el) => el.child(div().px(8).h(22).flex().items_center().rounded(11).bg(t.raised).text_size(11.5).text_color(t.muted).child(where)))
         .when(dirty, (el) => el.child(div().text_size(11.5).text_color(t.working).child("unsaved")))
-        .child(div().flex_1())
-        .when(sel.isNew && Boolean(def), (el) => el.child(h_flex().gap(6)
-          .child(chip("p-scope-ws", sel.scope === "workspace" ? `● Only in ${def.name}` : `Only in ${def.name}`, () => { this.sel = { ...sel, scope: "workspace" }; }))
-          .child(chip("p-scope-global", sel.scope === "global" ? "● Every workspace" : "Every workspace", () => { this.sel = { ...sel, scope: "global" }; })))))
+        .child(div().flex_1()))
+      // Where a new preset goes, with the form's own chips.
+      .when(sel.isNew && Boolean(def), (el) => el.child(label("Where: who can start it")).child(h_flex().gap(6).items_center()
+        .child(pick("p-scope-ws", `Only in ${def.name}`, sel.scope === "workspace", () => { this.sel = { ...sel, scope: "workspace" }; }))
+        .child(pick("p-scope-global", "Every workspace", sel.scope === "global", () => { this.sel = { ...sel, scope: "global" }; }))))
       .when(Boolean(overridesGlobal), (el) => el.child(div().pt(6).text_size(11.5).text_color(t.working)
         .child(`${def.name} has its own "${sel.name}", which is the one that runs there.`)))
       .when(sel.isNew, (el) => el.child(label("Name: how you and agents call it (hc run <name>)")).child(box(this.nameIn)))

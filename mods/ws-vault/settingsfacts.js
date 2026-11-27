@@ -168,7 +168,7 @@ export function appChoices({ catalogInstalled = [], macApps = [], system = null,
     add(apps, { id: `app:${a.bundle || a.name}`, label: String(a.name).replace(/\.app$/i, ""), tag: tagOf(path) }, a.bundle);
   }
   const out = [...editors.filter((a) => a.id !== "xcode"), ...editors.filter((a) => a.id === "xcode"), ...apps,
-    { id: "system", label: "Default app", tag: "per file type" }];
+    { id: "system", label: "System default", tag: "per file type" }];
   if (typeof current === "string" && current && !out.some((a) => a.id === current)) out.push({ id: current, label: appLabel(out, current), tag: "not found" });
   return out;
 }
@@ -179,7 +179,7 @@ export function appLabel(choices, id) {
   if (id == null) return "Automatic (editor first)";
   const a = (choices ?? []).find((x) => x.id === id && x.tag !== "not found") ?? EDITOR_CATALOG.find((x) => x.id === id);
   if (a) return a.label;
-  if (id === "system") return "Default app";
+  if (id === "system") return "System default";
   return String(id).startsWith("app:") ? String(id).slice(4) : String(id);
 }
 

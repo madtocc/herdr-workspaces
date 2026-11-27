@@ -375,7 +375,7 @@ case ${1:-} in
     done
     ;;
   *)
-    sed -n '2,22p' "$self" | sed 's/^# \{0,1\}//'
+    sed -n '2,24p' "$self" | sed 's/^# \{0,1\}//'
     [ "${1:-}" = --help ] || [ "${1:-}" = -h ] || exit 2
     ;;
 esac

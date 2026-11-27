@@ -100,6 +100,8 @@
   <rect x="875.5" y="44.5" width="392" height="552" rx="10" fill="#202227" stroke="#33363c" filter="url(#shadow)"/>
   <text x="891" y="72" fill="#e8e9eb" font-size="13.5" font-weight="600">Notifications</text>
   <text x="1252" y="72" fill="#a5a8ae" font-size="11.5" text-anchor="end">Mark all read</text>
+  <!-- the gear before Mark all read: Settings on Features -->
+  <g transform="translate(1152.5 61.5) scale(0.5417)" fill="none" stroke="#a5a8ae" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></g>
   <text x="891" y="94" font-size="12"><tspan fill="#e5534b" font-weight="500">2 need you</tspan><tspan fill="#a5a8ae"> · </tspan><tspan fill="#76a8ff" font-weight="500">2 unread</tspan></text>
   <rect x="890.5" y="104.5" width="96" height="22" rx="5" fill="#2c2e34" stroke="#33363c"/><text x="938.5" y="119.5" fill="#e8e9eb" font-size="11.5" font-weight="500" text-anchor="middle">All workspaces</text>
   <rect x="997" y="109" width="13" height="13" rx="4" fill="#5b8def"/><text x="1003.5" y="119" fill="#fff" font-size="8" font-weight="700" text-anchor="middle">A</text><text x="1015" y="119.5" fill="#a5a8ae" font-size="11.5">Acme</text>

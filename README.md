@@ -335,7 +335,8 @@ ours at the end, after Privacy:
 
 Herdr's sections are Herdr's: the package rebuilds its copy from Herdr's own
 file whenever Herdr updates it. The macOS menu's Settings… still opens Herdr's
-plain window; to have Cmd+, open this one, set `"cmd-,"` in the `global`
+plain window; to have Cmd+, open this one (the installer asks once, or binds it
+with `--settings-key`), set `"cmd-,"` in the `global`
 section of your `~/.config/herdr-app/keys.json` to `"mod.open:ws-settings"`
 (or to `ws-switcher.settings/features`, `ws-switcher.settings/agents`,
 `ws-switcher.settings/automations`, `ws-switcher.settings/files`, `ws-switcher.settings/vault` or `ws-switcher.settings/experimental` to open it on a section; `ws-switcher.settings/extras` opens Agents). Herdr then
@@ -397,9 +398,13 @@ irm https://madtocc.github.io/herdr-workspaces/install.ps1 | iex
   Intel Macs: install Herdr there yourself, then run the line.)
 - **Then the steps below, done for you:** the layout and mods copied, the
   commands on your `PATH`, the agents you have added to `programs.json`, and
-  Herdr opening on the layout. It asks before two things: the line that brings
-  agents back after a restart, and the example presets. On Windows it also
-  offers Git for Windows and Node through winget.
+  Herdr opening on the layout. It asks before three things: the line that brings
+  agents back after a restart, the example presets and, once, whether Herdr's
+  Settings key (Cmd+, on macOS, Ctrl+, elsewhere) opens the package's Settings,
+  which makes `keys.json` yours (Herdr's updates no longer add their new default
+  keys to it). Herdr writes that file when it first starts, so when the script
+  installs Herdr too, the next run asks. On Windows it also offers Git for
+  Windows and Node through winget.
 - **Run it again to update.** A file you changed is kept in
   `~/.herdr/install/backup/` before the new one takes its place. Your
   workspaces, tasks, presets and automations are never touched.
@@ -510,8 +515,10 @@ An agent's own `hc run … herdr-ws-agent …` needs its task on one line there
 **What the installer touches:** Herdr's folder (the layout, the `ws-*` mods,
 `programs.json`, and `shared.json` only when Herdr has never run), links in
 `~/.local/bin` (Windows: your user `Path`), herdr-core's `config.toml` and
-`templates` when you say yes, and `~/.herdr/install/` (the list of files it
-put in place, and the ones it replaced or took out). It reaches github.com for
+`templates` when you say yes, Herdr's `keys.json` when you say yes to the
+Settings key (a copy goes to the backup first; the uninstall gives the key
+back), and `~/.herdr/install/` (the list of files it put in place, the ones it
+replaced or took out, and `settings-key-asked` once it has asked). It reaches github.com for
 the package and, when Herdr is missing, releases.herdr.dev.
 
 **What it touches:** it reads `~/.herdr/workspaces` and the folders of
@@ -536,7 +543,9 @@ it opens on a card still before the start column or merges, its `status:`, and t
 `hc send` when a check fails, a review arrives or it conflicts. With Keep running
 on, that work is done by a Node process herdr-core holds as the terminal
 `herdr-ws-runner`: it writes `~/.herdr/runner/` (a shell automation's output goes to
-`~/.herdr/runner/logs/`, deleted with its run), starts runs with `hc run`, ends
+`~/.herdr/runner/logs/`, deleted with its run), lists the workspace, automation, card and preset files
+under `~/.herdr` once a minute (their size and time) and reads an automation's file again before
+it starts a run, starts runs with `hc run`, ends
 old and finished run terminals with `hc kill`, and reads herdr-core's terminal list, the app's
 layout document, `shared.json`, `programs.json` and `view.json` (which tab is shown),
 and connects to the app's socket to see whether Herdr is open. Start at login writes
@@ -567,7 +576,8 @@ layout's file (`layouts/<name>.json`, at start, on a layout switch and every 30
 seconds) and sizes its own block with `layout.resize` (Herdr keeps that in
 `layouts/.state/`). The switcher reads Herdr's own Settings
 window (`frame/settings/main.js` in Herdr's folder) to write its copy,
-`mods/ws-settings/main.js`. With its experiment turned on, wiping an Antigravity
+`mods/ws-settings/main.js`. Settings > Agents' Copy the shell line puts herdr-core's
+shell line on the clipboard (`pbcopy`, `wl-copy` or `xclip`; PowerShell on Windows). With its experiment turned on, wiping an Antigravity
 agent also edits Antigravity's own index files and prompt history in
 `~/.gemini/antigravity-cli` (a copy of each, and what it removed, goes to
 `~/.herdr/trash/` first, and the conversation's files go there too, until you
@@ -580,8 +590,13 @@ board's and automations' new tabs, and `pane.split` for a view opened beside
 the terminals) and, through the launcher, Start and
 automations, your agents. Changes (`ws-changes`, a copy of Herdr's own) runs `git` reads (status, diff,
 branch, `worktree list`) in the repo of the terminal it follows (or nested repos found up to three
-levels under a non-git space folder with `sh`, or PowerShell on Windows) and, when you press Commit,
-`git add -A` and `git commit` in the selected checkout, as Herdr's Changes does; Files (`ws-files`)
+levels under a non-git space folder with `sh`, or PowerShell on Windows), counts new files' lines
+with `find` and `grep -c`, looks staged new files up with `git ls-files -s` and, when you press Commit,
+`git add -A` and `git commit` in the selected checkout, as Herdr's Changes does. A changed file's
+right-click menu copies its path to the clipboard, and its Discard changes… (after it asks, naming
+the file) runs `git checkout HEAD --` on that one file, or for a new file `git rm --cached` and the
+Trash (`trash`, `gio trash`, else `~/.herdr/trash`); `sh` checks first that nothing but that file
+would change. Files (`ws-files`)
 lists folders and reads files there, as Herdr's Files does, and also writes the
 file you save (on this computer only), searches with `rg` (else `grep`), runs
 `git` reads (branch, status, ignored files), `wc -c`, `head -c` and `sips` (an
@@ -599,14 +614,15 @@ until you press Restore or Discard on the strip that offers the copy. The copy i
 you save, discard or reload the file, or press that Discard, and one nobody comes back for
 after 30 days (with `find`, in Git's `sh` on Windows). While its filter box has text it lists
 the names under the folder with `git ls-files` (else `find`). Its right-click menu makes,
-renames and duplicates files and folders with `mkdir`, `mv` and `cp` (never over an existing
-name), moves them to the Trash with `trash` or `gio trash` (else into `~/.herdr/trash`), counts a
+renames (a name with a folder in it moves the entry there, the folder made with `mkdir -p`) and
+duplicates files and folders with `mkdir`, `mv` and `cp` (never over an existing name), moves them to the Trash with `trash` or `gio trash` (else into `~/.herdr/trash`), counts a
 folder's files with `find`, copies paths to the clipboard and opens a terminal tab there. It and its Cmd-click handler
 read their defaults from `~/.herdr/settings.jsonc`. A Cmd-click
 on a path in a terminal is checked with `sh` (on that terminal's machine) before
 Files takes it. The Worktrees tab reads git in the workspace's repos and
 their worktrees (`worktree list`, `for-each-ref`, `status`) and each repo's pull
-requests with `gh pr list`. Removing a worktree there (after a confirmation)
+requests with `gh pr list`, when it opens, on Refresh, and every 5 minutes while
+it's shown full size in a window you can see. Removing a worktree there (after a confirmation)
 deletes its folder with `git worktree remove`; the branch stays. History reads the
 conversations your agents keep on this computer (`~/.claude/projects`, `~/.codex/state_*.sqlite`,
 `~/.pi/agent/sessions`, `~/.grok/sessions`, `~/.local/share/opencode/opencode.db`,
@@ -626,8 +642,9 @@ background which terminal started it (and for up to 30 seconds which session the
 Antigravity opens a session). Its right-click Wipe moves a Claude Code or Pi conversation's files
 to the Trash as the Agents list's does (after `terminal.kill` on the terminal it's open in; to tell
 which, it asks `hc get` for each agent terminal's program and reads Claude's `~/.claude/sessions/`,
-the launcher's notes and `ps`, and `stat` to see whether its transcript was just written), puts a conversation id on the clipboard for
-Copy conversation id, and hands an Antigravity one to the Agents list's Wipe. Nothing it reads leaves the computer. The Agents list's numbers
+the launcher's notes and `ps`, and `stat` to see whether its transcript was just written; for an
+Antigravity one also `lsof` on its presence lock, to find the terminal that has it open), puts a conversation id, a resume command or a run's report on the
+clipboard for its Copy buttons, and hands an Antigravity one to the Agents list's Wipe. Nothing it reads leaves the computer. The Agents list's numbers
 come from the same places, read by `node` every few seconds while an agent works: what Claude
 Code hands its status line, which `herdr-ws-statusline` keeps in `~/.herdr/agents/<core>/`
 (the launcher sets it as the status line, in that session's `--settings`, where you have none),
@@ -659,7 +676,7 @@ the workspace's root, its folders elsewhere and its `tasks` and `notes` folders;
 names, read calls `herdr-ws-run` leaves in `~/.herdr/workspaces/.inbox` (and
 delete them), and close an automation's older run tabs once their agent is done.
 An automation's `check:` is a shell command Herdr runs by itself, as you, in the
-automation's folder before each run, to see whether there's anything to do. It runs only a line you've allowed: one you saved in the Automations screen, or one you allowed there after an agent or a file brought it.
+automation's folder before each run, to see whether there's anything to do. It runs only a line you've allowed: one you saved in the Automations screen (Save, Create or Overwrite; its On / Off and the 10-minute fixes write the file without allowing anything, and Allow allows only the part it names, as the screen shows it), or one you allowed there after an agent or a file brought it. The screen's Copy puts its `herdr-ws-run` line on the clipboard.
 For restarts, the launcher keeps notes of the Claude agents it starts in
 `~/.herdr/resume/` (their command and session), runs `hc ls` to drop the notes
 of closed tabs, and gives Claude two hooks (`--settings`) that note its session

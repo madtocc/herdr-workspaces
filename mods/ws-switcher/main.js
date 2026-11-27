@@ -34,8 +34,14 @@
 // Not this block's: ws-history's own, between its copies (its right-click menu and Wipe dialog are copies of their own).
 //   workspaces.history.act    { from, key, action, terminal, at }: the menu asks the History it was opened from to resume or go to a row
 //   workspaces.history.wiped  { keys, at }: what History's Wipe took; every History reads again
+//   workspaces.agents.restores  { [backup folder name]: { state: running | done | failed, why, again, title, at } }: a wipe's
+//                        Put it back, as ws-agents ran it (`ws-agents.restore/…`), kept by its trash folder's key for the toast and the bell
+//   workspaces.agents.alive  { at }: ws-agents' list copies are there to take a Put it back press (refreshed every 5 s)
+//   workspaces.folder.open  { path, at }: the switcher menu's "Edit … settings" asks this sidebar copy to open a workspace's folder
 //   workspaces.board.start  { owner, file, worktree, over, at }: ws-board's Start with… dialog asks the board
 //                        copy that opened it (owner) to start a card with another agent, folder or first message
+//   workspaces.board.added  { ws, id, at }: ws-board's task dialog added that card; the board empties a search that would hide it
+//   workspaces.board.closed <ms>: ws-board's task dialog just saved or deleted; the board ignores a click under it for 500 ms
 //   Views (ws-tabs' Views menu): Changes and Files belong to a space, Board, Notes, Worktrees and History
 //   to a workspace. Each opens full size (the layout's block `screen-<view>`, in place of the terminals,
 //   with a pill in the tab bar) or beside the shown tab's terminals as a pane.
@@ -83,7 +89,8 @@
 //                        log (notif.js classifyToast keeps the few worth it)
 //   workspaces.notifications.open   { overlay, at } or { overlay: null, closedAt }: the list is open (ws-notifications
 //                        says so), so the bell and its key close it
-//   workspaces.history.open  { ws, runId, at, taken? }: a notification asks History to show that run (ws-history)
+//   workspaces.history.open  { ws, runId, at, taken? }: a notification asks History to show that run (ws-history);
+//                            { ws, conversation: { app, id }, at, taken? } that conversation ("history-at/…")
 //   workspaces.board.open    { ws, taskId, at, taken? }: a notification asks the board to open that card (ws-board)
 //
 //   workspaces.usage     { <plan>: { rows, at, from, tried } }: each plan's usage, read by ws-status's bar for its panel
@@ -97,7 +104,7 @@
 // the window (background()): it starts it when it isn't running, copies what it
 // publishes (~/.herdr/runner/state.json) into shared state, shows its notes as
 // toasts, names the tabs and spaces of the runs it started, and hands it the
-// screen's Run now (with its text) and allowed checks and scripts as files in the inbox.
+// screen's Run now (with its text), allowed checks and scripts and a queued run's Cancel as files in the inbox.
 //   workspaces.runner      { on, running, via, pid, login, plist }: the background runner, for the
 //                        screens: via "launchd" or "systemd" (started at login) or "hc" (a terminal herdr-core
 //                        holds), login: it starts at login (its LaunchAgent or systemd unit file, plist, is there)
@@ -123,7 +130,7 @@
 // name), or when it's made while that workspace is shown.
 
 import { View, div, svg } from "gpui-kit";
-import { h_flex, v_flex, InputState, Input } from "gpui-base";
+import { h_flex, v_flex, InputState, Input, ScrollHandle } from "gpui-base";
 import { spaces, panes, machines, run, theme, shared, setShared, props, openOverlay, closeOverlay, home, appHome, layout, watchFolder, readTextFile, writeTextFile, pickFolder, notify, window, nextCommand, focused, updates, checking } from "herdr";
 import { exec } from "./posix.js";
 import * as fs from "fs/promises";
@@ -132,18 +139,16 @@ import { PrWatcher } from "./prs.js";
 import { GhWatcher } from "./ghboard.js";
 import { Scratch, isScratch, scratchDef, scratchLabel, scratchWhen, scratchDeleteButton, scratchRoot, keepPending, commandFailTitle } from "./scratch.js";
 import { dir, expand, tilde, under, base, subdirs, parseJsonc, loadDefs, loadOrder, orderFile, templatesDir, loadPresetDir, presetsFor, presetLaunch, withTask, notesOnly } from "./defs.js";
-import { arrange, move as moveRow, groupOf, groupName, renamed, withGroup, orderText } from "./arrange.js";
+import { arrange, move as moveRow, groupOf, groupName, renamed, withGroup, orderText, workspaceTip, spacesCount } from "./arrange.js";
 import { buildSettings, hash, SOURCE as SETTINGS_SOURCE, TARGET as SETTINGS_TARGET } from "./settingsbuild.js";
-import { SETTINGS_FILE, parseSettings, automationSetting } from "./settingsfacts.js";
+import { SETTINGS_FILE, parseSettings, automationSetting, fileSetting } from "./settingsfacts.js";
+import { folderOpeners } from "./openwith.js";
 import { openIn, splitAt, follow as followLedger, wantsClose, trusted, drainAsks } from "./beside.js";
 import { Features, flips, FOLLOWED } from "./featuregate.js";
 import { NotifLog } from "./notiflog.js";
 // The system's trash by its name: the Recycle Bin on Windows, the Trash elsewhere.
 const trashName = () => (window()?.platform === "windows" ? "Recycle Bin" : "Trash");
 
-// "Edit" opens the workspace's folder in the first of these that's installed,
-// else with the system's opener (Finder, the file manager, Explorer).
-const EDITORS = ["zed", "cursor", "code", "subl"];
 const SETTLE = 1500; // ms a new space's first terminal takes to report its folder
 // The views: a workspace's (Board, Worktrees, History, Notes) and a space's (Changes, Files: space).
 // The layout holds each once, as the block `screen-<key>` in the `screens` column of `center`.
@@ -162,6 +167,13 @@ const PALETTE = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
 const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b7cf6", ansi2: "#3fae6a", ansi1: "#d9649a" };
 const URGENT = { blocked: 2, done: 1 };
 const SWITCHER_MENU = "workspaces.switcher.menu";
+// Where a press was, in window points (the menu's props.pointer), or null.
+const pressAt = (e) => {
+  const x = e?.position?.x, y = e?.position?.y;
+  return typeof x === "number" && typeof y === "number" && isFinite(x) && isFinite(y) ? { x: Math.max(0, x), y: Math.max(0, y) } : null;
+};
+// A pointer position as a key ("x,y"), or undefined when there is none.
+const pointKey = (p) => (p && Number.isFinite(p.x) && Number.isFinite(p.y) ? `${p.x},${p.y}` : undefined);
 // Settings > Features, for what's drawn and opened (the runners go by this.features).
 const featureOn = (key) => shared("workspaces.settings")?.features?.[key] !== false;
 // The views opened as panes (beside.js).
@@ -189,7 +201,8 @@ function realOf(def, path) {
 const inFolder = (def, at, folder) => under(at, folder) || under(at, realOf(def, folder));
 
 // What bin/herdr-ws-agent reads (a shell script can't read JSONC): one line per
-// fact, tab-separated. ws: id, root, instructions file. dir: id, a root or folder.
+// fact, tab-separated. ws: id, root, instructions file. dir: id, a root or folder (a root's line
+// ends in "root": on a tie with another workspace's listed folder, the root wins).
 // repo: id, a repo name a herdr worktree can be named after.
 function indexText(defs) {
   const ok = (s) => !/[\t\n]/.test(s);
@@ -197,7 +210,7 @@ function indexText(defs) {
   for (const d of defs) {
     if (d.error || !d.root || !ok(d.root) || !ok(d.instructions)) continue;
     lines.push(["ws", d.id, d.root, d.instructions].join("\t"));
-    for (const f of [d.root, ...d.folders]) if (ok(f)) lines.push(["dir", d.id, f].join("\t"));
+    for (const f of [d.root, ...d.folders]) if (ok(f)) lines.push(["dir", d.id, f, ...(f === d.root ? ["root"] : [])].join("\t"));
     for (const r of new Set([...d.children, ...d.folders.map(base)])) if (ok(r)) lines.push(["repo", d.id, r].join("\t"));
   }
   return lines.join("\n") + "\n";
@@ -215,11 +228,23 @@ function startPreset(preset, active, prompt = "") {
   else run("space.new", { ...(active?.root ? { folder: active.root } : {}), tab: preset.name, argv, ...(task ? { task } : {}) });
 }
 
-// Opens a folder in the first installed editor of EDITORS, else the system's opener.
-function openFolder(path) {
-  if (window()?.platform === "windows") return exec("explorer", [path]).catch(() => {});
-  const editors = EDITORS.map((e) => `command -v ${e} >/dev/null 2>&1 && exec ${e} "$1";`).join(" ");
-  return exec("sh", ["-c", `${editors} command -v open >/dev/null 2>&1 && exec open "$1"; exec xdg-open "$1"`, "sh", path]).catch(() => {});
+// A workspace's folder in a tooltip: where it is and what it holds (the row's words stay short).
+const folderTip = (path) => `${tilde(path)}: its settings (workspace.jsonc) and instructions (AGENTS.md)`;
+
+// The menu's "Edit … settings" row: the sidebar copy opens the folder (the menu closes as the row runs, and
+// a popup's tasks end with it, so the steps below couldn't wait there).
+const askOpenFolder = (path) => setShared("workspaces.folder.open", { path, at: Date.now() });
+
+// Opens a folder with Settings > Files' Default external app, else the first installed editor of
+// EDITORS, else the system's opener (openwith.js). The setting is read from the file at each open:
+// the menu's popup copy doesn't keep it.
+async function openFolder(path) {
+  const text = await readTextFile(`${home()}/${SETTINGS_FILE}`).catch(() => null);
+  const steps = folderOpeners(fileSetting(parseSettings(text), "default-app"), window()?.platform ?? "macos", path);
+  for (const [i, s] of steps.entries()) {
+    const r = await exec(s.cmd, s.args).catch(() => null);
+    if (r?.code === 0 || i === steps.length - 1) return;
+  }
 }
 
 // workspace.jsonc with its top-level "name" set, comments and all kept as written.
@@ -273,9 +298,13 @@ function placeOf(s, ps) {
 
 // The workspace a folder belongs to: the most specific root or folder holding it.
 function match(path, defs) {
-  let best = null, length = -1;
+  // The longest root or folder holding it; on a tie a workspace's root wins over another's listed folder
+  // (a workspace made inside a folder an older one lists keeps what is under its own root).
+  let best = null, length = -1, rooted = false;
   for (const d of defs) for (const f of [d.root, ...d.folders]) {
-    if (inFolder(d, path, f) && f.length > length) { best = d; length = f.length; }
+    if (!inFolder(d, path, f)) continue;
+    const root = f === d.root;
+    if (f.length > length || (f.length === length && root && !rooted)) { best = d; length = f.length; rooted = root; }
   }
   if (best) return best.id;
   const trees = `${home()}/.herdr/worktrees/`;
@@ -335,6 +364,7 @@ function configText(name, color, root, folders) {
   "root": ${JSON.stringify(root)},
   // The repos and folders used here: relative to root, or absolute (~ works)
   // for one that lives elsewhere. The switcher lists them to open as spaces.
+  // Empty: the folders in root, read each time the switcher menu opens.
   "folders": [
 ${folders.map((f) => `    ${JSON.stringify(f)},`).join("\n")}
   ],
@@ -374,6 +404,20 @@ export default class Workspaces extends View {
     if (props()?.popup) {
       this.handle.focus();
       if (!checking()) setShared(SWITCHER_MENU, { overlay: props()?.overlay ?? null, at: Date.now() });
+      // The keys' lit row (arrows, Enter): the shown workspace's, as the menu opens; the pointer takes it only
+      // when it moves (pointerRow()), from where the press that opened the menu was (props.pointer).
+      { const a = shared("workspaces.active"), def = (shared("workspaces.defs") ?? []).find((d) => d.id === a);
+        // Scratch: the shown scratch space's row (its header would fold on Enter).
+        const shownSpace = spaces().find((x) => x.active);
+        this.sel = def ? (def.scratch ? (shownSpace ? `s:${shownSpace.id}` : null) : `w:${def.id}`) : "ws-all"; }
+      this.pointerLast = pointKey(props()?.pointer);
+      this.keyRows = [];
+      this.digitTargets = [];
+      this.menuScroll = ScrollHandle.new();
+      // A workspace without a "folders" list shows the folders in its root as they are now.
+      const shownDef = (shared("workspaces.defs") ?? []).find((d) => d.id === shared("workspaces.active") && !d.error && !d.scratch);
+      this.rootKids = null;
+      if (shownDef?.root && !shownDef.folders.length) cx.spawn(async (cx) => { this.rootKids = { id: shownDef.id, list: await subdirs(shownDef.root) }; cx.notify(); });
       // The group submenus' boxes: a new group's name, and a group's new name.
       this.newGroupIn = InputState.new({ value: "", placeholder: "New group…" });
       this.renameIn = InputState.new({ value: "" });
@@ -383,6 +427,8 @@ export default class Workspaces extends View {
     }
     if (props()?.dialog) {
       this.handle.focus();
+      // In a dialog that deletes, a press this soon after it opened doesn't count (a second Enter from the menu): fresh().
+      this.openedAt = Date.now();
       if (props().dialog === "new-space") this.initNewSpace(cx);
       if (props().dialog === "rename") {
         this.text = (shared("workspaces.defs") ?? []).find((d) => d.id === props().id)?.name ?? "";
@@ -418,6 +464,8 @@ export default class Workspaces extends View {
     // The rows' Keep asks already there at start were for an earlier run: none is done again.
     this.keepSeen = Object.fromEntries(Object.entries(shared("workspaces.scratch.keep") ?? {}).map(([k, v]) => [k, v?.at]));
     this.allowAsked = shared("workspaces.automation.allow")?.at;
+    this.cancelAsked = shared("workspaces.automation.cancel")?.at;
+    this.folderAsked = shared("workspaces.folder.open")?.at;
     this.setAsked = shared("workspaces.runner.set")?.at;
     this.arrangeAsked = shared("workspaces.arrange")?.at;
     // A space the runner makes for its runs joins that workspace at once.
@@ -453,6 +501,7 @@ export default class Workspaces extends View {
     // "ws-switcher.settings" opens or closes our Settings window (ws-settings) and
     // "ws-switcher.settings/<section>" opens it on that section (features, agents, experimental, look, machines, …; extras is an alias for agents).
     // "ws-switcher.show/board/<workspace>/<card>" also opens that card (a pull request's toast).
+    // "ws-switcher.history-at/<app>/<id>[/<workspace>]" opens History at a conversation (a put-back wipe).
     cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
@@ -525,7 +574,7 @@ export default class Workspaces extends View {
     if (!o || o.overlay === (props()?.overlay ?? null)) setShared(SWITCHER_MENU, { overlay: null, closedAt: Date.now() });
   }
 
-  // A command for this copy (see init): "scratch-new", "scratch-keep/…", "automation/…", "show/…",
+  // A command for this copy (see init): "scratch-new", "scratch-keep/…", "automation/…", "show/…", "history-at/…",
   // "settings…", a view's key. The bell's items with such an action come here too (openNotification()).
   async command(c, cx) {
     try {
@@ -536,6 +585,7 @@ export default class Workspaces extends View {
       else if (c.startsWith("scratch-row/")) await this.scratch.setKept(c);
       else if (c.startsWith("automation/")) this.openAutomation(c);
       else if (c.startsWith("show/")) this.showScreen(c, cx);
+      else if (c.startsWith("history-at/")) this.historyAt(c, cx);
       else if (c === "settings" || c.startsWith("settings/")) openSettings(c.slice("settings/".length), cx);
     } catch (e) { notify({ title: commandFailTitle(c, (k) => screenOf(k)?.name ?? null), body: String(e?.message ?? e), level: "error" }); }
   }
@@ -608,7 +658,7 @@ export default class Workspaces extends View {
         const text = await readTextFile(`${d.dir}/workspace.jsonc`).catch(() => null);
         let error = null;
         try { parseJsonc(text ?? ""); } catch (e) { error = String(e?.message ?? e); }
-        if (text !== null && error) notify({ title: `${readBefore.get(d.id)}'s workspace.jsonc doesn't read`, body: `Open its files from the switcher menu (right-click “${d.id}”): ${error}`, level: "error" });
+        if (text !== null && error) notify({ title: `${readBefore.get(d.id)}'s workspace.jsonc doesn't read`, body: `Edit its settings from the switcher menu (right-click “${d.id}”): ${error}`, level: "error" });
       }));
       // What's shown already has a drag or group change being written: only a read
       // that began after it was written may replace it.
@@ -1001,7 +1051,7 @@ export default class Workspaces extends View {
     for (let n = 2; defs.some((d) => d.id === id) || (await fs.exists(`${dir()}/${id}`)); n++) id = `${slug}-${n}`;
     const used = new Set(defs.map((d) => d.color));
     const color = PALETTE.find((c) => !used.has(c)) ?? PALETTE[defs.length % PALETTE.length];
-    await writeTextFile(`${dir()}/${id}/workspace.jsonc`, configText(base(root), color, tilde(root), await subdirs(root)), null);
+    await writeTextFile(`${dir()}/${id}/workspace.jsonc`, configText(base(root), color, tilde(root), []), null);
     await writeTextFile(`${dir()}/${id}/AGENTS.md`, instructionsText(base(root)), null);
     setShared("workspaces.defs", await loadDefs());
     choose(id);
@@ -1025,6 +1075,9 @@ export default class Workspaces extends View {
     }
     this.nameIn.focus();
     cx.timer.after(600, () => this.nameIn.focus());
+    // No "folders" list: the folders in its root as they are now, read as the menu reads them.
+    this.rootKids = null;
+    if (ws?.root && !scratch && !ws.folders.length) cx.spawn(async (cx) => { this.rootKids = { id: ws.id, list: await subdirs(ws.root) }; cx.notify(); });
   }
 
   // Its Create: a space with that name in that folder (Scratch: a new scratch folder).
@@ -1170,7 +1223,9 @@ export default class Workspaces extends View {
     const hit = folder.startsWith("/") ? (isScratch(folder, home()) ? scratchDef(defs)?.id : match(folder, defs)) : null;
     const owner = defs.find((d) => d.id === hit) ?? null;
     const joins = owner && owner.id !== ws?.id ? `Joins ${owner.name}: its folder is there.` : ws ? `Joins ${ws.name}.` : owner ? `Joins ${owner.name}.` : "Shows under All spaces.";
-    const picks = ws ? [ws.root, ...ws.folders].filter(Boolean).slice(0, 6) : [];
+    // No "folders" list: the folders in its root as they are now (read when the dialog opened), as the menu lists them.
+    const kids = this.rootKids?.id === ws?.id ? this.rootKids.list : ws?.children ?? [];
+    const picks = ws ? [ws.root, ...(ws.folders.length ? ws.folders : kids.map((c) => `${ws.root}/${c}`))].filter(Boolean).slice(0, 6) : [];
     const chip = (id, label, tip, action) => div().id(id).h(24).px(8).flex().items_center().rounded(6).border_1().border_color(t.input)
       .text_size(11.5).text_color(t.muted).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip(tip).on_click(action).child(label);
     const setFolder = (path, cx) => { this.folderIn.set_value(tilde(path)); this.error = null; this.escAsked = false; cx.notify(); };
@@ -1209,7 +1264,7 @@ export default class Workspaces extends View {
       if (this.typed() && !this.escAsked && (d || p.dialog === "new-space")) { this.escAsked = true; cx.notify(); return; }
       close();
     };
-    // danger: a delete's button, in the danger fill (`blocked`), as Files' Move to Trash has it (D2).
+    // danger: a delete's button, in the danger fill (`blocked`), as Files' Move to Trash has it.
     const button = (id, label, primary, action, danger = false) => h_flex().id(id).h(32).px(danger ? 13 : 14).items_center().rounded(8)
       .border_1().border_color(danger ? t.blocked : primary ? t.solid : t.input).bg(danger ? t.blocked : primary ? t.solid : t.raised)
       .text_color(danger || primary ? t.solid_foreground : t.foreground).text_size(12.5).font_medium().cursor_pointer()
@@ -1225,7 +1280,7 @@ export default class Workspaces extends View {
     // as keys: claimed here, so the first asks when something typed would be lost and a busy dialog stays.
     // A handler that returns without closing keeps the dialog. (These dialogs are only ever overlays.)
     const onClose = (_e, cx) => { cx.stop_propagation(); escape(cx); };
-    const frame = (id, enter) => v_flex().id(id).track_focus(this.handle).size_full().min_h(0).p(18).bg(t.popover).text_size(13)
+    const frame = (id, enter, guarded = false) => v_flex().id(id).track_focus(this.handle).size_full().min_h(0).p(18).bg(t.popover).text_size(13)
       // A click anywhere in it takes back the first Esc.
       .on_mouse_down("left", (_e, cx) => { if (this.escAsked) { this.escAsked = false; cx.notify(); } })
       .on_action("overlay.close", onClose)
@@ -1233,7 +1288,8 @@ export default class Workspaces extends View {
       .on_action("pane.close", onClose)
       // Enter only: Herdr's Esc comes as overlay.close (above), never as a key here.
       .on_key_down((e, cx) => {
-        if (e.key === "enter" && enter) enter(cx);
+        // A held Enter's repeats never answer it; in a dialog that deletes (guarded), nor one within 500 ms of its opening.
+        if (e.key === "enter" && enter) { if (!e.is_held && (!guarded || this.fresh())) enter(cx); }
         else return;
         cx.stop_propagation();
       });
@@ -1242,7 +1298,7 @@ export default class Workspaces extends View {
     if (p.dialog === "scratch-trash") {
       const folder = String(p.folder ?? "");
       const name = scratchLabel(folder) ?? base(folder);
-      return frame("ws-scratch-trash", (cx) => this.trashFolder(cx))
+      return frame("ws-scratch-trash", (cx) => this.trashFolder(cx), true)
         .child(title(`Move ${name} to the ${trashName()}?`))
         .child(div().pt(12).text_color(t.muted).child(`Moves ${tilde(folder)} and the files in it to the ${trashName()}.`))
         .when(Boolean(this.error), (el) => el.child(error()))
@@ -1268,7 +1324,7 @@ export default class Workspaces extends View {
 
     // Enter confirms a delete, but not Scratch's: it closes its spaces, ending what runs there, which
     // the Trash can't bring back.
-    return frame("ws-delete", d.scratch ? null : (cx) => this.remove(cx))
+    return frame("ws-delete", d.scratch ? null : (cx) => this.remove(cx), true)
       .child(title(`Delete “${d.name}”?`))
       .child(div().pt(12).text_color(t.muted).child(
         d.scratch ? scratchDeleteText(d) :
@@ -1276,7 +1332,7 @@ export default class Workspaces extends View {
       .when(Boolean(this.error), (el) => el.child(error()))
       .child(div().flex_1().min_h(0)).child(h_flex().pt(18).gap(8).justify_end()
         .child(button("ws-delete-cancel", "Cancel", false, close))
-        // Scratch's says it closes its spaces too (D2); every delete is in the danger fill.
+        // Scratch's says it closes its spaces too; every delete is in the danger fill.
         .child(button("ws-delete-yes", this.busy ? "Deleting…" : d.scratch ? scratchDeleteButton(spaces().filter((s) => (shared("workspaces.assigned") ?? {})[s.id] === d.id).length, trashName()) : `Move to ${trashName()}`,
           false, (_e, cx) => this.remove(cx), true)));
   }
@@ -1295,20 +1351,22 @@ export default class Workspaces extends View {
     // spaces, and the tab bar's bell (ws-notifications) says what needs you and where.
     // Open already: the click closes it (a press outside a popup may close it first: then it stays closed).
     const m = shared(SWITCHER_MENU), up = Boolean(m?.overlay) && (m.at ?? 0) >= this.startedAt;
+    // A click event has no position: the press's is kept from its mouse-down, for the menu's pointer rule.
+    const press = (e) => { this.menuPress = pressAt(e); };
     const open = () => {
       if (up) { closeOverlay(m.overlay); setShared(SWITCHER_MENU, { overlay: null, closedAt: Date.now() }); return; }
       if (Date.now() - (m?.closedAt ?? 0) < 300) return;
-      openOverlay({ mod: "ws-switcher", kind: "popup", width: 288, height: 600, props: { popup: true } });
+      openOverlay({ mod: "ws-switcher", kind: "popup", width: 288, height: 600, props: { popup: true, pointer: this.menuPress ?? null } });
     };
     if (narrow()) {
       return h_flex().size_full().bg(t.chrome).items_center().justify_center()
         .child(h_flex().id("ws-rail").relative().size(32).rounded(6).items_center().justify_center().cursor_pointer()
-          .hover((s) => s.bg(t.hover)).when(!up, (el) => el.tooltip(active?.name ?? "All spaces")).on_click(open)
+          .hover((s) => s.bg(t.hover)).when(!up, (el) => el.tooltip(active?.name ?? "All spaces")).on_mouse_down("left", press).on_click(open)
           .child(mark(active, defs, t, 20)));
     }
     return h_flex().size_full().bg(t.chrome).px(8).items_center().text_size(13)
       .child(h_flex().id("ws-current").flex_1().min_w(0).h(34).px(8).gap(9).rounded(8).items_center().cursor_pointer()
-        .hover((s) => s.bg(t.hover)).on_click(open)
+        .hover((s) => s.bg(t.hover)).on_mouse_down("left", press).on_click(open)
         .child(mark(active, defs, t, 20))
         .child(div().id("ws-current-name").flex_1().min_w(0).truncate().font_medium().text_color(t.foreground).when(!up, (el) => el.tooltip(active?.name ?? "All spaces")).child(active?.name ?? "All spaces"))
         .child(svg("mods/workspace-chrome/chevron-down.svg").size(11).flex_none().text_color(t.dim)));
@@ -1366,6 +1424,23 @@ export default class Workspaces extends View {
     if (allowAsk?.at !== this.allowAsked) {
       this.allowAsked = allowAsk?.at;
       if (allowAsk && Date.now() - allowAsk.at < 15000 && this.bg.owner) this.pass(cx, "allow", JSON.stringify({ workspace: allowAsk.workspace, name: allowAsk.name, check: allowAsk.check, script: allowAsk.script }));
+    }
+    // The menu's "Edit … settings": the folder, opened here (openFolder() waits on the setting and each step).
+    const folderAsk = shared("workspaces.folder.open") ?? null;
+    if (folderAsk?.at !== this.folderAsked) {
+      this.folderAsked = folderAsk?.at;
+      const d = Date.now() - (folderAsk?.at ?? 0);
+      if (typeof folderAsk?.path === "string" && folderAsk.path && d >= 0 && d < 15000) cx.spawn(async () => { await openFolder(folderAsk.path); });
+    }
+    // A queued run's Cancel (the Automations screen): this copy's runner takes it out of its queue,
+    // or the background one gets a file.
+    const cancelAsk = shared("workspaces.automation.cancel") ?? null;
+    if (cancelAsk?.at !== this.cancelAsked) {
+      this.cancelAsked = cancelAsk?.at;
+      if (cancelAsk?.id && Date.now() - cancelAsk.at < 15000) {
+        if (this.mine() && this.runner) this.runner.cancel(cancelAsk.id);
+        else if (this.bg.owner) this.pass(cx, "cancel", JSON.stringify({ workspace: cancelAsk.workspace, name: cancelAsk.name, id: cancelAsk.id }));
+      }
     }
     const setAsk = shared("workspaces.runner.set") ?? null;
     if (setAsk?.at !== this.setAsked) {
@@ -1724,6 +1799,19 @@ export default class Workspaces extends View {
     if (key === "board" && plain(card) && featureOn("board")) setShared("workspaces.board.open", { ws, taskId: card, at: Date.now() });
   }
 
+  // "history-at/<app>/<conversation id>[/<workspace>]": History (that workspace's, else All spaces or the
+  // dialog, as the bell's run rows open it) at that conversation: ws-history takes
+  // "workspaces.history.open" { ws, conversation: { app, id } } and selects it. A put-back wipe's toast
+  // and bell row run it.
+  historyAt(c, cx) {
+    const [, app, cid, w] = c.split("/");
+    const plain = (v) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(String(v ?? ""));
+    if (!plain(app) || !plain(cid) || !featureOn("history")) return;
+    const ws = plain(w) && (shared("workspaces.defs") ?? []).some((d) => d.id === w) ? w : null;
+    this.openHistory(ws, cx);
+    setShared("workspaces.history.open", { ws, conversation: { app, id: cid }, at: Date.now() });
+  }
+
   pin(ws, key) {
     const all = shared("workspaces.screens") ?? {};
     if (!(all[ws] ?? []).includes(key)) setShared("workspaces.screens", { ...all, [ws]: [...(all[ws] ?? []), key] });
@@ -1795,21 +1883,45 @@ export default class Workspaces extends View {
     const icon = (name) => svg(`mods/workspace-chrome/${name}.svg`).size(14).flex_none().text_color(t.muted);
     const hint = (...kids) => h_flex().flex_none().gap(8).items_center().text_size(11).text_color(t.dim).children(kids);
     const check = (on) => (on ? svg("mods/workspace-chrome/check.svg").size(13).text_color(t.accent) : div().w(13));
+    // The number key that picks a row (0 All spaces, then the workspace rows as drawn, to 9): its dim hint.
+    // Its 7 px column is on every row with a count or a check (digit(10): the column, empty), so they line up.
+    const digits = [null];
+    const digit = (n) => div().w(7).flex_none().child(n <= 9 ? String(n) : "");
     const head = (text) => { height += 26; return div().h(26).px(8).pt(9).flex_none().text_size(11).text_color(t.dim).child(text); };
     const line = () => { height += 9; return div().h(1).mx(4).my(4).flex_none().bg(t.border); };
+    // The rows the arrows walk and Enter runs, in drawn order: { id, act }. The lit one (this.sel) is
+    // the only fill: a row has no hover fill of its own, the pointer moves the lit row (pointerRow()).
+    const keyRows = [];
     const row = (id, lead, label, tail, action, { dim = false, tip = null, keep = false, danger = false } = {}) => {
       height += 30;
-      return h_flex().id(id).h(30).px(8).gap(9).rounded(7).items_center().flex_none().cursor_pointer()
-        .text_color(danger ? t.blocked : dim ? t.dim : t.foreground).hover((s) => s.bg(t.selected))
+      const act = (cx) => { if (!keep) closeOverlay(props().overlay); action(cx); };
+      const entry = { id, act, el: null };
+      keyRows.push(entry);
+      return entry.el = h_flex().id(id).h(30).px(8).gap(9).rounded(7).items_center().flex_none().cursor_pointer()
+        .text_color(danger ? t.blocked : dim ? t.dim : t.foreground).when(this.sel === id, (s) => s.bg(t.selected))
+        .on_mouse_move((e, cx) => this.pointerRow(id, e, cx))
+        // Under a group's name box no row is lit (the box has the keys): the pointer's own fill then.
+        .when(Boolean(this.grouping || this.renaming), (el) => el.hover((s) => s.bg(t.selected)))
         .when(Boolean(tip), (el) => el.tooltip(tip))
-        .on_click((_e, cx) => { if (!keep) closeOverlay(props().overlay); action(cx); })
+        .on_click((_e, cx) => act(cx))
         .child(lead).child(div().flex_1().min_w(0).truncate().child(label)).child(tail);
     };
-    const frame = (items) => v_flex().id("ws-menu").track_focus(this.handle).on_key_down((e) => this.key(e, defs))
+    // The arrows moved the lit row: it's brought into view (the menu scrolls past 600 px).
+    const frame = (items) => {
+      this.keyRows = keyRows;
+      if (this.reveal) {
+        this.reveal = false;
+        const lit = keyRows.find((r) => r.id === this.sel);
+        const at = lit ? items.indexOf(lit.el) : -1;
+        if (at >= 0) this.menuScroll.scroll_to_item(at);
+      }
+      return frame2(items);
+    };
+    const frame2 = (items) => v_flex().id("ws-menu").track_focus(this.handle).on_key_down((e, cx) => this.key(e, cx)).on_key_up((e, cx) => this.keyUp(e, cx))
       // In a submenu (Move to, a workspace's own menu and its group, a group's own, a scratch folder's),
       // Herdr's Esc (overlay.close) goes back a level, as ‹ Back does; at the menu's top level Herdr closes it.
       .when(this.inSubmenu(), (el) => el.on_action("overlay.close", (_e, cx) => { cx.stop_propagation(); this.goBack(cx); }))
-      .w_full().h(Math.min(600, height)).p(5).bg(t.popover).text_size(12.8).overflow_y_scrollbar()
+      .w_full().h(Math.min(600, height)).p(5).bg(t.popover).text_size(12.8).overflow_y_scrollbar().track_scroll(this.menuScroll)
       .on_mouse_up("left", (_e, cx) => { if (this.dragFrom) { this.dragFrom = this.dragOver = null; cx.notify(); } })
       .children(items);
 
@@ -1820,9 +1932,13 @@ export default class Workspaces extends View {
     if (this.grouping && !defs.some((d) => d.id === this.grouping && !d.scratch && !d.error)) this.grouping = null;
     if (this.folderMenu && !(shared("workspaces.scratch.folders") ?? []).includes(this.folderMenu)) this.folderMenu = null;
     if (this.renaming && !arrange(defs, shared("workspaces.order") ?? {}).some((it) => it.group === this.renaming)) this.renaming = null;
-    // Every submenu starts with ‹ Back (D3-6): one level up, as Esc.
+    // Every submenu starts with ‹ Back: one level up, as Esc.
     const back = () => [row("ws-back", svg("mods/workspace-chrome/chevron-left.svg").size(14).flex_none().text_color(t.muted),
       div().text_color(t.muted).child("Back"), div(), (cx) => this.goBack(cx), { keep: true }), line()];
+    // "Edit … settings": the sidebar copy opens the folder; while it isn't running, the row says so (dim).
+    const editRow = (id, label, path, tip) => switcherAway()
+      ? row(id, icon("file-text"), label, hint("Show the sidebar to do this"), () => {}, { dim: true, keep: true, tip: `${label}\n${tip}` })
+      : row(id, icon("file-text"), label, div(), () => askOpenFolder(path), { tip });
     const askFor = (dialog, height, id) => openOverlay({ mod: "ws-switcher", kind: "dialog", modal: true, width: 420, height, props: { dialog, id } });
     const trashIcon = () => svg("mods/workspace-chrome/archive.svg").size(14).flex_none().text_color(t.blocked);
 
@@ -1870,21 +1986,21 @@ export default class Workspaces extends View {
           { tip: "Its workspaces stay where they are in the list, without a group" })]);
     }
 
-    // A workspace's own menu (D3-5): its row right-clicked, or Scratch's header. What the actions below do
+    // A workspace's own menu: its row right-clicked, or Scratch's header. What the actions below do
     // for the shown one, for this one; no group for Scratch or a workspace whose file doesn't parse.
     const owner = this.wsMenu ? defs.find((d) => d.id === this.wsMenu) : null;
     if (owner) {
       const now = groupOf(owner);
       return frame([...back(), head(owner.name),
         row("ws-m-rename", icon("square-pen"), `Rename ${owner.name}…`, div(), () => askFor("rename", 236, owner.id)),
-        row("ws-m-files", icon("file-text"), `Open ${owner.name}'s files`, div(), () => openFolder(owner.dir), { tip: tilde(owner.dir) }),
+        editRow("ws-m-files", `Edit ${owner.name}'s settings`, owner.dir, folderTip(owner.dir)),
         ...(owner.scratch || owner.error ? [] : [row("ws-m-group", icon("layers"), now ? `Change ${owner.name}'s group…` : `Put ${owner.name} in a group…`, hint(now ?? "", "›"),
           (cx) => { this.grouping = owner.id; this.newGroupIn.set_value(""); this.newGroupIn.focus(); cx.notify(); },
           { keep: true, tip: "Workspaces in the same group sit together in this list, under a header that folds" })]),
         line(),
         row("ws-m-delete", trashIcon(), `Delete ${owner.name}…`, div(), () => askFor("delete", owner.scratch ? 256 : 226, owner.id), { danger: true })]);
     }
-    // A scratch folder's menu (D4, its row right-clicked): Open, Keep or Don't keep, Move to Trash….
+    // A scratch folder's menu (its row right-clicked): Open, Keep or Don't keep, Move to Trash….
     const fm = this.folderMenu;
     if (fm) {
       const st = (shared("workspaces.scratch.state") ?? {})[fm];
@@ -1904,7 +2020,7 @@ export default class Workspaces extends View {
     // from the + on the Scratch group's header, below.
     const items = [row("ws-new", icon("folder-plus"), "New workspace from a folder…", div(), () => setShared("workspaces.create", Date.now())),
       line(), head("Workspaces"),
-      row("ws-all", mark(null, defs, t, 18), "All spaces", hint(String(sp.length), check(!active)), () => choose(null))];
+      row("ws-all", mark(null, defs, t, 18), "All spaces", hint(String(sp.length), check(!active), digit(0)), () => choose(null))];
     // The workspaces as arrange.js has them: each group under a header that folds (a
     // folded one still shows the workspace you're in), then Scratch as a group of its
     // scratch spaces and kept folders, with a + for a new one. A row can be dragged:
@@ -1917,13 +2033,15 @@ export default class Workspaces extends View {
     // Pressed, then let go on the same row: a click. On another: a drop there.
     const moving = (r) => this.dragOver && this.dragOver !== this.dragFrom && !r.kind.startsWith("scratch")
       && (this.dragFrom === r.key || (r.group && this.dragFrom === `g:${r.group}`));
-    const drag = (el, r, click, menu) => el.relative()
+    const drag = (el, r, click, menu) => { const entry = { id: r.key, act: click, el: null }; keyRows.push(entry); return entry.el = el.relative()
+      .when(this.sel === r.key, (el) => el.bg(t.selected))
       .when(moving(r), (el) => el.opacity(0.5))
       .when(drop?.key === r.key, (el) => el.child(drop.edge === "into"
         ? div().absolute().top(0).bottom(0).left(0).right(0).rounded(7).border_1().border_color(t.accent)
         : div().absolute().left(6).right(6).h(2).rounded_full().bg(t.accent).when(drop.edge === "top", (l) => l.top(-1)).when(drop.edge === "bottom", (l) => l.bottom(-1))))
       .on_mouse_down("left", () => { this.dragFrom = r.key; this.dragOver = r.key; this.dragY = 0.5; })
       .on_mouse_move((e, cx) => {
+        this.pointerRow(r.key, e, cx);
         if (!this.dragFrom) return;
         const y = e.bounds?.height ? e.local_position.y / e.bounds.height : 0.5;
         if (this.dragOver !== r.key || Math.abs(y - this.dragY) > 0.05) { this.dragOver = r.key; this.dragY = y; cx.notify(); }
@@ -1935,7 +2053,7 @@ export default class Workspaces extends View {
         this.dragFrom = this.dragOver = null;
         cx.notify();
       })
-      .on_mouse_down("right", (_e, cx) => { this.dragFrom = this.dragOver = null; menu(cx); });
+      .on_mouse_down("right", (_e, cx) => { this.dragFrom = this.dragOver = null; menu(cx); }); };
     for (const r of rows) {
       if (r.kind === "scratch") {
         // Its + makes a scratch space (the dialog asks the name); it doesn't fold or drag.
@@ -1948,7 +2066,7 @@ export default class Workspaces extends View {
           .on_click(() => { closeOverlay(props().overlay); askScratch(); })
           .child(svg("mods/workspace-chrome/plus.svg").size(13));
         items.push(drag(h_flex().id("ws-scratch-head").h(28).pl(8).pr(2).gap(6).rounded(7).items_center().flex_none().cursor_pointer()
-          .hover((s) => s.bg(t.selected)).tooltip(`${r.shut ? "Click to open" : "Click to fold"}${r.def ? "; right-click for more" : ""}`)
+          .tooltip(`${r.shut ? "Click to open" : "Click to fold"}${r.def ? "; right-click for more" : ""}`)
           .child(svg(`mods/workspace-chrome/chevron-${r.shut ? "right" : "down"}.svg`).size(10).flex_none().text_color(t.dim))
           .child(div().flex_1().min_w(0).truncate().text_size(11.5).font_medium().text_color(t.muted).child(r.def?.name ?? "Scratch"))
           .child(hint(status ? div().size(6).rounded_full().bg(t[status]) : div(), r.shut && r.open.length ? String(r.open.length) : ""))
@@ -1964,10 +2082,10 @@ export default class Workspaces extends View {
         const fill = c.startsWith("#") ? c : (MARK[c] ?? t[c] ?? t.accent);
         const status = urgent([s]);
         items.push(drag(h_flex().id(`ws-scratch-${s.id}`).h(30).pl(24).pr(8).gap(9).rounded(7).items_center().flex_none().cursor_pointer()
-          .text_color(t.foreground).hover((x) => x.bg(t.selected)).tooltip(tilde(placeOf(s, ps)))
+          .text_color(t.foreground).tooltip(tilde(placeOf(s, ps)))
           .child(h_flex().size(18).flex_none().rounded(5).bg(fill).items_center().justify_center().text_size(10).font_bold().text_color("#ffffff").child([...s.name][0]?.toUpperCase() ?? "?"))
           .child(div().flex_1().min_w(0).truncate().child(s.name))
-          .child(hint(status ? div().size(6).rounded_full().bg(t[status]) : div(), check(Boolean(active?.scratch && s.active)))),
+          .child(hint(status ? div().size(6).rounded_full().bg(t[status]) : div(), check(Boolean(active?.scratch && s.active)), digit(10))),
           r, () => { closeOverlay(props().overlay); if (shared("workspaces.screen")) setShared("workspaces.screen", null); run("space.select", { id: s.id }); }, () => {}));
         continue;
       }
@@ -1978,7 +2096,7 @@ export default class Workspaces extends View {
         const name = scratchLabel(r.folder);
         const st = (shared("workspaces.scratch.state") ?? {})[r.folder];
         const when = scratchWhen(st, Date.now(), trashName());
-        // On hover, after the words, a small Keep (on its way to the Trash) or Don't keep (kept) (D4-a). Pressed,
+        // On hover, after the words, a small Keep (on its way to the Trash) or Don't keep (kept). Pressed,
         // it stays at 0.45 until the shared state says the folder changed (10 s at most).
         const pending = this.keeping?.[r.folder];
         if (pending && !keepPending(pending, Boolean(st?.kept), Date.now())) delete this.keeping[r.folder];
@@ -1995,7 +2113,7 @@ export default class Workspaces extends View {
             .child(st?.kept ? "Don't keep" : "Keep")
           : null;
         items.push(drag(h_flex().id(`ws-scratch-f-${r.folder}`).h(30).pl(24).pr(keepBtn ? 3 : 8).gap(9).rounded(7).items_center().flex_none().cursor_pointer()
-          .text_color(t.muted).hover((x) => x.bg(t.selected)).tooltip(`${tilde(r.folder)}: ${when.tip}`)
+          .text_color(t.muted).tooltip(`${tilde(r.folder)}: ${when.tip}`)
           .on_hover((on, cx) => { if (on) this.overFolder = r.folder; else if (this.overFolder === r.folder) this.overFolder = null; cx.notify(); })
           .child(div().w(18).flex_none().flex().justify_center().child(icon("folder")))
           .child(div().flex_1().min_w(0).truncate().child(name ?? base(r.folder)))
@@ -2016,10 +2134,10 @@ export default class Workspaces extends View {
         const mine = sp.filter((s) => members.has(assigned[s.id]));
         const status = r.shut ? urgent(mine) : null;
         items.push(drag(h_flex().id(`ws-group-${r.name}`).h(28).px(8).gap(6).rounded(7).items_center().flex_none().cursor_pointer()
-          .hover((s) => s.bg(t.selected)).tooltip(`${r.shut ? "Click to open" : "Click to fold"}. Drag to move the group; right-click to rename or ungroup it.`)
+          .tooltip(`${r.shut ? `Click to open (${spacesCount(mine.length)})` : "Click to fold"}. Drag to move the group; right-click to rename or ungroup it.`)
           .child(svg(`mods/workspace-chrome/chevron-${r.shut ? "right" : "down"}.svg`).size(10).flex_none().text_color(t.dim))
           .child(div().flex_1().min_w(0).truncate().text_size(11.5).font_medium().text_color(t.muted).child(r.name))
-          .child(hint(status ? div().size(6).rounded_full().bg(t[status]) : div(), r.shut ? String(mine.length) : "", div().w(13))),
+          .child(hint(status ? div().size(6).rounded_full().bg(t[status]) : div(), r.shut ? String(mine.length) : "", div().w(13), digit(10))),
           r, () => this.fold(r.name),
           (cx) => { this.renaming = r.name; this.renameIn.set_value(r.name); this.renameIn.set_selected_range({ start: 0, end: r.name.length }); this.renameIn.focus(); cx.notify(); }));
         continue;
@@ -2029,10 +2147,12 @@ export default class Workspaces extends View {
       const status = urgent(mine);
       height += 30;
       items.push(drag(h_flex().id(`ws-def-${d.id}`).h(30).px(8).when(Boolean(r.group), (el) => el.pl(24)).gap(9).rounded(7).items_center().flex_none().cursor_pointer()
-        .text_color(d.error ? t.dim : t.foreground).hover((s) => s.bg(t.selected))
-        .tooltip(d.error ? `workspace.jsonc: ${d.error} · right-click for more` : `${tilde(d.root)} · drag to reorder, right-click for more`)
+        .text_color(d.error ? t.dim : t.foreground)
+        .tooltip(d.error ? `workspace.jsonc: ${d.error} · right-click for more` : workspaceTip(tilde(d.root), mine.length, status))
         .child(mark(d, defs, t, 18)).child(div().flex_1().min_w(0).truncate().child(d.name))
-        .child(hint(status ? div().size(6).rounded_full().bg(t[status]) : div(), String(mine.length), check(active?.id === d.id))),
+        // A workspace.jsonc that doesn't read: "config error" in red where its count is (the tooltip says why).
+        .child(d.error ? hint(div().text_color(t.blocked).child("config error"), check(active?.id === d.id), digit(digits.push(d.id) - 1))
+          : hint(status ? div().size(6).rounded_full().bg(t[status]) : div(), String(mine.length), check(active?.id === d.id), digit(digits.push(d.id) - 1))),
         r, () => { closeOverlay(props().overlay); choose(d.id); },
         (cx) => { this.wsMenu = d.id; this.handle.focus(); cx.notify(); }));
     }
@@ -2045,8 +2165,7 @@ export default class Workspaces extends View {
         (cx) => { this.moving = true; cx.notify(); }, { keep: true }));
     }
     const target = active?.dir ?? dir();
-    items.push(row("ws-edit", icon("file-text"), active ? `Open ${active.name}'s files` : "Open the workspaces folder", div(),
-      () => openFolder(target), { tip: tilde(target) }));
+    items.push(editRow("ws-edit", active ? `Edit ${active.name}'s settings` : "Open the workspaces folder", target, active ? folderTip(target) : tilde(target)));
     if (active) {
       const ask = (dialog, height) => askFor(dialog, height, active.id);
       items.push(row("ws-rename", icon("square-pen"), `Rename ${active.name}…`, div(), () => ask("rename", 236)));
@@ -2062,7 +2181,8 @@ export default class Workspaces extends View {
 
     // Scratch's folders are in its group above.
     if (active && !active.error && !active.scratch) {
-      const folders = active.folders.length ? active.folders : active.children.map((c) => `${active.root}/${c}`);
+      const kids = this.rootKids?.id === active.id ? this.rootKids.list : active.children;
+      const folders = active.folders.length ? active.folders : kids.map((c) => `${active.root}/${c}`);
       if (folders.length) items.push(line(), head(`${active.name} folders`));
       for (const f of folders) {
         const there = sp.find((s) => !s.machine && inFolder(active, placeOf(s, ps), f));
@@ -2071,6 +2191,7 @@ export default class Workspaces extends View {
       }
     }
 
+    this.digitTargets = digits;
     return frame(items);
   }
 
@@ -2104,12 +2225,20 @@ export default class Workspaces extends View {
     return rows;
   }
 
+  // Half a second since this dialog opened: a press before that was meant for what opened it.
+  fresh() { const d = Date.now() - (this.openedAt ?? 0); return !(d >= 0 && d < 500); }
+
   // Whether the menu shows a submenu (Esc and ‹ Back go up a level).
   inSubmenu() { return Boolean(this.moving || this.grouping || this.renaming || this.wsMenu || this.folderMenu); }
 
   // ‹ Back, or Esc in a submenu: a workspace's group opened from its own menu goes back to that menu;
   // anything else to the main menu.
   goBack(cx) {
+    // The row that opened the submenu is lit again.
+    const def = this.wsMenu ? (shared("workspaces.defs") ?? []).find((d) => d.id === this.wsMenu) : null;
+    this.sel = this.grouping && this.wsMenu ? "ws-m-group" : this.moving ? "ws-move" : this.grouping ? "ws-group"
+      : this.renaming ? `g:${this.renaming}` : this.wsMenu ? (def?.scratch ? "s:" : `w:${this.wsMenu}`) : this.folderMenu ? `f:${this.folderMenu}` : this.sel;
+    this.reveal = true;
     if (this.grouping && this.wsMenu) this.grouping = null;
     else { this.moving = false; this.grouping = null; this.renaming = null; this.wsMenu = null; this.folderMenu = null; }
     this.handle.focus();
@@ -2215,14 +2344,56 @@ export default class Workspaces extends View {
     });
   }
 
-  // 0 shows every space, 1-9 the workspaces in the menu's order. (Herdr's Esc comes as overlay.close,
-  // never as a key here: menu() claims it in a submenu.)
-  key(e, defs) {
-    if (this.inSubmenu() || e.modifiers?.control || e.modifiers?.platform || e.modifiers?.alt) return;
-    if (!/^[0-9]$/.test(e.key)) return;
-    const n = Number(e.key);
-    if (n > defs.length) return;
+  // The menu's keys: up and down move the lit row, Enter runs it when let go, and a number
+  // picks All spaces (0) or a workspace row counted as drawn (main menu only). Esc is Herdr's action.
+  // In a group's box the box keeps Enter and the arrows. (Herdr's Esc comes as overlay.close, never as a
+  // key here: menu() claims it in a submenu.)
+  key(e, cx) {
+    if (e.modifiers?.control || e.modifiers?.platform || e.modifiers?.alt) return;
+    const boxed = Boolean(this.grouping || this.renaming);
+    if ((e.key === "down" || e.key === "up") && !boxed) {
+      const rows = this.keyRows ?? [];
+      if (!rows.length) return;
+      const at = rows.findIndex((r) => r.id === this.sel), dir = e.key === "down" ? 1 : -1;
+      this.sel = rows[at < 0 ? (dir > 0 ? 0 : rows.length - 1) : (at + dir + rows.length) % rows.length].id;
+      this.reveal = true;
+      cx.stop_propagation(); cx.notify();
+      return;
+    }
+    if (e.key === "enter" && !boxed) {
+      // Pressed here (not held, not a repeat): the row runs when Enter is let go (keyUp()), so a dialog or the
+      // folder picker it opens never gets this key's repeats.
+      if (!e.is_held && (this.keyRows ?? []).some((x) => x.id === this.sel)) { this.enterOn = this.sel; cx.stop_propagation(); }
+      return;
+    }
+    if (this.inSubmenu() || !/^[0-9]$/.test(e.key)) return;
+    const n = Number(e.key), targets = this.digitTargets ?? [];
+    if (n >= targets.length) return;
     closeOverlay(props().overlay);
-    choose(n === 0 ? null : defs[n - 1].id);
+    choose(targets[n]);
+  }
+
+  // Enter let go on the row it was pressed on: that row runs.
+  keyUp(e, cx) {
+    if (e.key !== "enter" || !this.enterOn) return;
+    const on = this.enterOn;
+    this.enterOn = null;
+    if (on !== this.sel || this.grouping || this.renaming) return;
+    const r = (this.keyRows ?? []).find((x) => x.id === on);
+    if (r) { cx.stop_propagation(); r.act(cx); }
+  }
+
+  // A row under a pointer that moves becomes the keys' row. pointerLast starts at the press that
+  // opened the menu (props.pointer) and follows every move; a move at the same place as the last
+  // one is no move (a resting pointer, or one re-sent with no movement), so it never takes the row.
+  pointerRow(i, e, cx) {
+    const here = pointKey(e?.position);
+    if (here === undefined || here === this.pointerLast) return;
+    // In a group's name box the box has Enter and the arrows: no row lights there.
+    if (this.grouping || this.renaming) { this.pointerLast = here; return; }
+    const first = this.pointerLast === undefined;
+    this.pointerLast = here;
+    if (first) return; // no press known: the first move is only where it rests
+    if (this.sel !== i) { this.sel = i; cx.notify(); }
   }
 }

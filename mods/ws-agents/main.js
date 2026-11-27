@@ -45,7 +45,7 @@
 // shows a cut name (rows, helper rows, the rail); and from Herdr 0.1.17's agents, a kept
 // sub-agent shows its own status, done included, without a helper's done pulling its
 // parent out of Working (kidStatus(), kidRank).
-// Also (picked D3-1): a hovered row, a helper's too, shows a ⋯ after its pin (more()), which
+// Also: a hovered row, a helper's too, shows a ⋯ after its pin (more()), which
 // opens the same menu as a right-click, under the button (moreAt()).
 // Also (small round, 2026-11-27): from Herdr's agents, clean() (0.1.17: a title keeps a leading
 // bracket, quote or emoji), title()'s path test on the raw title (0.1.15), the guarded saved
@@ -54,14 +54,31 @@
 // says what it's doing while it runs (BUSY_WORDS); a right-click's menu that waits for a read
 // opens where the press was (pressAt()); the ⋯, Sort and + drop their tooltip once clicked
 // (quietTip()); Hand off's Agent row says why it has none (menufacts.js agentsCheckLine()).
+// Also (options round, 2026-11-27): folds are kept across restarts (listfacts.js keptFolds(),
+// pruneFolds()); a folded tree whose helper waits shows the "!" after its count (fold()); with
+// no Node a dim line under the header says what needs it (noNode); Wipe for Claude and Pi shows
+// the conversation's name, model and context in a box (statfacts.js wipeLine()); an Antigravity
+// wipe's toasts end with the command that puts it back (listfacts.js restoreCommand()); Sort, +,
+// the pin and the fold arrow sit in 22 px boxes.
+// Also (after the options round): the Wipe dialog's Antigravity lookup and Hand off's agents check are
+// started from the dialog's own timer, not in init (a dialog opened by a menu that closes as it opens
+// it ran its init inside the menu's call, and Herdr dropped the work's answer once the menu had gone),
+// and asked again by a press once they've run 5 s with no answer (listfacts.js lookStuck(); agyLookUp(),
+// hoLookUp(), hoLookAgain()).
+// Also (Put it back, for 0.34.0): an Antigravity wipe's toasts are titled "Wiped “<title>”" (", to finish later"),
+// "Couldn't wipe “<title>”", and carry `undo` (listfacts.js wipeUndo()) with a 10-minute timeout; ws-toast and the
+// bell draw it as Put it back, which runs ws-agents.restore/<backup folder name>: restore() runs agywipe.js
+// restore and keeps the outcome in shared workspaces.agents.restores (restoreOutcome()); the list copies publish
+// workspaces.agents.alive every 5 s so the button knows the command can run.
 // Esc, and Cmd/Ctrl+W, reach these dialogs as Herdr's actions (overlay.close, tab.close,
 // pane.close), never as keys: dialogFrame() and handoffDialog() claim them on the root.
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, Popup, ScrollHandle } from "gpui-base";
-import { agents, terminals, panes, focused, spaces, knownAgents, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, hc, appHome, home, notify, checking, readTextFile, writeTextFile } from "herdr";
+import { agents, terminals, panes, focused, spaces, knownAgents, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, hc, appHome, home, notify, checking, readTextFile, writeTextFile, nextCommand } from "herdr";
 import { exec } from "./posix.js";
-import { tokens } from "./statfacts.js";
+import { tokens, wipeLine } from "./statfacts.js";
+import { keptFolds, restoreCommand, lookStuck, wipeUndo, restoreKey, restoreOutcome, historyAt } from "./listfacts.js";
 import { kindOf as menuKind, menuItems, menuHeight, closeAsks, helpersLine, forkArgv, wipeTargets, agyDir, handoffChoices, firstHandoffPick, handoffLaunch, commandProgram, choiceArgv, moreAt, agentsCheckLine } from "./menufacts.js";
 import { KNOBS, knobsIn, configModels, listable, keptModels, listModels, SHORT_LIST, typeahead, markSegments } from "./knobs.js";
 import { SETTINGS_FILE, parseSettings, experimentOn, featureOn } from "./settingsfacts.js";
@@ -311,19 +328,37 @@ function failure(r) {
   }
 }
 
-// Where a wipe's files went, in words (agywipe.js moves them into its backup folder).
-const filesWhere = (n, backup) => (n ? `its files are in ${tilde(backup)}/files (move that folder to the ${trashName()} once you're sure)` : "it had no files left to move");
+// Put it back: a wipe's toast carries `undo` (listfacts.js wipeUndo()), which ws-toast and the bell draw as
+// a button running `ws-agents.restore/<backup folder name>` (restore(), below); the command itself is the
+// bell's fallback. Such a toast stays 10 minutes, or until it's closed or pressed.
+const UNDO_TIMEOUT = 600000;
+const RESTORES = "workspaces.agents.restores"; // { [backup folder name]: { state: running | done | failed, why, again, title, at } }
+const ALIVE = "workspaces.agents.alive"; // { at }, every 5 s from the list copies: whether ws-agents.restore/… can run
+// History at that conversation, once it's put back (a click on the "Put back" toast and its bell row), while History is on.
+const opensAt = (id, ws) => (featureOn(shared("workspaces.settings"), "history") ? historyAt(id, ws) : null);
+const undoFor = (backup, ws, id) => (backup ? wipeUndo(backup, restoreCommand(`${appHome()}/mods/ws-agents/agywipe.js`, home(), backup, window()?.platform === "windows"), ws, opensAt(id, ws)) : null);
+// Each undo's workspace, so the "Put back" toast opens that workspace's History (the command carries only the
+// folder's name). Module state, shared by this code's copies; after a reload, All spaces.
+const UNDO_WS = new Map();
+const withUndo = (n, backup, ws = null, id = null) => {
+  const undo = undoFor(backup, ws, id);
+  if (undo && ws) UNDO_WS.set(undo.key, ws);
+  return undo ? { ...n, undo, timeout: UNDO_TIMEOUT } : n;
+};
+// A space's workspace (the bell's row names it), or null.
+const wsOfSpace = (space) => { const w = space ? (shared("workspaces.assigned") ?? {})[space] : null; return w && (shared("workspaces.defs") ?? []).some((d) => d.id === w) ? w : null; };
 // What changed in Antigravity's lists, in words, from agywipe.js' `changed`.
 const changedWords = (changed) => (changed?.length ? `Antigravity's lists were partly changed (${changed.join(", ")})` : "Antigravity's lists weren't changed");
 
 // Toasts for what an `agywipe.js pending` run did.
 function pendingToasts(out) {
   for (const c of out.cleaned ?? []) {
-    notify({ title: "Antigravity wipe finished", level: "success", body: `“${c.title}” is out of Antigravity's lists, and ${filesWhere(c.moved, c.backup)}.` });
+    notify(withUndo({ title: `Wiped “${c.title || "the conversation"}”`, level: "success", body: "Gone from Antigravity and History." }, c.backup, null, c.id));
   }
   for (const g of out.gaveUp ?? []) {
-    notify({ title: "An Antigravity wipe gave up", level: "error", timeout: 0,
-      body: `“${g.title}”: ${g.error}. ${changedWords(g.changed)}; its files weren't moved.${g.backup ? ` A copy and what it removed are in ${tilde(g.backup)} (agywipe.js restore puts them back).` : ""}` });
+    // Put it back only when it had partly changed the lists: else there's nothing to put back.
+    const n = { title: `Couldn't wipe “${g.title || "the conversation"}”`, level: "error", body: `${g.error}. ${changedWords(g.changed)}; its files weren't moved.` };
+    notify(g.changed?.length ? withUndo(n, g.backup, null, g.id) : n);
   }
 }
 
@@ -339,7 +374,10 @@ export default class Agents extends View {
       return;
     }
     if (p?.agentMenu || p?.send || p?.wipe || p?.handoff) return this.initOverlay(p, cx);
-    this.folded = new Set();
+    // Folds, kept across restarts as pins are (listfacts.js keptFolds()).
+    try { this.foldSeen = keptFolds(JSON.parse(localStorage.getItem("folds") ?? "{}"), null, Date.now()); } catch { this.foldSeen = {}; }
+    this.folded = new Set(Object.keys(this.foldSeen));
+    this.foldsSaved = JSON.stringify(this.foldSeen);
     this.widths = new Map();
     // Each agent's last state and when it changed (ms), kept across restarts.
     // Herdr 0.1.16's guards: a damaged saved value is dropped instead of taking the list away.
@@ -358,6 +396,15 @@ export default class Agents extends View {
     this.pids = new Map();
     this.prefillSeen = shared(PREFILL_KEY)?.id ?? 0;
     if (checking()) return;
+    // Put it back: whether the command can run (ws-toast and the bell read it first), and the command.
+    setShared(ALIVE, { at: Date.now() });
+    cx.timer.every(5000, () => setShared(ALIVE, { at: Date.now() }));
+    cx.spawn(async () => {
+      for (;;) {
+        const c = String((await nextCommand().catch(() => null)) ?? "");
+        if (c.startsWith("restore/")) this.restore(c.slice("restore/".length));
+      }
+    });
     // Watch for Hand off "Pre-fill only" requests published by the dialog.
     cx.timer.every(250, (cx) => {
       const ask = shared(PREFILL_KEY);
@@ -372,6 +419,9 @@ export default class Agents extends View {
     cx.spawn(async (cx) => {
       await this.readSettings();
       if (numbersOn()) await this.readStats(cx);
+      // With the numbers off nothing reads until a right-click, so Node is looked for once here:
+      // the line under the header shows from the start while it's missing.
+      else if (!(await findNode())) { this.noNode = true; cx.notify(); }
     });
     cx.timer.every(60000, (cx) => {
       cx.spawn(async () => this.readSettings());
@@ -458,6 +508,8 @@ export default class Agents extends View {
       // Agents gone are forgotten (not on a one-agent read: the others are still there).
       if (!only) for (const k of this.pids.keys()) if (!list.some((a) => a.address === k)) this.pids.delete(k);
       const r = await node(args);
+      // No Node: the list says so under its header, until a read finds one.
+      if ((r.code === 127) !== Boolean(this.noNode)) { this.noNode = r.code === 127; cx.notify(); }
       if (r.code !== 0 || r.stdout === this.statsRaw) return;
       let data = null;
       try { data = JSON.parse(r.stdout); } catch { return; }
@@ -482,7 +534,8 @@ export default class Agents extends View {
       .items_center()
       .text_size(11)
       .text_color(t.dim)
-      .tooltip(statDetail(s))
+      // Off while its row's right-click menu is up, as the row's other tooltips (quietTip()).
+      .when(this.tipOff !== `ag-${a.address}` && this.tipOff !== `sub-${a.address}`, (el) => el.tooltip(statDetail(s)))
       .when(Boolean(s.name), (el) => el.child(div().min_w(0).truncate().child(s.name)))
       .when(pct != null, (el) => el
         .when(!short, (el) => el.child(meter(t, pct, 26)))
@@ -557,7 +610,10 @@ export default class Agents extends View {
     this.handle = cx.focus_handle();
     this.handle.focus();
     // Antigravity's Wipe: which conversation it is and what stands in the way, before anything.
-    if (p.wipe?.kind === "agy") this.agyLookUp(p.wipe, cx);
+    // Started from this dialog's own timer, not in init: a dialog opened by a menu that closes as it
+    // opens it (the agent menu, History's) runs its init inside that menu's call, and work begun there
+    // can belong to the menu: once the menu has gone, Herdr drops its answer for good.
+    if (p.wipe?.kind === "agy") { this.agyLooking = true; this.agyAskedAt = Date.now(); cx.timer.after(1, (cx) => this.agyLookUp(p.wipe, cx)); }
     if (p.handoff) {
       // Installed agents: the + menu's last list at once, then refreshed in the background.
       this.hoAgents = shared("new-menu.agents")?.[""] ?? [];
@@ -591,33 +647,25 @@ export default class Agents extends View {
       }
       this.hoPick = firstHandoffPick(this.hoChoices(p.handoff), p.handoff.kind);
       this.syncHoKnobs(p.handoff);
-      cx.spawn(async (cx) => {
-        const known = await knownAgents().catch(() => null);
-        // What the Agent row says while it has none to offer (agentsCheckLine()).
-        this.hoCheck = known ? { checked: true } : { failed: true };
-        if (!known) cx.notify();
-        if (known) {
-          this.hoAgents = known;
-          if (!this.hoChosen) {
-            this.hoPick = firstHandoffPick(this.hoChoices(p.handoff), p.handoff.kind);
-            this.syncHoKnobs(p.handoff);
-          }
-          cx.notify();
-        }
-      });
-      cx.spawn(async (cx) => {
-        this.codexModels = configModels(await readTextFile(`${home()}/.codex/config.toml`).catch(() => null));
-        cx.notify();
-      });
-      const io = { exec, readTextFile, writeTextFile, home };
-      for (const program of listable()) {
+      // From this dialog's own timer, as the Wipe dialog's lookup (the agent menu closes as it opens it).
+      this.hoLooking = true;
+      this.hoAskedAt = Date.now();
+      cx.timer.after(1, (cx) => {
+        this.hoLookUp(p.handoff, cx);
         cx.spawn(async (cx) => {
-          this.listed[program] = (await keptModels(io, program).catch(() => null))?.models ?? [];
-          cx.notify();
-          this.listed[program] = await listModels(io, program).catch(() => this.listed[program]);
+          this.codexModels = configModels(await readTextFile(`${home()}/.codex/config.toml`).catch(() => null));
           cx.notify();
         });
-      }
+        const io = { exec, readTextFile, writeTextFile, home };
+        for (const program of listable()) {
+          cx.spawn(async (cx) => {
+            this.listed[program] = (await keptModels(io, program).catch(() => null))?.models ?? [];
+            cx.notify();
+            this.listed[program] = await listModels(io, program).catch(() => this.listed[program]);
+            cx.notify();
+          });
+        }
+      });
       this.hoText = TextareaState.new({
         value: "",
         rows: 5,
@@ -668,7 +716,7 @@ export default class Agents extends View {
       remote: a.address.includes("/"),
       session: s.session ?? null, file: s.file ?? null, cwd: s.cwd ?? pane?.cwd ?? a.cwd ?? null, cmd: s.cmd ?? null,
       agyWipe: experimentOn(shared("workspaces.settings"), "antigravity-wipe"), agyFresh: s.fresh === true, pid: this.pids?.get(a.address)?.pid ?? null,
-      helpers, wipeHelpers,
+      helpers, wipeHelpers, facts: wipeLine(s),
     };
   }
 
@@ -793,7 +841,7 @@ export default class Agents extends View {
       }
       case "wipe":
         done();
-        return openOverlay({ mod: "ws-agents", kind: "dialog", modal: true, width: 480, height: (f.kind === "agy" ? 410 : 226) + (helpersLine(f.wipeHelpers) ? 20 : 0), props: { wipe: f } });
+        return openOverlay({ mod: "ws-agents", kind: "dialog", modal: true, width: 480, height: (f.kind === "agy" ? 410 : f.facts ? 288 : 268) + (helpersLine(f.wipeHelpers) ? 20 : 0), props: { wipe: f } });
     }
   }
 
@@ -1126,7 +1174,9 @@ export default class Agents extends View {
         .when(Boolean(folder), (el) => el.child(div().text_color(t.dim).truncate().child(`Folder: ${tilde(folder)}`))))
       .child(section("Agent"))
       .when(agentChoices.length > 0, (el) => el.child(h_flex().gap(6).flex_wrap().children(agentChoices.map(chip))))
-      .when(agentChoices.length === 0, (el) => el.child(div().text_size(12).text_color(t.dim).child(agentsCheckLine(this.hoCheck))))
+      .when(agentChoices.length === 0, (el) => el.child(div().id("handoff-agents-again").text_size(12).text_color(t.dim).cursor_pointer()
+        .hover((s) => s.text_color(t.foreground)).tooltip("Click to look again")
+        .on_click((_e, cx) => this.hoLookAgain(f, cx)).child(agentsCheckLine(this.hoCheck))))
       .when(presetChoices.length > 0, (el) => el
         .child(section("Presets"))
         .child(h_flex().gap(6).flex_wrap().children(presetChoices.map(chip))))
@@ -1166,6 +1216,7 @@ export default class Agents extends View {
     const choices = this.hoChoices(f);
     const choice = choices.find((c) => c.id === this.hoPick) ?? null;
     if (!choice) {
+      if (!choices.length) this.hoLookAgain(f, cx);
       this.error = choices.length ? "Pick an agent or preset first." : agentsCheckLine(this.hoCheck, true);
       cx.notify();
       return;
@@ -1249,7 +1300,12 @@ export default class Agents extends View {
     if (f.kind !== "agy") {
       return this.dialogFrame(t, "agent-wipe", `Wipe ${f.name}?`, (cx) => this.doWipe(cx), { locked: () => this.busy })
         .child(div().pt(12).text_color(t.muted).child(`Closes it and moves its conversation to the ${trashName()}. History won't list it and it can't be resumed${working}.${helpers}`))
-        .child(div().id("agent-wipe-file").pt(10).text_size(11.5).text_color(t.dim).truncate().tooltip(tilde(targets[0])).child(tilde(targets[0])))
+        // Which conversation it is, as Antigravity's box shows it: the row's name, its model and
+        // context (statfacts.js wipeLine()), the file (whole on hover).
+        .child(v_flex().id("agent-wipe-file").mt(12).p(10).gap(3).rounded(8).bg(t.background).border_1().border_color(t.border).text_size(11.5).tooltip(tilde(targets[0]))
+          .child(div().text_size(12.5).text_color(t.foreground).truncate().child(`“${f.name}”`))
+          .when(Boolean(f.facts), (el) => el.child(div().text_color(t.muted).truncate().child(f.facts)))
+          .child(div().text_color(t.dim).truncate().child(tilde(targets[0]))))
         .when(Boolean(this.error), (el) => el.child(div().pt(8).text_size(11.5).text_color(t.blocked).child(this.error)))
         .child(div().flex_1())
         .child(h_flex().pt(14).gap(8).justify_end()
@@ -1272,7 +1328,7 @@ export default class Agents extends View {
     ].filter(Boolean).join(" ") : "";
     const go = this.busy ? "Wiping…" : this.agyClosed ? "Try again" : this.agyConfirm && c ? `Wipe all ${c.tree.length}` : "Wipe";
     return this.dialogFrame(t, "agent-wipe", `Wipe ${f.name}?`, (cx) => this.doWipe(cx), { locked: () => this.busy })
-      .child(div().pt(12).text_color(t.muted).child(`${f.address ? "Closes it, takes" : "Takes"} this conversation out of Antigravity's own lists and moves its files into ~/.herdr/trash, so History and /resume won't show it${working}.${helpers} Experimental: what it removes is kept there too, and agywipe.js restore puts it back.`))
+      .child(div().pt(12).text_color(t.muted).child(`${f.address ? "Closes it, takes" : "Takes"} this conversation out of Antigravity's own lists and moves its files into ~/.herdr/trash, so History and /resume won't show it${working}.${helpers} Experimental: what it removes is kept there too, and Put it back on the toast after it undoes it.`))
       .child(facts)
       .when(Boolean(ask) && !this.error, (el) => el.child(div().pt(8).text_size(11.5).text_color(t.ansi3).child(ask)))
       .when(Boolean(others) && !this.error && !ask, (el) => el.child(div().pt(8).text_size(11.5).text_color(t.muted).child(others)))
@@ -1286,11 +1342,76 @@ export default class Agents extends View {
 
   // agywipe.js check for the dialog: the conversation's root, title, last use and sub-agents,
   // or why it can't be wiped (then Wipe does nothing).
+  // Put it back (ws-agents.restore/<backup folder name>, from a wipe's toast or its bell row): agywipe.js
+  // restore, with the outcome in shared RESTORES for the toast and the bell (listfacts.js restoreOutcome()),
+  // and a "Put back" toast when it's done. Every list copy gets the command: the first marks it running,
+  // so the others leave it.
+  async restore(tail) {
+    const key = restoreKey(tail);
+    if (!key) return;
+    const cur = (shared(RESTORES) ?? {})[key];
+    const d = Date.now() - (cur?.at ?? 0);
+    if (cur?.state === "running" && d >= 0 && d < 120000) return;
+    const put = (v) => {
+      const now = Date.now();
+      const kept = Object.entries(shared(RESTORES) ?? {}).filter(([, x]) => now - (x?.at ?? 0) < 86400000);
+      setShared(RESTORES, { ...Object.fromEntries(kept), [key]: { ...v, at: now } });
+    };
+    put({ state: "running", why: null, again: false, title: cur?.title ?? null });
+    const backup = `${home()}/.herdr/trash/${key}`;
+    let m = null;
+    try { m = JSON.parse(await readTextFile(`${backup}/manifest.json`)); } catch { m = null; }
+    const title = m?.title || cur?.title || "the conversation";
+    const r = await node([`${appHome()}/mods/ws-agents/agywipe.js`, "restore", home(), backup], { timeout: 60000, once: true });
+    const o = restoreOutcome(r, Boolean(m?.restored));
+    put({ ...o, title });
+    // A click on it opens History at that conversation (the switcher's history-at), while History is on.
+    const opens = o.state === "done" && !o.why ? opensAt(m?.root, UNDO_WS.get(key) ?? null) : null;
+    if (o.state === "done" && !o.why) notify({ title: `Put back “${title}”`, level: "success", body: "In Antigravity and History again.", ...(opens ? { action: { name: opens } } : {}) });
+  }
+
+  // Hand off's installed agents, refreshed in the background. A press on the empty Agent row or on
+  // Start asks again once it has looked for 5 s (lookStuck()); an older ask's late answer is ignored.
+  hoLookUp(f, cx) {
+    const ask = (this.hoAsk = (this.hoAsk ?? 0) + 1);
+    this.hoAskedAt = Date.now();
+    this.hoLooking = true;
+    cx.spawn(async (cx) => {
+      const known = await knownAgents().catch(() => null);
+      if (ask !== this.hoAsk) return;
+      this.hoLooking = false;
+      // What the Agent row says while it has none to offer (agentsCheckLine()).
+      this.hoCheck = known ? { checked: true } : { failed: true };
+      if (known) {
+        this.hoAgents = known;
+        if (!this.hoChosen) {
+          this.hoPick = firstHandoffPick(this.hoChoices(f), f.kind);
+          this.syncHoKnobs(f);
+        }
+      }
+      cx.notify();
+    });
+  }
+
+  // With no agent to offer: a press asks again, unless an ask under 5 s old is still going.
+  hoLookAgain(f, cx) {
+    if (this.hoLooking && !lookStuck(this.hoAskedAt)) return false;
+    this.hoCheck = {};
+    this.hoLookUp(f, cx);
+    cx.notify();
+    return true;
+  }
+
+  // A press on Wipe starts it again once it has looked for 5 s (lookStuck()); an older look's
+  // late answer is ignored.
   agyLookUp(f, cx) {
+    const ask = (this.agyAsk = (this.agyAsk ?? 0) + 1);
+    this.agyAskedAt = Date.now();
     this.agyCheck = null;
     this.agyLooking = true;
     cx.spawn(async (cx) => {
       const r = await agywipe(["check", home(), agyDir(f) ?? "", f.session ?? "", ...(f.pid ? [String(f.pid)] : [])], 30000);
+      if (ask !== this.agyAsk) return;
       this.agyLooking = false;
       this.hint = null;
       if (r.code !== 0 || !r.out) this.error = `Can't wipe it: ${String(r.stderr ?? "").trim().split("\n").pop() || "agywipe.js failed"}.`;
@@ -1307,7 +1428,12 @@ export default class Agents extends View {
     if (this.busy || !targets.length) return;
     if (f.kind === "agy") {
       if (!this.agyCheck) {
-        if (this.agyLooking) { this.hint = "Still looking up the conversation: Wipe works once it's shown."; cx.notify(); }
+        if (this.agyLooking) {
+          const stuck = lookStuck(this.agyAskedAt);
+          if (stuck) this.agyLookUp(f, cx);
+          this.hint = stuck ? "Looking it up again…" : "Still looking up the conversation: Wipe works once it's shown.";
+          cx.notify();
+        }
         return;
       }
       // More than the note's own conversation: the first press asks.
@@ -1360,7 +1486,7 @@ export default class Agents extends View {
       if (o.cleaned?.some((x) => x.id === root) || e?.done) return closeOverlay(p.overlay);
       if (o.gaveUp?.some((x) => x.id === root)) return closeOverlay(p.overlay);
       if (o.left?.includes(root) && !e?.error) {
-        notify({ title: `Wiped ${f.name}, to finish later`, level: "success", body: `Nothing has changed yet: it finishes once every Antigravity has closed, and History hides “${title}” meanwhile.` });
+        notify({ title: `Wiped “${title}”, to finish later`, level: "success", body: `Nothing has changed yet: it finishes once every Antigravity has closed, and History hides “${title}” meanwhile.` });
         return closeOverlay(p.overlay);
       }
       if (!e) { notify({ title: `${f.name}: nothing left to do`, level: "success", body: `“${title}” isn't waiting to be wiped any more.` }); return closeOverlay(p.overlay); }
@@ -1387,13 +1513,14 @@ export default class Agents extends View {
     const r = await agywipe(["wipe", home(), dir, f.session, String(pid ?? "-"), family.join(",")], 90000);
     const o = r.out;
     if (o?.state === "done") {
-      notify({ title: `Wiped ${f.name}`, level: "success",
-        body: `“${title}” is out of Antigravity's lists${o.tree.length > 1 ? `, with ${o.tree.length - 1} sub-agent conversation${o.tree.length === 2 ? "" : "s"}` : ""}, and ${filesWhere(o.moved?.length, o.backup)}. What it removed from the lists is kept there too.` });
+      const kids = o.tree.length - 1;
+      notify(withUndo({ title: `Wiped “${title}”`, level: "success",
+        body: `Gone from Antigravity and History${kids ? `, with its ${kids === 1 ? "sub-agent conversation" : `${kids} sub-agent conversations`}` : ""}.` }, o.backup, wsOfSpace(f.space), o.root ?? this.agyCheck?.root));
       return closeOverlay(p.overlay);
     }
     if (o?.state === "pending") {
       const why = o.why === "closing" ? "Its Antigravity is still closing" : o.why === "unknown" ? "It can't tell whether another Antigravity runs (ps didn't answer)" : "Another Antigravity is running";
-      notify({ title: `Wiped ${f.name}, to finish later`, level: "success",
+      notify({ title: `Wiped “${title}”, to finish later`, level: "success",
         body: `${why}, so nothing has changed yet: History hides “${title}” now, and it leaves Antigravity's lists once that's over.` });
       return closeOverlay(p.overlay);
     }
@@ -1473,20 +1600,22 @@ export default class Agents extends View {
   }
 
   // The fold chevron of a row with sub-agents (`subs`, every one under it); folded,
-  // the count too, colored by the most urgent one.
+  // the count too, colored by the most urgent one, and a "!" when one waits on you.
   fold(t, addr, subs) {
     const sts = subs.map((s) => kidStatus(s.t, this.listed));
     const top = sts.reduce((m, s) => ((RANK[s] ?? 0) > (RANK[m] ?? 0) ? s : m), null);
     const open = !this.folded.has(addr);
     return div()
       .id(`fold-${addr}`)
-      .h(18)
-      .px(3)
+      .h(22)
+      .min_w(22)
+      .px(4)
       .gap(3)
       .flex()
       .flex_none()
       .items_center()
-      .rounded(4)
+      .justify_center()
+      .rounded(5)
       .text_size(11)
       .text_color(open ? t.dim : (t[top] ?? t.dim))
       .cursor_pointer()
@@ -1496,12 +1625,34 @@ export default class Agents extends View {
         this.toggleFold(addr, cx);
       })
       .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(11).flex_none())
-      .when(!open, (el) => el.child(String(subs.length)));
+      .when(!open, (el) => el.child(String(subs.length)))
+      // A helper waiting on you says so by more than the number's colour: the "!" a folded heading has.
+      .when(!open && top === "blocked", (el) => el.child(this.status(t, { status: "blocked" }, true)));
   }
 
   toggleFold(addr, cx) {
-    this.folded.has(addr) ? this.folded.delete(addr) : this.folded.add(addr);
+    if (this.folded.has(addr)) { this.folded.delete(addr); delete this.foldSeen[addr]; }
+    else { this.folded.add(addr); this.foldSeen[addr] = Date.now(); }
+    this.saveFolds(this.foldSeen);
     cx.notify();
+  }
+
+  // Drops the folds of terminals and spaces gone for a day (listfacts.js), once the list has
+  // something in it.
+  pruneFolds(all, list, now) {
+    if (!list.length || !this.folded.size) return;
+    const listed = new Set([...all.filter((k) => k.state === "live").map((k) => k.address), ...list.map((a) => `sp-${a.space}`)]);
+    this.saveFolds(keptFolds(this.foldSeen, listed, now));
+  }
+
+  saveFolds(kept) {
+    const s = JSON.stringify(kept);
+    if (s === this.foldsSaved) return;
+    this.foldSeen = kept;
+    this.folded = new Set(Object.keys(kept));
+    this.foldsSaved = s;
+    if (Object.keys(kept).length) localStorage.setItem("folds", s);
+    else localStorage.removeItem("folds");
   }
 
   // A stat line's column reports its width; too narrow for the whole line (statWidth),
@@ -1611,6 +1762,7 @@ export default class Agents extends View {
     const shown = focused()?.agent;
     const now = Date.now();
     this.track(list, now);
+    this.pruneFolds(all, list, now);
     this.hold(list);
     const ws = workspace();
     const everywhere = list.length;
@@ -1694,8 +1846,11 @@ export default class Agents extends View {
       const pin = div()
         .id(`pin-${a.address}`)
         .flex_none()
-        .p(2)
-        .rounded(4)
+        .size(22)
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(5)
         .text_color(t.dim)
         .cursor_pointer()
         .hover((s) => s.bg(t.hover).text_color(t.foreground))
@@ -1765,7 +1920,9 @@ export default class Agents extends View {
     // A group's header; it folds the group. Folded, it says how many and the most urgent state.
     const header = (g) => {
       const open = !this.folded.has(g.id);
-      const top = g.members.reduce((m, a) => ((RANK[a.status] ?? 0) > (RANK[m] ?? 0) ? a.status : m), null);
+      // Its members' and their helpers' most urgent (rankOf()), so a helper waiting under a
+      // folded heading shows its "!" too.
+      const top = SECTION_STATUS[Math.max(0, ...g.members.map(rankOf))] ?? null;
       return h_flex()
         .id(g.id)
         .px(8)
@@ -1778,10 +1935,7 @@ export default class Agents extends View {
         .font_medium()
         .cursor_pointer()
         .hover((s) => s.text_color(t.foreground))
-        .on_click((_e, cx) => {
-          open ? this.folded.add(g.id) : this.folded.delete(g.id);
-          cx.notify();
-        })
+        .on_click((_e, cx) => this.toggleFold(g.id, cx))
         .child(div().truncate().text_color(t[g.status] ?? t.dim).child(g.label))
         .when(byPriority || !open, (el) => el.child(div().text_color(t.dim).child(String(g.members.length))))
         .child(div().flex_1())
@@ -1802,8 +1956,10 @@ export default class Agents extends View {
       .text_size(13)
       .when(!collapsed, (el) =>
         el.child(
+          // Sort and + sit in 22 px boxes; the right padding is 4 less, so the icons stay put.
           h_flex()
-            .px(16)
+            .pl(16)
+            .pr(12)
             .h(41)
             .pt(14)
             .pb(5)
@@ -1814,9 +1970,14 @@ export default class Agents extends View {
             .child(this.quietTip(
               div()
                 .id("ag-sort")
+                .size(22)
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(5)
                 .text_size(11)
                 .text_color(t.dim)
-                .hover((s) => s.text_color(t.foreground))
+                .hover((s) => s.bg(t.hover).text_color(t.foreground))
                 .on_mouse_down("left", (e) => { this.sortPress = pressAt(e); })
                 .on_click((_e, cx) => { this.tipOff = "ag-sort"; openOverlay({ mod: "ws-agents", kind: "popup", width: 200, height: 140, props: { sortMenu: true, pointer: this.sortPress ?? null } }); cx.notify(); })
                 .child(svg(`mods/workspace-chrome/${sort.icon}.svg`).size(14)),
@@ -1826,14 +1987,21 @@ export default class Agents extends View {
             .when(!shared("workspaces.covered"), (el) => el.child(this.quietTip(
               div()
                 .id("ag-new")
-                .ml(10)
+                .ml(2)
+                .size(22)
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(5)
                 .text_color(t.dim)
-                .hover((s) => s.text_color(t.foreground))
+                .hover((s) => s.bg(t.hover).text_color(t.foreground))
                 .on_click((_e, cx) => { this.tipOff = "ag-new"; openOverlay({ mod: "ws-new-menu", kind: "popup", width: 250, height: 0.85, props: { agentsOnly: true } }); cx.notify(); })
                 .child(svg("mods/workspace-chrome/plus.svg").size(14)),
               "ag-new", "Start an agent"))),
         ),
       )
+      .when(Boolean(this.noNode) && !collapsed, (el) => el.child(div().id("agents-no-node").px(16).pb(6).text_size(11.5).text_color(t.dim)
+        .child("Agent numbers, Fork, Copy conversation id and Wipe need Node (20.6 or newer) on your PATH.")))
       .when(list.length === 0 && !collapsed, (el) =>
         el.child(div().px(12).text_size(12).text_color(t.dim).child(ws && everywhere
           ? `No agents in ${ws.name}. Agents in other workspaces show in theirs.`

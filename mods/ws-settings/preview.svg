@@ -118,58 +118,61 @@
   <text x="245" y="303" fill="#a5a8ae" font-size="13.5">Updates</text>
   <g transform="translate(220 324.5) scale(0.625)" fill="none" stroke="#7d8089" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></g>
   <text x="245" y="337" fill="#a5a8ae" font-size="13.5">Privacy</text>
-  <g transform="translate(220 358.5) scale(0.625)" fill="none" stroke="#7d8089" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M10 22V7a1 1 0 0 0-1-1H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5a1 1 0 0 0-1-1H2"/><rect x="14" y="2" width="8" height="8" rx="1"/></g>
-  <text x="245" y="371" fill="#a5a8ae" font-size="13.5">Features</text>
-  <rect x="210" y="384" width="170" height="32" rx="7" fill="#2a2b30"/>
-  <g transform="translate(220 392.5) scale(0.625)" fill="none" stroke="#5b8def" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/></g>
-  <text x="245" y="405" fill="#e8e9eb" font-size="13.5">Agents</text>
-  <g transform="translate(220 426.5) scale(0.625)" fill="none" stroke="#7d8089" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4.5 13.5H12L11 22l8.5-11.5H12z"/></g>
-  <text x="245" y="439" fill="#a5a8ae" font-size="13.5">Automations</text>
-  <g transform="translate(220 460.5) scale(0.625)" fill="none" stroke="#7d8089" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></g>
-  <text x="245" y="473" fill="#a5a8ae" font-size="13.5">Files</text>
-  <g transform="translate(220 494.5) scale(0.625)" fill="none" stroke="#7d8089" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4"/><path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/></g>
-  <text x="245" y="507" fill="#a5a8ae" font-size="13.5">Secrets</text>
-  <g transform="translate(220 528.5) scale(0.625)" fill="none" stroke="#7d8089" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2"/><path d="M6.453 15h11.094"/><path d="M8.5 2h7"/></g>
-  <text x="245" y="541" fill="#a5a8ae" font-size="13.5">Experimental</text>
+  <rect x="220" y="355" width="150" height="1" fill="#303237"/>
+  <g transform="translate(220 369.5) scale(0.625)" fill="none" stroke="#7d8089" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M10 22V7a1 1 0 0 0-1-1H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5a1 1 0 0 0-1-1H2"/><rect x="14" y="2" width="8" height="8" rx="1"/></g>
+  <text x="245" y="382" fill="#a5a8ae" font-size="13.5">Features</text>
+  <rect x="210" y="395" width="170" height="32" rx="7" fill="#2a2b30"/>
+  <g transform="translate(220 403.5) scale(0.625)" fill="none" stroke="#5b8def" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/></g>
+  <text x="245" y="416" fill="#e8e9eb" font-size="13.5">Agents</text>
+  <g transform="translate(220 437.5) scale(0.625)" fill="none" stroke="#7d8089" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4.5 13.5H12L11 22l8.5-11.5H12z"/></g>
+  <text x="245" y="450" fill="#a5a8ae" font-size="13.5">Automations</text>
+  <g transform="translate(220 471.5) scale(0.625)" fill="none" stroke="#7d8089" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></g>
+  <text x="245" y="484" fill="#a5a8ae" font-size="13.5">Files</text>
+  <g transform="translate(220 505.5) scale(0.625)" fill="none" stroke="#7d8089" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4"/><path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/></g>
+  <text x="245" y="518" fill="#a5a8ae" font-size="13.5">Secrets</text>
+  <g transform="translate(220 539.5) scale(0.625)" fill="none" stroke="#7d8089" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2"/><path d="M6.453 15h11.094"/><path d="M8.5 2h7"/></g>
+  <text x="245" y="552" fill="#a5a8ae" font-size="13.5">Experimental</text>
   <rect x="210" y="662" width="170" height="32" rx="7" fill="#2a2b30" stroke="#303237"/><text x="222" y="683" fill="#e8e9eb" font-size="13">Send feedback</text>
-  <text x="419" y="124" fill="#7d8089" font-size="12" font-weight="600" letter-spacing="0.4">STARTING AGENTS</text>
-  <text x="419" y="150" fill="#e8e9eb" font-size="14">Herdr guide for every agent</text>
-  <text x="419" y="170.0" fill="#7d8089" font-size="12.5">Agents started through the launcher get ~/.herdr/AGENTS.md, how to use</text>
-  <text x="419" y="187.5" fill="#7d8089" font-size="12.5">automations, helpers and the board, before the workspace's own</text>
-  <text x="419" y="205.0" fill="#7d8089" font-size="12.5">instructions.</text>
-  <text x="419" y="224.0" fill="#a5a8ae" font-size="12">On: 5.2 KB</text>
-  <rect x="960" y="171.0" width="46" height="28" rx="7" fill="#2a2b30" stroke="#303237"/>
-  <text x="983.0" y="189.0" fill="#e8e9eb" font-size="13" text-anchor="middle">Edit</text>
-  <rect x="1016" y="175.0" width="36" height="20" rx="10" fill="#5b8def"/><circle cx="1042" cy="185.0" r="8" fill="#fff"/>
-  <rect x="419" y="238.0" width="633" height="1" fill="#303237"/>
-  <text x="419" y="262.0" fill="#e8e9eb" font-size="14">Bring agents back after a restart</text>
-  <text x="419" y="282.0" fill="#7d8089" font-size="12.5">Claude and Antigravity agents started through the launcher continue their</text>
-  <text x="419" y="299.5" fill="#7d8089" font-size="12.5">conversation after a reboot or a logout.</text>
-  <text x="419" y="318.5" fill="#a5a8ae" font-size="12">On: 3 agents would come back</text>
-  <rect x="1016" y="278.25" width="36" height="20" rx="10" fill="#5b8def"/><circle cx="1042" cy="288.25" r="8" fill="#fff"/>
-  <rect x="419" y="332.5" width="633" height="1" fill="#303237"/>
-  <text x="419" y="362.5" fill="#7d8089" font-size="12" font-weight="600" letter-spacing="0.4">IN THE + MENU</text>
-  <text x="525" y="362.5" fill="#a5a8ae" font-size="12">3 of 4 shown</text>
-  <text x="419" y="382.5" fill="#7d8089" font-size="12.5">The tab bar's + lists the agents installed here. Turn off the ones you don't use; a right-click</text>
-  <text x="419" y="400.0" fill="#7d8089" font-size="12.5">on an agent in the + menu hides it too.</text>
-  <rect x="419" y="423.0" width="16" height="16" rx="4" fill="#d97757" opacity="1"/>
-  <text x="447" y="436.0" fill="#e8e9eb" font-size="14">Claude Code</text>
-  <rect x="1016" y="421.0" width="36" height="20" rx="10" fill="#5b8def"/><circle cx="1042" cy="431.0" r="8" fill="#fff"/>
-  <rect x="419" y="450.0" width="633" height="1" fill="#303237"/>
-  <rect x="419" y="459.0" width="16" height="16" rx="4" fill="#10a37f" opacity="1"/>
-  <text x="447" y="472.0" fill="#e8e9eb" font-size="14">Codex</text>
-  <rect x="1016" y="457.0" width="36" height="20" rx="10" fill="#5b8def"/><circle cx="1042" cy="467.0" r="8" fill="#fff"/>
-  <rect x="419" y="486.0" width="633" height="1" fill="#303237"/>
-  <rect x="419" y="495.0" width="16" height="16" rx="4" fill="#4285f4" opacity="1"/>
-  <text x="447" y="508.0" fill="#e8e9eb" font-size="14">Antigravity</text>
-  <rect x="1016" y="493.0" width="36" height="20" rx="10" fill="#5b8def"/><circle cx="1042" cy="503.0" r="8" fill="#fff"/>
-  <rect x="419" y="522.0" width="633" height="1" fill="#303237"/>
-  <rect x="419" y="531.0" width="16" height="16" rx="4" fill="#8b7cf6" opacity="0.55"/>
-  <text x="447" y="544.0" fill="#a5a8ae" font-size="14">Gemini</text>
-  <text x="1004" y="543.0" fill="#7d8089" font-size="12" text-anchor="end">hidden</text>
-  <rect x="1016" y="529.0" width="36" height="20" rx="10" fill="#34363b"/><circle cx="1026" cy="539.0" r="8" fill="#a5a8ae"/>
-  <rect x="419" y="558.0" width="633" height="1" fill="#303237"/>
-  <text x="419" y="576.0" fill="#7d8089" font-size="12">Not installed: Copilot, Amp.</text>
-  <text x="419" y="595.0" fill="#7d8089" font-size="12">Hidden agents are only left out of the + menu. Presets and automations can still start them.</text>
+  <text x="419" y="128" fill="#e8e9eb" font-size="18" font-weight="600">Agents</text>
+  <text x="419" y="154" fill="#7d8089" font-size="12.5">What agents started through the launcher get, and which agents the + menu lists.</text>
+  <text x="419" y="188" fill="#7d8089" font-size="12" font-weight="600" letter-spacing="0.4">STARTING AGENTS</text>
+  <text x="419" y="214" fill="#e8e9eb" font-size="14">Herdr guide for every agent</text>
+  <text x="419" y="234" fill="#7d8089" font-size="12.5">Agents started through the launcher get ~/.herdr/AGENTS.md, how to use</text>
+  <text x="419" y="251.5" fill="#7d8089" font-size="12.5">automations, helpers and the board, before the workspace's own</text>
+  <text x="419" y="269" fill="#7d8089" font-size="12.5">instructions.</text>
+  <text x="419" y="288" fill="#a5a8ae" font-size="12">On: 5.2 KB</text>
+  <rect x="960" y="235" width="46" height="28" rx="7" fill="#2a2b30" stroke="#303237"/>
+  <text x="983.0" y="253" fill="#e8e9eb" font-size="13" text-anchor="middle">Edit</text>
+  <rect x="1016" y="239" width="36" height="20" rx="10" fill="#5b8def"/><circle cx="1042" cy="249" r="8" fill="#fff"/>
+  <rect x="419" y="302" width="633" height="1" fill="#303237"/>
+  <text x="419" y="326" fill="#e8e9eb" font-size="14">Bring agents back after a restart</text>
+  <text x="419" y="346" fill="#7d8089" font-size="12.5">Claude and Antigravity agents started through the launcher continue their</text>
+  <text x="419" y="363.5" fill="#7d8089" font-size="12.5">conversation after a reboot or a logout.</text>
+  <text x="419" y="382.5" fill="#a5a8ae" font-size="12">On: 3 agents would come back</text>
+  <rect x="1016" y="342.25" width="36" height="20" rx="10" fill="#5b8def"/><circle cx="1042" cy="352.25" r="8" fill="#fff"/>
+  <rect x="419" y="396.5" width="633" height="1" fill="#303237"/>
+  <text x="419" y="426.5" fill="#7d8089" font-size="12" font-weight="600" letter-spacing="0.4">IN THE + MENU</text>
+  <text x="525" y="426.5" fill="#a5a8ae" font-size="12">3 of 4 shown</text>
+  <text x="419" y="446.5" fill="#7d8089" font-size="12.5">The tab bar's + lists the agents installed here. Turn off the ones you don't use; a right-click</text>
+  <text x="419" y="464" fill="#7d8089" font-size="12.5">on an agent in the + menu hides it too.</text>
+  <rect x="419" y="487" width="16" height="16" rx="4" fill="#d97757" opacity="1"/>
+  <text x="447" y="500" fill="#e8e9eb" font-size="14">Claude Code</text>
+  <rect x="1016" y="485" width="36" height="20" rx="10" fill="#5b8def"/><circle cx="1042" cy="495" r="8" fill="#fff"/>
+  <rect x="419" y="514" width="633" height="1" fill="#303237"/>
+  <rect x="419" y="523" width="16" height="16" rx="4" fill="#10a37f" opacity="1"/>
+  <text x="447" y="536" fill="#e8e9eb" font-size="14">Codex</text>
+  <rect x="1016" y="521" width="36" height="20" rx="10" fill="#5b8def"/><circle cx="1042" cy="531" r="8" fill="#fff"/>
+  <rect x="419" y="550" width="633" height="1" fill="#303237"/>
+  <rect x="419" y="559" width="16" height="16" rx="4" fill="#4285f4" opacity="1"/>
+  <text x="447" y="572" fill="#e8e9eb" font-size="14">Antigravity</text>
+  <rect x="1016" y="557" width="36" height="20" rx="10" fill="#5b8def"/><circle cx="1042" cy="567" r="8" fill="#fff"/>
+  <rect x="419" y="586" width="633" height="1" fill="#303237"/>
+  <rect x="419" y="595" width="16" height="16" rx="4" fill="#8b7cf6" opacity="0.55"/>
+  <text x="447" y="608" fill="#a5a8ae" font-size="14">Gemini</text>
+  <text x="1004" y="607" fill="#7d8089" font-size="12" text-anchor="end">hidden</text>
+  <rect x="1016" y="593" width="36" height="20" rx="10" fill="#34363b"/><circle cx="1026" cy="603" r="8" fill="#a5a8ae"/>
+  <rect x="419" y="622" width="633" height="1" fill="#303237"/>
+  <text x="419" y="640" fill="#7d8089" font-size="12">Not installed: Copilot, Amp.</text>
+  <text x="419" y="659" fill="#7d8089" font-size="12">Hidden agents are only left out of the + menu. Presets and automations can still start them.</text>
   </g>
 </svg>

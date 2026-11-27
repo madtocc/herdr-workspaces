@@ -82,6 +82,20 @@ export function brokerState(status, mac = true) {
   return status.running ? "running" : "stopped";
 }
 
+// The broker's log an error line names ("installed but not answering (see /…/broker.log)"): its
+// absolute path, or null when the line names none. Under the home folder it's taken from there, so
+// a home with a space in its name keeps its whole path; elsewhere a path is one word.
+export function logOf(line, home = "") {
+  const text = String(line ?? "");
+  if (home) {
+    const at = text.indexOf(`${home}/`);
+    const end = at < 0 ? -1 : text.indexOf("/broker.log", at);
+    if (end >= 0 && !/[()]/.test(text.slice(at, end))) return text.slice(at, end + "/broker.log".length);
+  }
+  const m = /(\/[^\s()]*\/broker\.log)\b/.exec(text);
+  return m ? m[1] : null;
+}
+
 // The row for a status answer. opts: mac (this is macOS), busy (the op running, or null), error
 // (an action's failure, else the status' own or the read's), confirm (Uninstall was pressed once:
 // the row asks before it goes), home (for ~ in the socket's path). Returns { state, chip:
@@ -91,7 +105,7 @@ export function brokerView(status, { mac = true, busy = null, error = null, read
   const state = brokerState(status, mac);
   const tilde = (p) => (home && String(p).startsWith(`${home}/`) ? `~${String(p).slice(home.length)}` : String(p));
   const btn = (op, label, kind = "plain") => ({ op, label: busy === op ? BROKER_OPS[op]?.busy ?? label : label, kind, enabled: !busy });
-  const v = { state, chip: null, about: ABOUT_INSTALLED, facts: "", factParts: [], note: null, buttons: [], error: null };
+  const v = { state, chip: null, about: ABOUT_INSTALLED, facts: "", factParts: [], note: null, buttons: [], error: null, log: null };
   // The facts line in parts, so the screen can wrap between them and never inside one (a
   // socket path broke in the middle beside the wider Rebuild anyway).
   const installedParts = () => [
@@ -153,5 +167,7 @@ export function brokerView(status, { mac = true, busy = null, error = null, read
   // The home folder as ~, as in the facts ("see ~/.herdr/vault/broker.log").
   const err = firstLine(error) ?? firstLine(status?.error) ?? firstLine(readError);
   v.error = err && home ? err.split(`${home}/`).join("~/") : err;
+  // The log the error names, as written (an absolute path), for the row's Open log; else null.
+  v.log = logOf(err, home);
   return v;
 }

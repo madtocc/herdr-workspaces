@@ -55,7 +55,12 @@ export function parseOpArgs(argv, { value = false } = {}) {
       default:
         if (a.startsWith("--value") || a === "-v") throw fail("usage", "a value is never an argument: use --value-stdin, or put on a terminal asks for it");
         if (a.startsWith("-")) throw fail("usage", `doesn't know ${a} (herdr-ws-secret --help)`);
-        if (o.name) throw fail("usage", "one secret name at a time");
+        if (o.name) {
+          // A scope typed as a word after the name ("rm github_token global"): the flag that says it.
+          if (a === "global") throw fail("usage", "use --global for a secret of every workspace");
+          if (isWorkspaceId(a)) throw fail("usage", `use --workspace ${a} for a secret of workspace ${a}`);
+          throw fail("usage", "one secret name at a time");
+        }
         o.name = a;
     }
   }
@@ -65,6 +70,14 @@ export function parseOpArgs(argv, { value = false } = {}) {
   if (o.set.mode !== undefined && !["http", "http+cli"].includes(o.set.mode)) throw fail("usage", "--mode is http or http+cli");
   if (o.set.ttl !== undefined && !TTL_CHOICES.includes(o.set.ttl)) throw fail("usage", "--ttl is " + TTL_CHOICES.join(", "));
   return o;
+}
+
+// A word that is a workspace's id: a secret is kept for it, or ~/.herdr/workspaces/<id> has a workspace.jsonc.
+function isWorkspaceId(a) {
+  if (!/^[\w.-]+$/.test(a) || a.startsWith(".")) return false;
+  const m = readMetaSoft();
+  if ((m.entries || []).some((e) => e.scope === `ws:${a}`)) return true;
+  try { return fs.statSync(path.join(os.homedir(), ".herdr", "workspaces", a, "workspace.jsonc")).isFile(); } catch { return false; }
 }
 
 // The scope the flags (or the current folder) name.
@@ -436,12 +449,20 @@ export async function listEntries({ workspace, global, all }) {
   const list = all ? m.entries.slice().sort((a, b) => (a.scope + a.name < b.scope + b.name ? -1 : 1)) : filterEntries(m.entries, { ws: who.ws });
   const hasProtected = list.some((e) => e.tier === "protected");
   const up = hasProtected ? !!(await brokerStatus(800)) : true;
-  return { who, up, entries: list };
+  // Other workspaces' secrets, left out: an empty list says they're there and how to see them.
+  const others = all ? [] : m.entries.filter((e) => !list.includes(e));
+  return { who, up, entries: list, others };
 }
 
-export function listText({ who, up, entries }) {
+export function listText({ who, up, entries, others }) {
   if (!entries.length) {
-    return `No secrets${who.ws ? ` for ${who.ws} or every workspace` : ""} yet. The person adds them in Herdr's Secrets (sidebar), or: herdr-ws-secret put <name>\n`;
+    const none = `No secrets for ${who.ws ? `${who.ws} or every workspace` : "every workspace"} yet.`;
+    const ids = [...new Set((others || []).filter((e) => e.scope.startsWith("ws:")).map((e) => e.scope.slice(3)))];
+    if (ids.length) {
+      const n = others.length;
+      return `${none} ${n} more ${n === 1 ? "is" : "are"} kept for ${ids.length === 1 ? "workspace" : "workspaces"} (${ids.join(", ")}): herdr-ws-secret list --all\n`;
+    }
+    return `${none} The person adds them in Herdr's Secrets (sidebar), or: herdr-ws-secret put <name>\n`;
   }
   const now = Date.now();
   const rows = entries.map((e) => [

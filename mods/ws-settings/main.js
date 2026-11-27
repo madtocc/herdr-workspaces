@@ -1,7 +1,7 @@
 // GENERATED: don't edit. ws-settings is Herdr's Settings window (its bundled mod frame-settings,
 // frame/settings/main.js) with the Workspaces package's Features, Agents and Experimental sections (extras.js).
 // Written by the ws-switcher mod (settingsbuild.js) from Herdr 0.1.18's file, source 06934205.
-// Patches: icons by full path, Features, Agents and Experimental after Herdr's sections, a section asked through shared state, their pages, their init.
+// Patches: icons by full path, Features, Agents and Experimental after Herdr's sections with a line between, a section asked through shared state, their pages, their init.
 import { packagePage, packageInit, askedSection, PACKAGE_SECTIONS } from "./extras.js";
 // App-owned settings mod. Writes changes immediately; no Save step.
 
@@ -904,7 +904,7 @@ export default class Settings extends View {
       .children(
         SECTIONS.map((s) => {
           const on = s.id === this.section;
-          return h_flex()
+          return h_flex().relative().when(s.id === PACKAGE_SECTIONS[0].id && HERDR_SECTIONS.length > 0, (el) => el.mt(11).child(div().absolute().top(-6).left(10).right(10).h(1).bg(t.border)))
             .id(`st-s-${s.id}`)
             .gap(10)
             .px(10)

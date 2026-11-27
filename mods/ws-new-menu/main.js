@@ -21,6 +21,9 @@
 // - New space's tooltip says it starts where the focused terminal is; the menu marks itself open and
 //   closed in shared "workspaces.newmenu.open" (not the Agents header's agents-only copy), so the tab
 //   bar's + doesn't open it again on the click that just closed it.
+// - The New space dialog's size counts the root's folders when the workspace has no "folders" list.
+// - A failed check of the installed agents says "Could not check installed agents" (Herdr's line) under
+//   the last good list, or in place of the list when there's none.
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex, Popup } from "gpui-base";
@@ -70,7 +73,7 @@ const openStart = (name, workspace) =>
 // root and up to five folders, then Choose…) where they wrap, about 7px a letter in 424px.
 function askNewSpace(ws) {
   const base = (path) => path.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
-  const picks = ws ? [ws.root, ...(ws.folders ?? [])].filter(Boolean).slice(0, 6) : [];
+  const picks = ws ? [ws.root, ...(ws.folders?.length ? ws.folders : (ws.children ?? []).map((c) => `${ws.root}/${c}`))].filter(Boolean).slice(0, 6) : [];
   const labels = [...picks.map((f) => (f === ws.root ? `${base(f)} (root)` : base(f))), "Choose\u2026"];
   let lines = 1, x = 0;
   for (const l of labels) { const w = 16 + 7 * l.length; if (x && x + w > 424) { lines++; x = 0; } x += w + 6; }
@@ -174,7 +177,7 @@ export default class NewMenu extends View {
     };
     const keyed = (i) => (i < 9 ? String(i + 1) : "");
     const only = Boolean(props()?.agentsOnly);
-    return v_flex().min_h(0).w_full().h(Math.min(752, (only ? 39 : ws?.scratch ? 167 : 198) + (Math.max(1, installed.length) + (installed.length ? 1 : 0)) * 31 + (presets.length ? 34 + presets.length * 31 : 0)))
+    return v_flex().min_h(0).w_full().h(Math.min(752, (only ? 39 : ws?.scratch ? 167 : 198) + (Math.max(1, installed.length) + (installed.length ? 1 : 0) + ((installed.length || allHidden) && this.failed ? 1 : 0)) * 31 + (presets.length ? 34 + presets.length * 31 : 0)))
       .bg(t.popover).p(5).text_size(12.8)
       .id("new-menu").track_focus(this.handle)
       // With an agent's small menu open, Herdr's Esc (overlay.close: it never comes as a key in a popup)
@@ -193,12 +196,14 @@ export default class NewMenu extends View {
         .child(only && space?.name ? `Start an agent in ${space.name}` : "Start an agent"))
       .child(v_flex().flex_1().min_h(0).overflow_y_scrollbar()
         .children(installed.map((a, i) => this.agentRow(a, keyed(i))))
+        // The check failed: the list is the last good one, and says so (Herdr's own line).
+        .when(this.failed && (installed.length > 0 || allHidden), el => el.child(div().px(9).py(6).text_color(t.dim).child("Could not check installed agents")))
         .when(installed.length > 0, el => el.child(this.row("choose", svg("mods/workspace-chrome/settings.svg").size(14).flex_none().text_color(t.muted),
           div().text_color(t.muted).child("Choose agents\u2026"), () => openChoose(), "", true, "Hide agents from this menu, or bring them back")))
         .when(allHidden, el => el.child(this.row("choose", svg("mods/workspace-chrome/settings.svg").size(14).flex_none().text_color(t.muted),
           div().text_color(t.dim).child("No agents shown. Choose agents\u2026"), () => openChoose())))
         .when(!allHidden && installed.length === 0, el => el.child(div().px(9).py(6).text_color(t.dim)
-          .child(this.failed ? "Could not load agents" : this.agents.length && this.hiddenKnown ? "No agents installed" : "Checking installed agents…")))
+          .child(this.failed ? "Could not check installed agents" : this.agents.length && this.hiddenKnown ? "No agents installed" : "Checking installed agents…")))
         .when(presets.length > 0, el => el
           .child(div().px(9).pt(10).pb(4).flex_none().text_size(11).text_color(t.dim).child("Agent presets"))
           .children(presets.map((p, i) => this.row(`preset-${p.name}`, iconOf(p), p.name, () => startPreset(p), keyed(installed.length + i), true,

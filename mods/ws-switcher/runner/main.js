@@ -41,6 +41,7 @@ import { GhWatcher } from "../ghboard.js";
 import { dir, loadDefs, templatesDir, loadPresetDir, presetsFor, presetLaunch, withTask, notesOnly } from "../defs.js";
 import { SETTINGS_FILE, parseSettings, automationSetting } from "../settingsfacts.js";
 import { Features, flips, FOLLOWED } from "../featuregate.js";
+import { Poller, filesNow, POLL } from "./poll.js";
 
 const SPACE = "Automations";
 const BEAT = 10000;
@@ -191,12 +192,19 @@ async function main() {
   prs = new PrWatcher();
   gh = new GhWatcher();
   dirty = true;
-  await reload();
+  // Beside the watches, a look at the automation and workspace files once a minute (poll.js): a watch can
+  // miss a save. Every reload goes through it, so it knows what the last one read.
+  const poller = new Poller(() => filesNow(dir(), globalDir()));
+  await poller.around(reload);
   await beat();
   log(`running (pid ${process.pid}): ${Object.values(runner.list).flat().length} automations in ${Object.keys(runner.list).length} workspaces`);
 
-  let reloading = Promise.resolve();
-  const again = (paths) => { reloading = reloading.then(reload).then(() => runner.changed(paths, cx)).catch((e) => log("reload failed:", said(e))); };
+  let reloading = Promise.resolve(), asked = 0;
+  const again = (paths) => {
+    asked++;
+    reloading = reloading.then(() => poller.around(reload)).then(() => runner.changed(paths, cx)).catch((e) => log("reload failed:", said(e))).finally(() => { asked--; });
+  };
+  setInterval(() => { poller.tick(() => asked > 0, (paths) => again(paths)).catch((e) => log("look failed:", said(e))); }, POLL);
   (async () => {
     for (;;) {
       let paths;

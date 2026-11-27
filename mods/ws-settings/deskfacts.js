@@ -1,4 +1,4 @@
-// Settings > Features' "Desktop notifications" row (D8) as rules with no imports, so node can test
+// Settings > Features' "Desktop notifications" row as rules with no imports, so node can test
 // them: what `herdr-ws-notify --status` said, and the row's line for it. extras.js draws the row and
 // runs the command (--on / --off write ~/.herdr/notify/switch; it isn't a feature in settings.jsonc).
 

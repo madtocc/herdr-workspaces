@@ -96,8 +96,10 @@
 //   workspaces.automation.run    { workspace, name, text?, at }
 // … and by its Create, Save and Allow this check or script (read here):
 //   workspaces.automation.allow  { workspace, name, check?, script?, at }; workspace "*": a global one
+// … and by a queued run's Cancel (the switcher passes it on: cancel()):
+//   workspaces.automation.cancel { workspace, name, id, at }; id: the queued run's
 // Outside calls (bin/herdr-ws-run) are files in ~/.herdr/workspaces/.inbox; with the
-// background runner on, the switcher passes Run now and an allowed check on as files there too.
+// background runner on, the switcher passes Run now, an allowed check and a Cancel on as files there too.
 // GitHub automations ask GitHub with `gh api` every POLL, one call per repo.
 // What it remembers (when each last ran, when it last ticked, the runs) is in
 // ~/.herdr/runner/automations.json, the same file whichever of the two runs.
@@ -157,6 +159,8 @@ const VAULT_LOOK = 5000;    // how often meta.json is looked at again, while an 
 const TAB_SECRET_MAX = 600e3; // herdr-ws-secret runs a command 10 minutes at most: a script in a tab with no timeout gets that
 export const AGENT_NO_CHECK = "secret_env reaches a check or a script, never the agent itself, and this has no check. The agent can use a secret by name instead (herdr-ws-secret http or run: say which in its prompt), or make this a shell automation.";
 export const AGENT_SECRETS_NOTE = "Its check gets these secrets as variables. The agent itself isn't handed them: it can use them by name (herdr-ws-secret http or run).";
+// A queued run cancelled from the Automations screen (cancel()): its note.
+export const CANCEL_NOTE = "Cancelled from the Automations screen.";
 export const VAULT_OFF_NOTE = "Secrets is off in Settings > Features, and it uses secrets (secret_env), so it didn't run.";
 // The first line of the launcher's note of which conversation terminal $1 holds, under
 // the resume folder $2: in the folder of this core (its socket's name, as herdr-ws-resume
@@ -1240,22 +1244,61 @@ export class Runner {
       if (how.manual) this.log({ ws, name: a.name, at: now, why, status: "skipped", note: OFF_NOTE });
       return;
     }
+    let lastBefore;
     if (!how.manual) {
       if (this.starting.has(key) || this.waitQueue.some((q) => q.key === key)) return;
       if (now - ((how.key ? this.recent.get(key) : this.state.last[k]) ?? 0) < GAP) return;
       if (how.key) this.recent.set(key, now);
+      lastBefore = this.state.last[k];
       this.state.last[k] = now;
       this.save();
-      // A one-time one whose check waits for you stays on: it hasn't had its turn.
-      if (a.trigger.kind === "once" && this.allowed(ws, a)) this.turnOff(cx, a);
+      // A one-time schedule is turned off in launch(), once its file as read then agrees to the start.
       const prev = this.lastRun(ws, a.name);
       if (!how.key && this.busy(prev)) {
         this.log({ ws, name: a.name, at: now, why, status: "skipped", note: "Its last run was still working." });
         return;
       }
     }
-    const extra = how.chainDepth ? { chainDepth: how.chainDepth } : {};
+    const extra = { ...(how.chainDepth ? { chainDepth: how.chainDepth } : {}), ...(!how.manual && !how.key ? { lastBefore: lastBefore ?? null } : {}) };
     cx.spawn(async (cx) => { await this.start(ws, a, why, vars, key, how.folder, Boolean(how.manual), extra); cx.notify(); });
+  }
+
+  // The automation as its file says it now, read at each start: a folder watch can miss a save (on Linux a
+  // file saved by rename is seen once, then not), and the list would start what the file has since changed.
+  // Returns { a } (the record to use for everything: the list's own object when nothing differs) or { why }
+  // (no start: the words for a queued run's entry). The list takes the file's record whenever it differs.
+  // On its own (not manual): off, broken or a changed trigger (a time that moved isn't now) is no start; a
+  // one-time schedule this start already turned off (turned) keeps its turn. By hand: on, off and the
+  // trigger don't matter, only that the text that runs is the file's. A file that isn't there leaves the
+  // list; one that is there but can't be read stays as it was, with a line in the output (the runner's
+  // readTextFile gives null for any failure, so a null is checked with exists()).
+  async fresh(ws, a, { manual = false, turned = false } = {}) {
+    const swap = (to) => {
+      const list = this.list[ws] ?? [];
+      if (!list.includes(a)) return; // a reload put a newer list in meanwhile: it already has the file's record
+      this.list[ws] = to ? list.map((x) => (x === a ? to : x)) : list.filter((x) => x !== a);
+      this.publish();
+    };
+    const unread = (e) => { console.log(`automations: ${ws}/${a.name} didn't start: its file couldn't be read (${message(e)})`); return { why: "Its file couldn't be read, so it didn't start." }; };
+    let text;
+    try { text = await readTextFile(a.file); } catch (e) { return unread(e); }
+    if (text === null) {
+      if (await exists(a.file).catch(() => false)) return unread("it's there, but reading it failed");
+      swap(null);
+      return { why: "It was taken out while it waited.", gone: true };
+    }
+    let f = parseAutomation(a.name, a.file, text, a.scope);
+    if (a.scope === "global") f = { ...f, everywhere: f.enabled, enabled: f.enabled && !f.off.includes(ws) };
+    f = this.applyVault(ws, [f])[0];
+    if (turned) f.enabled = false;
+    const same = JSON.stringify(f) === JSON.stringify(a);
+    if (!same) swap(f);
+    if (!manual) {
+      if (f.error) return { why: "Its file has an error, so it didn't start." };
+      if (!f.enabled && !turned) return { why: "It was turned off while it waited." };
+      if (JSON.stringify(f.trigger) !== JSON.stringify(a.trigger)) return { why: "Its schedule changed while it waited.", moved: true };
+    }
+    return { a: same ? a : f };
   }
 
   // A one-time schedule has had its turn: `enabled: false` in its file, which the
@@ -1317,7 +1360,17 @@ export class Runner {
       ws, name: a.name, at, why, status: "queued", ...(kind === "shell" ? { kind: "shell", shell: shellOf(a) } : {}),
       note: `Waiting for a parallel slot (${this.going(kind)} of ${this.cap(kind)} busy)`,
     });
-    this.waitQueue.push({ key: extra.key, ws, name: a.name, why, vars, place, at, kind, id, extra: { ...(extra.chainDepth ? { chainDepth: extra.chainDepth } : {}), ...(checked !== undefined ? { checked } : {}) } });
+    this.waitQueue.push({ key: extra.key, ws, name: a.name, why, vars, place, at, kind, id, extra: { ...(extra.chainDepth ? { chainDepth: extra.chainDepth } : {}), ...(checked !== undefined ? { checked } : {}), ...(extra.onceTurned ? { onceTurned: true } : {}) } });
+  }
+
+  // A queued run cancelled (the Automations screen's Cancel): out of the queue, noted as skipped. One
+  // that started meanwhile, or is gone, is left as it is: the screen then shows it as it is.
+  cancel(id) {
+    const q = this.waitQueue.find((x) => x.id === id);
+    if (!q) return false;
+    this.waitQueue = this.waitQueue.filter((x) => x !== q);
+    this.patch(id, { status: "skipped", note: CANCEL_NOTE });
+    return true;
   }
 
   // Each tick: the queued runs whose kind has a free slot start, oldest first. Automations off,
@@ -1327,7 +1380,7 @@ export class Runner {
     const left = [];
     for (const q of this.waitQueue) {
       const a = this.find(q.ws, q.name);
-      const why = !on ? OFF_NOTE : !a ? "It was taken out while it waited." : !a.enabled || a.error ? "It was turned off while it waited." : null;
+      const why = !on ? OFF_NOTE : !a ? "It was taken out while it waited." : (!a.enabled && !q.extra?.onceTurned) || a.error ? "It was turned off while it waited." : null;
       if (why) { this.patch(q.id, { status: "skipped", note: why }); continue; }
       if (!this.free(q.kind)) { left.push(q); continue; }
       this.launching[q.kind]++;
@@ -1340,13 +1393,32 @@ export class Runner {
   // place: where it runs when the automation names no folder (a github one's repo), else the root.
   // manual: started by hand or from outside, so it starts whatever its check says, and doesn't wait for a slot.
   async launch(ws, a, why, vars, at, place, manual, extra = {}) {
-    const kind = this.kindOf(a);
+    let kind = this.kindOf(a);
     // Holding a slot (the queue took one for it, or it took one below) until it's in the runs.
     let held = Boolean(extra.reserved);
     const release = () => { if (held) { held = false; this.launching[kind] = Math.max(0, this.launching[kind] - 1); } };
     try {
       // Turned off while it waited its turn: it doesn't start (nor its check).
       if (!this.automationsOn()) { this.log({ ws, name: a.name, at, why, status: "skipped", note: OFF_NOTE }); return; }
+      // A start on its own (a schedule, a card, a file, a chain): its file read now, and that record used for
+      // everything below (on or off, its trigger, its check and script, tested against what was allowed).
+      // A start on its own (a schedule, a card, a file, a chain) or by hand: its file read now, and that record
+      // used for everything below (its check and script, tested against what was allowed; on its own, on or off
+      // and its trigger too).
+      const got = await this.fresh(ws, a, { manual, turned: Boolean(extra.onceTurned) });
+      if (!got.a) {
+        // A queued run says why it didn't start; by hand, the toast. A trigger that changed gives back the
+        // schedule's last time, so the next one counts from the last real run.
+        if (got.moved && extra.lastBefore !== undefined) { const k = `${ws}/${a.name}`; if (extra.lastBefore === null) delete this.state.last[k]; else this.state.last[k] = extra.lastBefore; this.save(); }
+        if (extra.reserved || manual) this.log({ ws, name: a.name, at, why, status: manual ? "failed" : "skipped", note: manual && got.gone ? "Its file isn't there any more." : got.why });
+        if (manual) notify({ title: `${a.name} didn't start`, body: got.gone ? "Its file isn't there any more." : got.why, level: "warning" });
+        return;
+      }
+      a = got.a;
+      if (this.kindOf(a) !== kind) {
+        if (held || !manual) return; // a script now an agent run, or back: not this start
+        kind = this.kindOf(a);
+      }
       const def = this.def(ws);
       if (!def) throw new Error("Its workspace is gone.");
       const b = boardOf(def);
@@ -1375,6 +1447,9 @@ export class Runner {
         });
         return;
       }
+      // A one-time schedule has had its turn once its file, read above, agreed to this start and its text is
+      // allowed (one that waits for you stays on): off from here, and a wait for a slot doesn't count as yours.
+      if (!manual && a.trigger.kind === "once" && !extra.onceTurned) { this.turnOff(this.cx, a); extra = { ...extra, onceTurned: true }; }
       if (a.check && extra.checked !== undefined) all.check = extra.checked; // checked before it waited for a slot
       else if (a.check) {
         const res = await runCheck(exec, a.check, folder, { ...all, folder, workspace_id: ws }, this.secretFor(ws, a));
@@ -1927,7 +2002,7 @@ export class Runner {
       try {
         const at = `${wsDir()}/.inbox`;
         let names = [];
-        try { names = (await fs.readdir(at)).filter((n) => n.endsWith(".run") || n.endsWith(".allow")).sort(); } catch {}
+        try { names = (await fs.readdir(at)).filter((n) => n.endsWith(".run") || n.endsWith(".allow") || n.endsWith(".cancel")).sort(); } catch {}
         for (const n of names) {
           const path = `${at}/${n}`;
           const text = await readTextFile(path);
@@ -1935,6 +2010,13 @@ export class Runner {
           if (text === null) continue;
           // The screen's Create, Save and Allow this check or script, passed on by the switcher
           // while the background runner runs: { workspace, name, check?, script? }.
+          // A queued run's Cancel, passed on the same way: { workspace, name, id }.
+          if (n.endsWith(".cancel")) {
+            let ask = null;
+            try { ask = JSON.parse(text); } catch {}
+            if (ask?.id) this.cancel(ask.id);
+            continue;
+          }
           if (n.endsWith(".allow")) {
             let ask = null;
             try { ask = JSON.parse(text); } catch {}

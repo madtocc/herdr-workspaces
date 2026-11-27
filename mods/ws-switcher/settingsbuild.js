@@ -60,6 +60,13 @@ function patch(source) {
   if (count(list, "[") !== count(list, "]")) return fail("its list of sections (SECTIONS) isn't one this copy can follow");
   s = `${s.slice(0, at)}const HERDR_SECTIONS = [${s.slice(at + start.length, end + 3)}\nconst SECTIONS = [...HERDR_SECTIONS, ...PACKAGE_SECTIONS];${s.slice(end + 3)}`;
 
+  // 2b. A line in the list between Herdr's sections and ours, above our first one's row (1px in border,
+  // 10px in from each side, 5px above and below): the row gets that room above it, the line drawn in it.
+  const row = /(SECTIONS\.map\(\(s\) => \{\s*const on = s\.id === this\.section;\s*return h_flex\(\))/g;
+  if ((s.match(row) ?? []).length !== 1) return fail("the list's rows of sections aren't drawn where this copy looks");
+  if (!/import\s*\{[^}]*\bdiv\b[^}]*\}\s*from\s*"gpui-kit"/.test(s)) return fail("it doesn't import div, which the list's line needs");
+  s = s.replace(row, (m) => `${m}.relative().when(s.id === PACKAGE_SECTIONS[0].id && HERDR_SECTIONS.length > 0, (el) => el.mt(11).child(div().absolute().top(-6).left(10).right(10).h(1).bg(t.border)))`);
+
   // 3. The section to open: Herdr's props (app.settings), else the one asked for through shared state.
   const asked = "const asked = props()?.section;";
   if (count(s, asked) !== 1) return fail("the section it opens on isn't read where this copy looks");
@@ -144,6 +151,6 @@ export function buildSettings(source, meta = {}) {
   }
   const from = `source ${hash(source)}`;
   const r = patch(source);
-  if (r.ok) return { ok: true, why: null, text: header(meta, from, "Patches: icons by full path, Features, Agents and Experimental after Herdr's sections, a section asked through shared state, their pages, their init.") + r.text };
+  if (r.ok) return { ok: true, why: null, text: header(meta, from, "Patches: icons by full path, Features, Agents and Experimental after Herdr's sections with a line between, a section asked through shared state, their pages, their init.") + r.text };
   return { ok: false, why: r.why, text: header(meta, from, `Fallback: ${r.why}.`) + fallback() };
 }

@@ -232,3 +232,11 @@ export function withGroup(text, group) {
   if (open < 0) throw new Error("workspace.jsonc has no { }");
   return `${text.slice(0, open + 1)}\n${lines.replace(/\n$/, "")}${text.slice(open + 1)}`;
 }
+
+// The words for a menu row's number and dot: "2 spaces · an agent needs you". status: the most
+// urgent of its spaces ("blocked", "done", or null), as the dot shows it.
+export const spacesCount = (n) => (n === 0 ? "no spaces" : n === 1 ? "1 space" : `${n} spaces`);
+const STATUS_WORDS = { blocked: "an agent needs you", done: "an agent is done" };
+export function workspaceTip(where, n, status) {
+  return [where, spacesCount(n), STATUS_WORDS[status], "drag to reorder, right-click for more"].filter(Boolean).join(" · ");
+}

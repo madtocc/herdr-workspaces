@@ -307,3 +307,80 @@ export function filterGroups(groups, query) {
   }
   return out;
 }
+
+// New files' line counts (git's numstat leaves untracked files out), in one pass per load: find
+// keeps the files of 1 MB or less (2048 blocks) among the paths it's given, and one grep counts their
+// lines as the diff counts them (a last line without a newline counts); a binary file counts 0, which
+// shows no count. Three programs in all, whatever the number of files. newLinesArgs() puts "./" before
+// every path, so a name like "-n" isn't an option; the output is "./path:N" lines.
+export const NEW_LINES_SH = 'find "$@" -prune -type f -size -2049 -print0 2>/dev/null | LC_ALL=C xargs -0 grep -H -I -c "" -- 2>/dev/null; true';
+export const NEW_LINES_MAX = 200;
+
+export function newLinesArgs(paths) {
+  return paths.map((p) => `./${p}`);
+}
+
+// { path: lines } for the paths asked (as given to newLinesArgs); anything else grep says is skipped.
+export function parseNewLines(stdout, asked) {
+  const out = {}, want = asked ? new Set(asked) : null;
+  for (const line of String(stdout ?? "").split("\n")) {
+    const i = line.lastIndexOf(":");
+    if (i < 3 || !line.startsWith("./")) continue;
+    const path = line.slice(2, i), n = Number(line.slice(i + 1));
+    if (!Number.isInteger(n) || n < 0 || (want && !want.has(path))) continue;
+    out[path] = n;
+  }
+  return out;
+}
+
+// The changed file ↑ or ↓ opens in Changes' list: the next or previous after the open one (no
+// wrap), the first (↓) or last (↑) when none is open; null for any other key or an empty list.
+export function nextFile(paths, open, key) {
+  if (!paths?.length || (key !== "up" && key !== "down")) return null;
+  const i = paths.indexOf(open);
+  if (i < 0) return key === "down" ? paths[0] : paths[paths.length - 1];
+  return paths[Math.max(0, Math.min(paths.length - 1, i + (key === "down" ? 1 : -1)))];
+}
+
+// A changed file's right-click menu in Changes: its rows (null a line). Open in Files isn't there for
+// a deleted file, Discard changes… isn't there for a conflict (finish that in the terminal).
+export function rowMenuItems(file) {
+  const out = [];
+  if (file.status !== "D") out.push("open");
+  out.push("copy");
+  // A path ending in "/" is a folder git won't list inside (a repository of its own, a worktree): it
+  // would go to the Trash whole, with commits that may be nowhere else. No Discard for it.
+  if (file.status !== "U" && !file.gitlink && !String(file.path ?? "").endsWith("/")) out.push(null, "discard"); // gitlink: the same, staged
+  return out;
+}
+
+// What Discard changes… does to a file, from its two status letters (git status --porcelain, "??"
+// for an untracked one) and whether the checkout has a commit: "restore" (git checkout HEAD -- path:
+// the file as the last commit has it, staged and unstaged changes both gone), "trash" (a new file,
+// untracked: to the Trash), "untrack" (a new file already staged: out of the index, then to the
+// Trash), or null (a conflict: not offered).
+export function discardPlan(xy, hasHead, path = "") {
+  const x = String(xy ?? "").slice(0, 2);
+  if (String(path).endsWith("/")) return null; // a folder with a repository of its own: never
+  if (x === "??") return "trash";
+  if (x.includes("U") || x === "AA" || x === "DD") return null;
+  if (!hasHead || x.includes("A")) return "untrack"; // staged new, or added with -N (" A")
+  return "restore";
+}
+
+// The question Discard changes… asks in place, naming the file and what becomes of it.
+export function discardAsk(name, plan) {
+  if (plan === "restore") return { title: `Discard the changes to ${name}?`, body: "It goes back to how the last commit has it. This can't be undone.", button: `Discard ${name}` };
+  return { title: `Discard ${name}?`, body: "It's new, so it goes to the Trash.", button: `Move ${name} to the Trash` };
+}
+
+// The paths that are gitlinks (mode 160000: a repository of its own, staged into this one) in
+// `git ls-files -s -z` output ("<mode> <sha> <stage>\t<path>\0").
+export function parseGitlinks(stdout) {
+  const out = new Set();
+  for (const entry of String(stdout ?? "").split("\0")) {
+    const tab = entry.indexOf("\t");
+    if (tab > 0 && entry.startsWith("160000 ")) out.add(entry.slice(tab + 1));
+  }
+  return out;
+}

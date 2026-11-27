@@ -17,16 +17,17 @@
 #   5. Adds the agents you have (claude, codex, agy, pi) to Herdr's programs.json,
 #      so they start through the launcher and get each workspace's instructions.
 #   6. Asks: bring agents back after a restart (one line in herdr-core's
-#      config.toml), and add the example agent presets.
+#      config.toml), add the example agent presets, and, once, whether
+#      Herdr's Settings key (Ctrl+,) opens the package's Settings.
 #   7. Switches Herdr to the layout, on a first install.
 # Your workspaces, tasks, presets and automations (%USERPROFILE%\.herdr) are never touched.
 #
-# Options: -Yes (don't ask: everything is added), -NoHerdr, -NoTools (no winget),
-# -Resume / -NoResume, -Presets / -NoPresets, -NoSwitch, -Version X.Y.Z,
+# Options: -Yes (don't ask: everything is added but the Settings key, which stays Herdr's), -NoHerdr, -NoTools (no winget),
+# -Resume / -NoResume, -Presets / -NoPresets, -SettingsKey / -NoSettingsKey, -NoSwitch, -Version X.Y.Z,
 # -From <folder> (a clone or an unpacked release), -DryRun, -Uninstall.
 param(
     [switch]$Yes, [switch]$NoHerdr, [switch]$NoTools, [switch]$Resume, [switch]$NoResume,
-    [switch]$Presets, [switch]$NoPresets, [switch]$NoSwitch,
+    [switch]$Presets, [switch]$NoPresets, [switch]$SettingsKey, [switch]$NoSettingsKey, [switch]$NoSwitch,
     [string]$Version = "", [string]$From = "", [switch]$DryRun, [switch]$Uninstall
 )
 
@@ -147,6 +148,30 @@ function Finish($lines) {
     }
 }
 
+# keys.json's global key bound to an action, or $null (no file, not plain JSON, none bound).
+function BoundKey($action) {
+    $file = Join-Path $herdrHome "keys.json"
+    if (-not (Test-Path $file)) { return $null }
+    try { $doc = Get-Content -Raw $file | ConvertFrom-Json } catch { return $null }
+    if (-not $doc.global) { return $null }
+    foreach ($p in $doc.global.PSObject.Properties) { if ($p.Value -eq $action) { return $p.Name } }
+    return $null
+}
+# Sets a global key to an action in keys.json; $false when the file can't be read as JSON.
+function SetKey($key, $action) {
+    $file = Join-Path $herdrHome "keys.json"
+    try {
+        $doc = Get-Content -Raw $file | ConvertFrom-Json
+        $doc.global.$key = $action
+        WriteText $file (($doc | ConvertTo-Json -Depth 20) + "`n")
+        return $true
+    } catch { return $false }
+}
+# A key as people write it: ctrl-, -> Ctrl+, (only the modifiers' dashes).
+function KeyShown($key) { $key -creplace "cmd-", "Cmd+" -creplace "ctrl-", "Ctrl+" -creplace "alt-", "Alt+" -creplace "shift-", "Shift+" }
+# Whether Ask can really ask someone (as Ask decides).
+function CanAsk { -not $Yes -and [Environment]::UserInteractive }
+
 $tmp = Join-Path ([IO.Path]::GetTempPath()) "herdr-ws-install-$PID"
 New-Item -ItemType Directory -Force $tmp | Out-Null
 try {
@@ -158,7 +183,8 @@ if ($Uninstall) {
     if ($DryRun) {
         Step "would: stop the background runner and Start at login,"
         Step "       move layouts\workspaces.json and mods\ws-* to $backup,"
-        Step "       take the commands off your Path, the launcher's lines out of programs.json and the shell line out of config.toml"
+        Step "       take the commands off your Path, the launcher's lines out of programs.json and the shell line out of config.toml,"
+        Step "       and give Herdr's Settings key back to Herdr's Settings in keys.json"
         return
     }
     # While its commands are still there: stop what runs in the background.
@@ -186,6 +212,31 @@ if ($Uninstall) {
         } catch { Note "Take the herdr-ws-agent lines out of $file by hand: without the launcher those agents won't start" }
     }
 
+    # keys.json: Herdr's Settings key back to Herdr's Settings when it opens ours, and a note for
+    # any other key bound to the package's commands (they do nothing once the mods are gone).
+    $keysFile = Join-Path $herdrHome "keys.json"
+    if ((Test-Path $keysFile) -and ((Get-Content -Raw $keysFile) -match "ws-")) {
+        Copy-Item $keysFile (Join-Path $backup "keys.json")
+        try {
+            $doc = Get-Content -Raw $keysFile | ConvertFrom-Json
+            $changed = $false; $left = @()
+            foreach ($section in @($doc.PSObject.Properties)) {
+                if ($section.Value -isnot [Management.Automation.PSCustomObject]) { continue }
+                foreach ($p in @($section.Value.PSObject.Properties)) {
+                    $c = if ($p.Value -is [string]) { $p.Value } elseif ($p.Value.command) { [string]$p.Value.command } else { "" }
+                    if ($section.Name -eq "global" -and $p.Value -eq "mod.open:ws-settings" -and @("cmd-,", "ctrl-,") -contains $p.Name) {
+                        $p.Value = "app.settings"; $changed = $true
+                        Step "keys: $(KeyShown $p.Name) opens Herdr's Settings again (keys.json)"
+                    } elseif ($c -match "^mod\.open:ws-" -or $c -match "^ws-[a-z0-9-]+\.") {
+                        $left += $(if ($section.Name -eq "global") { "`"$($p.Name)`"" } else { "`"$($section.Name) $($p.Name)`"" })
+                    }
+                }
+            }
+            if ($changed) { WriteText $keysFile (($doc | ConvertTo-Json -Depth 20) + "`n") }
+            if ($left.Count) { Note "$keysFile still binds $($left -join ', ') to the package's commands, which do nothing now: take them out or bind them again (a copy from before is $(Join-Path $backup 'keys.json'))" }
+        } catch { Note "$keysFile may still bind keys to the package's commands, which do nothing now (a copy from before is $(Join-Path $backup 'keys.json'))" }
+    }
+
     $cfg = Join-Path $core "config.toml"
     if ((Test-Path $cfg) -and ((Get-Content -Raw $cfg) -match "herdr-ws-resume")) {
         Copy-Item $cfg (Join-Path $backup "config.toml")
@@ -205,6 +256,9 @@ if ($Uninstall) {
     }
     $manifest = Join-Path $state "files.sha256"
     if (Test-Path $manifest) { Move-Item $manifest (Join-Path $backup "files.sha256") }
+    # So an install after this asks about the Settings key again.
+    $asked = Join-Path $state "settings-key-asked"
+    if (Test-Path $asked) { Move-Item $asked (Join-Path $backup "settings-key-asked") }
 
     $left = @("Workspaces is out. Still there, yours to keep or delete:",
         "  - $(Join-Path $env:USERPROFILE '.herdr') (your workspaces, tasks, automations, secrets and settings)")
@@ -426,6 +480,36 @@ if (Test-Path $examples) {
                 foreach ($f in $toAdd) { Copy-Item $f.FullName (Join-Path $templates $f.Name) }
                 Step "presets: added $names"
             }
+        }
+    }
+}
+
+# ---- 6b. Herdr's Settings key ------------------------------------------------------------
+# It opens Herdr's own window, which has none of the package's sections. Asked once: on the first
+# run that finds the key bound to Herdr's Settings in keys.json (Herdr writes that file when it
+# first starts, so a first install that installs Herdr too is asked on the next run), remembered
+# in .herdr\install\settings-key-asked; -Yes and a run nobody can answer don't count as asked.
+# -SettingsKey binds it on any run. A yes makes keys.json yours, so Herdr's updates no longer add
+# their new default keys to it.
+$askedFile = Join-Path $state "settings-key-asked"
+if (-not $NoSettingsKey -and ($SettingsKey -or -not (Test-Path $askedFile))) {
+    $key = BoundKey "app.settings"
+    $keysFile = Join-Path $herdrHome "keys.json"
+    if (-not $key) {
+        if (-not (BoundKey "mod.open:ws-settings") -and -not (Test-Path $keysFile)) {
+            Note "Herdr's Settings key opens Herdr's own window, without the package's sections. Run this again once Herdr has started to be asked whether it should open the package's Settings, or see Settings in the README"
+        }
+    } else {
+        $yesToKey = $SettingsKey
+        if (-not $SettingsKey) {
+            if ((CanAsk) -and -not $DryRun) { WriteText $askedFile "" }
+            $yesToKey = Ask "Have $(KeyShown $key) open this Settings, with the package's sections? (Writes `"$key`" into $keysFile. Herdr then leaves that file to you: new default shortcuts in its updates are added by hand.)" $false
+        }
+        if ($yesToKey -and (Does "bind $key to the package's Settings in $keysFile")) {
+            New-Item -ItemType Directory -Force $backup | Out-Null
+            Copy-Item $keysFile (Join-Path $backup "keys.json")
+            if (SetKey $key "mod.open:ws-settings") { Step "keys: $(KeyShown $key) opens the package's Settings (keys.json)" }
+            else { Note "Couldn't change $keysFile (a copy from before is $(Join-Path $backup 'keys.json')): set `"$key`" in its global section to `"mod.open:ws-settings`" by hand" }
         }
     }
 }

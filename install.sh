@@ -16,15 +16,18 @@
 #   4. Adds the agents you have (claude, codex, agy, pi) to Herdr's programs.json,
 #      so they start through the launcher and get each workspace's instructions.
 #   5. Asks: bring agents back after a restart (one line in herdr-core's
-#      config.toml), and add the example agent presets.
+#      config.toml), add the example agent presets, and, once, whether
+#      Herdr's Settings key (Cmd+,) opens the package's Settings.
 #   6. Switches Herdr to the layout, on a first install.
 # Your workspaces, tasks, presets and automations (~/.herdr) are never touched.
 #
 # Options:
 #   --yes            don't ask: Herdr, the restart line and the presets are all added
+#                    (not the Settings key: that stays Herdr's)
 #   --no-herdr       don't install Herdr when it's missing (stop instead)
 #   --resume, --no-resume     the restart line, without asking
 #   --presets, --no-presets   the example presets, without asking
+#   --settings-key, --no-settings-key   Cmd+, opens the package's Settings, without asking
 #   --no-switch      leave the shown layout as it is
 #   --version X.Y.Z  that release instead of the latest
 #   --from DIR       install the copy in DIR (a clone or an unpacked release)
@@ -44,7 +47,7 @@ main() {
   backup=$state/backup/$stamp
   commands="herdr-ws-agent herdr-ws-run herdr-ws-runner herdr-ws-notify herdr-ws-secret herdr-ws-resume"
 
-  yes=0 herdr=ask resume=ask presets=ask switch=1 version='' from='' dry=0 uninstall=0
+  yes=0 herdr=ask resume=ask presets=ask settingskey=ask switch=1 version='' from='' dry=0 uninstall=0
   while [ $# -gt 0 ]; do
     case $1 in
       --yes | -y) yes=1 ;;
@@ -53,6 +56,8 @@ main() {
       --no-resume) resume=no ;;
       --presets) presets=yes ;;
       --no-presets) presets=no ;;
+      --settings-key) settingskey=yes ;;
+      --no-settings-key) settingskey=no ;;
       --no-switch) switch=0 ;;
       --version) version=${2:?--version needs a number}; shift ;;
       --from) from=${2:?--from needs a folder}; shift ;;
@@ -87,6 +92,7 @@ main() {
   add_programs
   add_resume
   add_presets
+  add_settings_key
   show_layout
   finish
 }
@@ -421,6 +427,68 @@ add_presets() {
   step "presets: added $names"
 }
 
+# ---- 5b. Herdr's Settings key -------------------------------------------------
+
+# The key keys.json's global section binds to an action ($1), or nothing (no file, no node).
+bound_key() {
+  [ -f "$home/keys.json" ] && have node || return 0
+  node -e '
+    const doc = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+    const g = (doc && doc.global) || {};
+    const k = Object.keys(g).find((k) => g[k] === process.argv[2]);
+    if (k) process.stdout.write(k);
+  ' "$home/keys.json" "$1" 2>/dev/null || true
+}
+
+# Sets the global key $1 to the action $2 in keys.json (the file was copied to $backup first).
+set_key() {
+  node -e '
+    const fs = require("fs");
+    const file = process.argv[1];
+    const doc = JSON.parse(fs.readFileSync(file, "utf8"));
+    doc.global = doc.global || {};
+    doc.global[process.argv[2]] = process.argv[3];
+    fs.writeFileSync(file, JSON.stringify(doc, null, 2) + "\n");
+  ' "$home/keys.json" "$1" "$2" 2>/dev/null
+}
+
+# A key as people write it: cmd-, -> Cmd+, (only the modifiers' dashes).
+shown_key() { printf '%s' "$1" | sed -e 's/cmd-/Cmd+/g; s/ctrl-/Ctrl+/g; s/alt-/Alt+/g; s/shift-/Shift+/g'; }
+
+# Whether ask can really ask someone (as ask decides): not under --yes, and with a terminal.
+can_ask() { [ "$yes" != 1 ] && (: < /dev/tty) 2>/dev/null; }
+
+# Herdr's Settings key (Cmd+, on macOS) opens Herdr's own window, which has none of the
+# package's sections. Asked once: on the first run that finds the key bound to Herdr's Settings in
+# keys.json (Herdr writes that file when it first starts, so a first install that installs Herdr
+# too is asked on the next run), remembered in ~/.herdr/install/settings-key-asked; --yes and a run
+# with no terminal don't count as asked. --settings-key binds it on any run. A yes makes keys.json
+# the person's, so Herdr's updates no longer add their new default keys to it.
+add_settings_key() {
+  [ "$settingskey" = no ] && return 0
+  asked=$state/settings-key-asked
+  [ "$settingskey" = yes ] || [ ! -f "$asked" ] || return 0
+  key=$(bound_key app.settings)
+  if [ -z "$key" ]; then
+    # Already ours, or rebound by the person: nothing to say. No file or no Node yet: the next run asks.
+    if [ -z "$(bound_key mod.open:ws-settings)" ] && { [ ! -f "$home/keys.json" ] || ! have node; }; then
+      note "Herdr's Settings key opens Herdr's own window, without the package's sections. Run this again once Herdr has started (and with Node) to be asked whether it should open the package's Settings, or see Settings in the README"
+    fi
+    return 0
+  fi
+  shown=$(shown_key "$key")
+  file=$(printf '%s' "$home/keys.json" | tilde)
+  if [ "$settingskey" = ask ]; then
+    if can_ask && [ "$dry" != 1 ]; then mkdir -p "$state"; : > "$asked"; fi
+    ask "Have $shown open this Settings, with the package's sections? (Writes \"$key\" into $file. Herdr then leaves that file to you: new default shortcuts in its updates are added by hand.)" n || return 0
+  fi
+  does "bind $key to the package's Settings in $home/keys.json" || return 0
+  mkdir -p "$backup"
+  cp -p "$home/keys.json" "$backup/keys.json"
+  if set_key "$key" mod.open:ws-settings; then step "keys: $shown opens the package's Settings (keys.json)"
+  else note "Couldn't change $home/keys.json (a copy from before is $backup/keys.json): set \"$key\" in its global section to \"mod.open:ws-settings\" by hand"; fi
+}
+
 # ---- 6. the layout -----------------------------------------------------------
 
 show_layout() {
@@ -473,7 +541,8 @@ uninstall() {
   if [ "$dry" = 1 ]; then
     step "would: stop the background runner and Start at login, uninstall the Protected broker,"
     step "       move layouts/workspaces.json and mods/ws-* to $backup,"
-    step "       remove the herdr-ws-* links, the launcher's lines in programs.json and the shell line in config.toml"
+    step "       remove the herdr-ws-* links, the launcher's lines in programs.json and the shell line in config.toml,"
+    step "       and give Herdr's Settings key back to Herdr's Settings in keys.json"
     return 0
   fi
   # While its commands are still there: stop what runs in the background.
@@ -510,6 +579,33 @@ uninstall() {
     else note "Take the herdr-ws-agent lines out of $file by hand: without the launcher those agents won't start"; fi
   fi
 
+  # keys.json: Herdr's Settings key back to Herdr's Settings when it opens ours, and a note for
+  # any other key bound to the package's commands (they do nothing once the mods are gone).
+  if [ -f "$home/keys.json" ] && grep -q 'ws-' "$home/keys.json"; then
+    cp -p "$home/keys.json" "$backup/keys.json"
+    if have node && out=$(node -e '
+      const fs = require("fs");
+      const file = process.argv[1];
+      const doc = JSON.parse(fs.readFileSync(file, "utf8"));
+      const cmd = (a) => (typeof a === "string" ? a : a && typeof a === "object" ? a.command : null);
+      const ours = (a) => typeof cmd(a) === "string" && (/^mod\.open:ws-/.test(cmd(a)) || /^ws-[a-z0-9-]+\./.test(cmd(a)));
+      let changed = false;
+      for (const [section, keys] of Object.entries(doc)) {
+        if (!keys || typeof keys !== "object") continue;
+        for (const [k, a] of Object.entries(keys)) {
+          if (section === "global" && a === "mod.open:ws-settings" && (k === "cmd-," || k === "ctrl-,")) {
+            keys[k] = "app.settings"; changed = true; console.log("restored " + k);
+          } else if (ours(a)) console.log("left " + (section === "global" ? k : section + " " + k));
+        }
+      }
+      if (changed) fs.writeFileSync(file, JSON.stringify(doc, null, 2) + "\n");
+    ' "$home/keys.json" 2>/dev/null); then
+      for k in $(printf '%s\n' "$out" | sed -n 's/^restored //p'); do step "keys: $(shown_key "$k") opens Herdr's Settings again (keys.json)"; done
+      left=$(printf '%s\n' "$out" | sed -n 's/^left //p' | awk 'NR > 1 { printf ", " } { printf "\"%s\"", $0 }')
+      [ -z "$left" ] || note "$home/keys.json still binds $left to the package's commands, which do nothing now: take them out or bind them again (a copy from before is $backup/keys.json)"
+    else note "$home/keys.json may still bind keys to the package's commands, which do nothing now (a copy from before is $backup/keys.json)"; fi
+  fi
+
   cfg=$core/config.toml
   if [ -f "$cfg" ] && grep -q 'herdr-ws-resume' "$cfg"; then
     cp -p "$cfg" "$backup/config.toml"
@@ -525,6 +621,8 @@ uninstall() {
     step "restart: the shell line is out of $cfg"
   fi
   [ -f "$state/files.sha256" ] && mv "$state/files.sha256" "$backup/files.sha256"
+  # So an install after this asks about the Settings key again.
+  [ -f "$state/settings-key-asked" ] && mv "$state/settings-key-asked" "$backup/settings-key-asked"
 
   say
   say "Workspaces is out. Still there, yours to keep or delete:"

@@ -402,7 +402,11 @@ export function kidNames(kids = []) {
 // when any row of it passes, opened down to the rows that do (`forced`), with only those
 // under it; a row that passes itself but has none under it that does shows folded, and
 // opened by hand shows all of its children.
-export function treeRows(f, { pass = () => true, root = () => true, unfolded = new Set(), filtering = false } = {}) {
+// `chipOnly`: the filter is an agent chip alone (no search): a row that passes the chip isn't
+// opened by it, only one that doesn't with a row under it that does (so the chip leaves a
+// Claude conversation's Claude helpers folded, as they were). `folded`: keys folded by hand,
+// which a filter opened (foldClick()).
+export function treeRows(f, { pass = () => true, root = () => true, unfolded = new Set(), folded = new Set(), filtering = false, chipOnly = false } = {}) {
   const hit = new Map();
   const below = (s) => {
     const k = key(s);
@@ -418,8 +422,8 @@ export function treeRows(f, { pass = () => true, root = () => true, unfolded = n
     if (seen.has(k)) return;
     seen.add(k);
     const kids = f.kids.get(k) ?? [];
-    const forced = filtering && below(s);
-    const open = kids.length > 0 && (forced || unfolded.has(k));
+    const forced = filtering && below(s) && !(chipOnly && pass(s));
+    const open = kids.length > 0 && ((forced && !folded.has(k)) || unfolded.has(k));
     out.push({ s, depth, kids, open, forced });
     if (!open) return;
     for (const c of kids) if (!forced || pass(c) || below(c)) walk(c, depth + 1, seen);
@@ -432,13 +436,39 @@ export function treeRows(f, { pass = () => true, root = () => true, unfolded = n
   return out;
 }
 
+// A click on a fold line (`x`: its row as treeRows() gave it): open, it folds, a tree a filter
+// opened too (kept in `folded` till it's opened again); folded, it opens. Changes the two sets.
+export function foldClick(k, x, unfolded, folded) {
+  if (x.open) { unfolded.delete(k); if (x.forced) folded.add(k); }
+  else { unfolded.add(k); folded.delete(k); }
+}
+
+// The conversation something asked History to show (`want`: { app, id }, from the shared
+// "workspaces.history.open", as a "Put back" toast or bell row sends it): its row, its key, the
+// keys of the rows above it in its tree (to unfold them, nearest first) and its tree's first row.
+// `app` is History's agent key or the agent's own word for itself ("agy", "claude-code"). Null
+// while it isn't among `rows` (not read yet, or not in this list's workspace).
+export function askedRow(rows, want) {
+  const alias = { agy: "antigravity", "claude-code": "claude" };
+  const provider = alias[want?.app] ?? want?.app;
+  const id = String(want?.id ?? "");
+  if (!provider || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id)) return null;
+  const byKey = new Map((rows ?? []).map((r) => [key(r), r]));
+  const s = byKey.get(`${provider}/${id}`);
+  if (!s) return null;
+  const up = [];
+  for (let p = s.parent; p && byKey.has(p) && !up.includes(p); p = byKey.get(p).parent) up.push(p);
+  return { s, key: key(s), up, root: up.length ? up[up.length - 1] : key(s) };
+}
+
 // How far a row at that depth is drawn in: 20px a level, at most 4 levels.
 export const indent = (depth) => Math.min(depth, 4) * 20;
 
 // --- The right-click menu ---
 // A History row's menu: { id, label, icon, hint?, danger?, sep? }, drawn as the Agents
 // list's (menufacts.js menuHeight() sizes it). f: { at (the terminal it's open in),
-// maybe (one only guessed to hold it), gone, readonly, wipe (whether Wipe can be offered: its agent's files are known) }.
+// maybe (one only guessed to hold it), gone, readonly, wipe (whether Wipe can be offered: its agent's files are known),
+// why (Antigravity's: why it can't be wiped, agyHold(); then a row that says so in place of Wipe, not picked) }.
 export function historyMenu(f) {
   if (f.readonly) return [];
   const out = [];
@@ -449,7 +479,8 @@ export function historyMenu(f) {
     if (!f.gone) out.push({ id: "resume", label: "Resume", icon: "mods/ws-history/history.svg" });
   }
   out.push({ id: "copy", label: "Copy conversation id", icon: "mods/ws-agents/copy.svg" });
-  if (f.wipe) out.push({ id: "wipe", label: "Wipe conversation…", icon: "mods/ws-agents/trash.svg", danger: true, sep: true, ...(f.agy ? { hint: "experimental" } : {}) });
+  if (f.wipe && f.why) out.push({ id: "wipe-why", label: f.why, icon: "mods/ws-agents/trash.svg", off: true, sep: true });
+  else if (f.wipe) out.push({ id: "wipe", label: "Wipe conversation…", icon: "mods/ws-agents/trash.svg", danger: true, sep: true, ...(f.agy ? { hint: "experimental" } : {}) });
   return out;
 }
 
@@ -512,6 +543,113 @@ export function openWords(at, status = null) {
   const doing = status === "working" ? "; it's working, so this also stops what it's doing" : status === "blocked" ? "; it's waiting on you there" : "";
   return ` It's open in ${at}: Wipe closes that first${doing}.`;
 }
+
+// The Wipe dialog looks again by itself while it's open (what had the conversation open, or
+// ran under it, may have ended, so Wipe comes on with no click): WIPE_RECHECK ms after the last
+// look ended (`last`), never while it wipes (`busy`) or while a look is under way (`looking`).
+// A clock set back looks at once rather than wait. A look under way for more than WIPE_LOST ms
+// (`started`) counts as ended: a task lost to a reload never settles, and would stop the looks for
+// good (its exec calls time out sooner than that).
+export const WIPE_RECHECK = 3000, WIPE_LOST = 35000;
+export function wipeLooksAgain({ busy = false, looking = false, started = 0, last = 0, now = Date.now() } = {}) {
+  if (busy) return false;
+  if (looking) { const g = now - started; if (g >= 0 && g <= WIPE_LOST) return false; return true; }
+  const d = now - last;
+  return !(d >= 0 && d < WIPE_RECHECK);
+}
+
+// Which Herdr terminal holds an Antigravity conversation `id`, for its Wipe, which goes to the
+// Agents list's dialog with that terminal filled in (so it closes it first, as from the Agents
+// row). Known two ways, the same as the Agents list and agywipe.js know it:
+//   - the launcher's note for a terminal names it (`note`) and is the running Antigravity's own:
+//     noted after that process started (`notedAt` >= `started`), or the process was started with
+//     `--conversation <id>` (`fgArgs`), as ws-agents/statfacts.js agyOwns() decides;
+//   - a running Antigravity has it open (`procs`: ps rows { pid, ppid, pgid, comm, args }, one
+//     whose arguments name it; `holders`: the pids lsof finds on its presence lock), and that
+//     process is a terminal's foreground program or runs under it (by parent pids).
+// terms: [{ address, pid (the terminal's own process), fg (its foreground pid), note, notedAt,
+// started, fgArgs }] for the live Antigravity terminals. `lsof`: whether lsof answered; `guess`:
+// the terminal History's list only guesses holds it. Returns { state, address?, pid?, pids?, why }:
+//   "exact": one terminal holds it (close it, then wipe); "none": nothing does (wipe as it is);
+//   "outside": an Antigravity outside Herdr's terminals has it (agywipe.js refuses: say so);
+//   "many": several terminals; "maybe": a terminal may hold it but that can't be told.
+const agyAgent = (p) => {
+  const words = String(p.args ?? "").trim().split(/\s+/);
+  const base = (w) => String(w ?? "").split("/").pop();
+  if (base(p.comm) !== "agy" && base(words[0]) !== "agy") return false;
+  return words[1] !== "agentapi" && !words.slice(1).some((w) => w === "-p" || w === "--print" || w.startsWith("--print="));
+};
+export function agyHold({ id, terms = [], procs = [], holders = [], lsof = false, guess = null } = {}) {
+  if (!id) return { state: "none", why: "" };
+  const parent = new Map(procs.map((p) => [String(p.pid), String(p.ppid)]));
+  const termOf = (pid) => {
+    for (let at = String(pid), hops = 0; at && at !== "0" && at !== "1" && hops < 64; at = parent.get(at), hops++) {
+      const t = terms.find((x) => String(x.fg ?? "") === at || String(x.pid ?? "") === at);
+      if (t) return t;
+    }
+    return null;
+  };
+  const open = new Set(procs.filter((p) => agyAgent(p) && String(p.args).includes(id)).map((p) => String(p.pid)));
+  for (const h of holders) open.add(String(h));
+  const at = new Set();
+  const outside = [];
+  const holder = new Map(); // a terminal's process that has it open: agywipe.js counts that one's family as the agent's own
+  for (const pid of open) { const t = termOf(pid); if (t) { at.add(t.address); if (!holder.has(t.address)) holder.set(t.address, pid); } else outside.push(pid); }
+  const owns = (t) => t.note === id && ((t.started > 0 && t.notedAt >= t.started) || ` ${String(t.fgArgs ?? "").trim()} `.includes(` --conversation ${id} `) || String(t.fgArgs ?? "").includes(`--conversation=${id}`));
+  for (const t of terms) if (owns(t)) at.add(t.address);
+  if (outside.length) return { state: "outside", pids: outside, why: `Can't wipe: an Antigravity outside Herdr has it open (process ${outside.join(", ")}); close it first` };
+  const list = [...at];
+  if (list.length > 1) return { state: "many", why: `Can't wipe: it's open in ${list.join(" and ")}; close all but one first` };
+  if (list.length === 1) {
+    const t = terms.find((x) => x.address === list[0]);
+    return { state: "exact", address: t.address, pid: holder.get(t.address) ?? t.fg ?? t.pid ?? null, why: "" };
+  }
+  const stale = terms.find((t) => t.note === id);
+  if (stale) return { state: "maybe", address: stale.address, why: `Can't wipe: ${stale.address} may hold it (its note may be an earlier Antigravity's); close it there first` };
+  if (guess && !lsof) return { state: "maybe", address: guess, why: `Can't wipe: it may be open in ${guess}; close it there first` };
+  return { state: "none", why: "" };
+}
+
+// A press on a dialog's Wipe within 500 ms of the dialog opening doesn't count (the press that
+// opened it, a double-click, mustn't wipe). Compared as `d >= 0 && d < 500`, so a clock set back
+// can't freeze it.
+export const tooSoon = (openedAt, now = Date.now()) => { const d = now - (openedAt ?? 0); return d >= 0 && d < 500; };
+
+// One conversation in the Wipe dialog for several (`check`: what checkWipe() found for it, or
+// null while it looks): the word beside its title, its tone, whether Wipe takes it (`ready`),
+// and why not, in a sentence, when it can't go. Like the single Wipe, one whose terminal has
+// live helpers under it (`ends`) waits until they're done.
+export function manyStatus(check) {
+  if (!check) return { word: "looking…", tone: "dim", ready: false, why: "" };
+  if (!check.ok) return { word: "can't now", tone: "blocked", ready: false, why: check.why };
+  const ends = check.ends ?? [];
+  if (ends.length) {
+    const names = ends.map((e) => (e.name ? `${e.name} (${e.address})` : e.address)).join(", ");
+    return { word: `${names} still running`, tone: "blocked", ready: false, why: `Closing ${check.close} would also end ${names}. Wipe it once they're done.` };
+  }
+  if (check.close) return { word: `closes ${check.close} first`, tone: "muted", ready: true, why: "" };
+  return { word: "can go", tone: "muted", ready: true, why: "" };
+}
+
+// What a Wipe dialog showed for each conversation it may take (`keys`), from checkWipe()'s
+// `checks`: whether Wipe takes it, the terminal it closes first and the live helpers that
+// closing would end, as one string per key. Wipe goes on only when a fresh look draws the same
+// (sigsDiffer()), and a press within 500 ms of a change doesn't count.
+export function drawnSigs(checks, keys) {
+  return new Map(keys.map((k) => {
+    const c = checks?.get(k) ?? null;
+    return [k, c ? `${manyStatus(c).ready}|${c.close ?? ""}|${(c.ends ?? []).map((e) => e.address).join(",")}` : "none"];
+  }));
+}
+export function sigsDiffer(a, b) {
+  if (!a || !b) return true;
+  const keys = new Set([...a.keys(), ...b.keys()]);
+  return [...keys].some((k) => a.get(k) !== b.get(k));
+}
+
+// The Wipe dialog for `n` conversations: its height, room for its words, a line each and a
+// reason under three of them (the list scrolls past that, the buttons stay).
+export const wipeManyHeight = (n) => Math.min(560, 36 + 24 + 12 + 3 * 20 + 8 + n * 24 + Math.min(n, 3) * 34 + 14 + 32);
 
 // The live terminals under one (its hc helpers and theirs): hc ends them when it ends.
 // terms: terminals() ({ address, parent, state, name }).

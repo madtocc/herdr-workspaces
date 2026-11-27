@@ -45,7 +45,7 @@ import { spaces, panes, agents, terminals, run, theme, settings, shared, setShar
 import { exec } from "./posix.js";
 import * as fs from "fs/promises";
 import { setUp } from "./treescripts.js";
-import { programOf, startChoices, firstPick, overOf, whoStarts, firstMessage } from "./startfacts.js";
+import { programOf, startChoices, firstPick, overOf, whoStarts, firstMessage, columnWidth, WIDE_COLUMN, agentChips, folderChips } from "./startfacts.js";
 // The system's trash by its name: the Recycle Bin on Windows, the Trash elsewhere.
 const trashName = () => (window()?.platform === "windows" ? "Recycle Bin" : "Trash");
 import {
@@ -71,7 +71,7 @@ const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b
 const STATUS_WORD = { working: "working", blocked: "needs you", done: "finished", idle: "idle" };
 // A dialog's first Esc or Close × with something typed or changed: said on its own line, in
 // `working` as Secrets says it. A second Esc or × then closes, whichever came first.
-const ASK_AGAIN = { esc: "Press Esc again to close and drop what you typed.", x: "Click × again to close and drop what you typed." };
+const ASK_AGAIN = { esc: "Press Esc again to close and drop what you typed.", x: "Click × again to close and drop what you typed.", go: "Click again to go there and drop what you typed." };
 const START_WITH = "workspaces.board.start"; // Start with…'s dialog asks the board copy that opened it
 // The tab bar's bell asks the board (the switcher shows it first) to open a card: { ws, taskId, at, taken? }.
 // The screen of that workspace takes it once its cards are read (a tab or pane of it after 1.5s, if the
@@ -109,8 +109,10 @@ const message = (e) => String(e?.message ?? e);
 // Where a GitHub board is kept between reads (ghfacts.js: keptText), one file per board, for every board tab.
 const keptFile = (ref) => `${home()}/.herdr/cache/github-boards/${ref.kind}-${ref.owner}-${ref.number}.json`;
 // Opens a GitHub page in the browser (nothing else: the links come from files and from GitHub).
+// The links the board opens: GitHub's own pages only (a mark on another host isn't drawn as a link).
+const opensLink = (url) => /^https:\/\/github\.com\//.test(String(url ?? ""));
 const openLink = (url) => {
-  if (/^https:\/\/github\.com\//.test(String(url ?? ""))) exec("sh", ["-c", 'command -v open >/dev/null 2>&1 && exec open "$1"; command -v explorer.exe >/dev/null 2>&1 && exec explorer.exe "$1"; exec xdg-open "$1"', "sh", url]).catch(() => {});
+  if (opensLink(url)) exec("sh", ["-c", 'command -v open >/dev/null 2>&1 && exec open "$1"; command -v explorer.exe >/dev/null 2>&1 && exec explorer.exe "$1"; exec xdg-open "$1"', "sh", url]).catch(() => {});
 };
 
 // --- the workspace's board settings ---
@@ -221,6 +223,17 @@ async function nextId(id, prefix) {
 // The open last column's cards: the first `limit`, plus any that landed in that column while
 // this board was open (a drop, a move in the dialog, an agent's), so a card moved there is
 // seen to land. All of them once "Show all" was pressed.
+// The Tasks side's search: the cards holding every typed word in their id, title, folder,
+// agent or notes (any case), as the GitHub side's search matches its items.
+function filterTasks(tasks, text) {
+  const words = String(text ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return tasks;
+  return tasks.filter((x) => {
+    const hay = `${x.id ?? ""} ${x.title ?? ""} ${x.folder ?? ""} ${x.agent ?? ""} ${x.body ?? ""}`.toLowerCase();
+    return words.every((w) => hay.includes(w));
+  });
+}
+
 function shownCards(tasks, limit, all, landed) {
   if (all || tasks.length <= limit) return tasks;
   return tasks.filter((x, i) => i < limit || landed.has(x.id));
@@ -402,6 +415,8 @@ export default class Board extends View {
     // A pane beside the terminals: Herdr's pane header names it, so it has no title row of its own.
     this.beside = !this.follow && Boolean(props()?.beside);
     this.workspace = (this.follow ? null : props()?.workspace) ?? shared("workspaces.active") ?? null;
+    this.taskSearch = InputState.new({ value: "", placeholder: "Search tasks…" });
+    this.taskSearch.on("change", (_e, cx) => cx.notify());
     this.reset();
     this.initGithub(cx);
     this.load(cx);
@@ -425,6 +440,20 @@ export default class Board extends View {
   }
 
   // A card the bell asked for (CARD_OPEN): its task dialog. Gone since: nothing (the bell said so).
+  // A task the dialog just added (shared "workspaces.board.added"): when the search holds
+  // words it doesn't match, the box is emptied, so the new card shows. Looked at when the
+  // cards are read and on the board's 2s beat (the file may be read before the stamp lands).
+  addedAsked(cx) {
+    const added = shared("workspaces.board.added") ?? null;
+    if (!added?.at || added.at === this.addedSeen) return;
+    this.addedSeen = added.at;
+    const d = Date.now() - added.at;
+    if (added.ws !== this.workspace || d < 0 || d > 15000 || !this.taskSearch?.value()) return;
+    const x = this.tasks.find((t) => t.id === added.id);
+    if (!x) { this.addedSeen = null; return; } // not read yet: the next read or beat looks again
+    if (!filterTasks([x], this.taskSearch.value()).length) { this.taskSearch.set_value(""); cx?.notify(); }
+  }
+
   cardAsked() {
     const ask = shared(CARD_OPEN) ?? null;
     if (!ask?.at || ask.taken || !this.loaded || ask.ws !== this.workspace) return;
@@ -463,6 +492,7 @@ export default class Board extends View {
   // A board's own state, as it opens.
   reset() {
     this.tasks = [];
+    if (this.taskSearch?.value()) this.taskSearch.set_value(""); // another workspace's cards: not its search
     this.loaded = false;
     this.busy = {}; // task id -> "start" | "worktree"
     this.drag = null; // { id, from, moved }
@@ -481,6 +511,7 @@ export default class Board extends View {
     this.lastFolded = this.pref("col.folded") === "1";
     this.showAll = false;
     this.landed = new Set(); // ids that came into the last column while this board was open
+    this.addedSeen = shared("workspaces.board.added")?.at ?? null; // the last added task already looked at (addedAsked())
     // Tasks (this board) or GitHub (the workspace's GitHub project board).
     this.source = this.pref("source") === "github" ? "github" : "tasks";
   }
@@ -520,6 +551,7 @@ export default class Board extends View {
       this.tasks = tasks;
       this.loaded = true;
       this.cardAsked();
+      this.addedAsked();
       cx.notify();
     });
   }
@@ -544,7 +576,9 @@ export default class Board extends View {
 
   // `over` (Start with…, startfacts.js): another agent, folder and first message for
   // this start only; the rest (status, terminal, tab, started, worktree) is the same.
-  start(task, worktree, cx, over = null) {
+  // `stay`: Shift held on Start or Worktree: the new tab or space is made without being shown
+  // (focus: false), so the board stays in view for the next card.
+  start(task, worktree, cx, over = null, stay = false) {
     const def = defOf(this.workspace);
     if (!def || this.busy[task.id]) return;
     const b = boardOf(def);
@@ -573,13 +607,13 @@ export default class Board extends View {
           // The repo's setup script (the Worktrees screen's Scripts), once per worktree.
           // If it fails the agent doesn't start; Worktree again tries it again.
           await setUp({ home, readTextFile, writeTextFile, exec }, { ws: def.id, repo: base(wt.repo), path: wt.path, main: wt.repo, branch: wt.branch });
-          made = await herdr("space.new", { folder: wt.path, tab: task.id, argv, ...(first ? { task: first } : {}) });
+          made = await herdr("space.new", { folder: wt.path, tab: task.id, argv, ...(first ? { task: first } : {}), ...(stay ? { focus: false } : {}) });
           extra = { worktree: tilde(wt.path), branch: wt.branch };
         } else {
           const space = spaceFor(def, folder);
           made = space
-            ? await herdr("tab.new", { space: space.id, name: task.id, folder, argv, ...(first ? { task: first } : {}) })
-            : await herdr("space.new", { folder, tab: task.id, argv, ...(first ? { task: first } : {}) });
+            ? await herdr("tab.new", { space: space.id, name: task.id, folder, argv, ...(first ? { task: first } : {}), ...(stay ? { focus: false } : {}) })
+            : await herdr("space.new", { folder, tab: task.id, argv, ...(first ? { task: first } : {}), ...(stay ? { focus: false } : {}) });
         }
         await this.update(task, { status: b.start, terminal: made.terminal ?? null, tab: made.tab ?? null, started: today(), ...extra });
       } catch (e) {
@@ -628,6 +662,7 @@ export default class Board extends View {
           .child(github ? (this.gh.board && this.ghRef(def) ? `${this.gh.board.title} on GitHub` : "") : `${open} open · ${this.tasks.length - open} done`)))
         .child(div().flex_1())
         .children(github ? this.ghTools(def, t) : [
+          ...(tiny ? [] : [this.taskSearchBox(t, 160)]),
           this.viewToggle(t),
           h_flex().id("board-new").h(26).px(tiny ? 0 : 10).when(tiny, (el) => el.w(26).justify_center()).gap(6).flex_none().items_center().rounded(7).cursor_pointer()
             .bg(t.solid).text_color(t.solid_foreground).text_size(12).font_medium().hover((s) => s.opacity(0.88))
@@ -649,6 +684,7 @@ export default class Board extends View {
         .child(github ? (this.gh.board && this.ghRef(def) ? `${this.gh.board.title} on GitHub` : "") : `${open} open · ${this.tasks.length - open} done`))
       .child(div().flex_1())
       .children(github ? this.ghTools(def, t) : [
+        this.taskSearchBox(t, 200),
         this.viewToggle(t),
         h_flex().id("board-new").h(30).px(12).gap(6).flex_none().items_center().rounded(8).cursor_pointer()
           .bg(t.solid).text_color(t.solid_foreground).text_size(12.5).font_medium().hover((s) => s.opacity(0.88))
@@ -663,12 +699,25 @@ export default class Board extends View {
 
   // The board view: a column per status.
   columns(shell, header, b, def, t, ag, tm, columnOf) {
-    const columns = b.columns.map((col) => this.column(col, this.tasks.filter((x) => columnOf(x) === col), def, b, t, ag, tm));
+    // How wide each open column is, for the cards' Worktree button (agentArea()).
+    this.colWidth = columnWidth({ width: this.width, columns: b.columns.length, folded: this.lastFolded, squeezed: this.squeezed(b), min: COL_MIN });
+    const shown = filterTasks(this.tasks, this.taskSearch?.value());
+    const columns = b.columns.map((col) => this.column(col, shown.filter((x) => columnOf(x) === col), def, b, t, ag, tm));
     return shell
       .on_mouse_up("left", (_e, cx) => { if (this.drag) { this.drag = null; this.over = null; cx.notify(); } })
       .child(header)
       .child(h_flex().id("board-columns").flex_1().min_h(0).items_stretch().p(12).gap(10).children(columns)
         .when(this.squeezed(b), (el) => el.overflow_x_scrollbar()));
+  }
+
+  // The Tasks side's search box, drawn as the GitHub side's: an × while it holds text, and Esc in it empties it.
+  taskSearchBox(t, w) {
+    return h_flex().id("task-search").w(w).h(28).flex_none().px(8).gap(6).items_center().rounded(8).border_1().border_color(t.input).bg(t.background)
+      .on_key_down((e, cx) => { if (e.key === "escape" && this.taskSearch.value()) { this.taskSearch.set_value(""); cx.stop_propagation(); cx.notify(); } })
+      .child(svg("mods/workspace-chrome/search.svg").size(12).flex_none().text_color(t.dim))
+      .child(Input.new(this.taskSearch).flex_1().min_w(0).text_size(12).text_color(t.foreground))
+      .when(Boolean(this.taskSearch.value()), (el) => el.child(div().id("task-search-x").flex_none().cursor_pointer().text_color(t.dim).hover((x) => x.text_color(t.foreground))
+        .tooltip("Clear the search").on_click((_e, cx) => { this.taskSearch.set_value(""); cx.notify(); }).child(svg("mods/workspace-chrome/x.svg").size(12))));
   }
 
   // Board | List, as two segments: for the tasks, or (github) for the GitHub view, each remembered apart.
@@ -699,8 +748,9 @@ export default class Board extends View {
       this.keep("folded", JSON.stringify([...next]));
       cx.notify();
     };
+    const shown = filterTasks(this.tasks, this.taskSearch?.value());
     const rows = b.columns.flatMap((col) => {
-      const tasks = this.tasks.filter((x) => columnOf(x) === col);
+      const tasks = shown.filter((x) => columnOf(x) === col);
       const shut = folded.has(col);
       const head = h_flex().id(`sec-${col}`).h(34).flex_none().pl(14).pr(8).gap(8).items_center().cursor_pointer()
         .when(this.narrow(LIST_MIN + 40) && !this.compact(), (el) => el.min_w(LIST_MIN))
@@ -829,7 +879,7 @@ export default class Board extends View {
           .hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => { this.showAll = true; cx.notify(); })
           .child(`Show all ${tasks.length}`)))
         .when(!tasks.length && this.loaded, (el) => el.child(div().px(4).py(6).text_size(12).text_color(t.dim)
-          .child("Empty"))));
+          .child(this.taskSearch?.value() ? "None like that" : "Empty"))));
   }
 
   // A column, open or folded, as a place to drop a dragged card.
@@ -865,7 +915,7 @@ export default class Board extends View {
     const small = (id, text, action, tip) => div().id(id).h(24).px(8).flex().flex_none().items_center().rounded(6).border_1().border_color(t.input)
       .text_size(11.5).text_color(t.muted).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
       .when(Boolean(tip), (el) => this.tip(el, id, tip))
-      .on_mouse_down("left", stop).on_click((_e, cx) => { cx.stop_propagation(); if (!this.dialogJustClosed()) { this.tipClicked(id, cx); action(cx); } }).child(text);
+      .on_mouse_down("left", stop).on_click((e, cx) => { cx.stop_propagation(); if (!this.dialogJustClosed()) { this.tipClicked(id, cx); action(cx, Boolean(e?.modifiers?.shift)); } }).child(text);
     if (busy) {
       return div().text_size(11.5).text_color(t.dim).child(busy === "worktree" ? "Making the worktree…" : "Starting…");
     }
@@ -881,8 +931,8 @@ export default class Board extends View {
     const where = task.treeThere ? `in its worktree${task.branch ? ` (${task.branch})` : ""}` : `in ${task.folder || "the workspace root"}`;
     return h_flex().gap(6).items_center().when(!inline, (el) => el.flex_wrap()).when(inline, (el) => el.justify_end())
       .when(ended && !inline, (el) => el.child(div().w_full().text_size(11.5).text_color(t.dim).child("Agent ended")))
-      .child(small(`start-${task.id}`, "Start", (cx) => this.start(task, false, cx), `${ended && inline ? "Its agent ended. " : ""}Run ${task.agent || b.agent} on it ${where}`))
-      .child(small(`wt-${task.id}`, "Worktree", (cx) => this.start(task, true, cx), "Run it on a new branch in its own worktree"))
+      .child(small(`start-${task.id}`, "Start", (cx, shift) => this.start(task, false, cx, null, shift), `${ended && inline ? "Its agent ended. " : ""}Run ${task.agent || b.agent} on it ${where}. Shift-click starts it and stays on the board.`))
+      .child(small(`wt-${task.id}`, !inline && this.colWidth >= WIDE_COLUMN ? "Start in worktree" : "Worktree", (cx, shift) => this.start(task, true, cx, null, shift), "Run it on a new branch in its own worktree"))
       .child(small(`sw-${task.id}`, "Start with…", () => this.openStartWith(task), "Pick the agent, the folder and the first message, then start it"));
   }
 
@@ -893,6 +943,14 @@ export default class Board extends View {
   prChip(task, t, inline) {
     const pr = (shared("workspaces.prs") ?? {})[task.file];
     if (!pr) return null;
+    // Its pr: line couldn't be read yet (gh missing, signed out, no GitHub remote, not a pull
+    // request's link): the icon with "?" and the reason, no click.
+    if (pr.unread) {
+      return h_flex().child(h_flex().id(`pr-${task.id}`).flex_none().h(20).px(6).gap(5).items_center().rounded(5).bg(t.raised)
+        .text_size(11).text_color(t.muted).tooltip(pr.tip || "This pull request couldn't be read")
+        .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).on_click((_e, cx) => cx.stop_propagation())
+        .child(svg("mods/ws-board/pr.svg").size(11).flex_none()).child("?"));
+    }
     const opens = (el) => el.cursor_pointer().tooltip(pr.tip)
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .on_click((_e, cx) => {
@@ -978,6 +1036,7 @@ export default class Board extends View {
   // its kept copy when there is one), one read more than 10 minutes ago is read
   // again, and "Read 3m ago" keeps moving.
   ghBeat(cx) {
+    this.addedAsked(cx);
     if (this.source !== "github") return;
     // The screen stays in the layout once shown: it asks GitHub nothing while it isn't the one shown.
     const scr = this.follow ? shared("workspaces.screen") : null;
@@ -1336,7 +1395,11 @@ export default class Board extends View {
       .when(Boolean(i.url), (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click(() => openLink(i.url)))
       .child(div().w(104).flex_none().truncate().text_size(11.5).text_color(t.dim).tooltip(refOf(i)).child(refOf(i)))
       .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(shut ? t.muted : t.foreground).tooltip(i.title).child(i.title))
-      .when(i.prs.length > 0, (el) => el.child(h_flex().flex_none().gap(3).items_center().text_size(11).text_color(t.dim).tooltip(`Pull request #${i.prs[0]?.number} (${i.prs[0]?.state})`)
+      // The pull request's mark opens the pull request; the rest of the row opens the issue.
+      .when(i.prs.length > 0, (el) => el.child(h_flex().id(`ghpr-${i.item}`).flex_none().gap(3).items_center().text_size(11).text_color(t.dim)
+        .tooltip(`Pull request #${i.prs[0]?.number} (${i.prs[0]?.state})${opensLink(i.prs[0]?.url) ? " · click opens it" : ""}`)
+        .when(opensLink(i.prs[0]?.url), (x) => x.cursor_pointer().hover((s) => s.text_color(t.foreground))
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).on_click((_e, cx) => { cx.stop_propagation(); openLink(i.prs[0].url); }))
         .child(svg("mods/ws-board/pr.svg").size(11)).child(`#${i.prs[0]?.number}`)))
       .child(div().w(52).flex_none().truncate().text_size(11.5).text_color(rankColor).child(i.rank ?? ""))
       .child(div().w(120).flex_none().truncate().text_size(11.5).text_color(t.dim).when(Boolean(whoOf(i, me)), (el) => el.tooltip(whoOf(i, me))).child(whoOf(i, me)))
@@ -1386,7 +1449,10 @@ export default class Board extends View {
         .when(shut, (el) => el.child(div().flex_none().px(5).rounded(4).bg(t.raised).child(i.state)))
         .when(g.order !== "board" && Boolean(i.created), (el) => el.child(div().flex_none().tooltip(`Opened ${String(i.created).slice(0, 10)}`).child(age(i.created, Date.now()))))
         .child(div().flex_1())
-        .when(i.prs.length > 0, (el) => el.child(h_flex().flex_none().gap(3).items_center().tooltip(`Pull request #${i.prs[0].number} (${i.prs[0].state})`)
+        .when(i.prs.length > 0, (el) => el.child(h_flex().id(`ghcpr-${i.item}`).flex_none().gap(3).items_center()
+          .tooltip(`Pull request #${i.prs[0].number} (${i.prs[0].state})${opensLink(i.prs[0].url) ? " · click opens it" : ""}`)
+          .when(opensLink(i.prs[0].url), (x) => x.cursor_pointer().hover((s) => s.text_color(t.foreground))
+            .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).on_click((_e, cx) => { cx.stop_propagation(); openLink(i.prs[0].url); }))
           .child(svg("mods/ws-board/pr.svg").size(11)).child(`#${i.prs[0].number}`))))
       .child(div().text_size(13).text_color(shut ? t.muted : t.foreground).child(i.title))
       .child(h_flex().gap(6).items_center()
@@ -1463,6 +1529,12 @@ export default class Board extends View {
     this.bodyInput.on("change", (_e, cx) => { this.unask(cx); this.disarm(cx); });
     // ⌘/Ctrl+Enter in the notes saves (a plain Enter is a line break there).
     this.bodyInput.on("submit", (e, cx) => { if (!e?.secondary) return; dropEnterBreak(this.bodyInput); this.save(cx); });
+    // The installed agents for the Agent chips: the + menu's last list at once, then asked again.
+    this.tdAgents = shared("new-menu.agents")?.[""] ?? [];
+    cx.spawn(async (cx) => {
+      const known = await knownAgents().catch(() => null);
+      if (known) { this.tdAgents = known; cx.notify(); }
+    });
     this.titleInput.focus();
     cx.timer.after(400, () => this.titleInput.focus());
     this.handle.focus();
@@ -1474,6 +1546,18 @@ export default class Board extends View {
   guardedClose(changed, cx, via) {
     if (this.busy) return; // saving or deleting: it closes by itself when that's done
     if (changed && !this.escAsked) { this.escAsked = via; cx.notify(); return; }
+    closeOverlay(props().overlay);
+  }
+
+  // Go to on the task dialog: shows the card's agent and closes the dialog; with something
+  // typed, the first click asks on the dialog's line (as Esc and × do), the second goes.
+  goTo(task, cx) {
+    if (this.busy) return;
+    if (this.taskChanged() && this.escAsked !== "go") { this.escAsked = "go"; this.goAskedAt = Date.now(); cx.notify(); return; }
+    // The second half of a double-click isn't a yes.
+    const d = Date.now() - (this.goAskedAt ?? 0);
+    if (this.escAsked === "go" && d >= 0 && d < 500) return;
+    run("agent.focus", { terminal: task.terminal });
     closeOverlay(props().overlay);
   }
 
@@ -1544,14 +1628,17 @@ export default class Board extends View {
             catch (e) { if (i >= 2) throw e; }
           }
         } else {
+          let id = null;
           for (let i = 0; ; i++) {
-            const id = await nextId(def.id, b.prefix);
+            id = await nextId(def.id, b.prefix);
             const text = withFields("---\n---\n", {
               id, title, status: this.form.status, folder: this.form.folder, priority: this.form.priority, agent: this.form.agent, created: today(),
             }, body);
             try { await writeTextFile(`${tasksDir(def.id)}/${id}.md`, text, null); break; }
             catch (e) { if (i >= 2) throw e; } // the ID was just taken: the next one
           }
+          // The board's search mustn't hide the card just added (addedAsked()).
+          setShared("workspaces.board.added", { ws: def.id, id, at: Date.now() });
         }
         setShared("workspaces.board.closed", Date.now());
         closeOverlay(p.overlay);
@@ -1606,7 +1693,7 @@ export default class Board extends View {
       .text_color(kind === "primary" ? t.solid_foreground : kind === "danger" ? t.blocked : t.foreground)
       .text_size(12.5).font_medium().cursor_pointer().when(this.busy, (el) => el.opacity(0.5)).hover((s) => s.opacity(0.88))
       .on_click(action).child(text);
-    const folders = [["", "Workspace root"], ...folderChoices(def).map((f) => [rel(def, f), base(f)])];
+    const folders = folderChips([["", "Workspace root"], ...folderChoices(def).map((f) => [rel(def, f), base(f)])], p.task?.folder ?? "", tilde, (v) => folderPath(def, v));
     const task = p.task;
 
     // Esc, and Cmd/Ctrl+W, reach a dialog as Herdr's actions, never as keys: claim them here.
@@ -1621,6 +1708,24 @@ export default class Board extends View {
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .on_click((_e, cx) => { if (!this.busy && Date.now() - this.confirmAt >= 500) action(cx); });
     const named = task ? `Delete “${task.title}”` : "";
+    // What the card is tied to, under its title: its live agent with Go to, its worktree and
+    // its pull request, drawn as on the card (nothing when it has none of them).
+    const live = task ? agentOf(task, agents(), terminals()) : null;
+    const tree = task?.treeThere ? task.worktree : null;
+    const pull = task ? this.prChip(task, t, true) : null;
+    const ties = live?.live || tree || pull ? h_flex().pt(8).gap(8).flex_wrap().items_center().text_size(11.5)
+      .when(Boolean(live?.live), (el) => el.child(h_flex().gap(6).items_center()
+        .child(div().size(7).flex_none().rounded_full().bg(live.status ? (t[live.status] ?? t.unknown) : t.unknown))
+        .child(div().text_color(t.muted).child(`${live.name} · ${live.status ? STATUS_WORD[live.status] ?? live.status : "running"}`))
+        .child(div().id("task-goto").h(24).px(8).flex().flex_none().items_center().rounded(6).border_1().border_color(t.input)
+          .text_color(t.foreground).cursor_pointer().hover((s) => s.bg(t.hover))
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+          .on_click((_e, cx) => { this.disarm(cx); this.goTo(task, cx); }).child("Go to"))))
+      .when(Boolean(tree), (el) => el.child(h_flex().id("task-tree").flex_none().h(20).px(6).gap(5).items_center().rounded(5).bg(t.raised).text_color(t.muted)
+        .tooltip(`${tilde(expand(tree))}${task.branch ? `, on ${task.branch}` : ""}`)
+        .child(svg("mods/workspace-chrome/git-branch.svg").size(11).flex_none())
+        .child(String(tilde(expand(tree))).replace(/^~\/\.herdr\/worktrees\//, ""))))
+      .when(Boolean(pull), (el) => el.child(pull)) : null;
     const question = () => [
       pair("task-delete-cancel", (cx) => { this.confirming = false; cx.notify(); },
         h_flex().flex_none().px(14).border_color(t.input).bg(t.raised).text_color(t.foreground).child("Cancel")),
@@ -1644,17 +1749,18 @@ export default class Board extends View {
       .child(h_flex().items_center()
         .child(div().flex_1().text_size(15).font_semibold().text_color(t.foreground).child(task ? `${task.id}` : `New task in ${def.name}`))
         .child(this.closeX(t, "task-close", (cx) => { this.disarm(cx); this.guardedClose(this.taskChanged(), cx, "x"); })))
+      .when(Boolean(ties), (el) => el.child(ties))
       .child(section("Title"))
       .child(Input.new(this.titleInput).h(36).px(10).rounded(9).border_1().border_color(t.input).bg(t.background).text_size(13).text_color(t.foreground))
       .child(section("Status"))
       .child(h_flex().gap(6).flex_wrap().children(b.columns.map((c) => chip(`st-${c}`, label(c), this.form.status === c, () => { this.form.status = c; }))))
       .child(section("Folder: where Start runs the agent"))
-      .child(h_flex().gap(6).flex_wrap().children(folders.map(([value, name]) => chip(`fd-${value || "root"}`, name, this.form.folder === value, () => { this.form.folder = value; }))))
+      .child(h_flex().gap(6).flex_wrap().children(folders.map(([value, name]) => chip(`fd-${value || "root"}`, name, this.form.folder === value || folderPath(def, this.form.folder) === folderPath(def, value), () => { this.form.folder = value; }))))
       .child(section("Priority"))
       .child(h_flex().gap(6).children([["", "None"], ["low", "Low"], ["medium", "Medium"], ["high", "High"]]
         .map(([value, name]) => chip(`pr-${value || "none"}`, name, this.form.priority === value, () => { this.form.priority = value; }))))
       .child(section(`Agent: who Start runs (default: ${b.agent})`))
-      .child(h_flex().gap(6).flex_wrap().children([["", "Default"], ...presetsFor(def.id).map((x) => [x.name, x.name])]
+      .child(h_flex().gap(6).flex_wrap().children(agentChips(presetsFor(def.id), this.tdAgents ?? [], p.task?.agent ?? "")
         .map(([value, name]) => chip(`ag-${value || "default"}`, name, this.form.agent === value, () => { this.form.agent = value; }))))
       .child(section("Notes"))
       .child(div().flex_1().min_h(0).child(Textarea.new(this.bodyInput).size_full().p(8).rounded(9).border_1().border_color(t.input).bg(t.background).text_size(12.5).text_color(t.foreground)))
@@ -1775,9 +1881,14 @@ export default class Board extends View {
       .when(!choices.length, (el) => el.child(div().text_size(12).text_color(t.dim).child("Checking installed agents…")))
       .child(section("Folder"))
       .child(h_flex().gap(6).flex_wrap()
-        .children(places.map((f, i) => chip(`sw-dir-${i}`, [placeName(f)], this.swFolder === f, () => { this.swFolder = f; }, f === tree && task.branch ? `${tilde(f)}, on ${task.branch}` : tilde(f))))
-        .child(chip("sw-tree", [svg("mods/workspace-chrome/git-branch.svg").size(12).flex_none(), "In a new worktree"], this.swTree, () => { this.swTree = !this.swTree; },
-          "On a new branch in its own worktree of that folder's repo, as the card's Worktree does")))
+        .children(places.map((f, i) => chip(`sw-dir-${i}`, [placeName(f)], this.swFolder === f, () => { this.swFolder = f; }, f === tree && task.branch ? `${tilde(f)}, on ${task.branch}` : tilde(f)))))
+      // Not a fifth place: an on/off for whichever folder is picked, so a tick box of its own (as Worktrees draws one).
+      .child(h_flex().id("sw-tree").pt(10).gap(8).items_center().cursor_pointer().text_size(12.5).text_color(t.foreground)
+        .on_click((_e, cx) => { this.swTree = !this.swTree; cx.notify(); })
+        .child(h_flex().size(15).flex_none().rounded(4).border_1().items_center().justify_center()
+          .border_color(this.swTree ? t.accent : t.input).when(this.swTree, (el) => el.bg(t.accent).text_color(t.accent_foreground)
+            .child(svg("mods/workspace-chrome/check.svg").size(11))))
+        .child("In a new worktree of that folder's repo"))
       .child(section(pick?.kind === "preset" ? "First message: after the preset's instructions" : "First message"))
       .child(div().flex_1().min_h(80).child(Textarea.new(this.swText).size_full().p(10).rounded(8).border_1().border_color(t.accent)
         .bg(t.background).text_size(12.5).text_color(t.foreground)))

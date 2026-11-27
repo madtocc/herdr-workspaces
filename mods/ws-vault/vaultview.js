@@ -360,6 +360,49 @@ export function expiresSub(form, e, now) {
   return `Auto-expires ${when(e.expiresAt)} (${span(e.expiresAt - now)} left)`;
 }
 
+// Discard asks in place (as Files' and Automations' Discard): the first press asks ("Discard
+// changes?"), a press within 500 ms of it doesn't count (a double-click only asks; a clock set back
+// can't freeze it), a later one discards. askedAt: when it asked, or null.
+export function discardStep(askedAt, now = Date.now()) {
+  if (typeof askedAt !== "number") return "ask";
+  const d = now - askedAt;
+  return d >= 0 && d < 500 ? "wait" : "discard";
+}
+
+// Enter in a box saves (or, in the search box, opens the first match), except while a question is
+// up: Discard's or Delete's. Enter then only takes the question back (the key handler does), never
+// answers it. The key handler may run before the box's submit, so a question taken back by a key
+// in the last 300 ms counts as up too. tookBackAt: when a key last took one back, or null.
+export function enterQuiet({ discardAsked = null, confirming = false, busy = null, tookBackAt = null } = {}, now = Date.now()) {
+  if (discardAsked !== null || (confirming && !busy)) return true;
+  if (typeof tookBackAt !== "number") return false;
+  const d = now - tookBackAt;
+  return d >= 0 && d < 300;
+}
+
+// An expired secret's Extend: its own length again (inferTtl), else the default expiry from
+// Settings > Secrets; never "never" (that isn't extending), then 24h.
+export function extendTtl(e, defaultTtl = "24h") {
+  const own = inferTtl(e);
+  if (own && own !== "never") return own;
+  return TTL_CHOICES.includes(defaultTtl) && defaultTtl !== "never" ? defaultTtl : "24h";
+}
+
+// Why Extend can't save a Protected secret now (blocked()'s answer), for the footer.
+export function extendBlockWords(block, status = null) {
+  if (!block) return "";
+  if (block.kind === "not-mac") return "Not extended: Protected secrets need macOS.";
+  if (block.kind === "checking") return "Not extended yet: still checking the Protected broker. Try again in a moment.";
+  const w = blockWords(block, { isNew: false, status });
+  return `Not extended: ${w.title}. ${w.words}`;
+}
+
+// The automations a Protected secret was allowed for in the macOS dialog, by <workspace>/<name>
+// ("acme/nightly-sync, acme/deploy-check"), or "" (the broker keeps them as grants; Secrets
+// reads them from the mirror it syncs when it opens).
+export const allowedAutomations = (e) => [...new Set((Array.isArray(e?.grants) ? e.grants : [])
+  .filter((g) => g && g.kind === "automation" && g.id).map((g) => String(g.id)))].join(", ");
+
 // The expiry chip shown as chosen: the one picked, else the one the secret was given; none for an
 // expired one (picking a chip is what renews it).
 export const ttlShown = (form, e, now = Date.now()) => form.ttlPick || (e && !isExpired(e, now) ? inferTtl(e) : null);

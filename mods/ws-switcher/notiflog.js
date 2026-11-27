@@ -21,7 +21,7 @@ import { home, readTextFile, writeTextFile, shared, setShared, agents, terminals
 import {
   NOTIF_FILE, ACT_KEY, PUSH_KEY, STORE_KEY, BADGE_KEY, emptyStore, parseStore, pruneStore, mergeStore, markRead, markAllRead,
   dismissItem, clearRead, appendEvent, forgetEpisodes, classifyToast, buildItems, badgeOf, hasMultiWs, panelHeight, drainQueue,
-  newUsage, usageEvent, appendUsage,
+  newUsage, usageEvent, appendUsage, markRestored, RESTORES_KEY,
 } from "./notif.js";
 import { parseUsage, usageNote } from "./vaultfacts.js";
 
@@ -112,7 +112,7 @@ export class NotifLog {
       agents: agents(), terminals: terminals(), spaces: spaces(),
       defs: shared("workspaces.defs") ?? [], assigned: shared("workspaces.assigned") ?? {},
       runs: shared("workspaces.automation.runs") ?? [], automations: shared("workspaces.automations") ?? {},
-      prs: shared("workspaces.prs") ?? null, store: { ...this.store, live: this.live },
+      prs: shared("workspaces.prs") ?? null, store: { ...this.store, live: this.live }, restores: shared(RESTORES_KEY) ?? null,
       features: shared("workspaces.settings")?.features ?? {}, now,
     });
   }
@@ -152,6 +152,9 @@ export class NotifLog {
       terminals: terminals(), runs: shared("workspaces.automation.runs") ?? [], prs: shared("workspaces.prs") ?? null, spaces: spaces(),
     });
     if (fresh !== this.store) { this.store = fresh; this.save(); }
+    // An undo ws-agents says is done: marked in the log, so its row still says "Put back" after a restart.
+    const restored = markRestored(this.store, shared(RESTORES_KEY) ?? null, now);
+    if (restored !== this.store) { this.store = restored; this.save(); }
     let items = off ? [] : this.items(now);
     const live = {};
     for (const it of items) live[it.id] = this.live[it.id] ?? now;

@@ -212,3 +212,14 @@ export function agyOwns(psLine, notedAt, id) {
   const args = ` ${m[2].trim()} `;
   return args.includes(` --conversation ${id} `) || args.includes(` --conversation=${id} `);
 }
+
+// The Wipe dialog's facts line for Claude and Pi, from what was read for the agent:
+// "Opus 4.5, high effort · Context: 92k of 200k tokens"; "" when nothing was read.
+export function wipeLine(s) {
+  if (!s) return "";
+  const parts = [];
+  const model = s.name ?? s.model;
+  if (model) parts.push(`${model}${s.effort ? `, ${s.effort} ${s.app === "pi" ? "thinking" : "effort"}` : ""}`);
+  if (s.used != null) parts.push(`Context: ${tokens(s.used)}${s.size ? ` of ${tokens(s.size)} tokens` : " tokens"}`);
+  return parts.join(" · ");
+}
