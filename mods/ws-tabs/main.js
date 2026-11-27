@@ -17,7 +17,11 @@
 // - commands for keys (keys.json), handled by any copy of this bar that's shown:
 //   "ws-tabs.view/<view>" shows it full size, and goes back to the terminals when it's the one shown;
 //   "ws-tabs.beside/<view>" opens it beside (views.js: viewCommand, besideCommand); "ws-tabs.views"
-//   opens the Views menu, and closes it when it's open;
+//   opens the Views menu, and closes it when it's open; "ws-tabs.switcher" opens the switcher's menu,
+//   "ws-tabs.scratch-new" the New scratch space dialog, "ws-tabs.settings/<section>" our Settings on that
+//   section (these and the views are the command palette's entries, mod.json). A view whose add-on is
+//   off, or anything the switcher does while it isn't running (shared "workspaces.switcher.alive" older
+//   than 15 s: a sidebar hidden since Herdr started), answers with a toast instead (views.js askBlocker);
 // - Notifications: a bell at the bar's right end, right of Views (before the window's own buttons where
 //   Herdr draws them), opens ws-notifications' list as a popup under it. It shows the switcher's count
 //   (shared "workspaces.notifications.badge": red while anything needs you, blue for unread updates,
@@ -31,13 +35,24 @@
 //   couple of seconds (the bar's main copy): the terminals' block (`main`) shown, an older workspaces
 //   layout's `panel` and `panel-back` hidden, shared "workspaces.panel" and "workspaces.beside" and the
 //   panel's per-space memory dropped.
+// - brought over from Herdr 0.1.18's `tabs`: one tab per wheel notch or swipe (`wheel()`), a tab
+//   Herdr named follows its agent's live title, else is its program's name (`cleanTitle()`,
+//   `tabLabel()`: Herdr's `clean()` and `label()`), and the shown tab is scrolled into view (its index
+//   counts the pills and the divider before the tabs; not while a view is shown full size);
+// - a tab's cut name has a tooltip with the whole name;
+// - the Views menu and a pill's menu mark themselves open and closed (shared "workspaces.tabs.menu"), as
+//   the bell's list and the + menu do: a click on Views, +, or the bell while its own menu is open closes
+//   it (and the click that just closed it doesn't open it again), and the button's tooltip isn't drawn
+//   over its own open menu;
+// - the New scratch space dialog it opens (the + in an empty Scratch, "ws-tabs.scratch-new") is modal
+//   (`modal: true`): a click beside it doesn't close it.
 // With an older layout (its own bar over the screens, props.screens, and the Back row, props.back),
 // that copy draws the same bar over a screen, and the Back row nothing.
 
 import { View, div, svg, image } from "gpui-kit";
-import { h_flex, v_flex } from "gpui-base";
-import { spaces, panes, run, openOverlay, closeOverlay, theme, window, shared, setShared, props, layout, settings, keys, checking, nextCommand } from "herdr";
-import { VIEWS, ALL, isView, viewCommand, parseCommand, pushAsk, backName, canBeside, keyLabel, menu, menuRows, menuHeight, moveSel, pillKeys, pillTip, buttonWidth, bellWidth, tight, narrowWindow } from "./views.js";
+import { h_flex, v_flex, ScrollHandle } from "gpui-base";
+import { spaces, panes, run, openOverlay, closeOverlay, theme, window, shared, setShared, props, layout, settings, keys, checking, nextCommand, notify } from "herdr";
+import { askBlocker, VIEWS, ALL, isView, viewCommand, parseCommand, pushAsk, backName, canBeside, keyLabel, menu, menuRows, menuHeight, moveSel, pillKeys, pillTip, buttonWidth, bellWidth, tight, narrowWindow } from "./views.js";
 
 // Whether an add-on is on in Settings > Features (nothing known yet counts as on).
 const featureOn = (key) => shared("workspaces.settings")?.features?.[key] !== false;
@@ -49,6 +64,35 @@ const BELL_OPEN = "workspaces.notifications.open";
 // When a Views menu last closed on "ws-tabs.views" (module code is shared by this mod's copies), so the
 // command toggles the menu instead of stacking a second one.
 let menuClosedAt = 0;
+// This mod's popups (the Views menu, a pill's menu): { overlay, which: "views" | "pill:<view>", at }
+// while one is open, { overlay: null, which, closedAt } once it closed. The + menu's is ws-new-menu's.
+const TABS_MENU = "workspaces.tabs.menu";
+const NEW_MENU = "workspaces.newmenu.open";
+// A button's menu: open (and not left from before a restart) it closes and says so; closed a moment
+// ago by this same click (a press outside a popup closes it first) it stays closed. True: don't open it.
+function toggledShut(key, o, since) {
+  if (o?.overlay && (o.at ?? 0) >= since) { closeOverlay(o.overlay); setShared(key, { ...o, overlay: null, closedAt: Date.now() }); return true; }
+  return Date.now() - (o?.closedAt ?? 0) < 300;
+}
+
+// Herdr 0.1.18's `clean()`: drops a status glyph, keeps a leading bracket or quote.
+const cleanTitle = (s) => (s ?? "").replace(/^[^\p{L}\p{N}\p{Ps}\p{Pi}]+/u, "").replace(/^\[ [!.] \] /, "").trim();
+
+// Herdr 0.1.18's `label()`: a tab Herdr named (unnamed, or after its program) follows its agent's
+// live title, as the agents list does; a name the person gave stays.
+function tabLabel(tab, lead) {
+  const prog = lead?.program?.name;
+  const base = tab.named ? tab.name : prog ?? "Terminal";
+  if (!lead?.program?.agent) return base;
+  const live = cleanTitle(lead.title);
+  // cleanTitle() would strip a path's leading ~ or /: test the title with only its status glyph gone.
+  const path = /^[~/]|^[A-Za-z]:\\/.test((lead.title ?? "").replace(/^[^\p{L}\p{N}~/]+/u, ""));
+  const telling = live && live !== lead.terminal && live !== prog && !path && !live.includes("@") && live.toLowerCase() !== lead.program.key;
+  return (tab.name === prog || !tab.named) && telling ? live : base;
+}
+
+// The pane a tab's name and icon come from: its agent's, else its first.
+const leadOf = (c) => panes().find(p => p.tab === c.id && p.program?.agent) ?? panes().find(p => p.tab === c.id);
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -93,13 +137,30 @@ function unpin(key, ws, space) {
   if (isShown(shared("workspaces.screen"), key, ws, space)) setShared("workspaces.screen", null);
 }
 
+// A toast saying why something asked can't be done (views.js askBlocker), once a second at most: every
+// shown copy of the bar gets a key's command.
+const toldAt = {};
+const tell = (b) => {
+  if (!b || Date.now() - (toldAt[b.title] ?? 0) < 1000) return;
+  toldAt[b.title] = Date.now();
+  notify({ title: b.title, body: b.body, level: "info", ...(b.action ? { action: b.action } : {}) });
+};
+// A command this bar does itself (the palette's Switch workspace…, New scratch space…, a Settings
+// section): done once, though every shown copy of the bar gets it.
+const doneAt = {};
+const once = (text) => { if (Date.now() - (doneAt[text] ?? 0) < 300) return false; doneAt[text] = Date.now(); return true; };
+const ALIVE = "workspaces.switcher.alive";
+
 // An ask for the switcher's sidebar copy, which opens views (a popup's tasks end when it closes).
 // beside: as a pane; toggle: full size, or back to the terminals when it's the one shown; move:
-// beside, and its pill closes.
+// beside, and its pill closes. One whose add-on is off, or that the switcher isn't running to do,
+// says so in a toast instead of waiting unseen.
 // Asks go on a short list (views.js pushAsk), so two close together are both done.
 let asked = 0;
 const ask = (key, { beside = false, toggle = false, move = false } = {}) => {
   const now = Date.now();
+  const blocked = askBlocker(key, { on: featureOn, alive: shared(ALIVE), now });
+  if (blocked) { tell(blocked); return; }
   setShared("workspaces.view", pushAsk(shared("workspaces.view"), { key, beside, toggle, move }, now, `${now}-${++asked}-${Math.random().toString(36).slice(2, 7)}`));
 };
 
@@ -125,6 +186,7 @@ export default class Tabs extends View {
     // The Views menu and a pill's right-click menu (popups) take the keyboard: arrows, Enter, Esc.
     if (p.viewsMenu || p.pillMenu) {
       this.handle = cx.focus_handle(); this.handle.focus(); this.sel = null;
+      if (!checking()) setShared(TABS_MENU, { overlay: p.overlay ?? null, which: p.viewsMenu ? "views" : `pill:${p.pillMenu.key}`, at: Date.now() });
       // "ws-tabs.views" again while the Views menu is open (a key): it closes, and says so, so the bar
       // (which gets the command too) doesn't open another.
       if (p.viewsMenu && !checking()) cx.spawn(async () => {
@@ -134,6 +196,8 @@ export default class Tabs extends View {
     }
     if (p.back) return; // an older layout's Back row: hidden, nothing to do
     this.pressed = null;
+    this.scroll = ScrollHandle.new();
+    this.swipe = { acc: 0, steps: 0, at: 0, last: 0 };
     // An "open" mark older than this copy is from before a crash or a restart: no list is open.
     this.startedAt = Date.now();
     if (checking()) return;
@@ -154,8 +218,31 @@ export default class Tabs extends View {
           });
           continue;
         }
+        // The palette's (or a key's) Switch workspace… and New scratch space…: the switcher's menu and
+        // dialog, opened from here; with the switcher not running, a toast says to show the sidebar.
+        if (text === "switcher" || text === "scratch-new") {
+          if (!once(text)) continue;
+          const blocked = askBlocker(text, { alive: shared(ALIVE), now: Date.now() });
+          if (blocked) tell(blocked);
+          else if (text === "switcher") this.openSwitcher();
+          else openOverlay({ mod: "ws-switcher", kind: "dialog", modal: true, width: 460, height: 260,
+            props: { dialog: "new-space", id: (shared("workspaces.defs") ?? []).find((d) => d.scratch && !d.error)?.id ?? null, scratch: true } });
+          continue;
+        }
+        // A Settings section ("settings/features"): our Settings window on it, the way the + menu's
+        // Choose agents… opens it, so it works with the sidebar hidden too. mod.open toggles: when the
+        // window was open it closed it, and the section is still waiting, so it's opened again.
+        if (/^settings\/[a-z-]+$/.test(text)) {
+          if (!once(text)) continue;
+          const at = Date.now();
+          setShared("workspaces.settings.section", { id: text.slice("settings/".length), at });
+          run("mod.open", { name: "ws-settings" });
+          cx.timer.after(400, () => { if (shared("workspaces.settings.section")?.at === at) run("mod.open", { name: "ws-settings" }); });
+          continue;
+        }
         // The bell's list: closed when it's open, else opened (the same way as the Views menu, so a
-        // key pressed twice quickly cancels out).
+        // key pressed twice quickly cancels out). Off in Settings > Features: a toast says so.
+        if (text === "notifications" && !featureOn("notifications")) { tell(askBlocker("notifications", { on: featureOn, needsSwitcher: false })); continue; }
         if (text === "notifications") {
           if (this.bellPending) { this.bellPending = null; continue; }
           const at = Date.now(), mine = { at };
@@ -179,6 +266,34 @@ export default class Tabs extends View {
     localStorage.removeItem("panelHeld");
     this.undoPanel();
     cx.timer.every(2000, () => this.undoPanel());
+  }
+
+  async close() {
+    const p = props() ?? {};
+    if (!p.viewsMenu && !p.pillMenu) return;
+    const o = shared(TABS_MENU);
+    if (!o || o.overlay === (p.overlay ?? null)) setShared(TABS_MENU, { ...(o ?? {}), overlay: null, closedAt: Date.now() });
+  }
+
+  // Herdr 0.1.18's wheel(): one tab per wheel notch. A touchpad or smooth-scrolling mouse sends many
+  // small events per gesture: a short swipe or one smoothed notch (about 25 px) switches one tab, a
+  // longer swipe keeps going a tab per 60 px, at most one every 100 ms so each shows.
+  wheel(e) {
+    if (e.delta_lines) {
+      if (e.delta_lines.y) run(e.delta_lines.y > 0 ? "tab.prev" : "tab.next");
+      return;
+    }
+    const s = this.swipe, now = Date.now();
+    // Phases often arrive only as moves (a macOS touchpad included): a pause or a turn starts a new gesture.
+    if (e.touch_phase === "started" || now - s.at > 250 || e.delta.y * s.acc < 0) Object.assign(s, { acc: 0, steps: 0 });
+    s.at = now;
+    s.acc += e.delta.y;
+    const need = s.steps ? 60 : 20;
+    if (Math.abs(s.acc) < need || now - s.last < 100) return;
+    s.acc -= Math.sign(s.acc) * need;
+    s.steps++;
+    s.last = now;
+    run(e.delta.y > 0 ? "tab.prev" : "tab.next");
   }
 
   undoPanel() {
@@ -211,6 +326,16 @@ export default class Tabs extends View {
     const m = menu({ ws: def ? { id: def.id, name: def.name, scratch: Boolean(def.scratch) } : null, space, covered,
       on: (k) => featureOn(k) && (Boolean(find(root, `screen-${k}`)) || VIEWS[k].space), panels: shared("workspace.panels") });
     openOverlay({ mod: "ws-tabs", kind: "popup", width: MENU_WIDTH, height: menuHeight(m), at, props: { viewsMenu: true } });
+  }
+
+  // The switcher's menu (a ws-switcher popup), where a click on the switcher opens it: under its block,
+  // the sidebar's `workspace-switcher` below `brand`. A popup's `at` is in the window's points; the
+  // layout's px are those over the zoom.
+  openSwitcher() {
+    const root = layout(), zoom = settings().zoom || 1, sidebar = find(root, "sidebar");
+    const top = (find(root, "brand")?.size?.px ?? 46) + (find(root, "workspace-switcher")?.size?.px ?? 44);
+    const rail = sidebar && !sidebar.hidden && (sidebar.size?.px ?? Infinity) < 160;
+    openOverlay({ mod: "ws-switcher", kind: "popup", width: 288, height: 600, at: { x: (rail ? 4 : 8) * zoom, y: (top - 4) * zoom }, props: { popup: true } });
   }
 
   // The bell's list, under the bell, its right edge on the bell's (as the Views menu); as tall as what
@@ -283,8 +408,8 @@ export default class Tabs extends View {
       .child(svg("mods/ws-tabs/beside.svg").size(12).flex_none()).child(div().min_w(0).truncate().child(m.hint)));
     if (!items.length) items.push(div().px(9).py(8).text_size(12).text_color(t.dim).child("No views: they're off in Settings > Features."));
     return v_flex().id("views-menu").track_focus(this.handle).size_full().min_h(0).p(6).bg(t.popover).text_size(12.8)
+      // Herdr's Esc comes as overlay.close, never as a key here, and closes the menu.
       .on_key_down((e, cx) => {
-        if (e.key === "escape") { cx.stop_propagation(); closeOverlay(props().overlay); return; }
         if (e.key === "down" || e.key === "up") { this.sel = moveSel(rows, this.sel, e.key === "down" ? 1 : -1); cx.stop_propagation(); cx.notify(); return; }
         if (e.key === "enter") { cx.stop_propagation(); go(this.sel ?? null, Boolean(e.modifiers?.alt)); }
       })
@@ -303,8 +428,8 @@ export default class Tabs extends View {
     const go = (it) => { closeOverlay(props().overlay); it?.go(); };
     const sel = items.find((it) => it.id === this.sel) ?? null;
     return v_flex().id("pill-menu").track_focus(this.handle).w_full().min_h(0).p(5).bg(t.popover).text_size(12.8)
+      // Herdr's Esc comes as overlay.close, never as a key here, and closes the menu.
       .on_key_down((e, cx) => {
-        if (e.key === "escape") { cx.stop_propagation(); closeOverlay(props().overlay); return; }
         if (e.key === "down" || e.key === "up") {
           const at = items.indexOf(sel), n = items.length;
           this.sel = items[at < 0 ? (e.key === "down" ? 0 : n - 1) : (at + (e.key === "down" ? 1 : -1) + n) % n].id;
@@ -344,11 +469,24 @@ export default class Tabs extends View {
     const tabName = backName(tab, panes());
     const button = (id, label, action) => div().id(id).size(26).flex_none().flex().items_center().justify_center().rounded(6).text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
       .on_mouse_down("left", stop).on_click(action).child(label);
+    // The shown tab's place in the strip (the pills and the divider come first): scrolled into view
+    // when it changes, when it or a tab before it changes width, and when the bar is resized. Not
+    // while a view is shown full size (no tab is shown then).
+    const activeTab = shown.findIndex(c => c.active);
+    const revealAt = over || activeTab < 0 ? -1 : pinned.length + (pinned.length > 0 && shown.length > 0 ? 1 : 0) + activeTab;
+    if (revealAt !== this.revealAt || shown[activeTab]?.id !== this.revealId) {
+      this.revealAt = revealAt; this.revealId = shown[activeTab]?.id;
+      if (revealAt >= 0) this.scroll.scroll_to_item(revealAt);
+    }
+    const reveal = (_size, cx) => { if (this.revealAt >= 0) { this.scroll.scroll_to_item(this.revealAt); cx.notify(); } };
     const item = (c, i) => {
-      const program = panes().find(p => p.tab === c.id && p.program?.agent)?.program ?? panes().find(p => p.tab === c.id)?.program;
-      const name = /^tb\d+$/.test(c.name) ? program?.name ?? "Terminal" : c.name;
+      const lead = leadOf(c);
+      const program = lead?.program;
+      const name = tabLabel(c, lead);
       const on = c.active && !over;
       return h_flex().id(`tab-${c.id}`).h(29).px(10).gap(7).rounded(7).items_center().flex_none().text_size(12.8)
+        // A rename or status dot on this or an earlier tab can push the shown one out.
+        .when(revealAt >= 0 && i <= activeTab, el => el.on_size_change(reveal))
         .border(1).border_color(on ? t.border : t.chrome).bg(on ? t.raised : t.chrome).text_color(on ? t.foreground : t.muted)
         .hover(s => s.bg(t.hover))
         .on_mouse_down("left", (e, cx) => { cx.stop_propagation(); this.pressed = i; if (e.click_count === 2) run("tab.rename", { id: c.id }); })
@@ -359,7 +497,7 @@ export default class Tabs extends View {
         })
         .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "menu", kind: "popup", width: 200, props: { tab: "tab", target: { id: c.id, space: space.id } } }); })
         .when(Boolean(program?.icon), el => el.child(program.tint ? svg(program.icon).size(14).text_color(t.muted) : image(program.icon).size(14)))
-        .child(div().max_w(170).truncate().child(name))
+        .child(div().id(`tab-name-${c.id}`).max_w(170).truncate().tooltip(name).child(name))
         // Zoomed: a chip that says so, and unzooms (pane.zoom on the zoomed pane unzooms it).
         .when(Boolean(c.zoomed), el => el.child(h_flex().id(`unzoom-${c.id}`).h(20).px(7).gap(4).flex_none().items_center().rounded(10)
           .bg(t.selected).text_color(t.foreground).text_size(11.5).hover(s => s.bg(t.hover))
@@ -385,6 +523,9 @@ export default class Tabs extends View {
     const badge = bell ? shared(BADGE) ?? null : null;
     const count = badge?.count > 0 ? (badge.count > 99 ? "99+" : String(badge.count)) : "";
     const bellOpen = Boolean(shared(BELL_OPEN)?.overlay) && (shared(BELL_OPEN)?.at ?? 0) >= (this.startedAt ?? 0);
+    // One of this mod's menus open now (the tooltip of the button that opened it isn't drawn over it).
+    const tabsMenu = shared(TABS_MENU);
+    const menuUp = (which) => Boolean(tabsMenu?.overlay) && tabsMenu.which === which && (tabsMenu.at ?? 0) >= (this.startedAt ?? 0);
     // The buttons at the right end, then whether the pills not shown go icon-only.
     const right = 8 + (beside ? 3 + buttonWidth(`Beside ${tabName}`, !narrow) : 0) + buttonWidth("Views", !narrow) + (bell ? 3 + bellWidth(count) : 0) + (w?.buttons ? 3 * 29 : 0);
     const lightsPadding = w?.platform === "macos" && w.titlebar === "none" && !w.fullscreen && root?.traffic_lights
@@ -392,7 +533,7 @@ export default class Tabs extends View {
       : 10;
     const small = tight(
       pinned.map((k) => ({ name: VIEWS[k].name, shown: k === shownKey })),
-      shown.map((c) => ({ name: /^tb\d+$/.test(c.name) ? "Terminal" : c.name, shown: c.active && !over, mark: Boolean(c.status && c.status !== "idle") })),
+      shown.map((c) => ({ name: tabLabel(c, leadOf(c)), shown: c.active && !over, mark: Boolean(c.status && c.status !== "idle") })),
       barWidth - lightsPadding - 10 - right);
     const pin = (key) => {
       const v = VIEWS[key], on = key === shownKey, iconOnly = small && !on;
@@ -400,7 +541,7 @@ export default class Tabs extends View {
       return h_flex().id(`screen-${key}`).h(29).px(10).gap(7).rounded(7).items_center().flex_none().text_size(12.8)
         .border(1).border_color(on ? t.border : t.chrome).bg(on ? t.raised : t.chrome).text_color(on ? t.foreground : t.muted)
         .hover(el => el.bg(t.hover))
-        .tooltip(pillTip(key, owner))
+        .when(!menuUp(`pill:${key}`), el => el.tooltip(pillTip(key, owner)))
         .on_mouse_down("left", stop)
         .on_click(() => { if (!on) setShared("workspaces.screen", { ws, ...(v.space ? { space: space?.id } : {}), screen: key, at: Date.now() }); })
         .on_mouse_down("right", (_e, cx) => {
@@ -417,17 +558,18 @@ export default class Tabs extends View {
     // + : a new tab (the + menu); while the workspace has no space, a new space in it.
     const plus = covered
       ? () => {
-        if (def?.scratch) openOverlay({ mod: "ws-switcher", kind: "dialog", width: 460, height: 234, props: { dialog: "new-space", id: def.id, scratch: true } });
+        if (def?.scratch) openOverlay({ mod: "ws-switcher", kind: "dialog", modal: true, width: 460, height: 260, props: { dialog: "new-space", id: def.id, scratch: true } });
         else run("space.new", def?.root ? { folder: def.root } : {});
       }
-      : () => openOverlay({ mod: "ws-new-menu", kind: "popup", width: 250, height: 0.85 });
+      : () => { if (!toggledShut(NEW_MENU, shared(NEW_MENU), this.startedAt ?? 0)) openOverlay({ mod: "ws-new-menu", kind: "popup", width: 250, height: 0.85 }); };
     return h_flex().id("tab-bar").on_size_change((size, cx) => { if (size.width !== this.width) { this.width = size.width; cx.notify(); } })
       .size_full().min_w(0).px(10).pl(lightsPadding).gap(3).items_center().bg(t.chrome).border_b(1).border_color(t.border)
       .on_mouse_up("left", () => { this.pressed = null; })
-      .on_scroll_wheel(e => { if (!covered && Math.abs(e.delta.y) >= 1) run(e.delta.y > 0 ? "tab.prev" : "tab.next"); })
+      .on_scroll_wheel(e => { if (!covered) this.wheel(e); })
       // The pills and tabs scroll when they don't fit; +, Beside and Views stay at the end (+ where
       // Herdr's own bar has it, so it's never scrolled away).
-      .child(h_flex().id("tab-scroll").flex_1().min_w(0).h_full().items_center().gap(3).overflow_x_scrollbar()
+      .child(h_flex().id("tab-scroll").flex_1().min_w(0).h_full().items_center().gap(3).overflow_x_scrollbar().track_scroll(this.scroll)
+        .on_size_change(reveal)
         .children(pinned.map(pin))
         .when(pinned.length > 0 && shown.length > 0, el => el.child(div().w(1).h(16).mx(4).flex_none().bg(t.border)))
         .children(shown.map(item)))
@@ -441,15 +583,15 @@ export default class Tabs extends View {
         .when(!narrow, el => el.child(div().max_w(180).truncate().child(`Beside ${tabName}`)))))
       .child(h_flex().id("views").h(28).px(10).gap(6).flex_none().items_center().rounded(7).text_size(12)
         .border(1).border_color(t.border).bg(t.raised).text_color(t.foreground).hover(s => s.bg(t.hover))
-        .when(narrow, el => el.tooltip("Views"))
+        .when(narrow && !menuUp("views"), el => el.tooltip("Views"))
         .on_mouse_down("left", (e, cx) => { cx.stop_propagation(); this.viewsBounds = e.bounds ?? null; })
-        .on_click(() => this.openMenu())
+        .on_click(() => { const o = shared(TABS_MENU); if (!toggledShut(TABS_MENU, o?.which === "views" ? o : null, this.startedAt ?? 0)) this.openMenu(); })
         .child(svg("mods/ws-tabs/views.svg").size(14).flex_none())
         .when(!narrow, el => el.child("Views")))
       .when(bell, el => el.child(h_flex().id("notifications").h(28).min_w(28).px(count ? 7 : 0).gap(5).flex_none().items_center().justify_center().rounded(7)
         .border(1).border_color(bellOpen ? t.border : t.chrome).bg(bellOpen ? t.raised : t.chrome)
         .text_color(count || bellOpen ? t.foreground : t.muted).hover(s => s.bg(t.hover).text_color(t.foreground))
-        .tooltip(!count ? "Notifications" : `Notifications: ${[badge.needs && `${badge.needs} need${badge.needs === 1 ? "s" : ""} you`, badge.unread && `${badge.unread} unread`].filter(Boolean).join(", ")}`)
+        .when(!bellOpen, el => el.tooltip(!count ? "Notifications" : `Notifications: ${[badge.needs && `${badge.needs} need${badge.needs === 1 ? "s" : ""} you`, badge.unread && `${badge.unread} unread`].filter(Boolean).join(", ")}`))
         .on_mouse_down("left", (e, cx) => { cx.stop_propagation(); this.bellBounds = e.bounds ?? null; })
         .on_click(() => this.openBell())
         .child(svg("mods/ws-notifications/bell.svg").size(14).flex_none())

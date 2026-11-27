@@ -25,7 +25,7 @@
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
-import { theme, shared, props, home, watchFolder, readTextFile, writeTextFile, notify, checking, window } from "herdr";
+import { theme, settings, shared, props, home, watchFolder, readTextFile, writeTextFile, notify, checking, window } from "herdr";
 import { exec } from "./posix.js";
 import * as fs from "fs/promises";
 import { matches, ago, cardOf, titleOf, touchesNotes } from "./notesfacts.js";
@@ -164,10 +164,10 @@ export default class Notes extends View {
     this.page = "note"; // narrow: the list or the open note
     this.editor = TextareaState.new({ value: "", placeholder: featureOn("board") ? "Write a rough idea here. Move it to the board when it's ready to be work." : "Write a rough idea here." });
     this.editor.set_soft_wrap(true);
-    this.editor.on("change", (_e, cx) => { if (this.quiet) return; this.st.typed(); this.confirming = false; this.error = null; cx.notify(); });
+    this.editor.on("change", (_e, cx) => { if (this.quiet) return; this.st.typed(); if (this.busy !== "delete") this.confirming = false; this.error = null; cx.notify(); });
     this.st = new NoteState(io, { get: () => this.editor.value(), set: (text) => this.setEditor(text) });
     this.query = InputState.new({ value: "", placeholder: "Search notes" });
-    this.query.on("change", (_e, cx) => cx.notify());
+    this.query.on("change", (_e, cx) => { this.disarm(cx); cx.notify(); });
     // Enter in the search opens the first note found.
     this.query.on("submit", (_e, cx) => { const first = this.shownNotes()[0]; if (first) this.select(first.name, cx); });
     this.reset();
@@ -354,7 +354,7 @@ export default class Notes extends View {
           title: `Moved to the board as ${id}`,
           body: where === "Trash" ? `The note is in the ${trashName()}.` : `The note is in ${tilde(where)}.`,
           level: "success",
-          action: { name: `ws-switcher.show/board/${def.id}`, args: {} },
+          action: { name: `ws-switcher.show/board/${def.id}/${id}`, args: {} }, // the board, with that card open
         });
         this.st.drop(open.file);
         this.openNext();
@@ -365,28 +365,37 @@ export default class Notes extends View {
     });
   }
 
-  // Delete: asked once in the header row, then the file goes to the Trash.
+  // The delete question goes when anything else is typed or clicked (not while it deletes).
+  disarm(cx) {
+    if (!this.confirming || this.busy === "delete") return;
+    this.confirming = false;
+    cx.notify();
+  }
+
+  // Delete: asked once in the note's bar, then the file goes to the Trash.
   remove(cx) {
     const open = this.st.open;
     if (!open || this.busy) return;
     if (!open.file) { this.openNext(); cx.notify(); return; } // a new note with no file just goes
-    if (!this.confirming) { this.confirming = true; cx.notify(); return; }
-    this.busy = "delete";
-    this.confirming = false;
+    if (!this.confirming) { this.confirming = true; this.confirmAt = Date.now(); cx.notify(); return; }
+    if (Date.now() - this.confirmAt < 500) return; // the second half of a double-click isn't a yes
+    this.busy = "delete"; // the question stays up, saying "Deleting…", until it's done
     cx.notify();
     cx.spawn(async (cx) => {
       try {
-        if (!(await io.exists(open.file))) { this.st.drop(open.file); this.openNext(); return; } // gone already
+        if (!(await io.exists(open.file))) { this.st.drop(open.file); this.openNext(); this.deletedAt = Date.now(); return; } // gone already
         const r = await exec("sh", ["-c", TRASH, "sh", open.file, `${workspacesDir()}/.trash`]);
         if (r.code !== 0) throw new Error(String(r.stderr ?? "").trim() || `exit ${r.code}`);
         const where = String(r.stdout ?? "").trim();
         notify({ title: "Note deleted", body: where === "Trash" ? `Its file is in the ${trashName()}.` : `Its file is in ${tilde(where)}.`, level: "success" });
         this.st.drop(open.file);
         this.openNext();
+        this.deletedAt = Date.now();
       } catch (e) {
         this.error = `Couldn't delete the note: ${message(e)}`;
       } finally {
         this.busy = null;
+        this.confirming = false;
         cx.notify();
       }
     });
@@ -406,8 +415,16 @@ export default class Notes extends View {
     const def = defOf(this.workspace);
     const st = this.st;
     const shell = v_flex().id("notes").size_full().min_h(0).bg(t.canvas).text_size(13).text_color(t.foreground)
-      .on_size_change((size, cx) => { if (size.width !== this.width) { this.width = size.width; cx.notify(); } })
-      .when(this.follow, (el) => el.track_focus(this.handle));
+      // Sizes come in window px; NARROW is in the mod's units.
+      .on_size_change((size, cx) => { const w = size.width / (Number(settings().zoom) > 0 ? Number(settings().zoom) : 1); if (w !== this.width) { this.width = w; cx.notify(); } })
+      .when(this.follow, (el) => el.track_focus(this.handle))
+      // The delete question goes on any other click or key; Esc only drops it.
+      .on_mouse_down("left", (_e, cx) => this.disarm(cx))
+      .on_key_down((e, cx) => {
+        if (!this.confirming || this.busy === "delete") return;
+        this.disarm(cx);
+        if (e.key === "escape") cx.stop_propagation();
+      });
     // Narrow (a pane beside the terminals): the header wraps, and it shows the list or the note.
     const narrow = this.width > 0 && this.width < NARROW;
     // Between two workspaces (the timer is a moment behind): nothing of the last one.
@@ -417,21 +434,27 @@ export default class Notes extends View {
         .child(this.workspace ? "This workspace is gone." : "Notes belong to a workspace: choose one in the switcher to see its notes.");
     }
     const now = Date.now();
+    // Just after a delete the next note's bar is under the pointer: for half a second its
+    // buttons take no press, so the second half of a double-click can't act on that note.
     const button = (id, text, action, { tip = null, solid = false, tone = null, icon = null, off = false } = {}) => h_flex().id(id).h(28).px(11).gap(6).flex_none().items_center().rounded(7)
       .text_size(12).cursor_pointer()
       .when(solid, (el) => el.bg(t.solid).text_color(t.solid_foreground).font_medium().hover((s) => s.opacity(0.88)))
       .when(!solid, (el) => el.border_1().border_color(t.input).text_color(tone ? t[tone] : t.muted).hover((s) => s.bg(t.hover).text_color(tone ? t[tone] : t.foreground)))
       .when(off, (el) => el.opacity(0.5))
       .when(Boolean(tip), (el) => el.tooltip(tip))
-      .on_click((_e, cx) => action(cx))
+      .on_click((_e, cx) => { const d = Date.now() - (this.deletedAt ?? 0); if (d < 0 || d >= 500) action(cx); })
       .when(Boolean(icon), (el) => el.child(svg(icon).size(13).flex_none()))
       .child(text);
 
     const shown = this.shownNotes();
-    const search = () => h_flex().w(220).h(28).px(9).gap(7).flex_none().items_center().rounded(7).border_1().border_color(t.input).bg(t.background)
+    // As Files' filter: an × while it holds text, and Esc in it empties it.
+    const search = () => h_flex().id("notes-search").w(220).h(28).px(9).gap(7).flex_none().items_center().rounded(7).border_1().border_color(t.input).bg(t.background)
       .when(this.beside && narrow, (el) => el.w_auto().flex_1().min_w(90))
+      .on_key_down((e, cx) => { if (e.key === "escape" && this.query.value()) { this.query.set_value(""); cx.stop_propagation(); cx.notify(); } })
       .child(svg("mods/workspace-chrome/search.svg").size(12).flex_none().text_color(t.dim))
-      .child(Input.new(this.query).flex_1().min_w(0).text_size(12).text_color(t.foreground));
+      .child(Input.new(this.query).flex_1().min_w(0).text_size(12).text_color(t.foreground))
+      .when(Boolean(this.query.value()), (el) => el.child(div().id("notes-search-x").flex_none().cursor_pointer().text_color(t.dim).hover((x) => x.text_color(t.foreground))
+        .tooltip("Clear the search").on_click((_e, cx) => { this.query.set_value(""); cx.notify(); }).child(svg("mods/workspace-chrome/x.svg").size(12))));
     const newButton = () => button("note-new", "New note", (cx) => this.newNote(cx), { solid: true, icon: "mods/workspace-chrome/plus.svg" });
     // A pane beside the terminals: one slim row (the pane's header names it). Narrow, it shows
     // over the list only; the open note has its own bar with "← Notes".
@@ -469,9 +492,9 @@ export default class Notes extends View {
       .when(on, (el) => el.bg(t.selected)).when(!on, (el) => el.hover((s) => s.bg(t.hover)))
       .on_click((_e, cx) => { if (n) this.select(n.name, cx); })
       .child(h_flex().gap(8).items_center()
-        .child(div().flex_1().min_w(0).truncate().font_medium().text_color(n?.empty ? t.muted : t.foreground).child(title))
+        .child(div().id(`note-title-${n?.name ?? "new"}`).flex_1().min_w(0).truncate().font_medium().text_color(n?.empty ? t.muted : t.foreground).tooltip(title).child(title))
         .child(div().flex_none().text_size(11.5).text_color(t.dim).child(n ? ago(n.mtime, now) : "")))
-      .child(div().truncate().text_size(11.5).text_color(t.dim).child(n ? n.snippet || " " : "Not saved until it has words"));
+      .child(div().truncate().text_size(11.5).text_color(t.dim).when(Boolean(n?.snippet), (el) => el.tooltip(n.snippet)).child(n ? n.snippet || " " : "Not saved until it has words"));
   }
 
   // The open note: its bar (where it's kept, saved, actions), then the text.
@@ -482,11 +505,25 @@ export default class Notes extends View {
     const first = boardOf(def).columns[0];
     const state = st.conflict !== null ? "" : st.saving || st.dirty ? "Saving…" : st.saved && open?.file ? "Saved" : "";
     const where = open?.file ? `notes/${open.name}` : "The first line is its title";
-    const actions = this.confirming
+    // Delete asked once: the bar holds only the question. Delete sits at the right here, so
+    // Cancel takes its place and the named delete steps in on the inner side.
+    const armed = this.confirming;
+    const deleting = this.busy === "delete";
+    const name = titleOf(this.editor.value()) || open?.title || "";
+    const named = name ? `Delete “${name}”` : "Delete this note";
+    const pair = (id, action, el) => el.id(id).h(28).items_center().rounded(7).border_1().text_size(12).font_medium()
+      .when(deleting, (x) => x.opacity(0.45)).when(!deleting, (x) => x.cursor_pointer())
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      // The second half of a double-click lands here: not an answer.
+      .on_click((_e, cx) => { if (!this.busy && Date.now() - this.confirmAt >= 500) action(cx); });
+    const actions = armed
       ? [
-        div().text_size(12).text_color(t.muted).child(`Move this note to the ${trashName()}?`),
-        button("note-delete-cancel", "Cancel", (cx) => { this.confirming = false; cx.notify(); }),
-        button("note-delete-yes", `Move to ${trashName()}`, (cx) => this.remove(cx), { tone: "blocked" }),
+        div().flex_1().min_w(0).text_right().text_size(11.5).text_color(t.muted).child(`It goes to the ${trashName()}.`),
+        pair("note-delete-yes", (cx) => this.remove(cx), h_flex().min_w(0).max_w(300).px(11).border_color(t.blocked).bg(t.blocked)
+          .text_color(t.solid_foreground).when(!deleting, (x) => x.hover((s) => s.opacity(0.88))).when(named.length > 40, (x) => x.tooltip(named))
+          .child(div().min_w(0).truncate().child(deleting ? "Deleting…" : named))),
+        pair("note-delete-cancel", (cx) => { this.confirming = false; cx.notify(); }, h_flex().flex_none().px(11).border_color(t.input)
+          .text_color(t.muted).when(!deleting, (x) => x.hover((s) => s.bg(t.hover).text_color(t.foreground))).child("Cancel")),
       ]
       : [
         ...(featureOn("board") ? [button("note-move", this.busy === "move" ? "Moving…" : "Move to the board", (cx) => this.moveToBoard(cx),
@@ -494,11 +531,11 @@ export default class Notes extends View {
         ...(open?.file || has ? [button("note-delete", "Delete", (cx) => this.remove(cx), { tip: open?.file ? `Move it to the ${trashName()}` : "Throw away this new note", icon: "mods/ws-notes/trash.svg" })] : []),
       ];
     const bar = h_flex().h(narrow ? 36 : 48).flex_none().px(narrow ? 10 : 16).gap(8).items_center().border_b(1).border_color(t.border)
-      .when(narrow, (el) => el.child(div().id("note-back").flex_none().text_size(12).text_color(t.muted).cursor_pointer()
+      .when(narrow && !armed, (el) => el.child(div().id("note-back").flex_none().text_size(12).text_color(t.muted).cursor_pointer()
         .hover((s) => s.text_color(t.foreground)).tooltip("Back to the list of notes")
         .on_click((_e, cx) => { this.page = "list"; this.confirming = false; cx.notify(); }).child("← Notes")))
-      .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(where))
-      .when(Boolean(state), (el) => el.child(div().flex_none().text_size(11.5).text_color(t.dim).child(state)))
+      .when(!armed, (el) => el.child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).tooltip(where).child(where)))
+      .when(Boolean(state) && !armed, (el) => el.child(div().flex_none().text_size(11.5).text_color(t.dim).child(state)))
       .children(actions);
     const problem = this.error
       ? h_flex().flex_none().mx(16).mt(10).px(12).py(8).gap(10).items_center().rounded(8).border_1().border_color(t.blocked).bg(t.surface).text_size(12)

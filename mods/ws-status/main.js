@@ -10,6 +10,12 @@
 // reads ~/.herdr/settings.jsonc itself before its first ask (settingsfacts.js), then
 // follows shared "workspaces.settings" (followUsage()); turned on again, it asks at once.
 // What was read stays in workspaces.usage.
+// Also (UX fixes, 2026-11-26): "1 agent" and "2 need you", as Herdr 0.1.17's workspace-status
+// says them; numbers the last ask couldn't refresh dim in the bar and say their age
+// (staleOf() in usagefacts.js).
+// Also (small round, 2026-11-27): no space (so no branch) while the workspace has none
+// (shared "workspaces.covered"); the agent count's hover says it counts every workspace and
+// where the ones waiting on you are (countTip()); the usage's tooltip goes once it's clicked.
 // Antigravity's limits come in pools (Gemini models; Claude and GPT models): the bar shows
 // its own models' pool, the 5-hour limit unless one of that pool's is full (barRow()), the panel
 // draws each pool once, its 5-hour and weekly limits side by side (poolBlock()), and the
@@ -19,13 +25,16 @@
 // Shared: workspaces.usage   { <plan>: { rows, at, from, tried } }: what the bar's copy
 //                            read, for the panel (rows: usagefacts.js)
 //         workspaces.usage.ask { at }: the panel's Refresh asks the bar's copy to read again
+// Numbers the last ask couldn't refresh (staleOf(): tried more than a minute after at; away:
+// its agent said it isn't signed in) say how old they are: dimmed in the bar, their age on
+// hover and in the panel's last line.
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { spaces, agents, theme, run, window, keys, home, shared, setShared, props, openOverlay, checking } from "herdr";
 import { exec } from "./posix.js";
 import * as fs from "fs/promises";
-import { claudeReportRows, agyReportRows, claudeStatusRows, barRow, blocksOf, barText, hoverLines, resetsText, agoText, followFeature } from "./usagefacts.js";
+import { claudeReportRows, agyReportRows, claudeStatusRows, barRow, blocksOf, barText, hoverLines, resetsText, agoText, staleOf, followFeature } from "./usagefacts.js";
 import { SETTINGS_FILE, parseSettings, featureOn } from "./settingsfacts.js";
 
 // The plans the bar shows, in its order: how to ask each agent for its usage without
@@ -99,6 +108,12 @@ const isPanel = () => Boolean(props()?.panel || props()?.overlay);
 // Plan usage's switch in shared "workspaces.settings" (undefined while nothing is there).
 const usageShared = () => shared("workspaces.settings")?.features?.usage;
 
+// The agent count's hover: "7 agents across every workspace", then where the ones waiting on you are.
+function countTip(list) {
+  const waiting = [...new Set(list.filter((a) => a.status === "blocked").map((a) => a.space_name || "a terminal with no space"))];
+  return `${list.length} ${list.length === 1 ? "agent" : "agents"} across every workspace${waiting.length ? `\nNeeds you: ${waiting.join(", ")}` : ""}`;
+}
+
 export default class WorkspaceStatus extends View {
   init(_props, cx) {
     if (isPanel() || checking()) return;
@@ -158,7 +173,7 @@ export default class WorkspaceStatus extends View {
         const rows = r.code === 0 ? p.parse(r.stdout) : null;
         const now = Date.now();
         if (rows?.length) this.publish(p.key, { rows, at: now, from: "usage", tried: now });
-        else if (this.data[p.key]) this.publish(p.key, { ...this.data[p.key], tried: now });
+        else if (this.data[p.key]) this.publish(p.key, { ...this.data[p.key], tried: now, away: signedOut(r) });
       }));
     } finally {
       this.usageBusy = false;
@@ -201,16 +216,22 @@ export default class WorkspaceStatus extends View {
   // In the bar: each plan's icon and the percent of the limit that matters (barRow(): its
   // most used; Antigravity's Gemini 5-hour), and when it's back once it's full; hover lists every limit, a pool a line, a click opens the panel.
   usage(t, plans) {
-    const detail = plans.flatMap((p) => hoverLines(p.name, p.data.rows)).join("\n");
+    const detail = plans.flatMap((p) => {
+      const old = staleOf(p.data);
+      return [...hoverLines(p.name, p.data.rows), ...(old ? [`${p.name}: from ${old.ago}, ${old.why}`] : [])];
+    }).join("\n");
     return h_flex().id("usage").h(20).px(6).gap(10).items_center().rounded(5).cursor_pointer()
       .hover((s) => s.bg(t.hover))
-      .tooltip(detail)
-      .on_click(() => openOverlay({ mod: "ws-status", kind: "popup", width: 360, props: { panel: true } }))
+      // Its tooltip goes once it's clicked, so it doesn't sit over the panel, until the pointer leaves.
+      .when(!this.tipOff, (el) => el.tooltip(detail))
+      .on_hover((over, cx) => { if (!over && this.tipOff) { this.tipOff = false; cx.notify(); } })
+      .on_click((_e, cx) => { this.tipOff = true; openOverlay({ mod: "ws-status", kind: "popup", width: 360, props: { panel: true } }); cx.notify(); })
       .children(plans.map((p) => {
         const top = barRow(p.data.rows);
+        const old = staleOf(p.data);
         return h_flex().gap(5).items_center()
-          .child(image(p.icon).w(12).h(12).flex_none())
-          .child(div().text_color(loud(top) ? tone(t, top) : t.muted).child(barText(top)));
+          .child(image(p.icon).w(12).h(12).flex_none().when(Boolean(old), (el) => el.opacity(0.5)))
+          .child(div().text_color(old ? t.dim : loud(top) ? tone(t, top) : t.muted).child(barText(top)));
       }));
   }
 
@@ -241,7 +262,7 @@ export default class WorkspaceStatus extends View {
         .children(blocksOf(p.data.rows).map((b, j) => b.group
           ? this.poolBlock(t, b, `usage-${p.key}-${j}`)
           : this.limitRow(t, b.rows[0], `usage-${p.key}-${j}`)))
-        .child(div().text_size(10.5).text_color(t.dim).child(`From ${p.from[p.data.from] ?? p.data.from}, ${agoText(p.data.at)}`))));
+        .child(div().text_size(10.5).text_color(t.dim).child(`From ${p.from[p.data.from] ?? p.data.from}, ${agoText(p.data.at)}${staleOf(p.data) ? ` · ${staleOf(p.data).why}` : ""}`))));
   }
 
   // A limit on its own line: its name, when it resets and the percent, over a meter.
@@ -277,7 +298,8 @@ export default class WorkspaceStatus extends View {
   render() {
     if (isPanel()) return this.panel();
     const t = theme();
-    const space = spaces().find(s => s.active);
+    // A workspace with no space yet: Herdr's active space is another workspace's, so none (ws-tabs' here()).
+    const space = shared("workspaces.covered") ? null : spaces().find(s => s.active);
     const list = agents();
     const needs = list.filter(a => a.status === "blocked").length;
     const plans = followFeature(this.usageOn, this.heard, usageShared()) ? this.plans() : [];
@@ -285,8 +307,9 @@ export default class WorkspaceStatus extends View {
     return h_flex().size_full().px(14).gap(16).items_center().bg(t.chrome).border_t(1).border_color(t.border).text_size(11.8).text_color(t.muted)
       .child(label(space?.machine ? "server" : "monitor", space?.machine ?? "This computer"))
       .when(Boolean(space?.branch), el => el.child(label("branch", space.branch)))
-      .child(h_flex().gap(6).items_center().child(div().size(6).rounded(3).bg(t.dim)).child(`${list.length} agents`)
-        .when(needs > 0, el => el.child(div().text_color(t.blocked).child(`· ${needs} needs you`))))
+      // Every workspace's agents, where the Agents list beside it shows one workspace's: the hover says so.
+      .child(h_flex().id("agent-count").gap(6).items_center().tooltip(countTip(list)).child(div().size(6).rounded(3).bg(t.dim)).child(`${list.length} ${list.length === 1 ? "agent" : "agents"}`)
+        .when(needs > 0, el => el.child(div().text_color(t.blocked).child(`· ${needs} ${needs === 1 ? "needs" : "need"} you`))))
       .child(div().flex_1())
       .when(plans.length > 0, el => el.child(this.usage(t, plans)))
       .child(div().id("palette").text_color(t.dim).on_click(() => run("app.palette")).child(this.hint(t)));

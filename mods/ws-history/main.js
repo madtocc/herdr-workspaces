@@ -32,7 +32,9 @@
 // runState), and its one action is Go to while its tab is open, Resume once it's closed
 // (its conversation as the runner noted it, histfacts.js: runSessions). A click opens a
 // run: the whole report (scan.js --said), when it ran and for how long, and a way into
-// the automation. Runs a check kept from starting are hidden unless asked for.
+// the automation. Quiet runs (a check with nothing new, a skip) are hidden unless asked for;
+// a check that failed or isn't allowed, a miss, and an agent's run that ended without its
+// outcome line ("no outcome") show and are counted.
 //
 // A Claude, Pi or Antigravity conversation that was compacted shows the compacted icon
 // and how often on its row; opened, it lists when (newest first), how, and how big the
@@ -48,7 +50,7 @@
 // kept in memory only.
 //
 // A right-click on a row opens its menu (treefacts.js historyMenu()): Resume or Go to,
-// Copy session id, Wipe session…. Wipe moves a Claude or Pi conversation to the Trash, as
+// Copy conversation id, Wipe conversation…. Wipe moves a Claude or Pi conversation to the Trash, as
 // the Agents list's Wipe does (menufacts.js, a copy of ws-agents' own: wipeTargets()),
 // in a dialog of this mod's (wipeDialog()): it closes the terminal it's known to be open
 // in first, refuses while another agent might be writing it (treefacts.js wipeCheck()),
@@ -56,11 +58,11 @@
 // to the Agents list's own Wipe dialog (agywipe.js), only while that experiment is on.
 
 import { View, div, svg, image } from "gpui-kit";
-import { h_flex, v_flex, InputState, Input } from "gpui-base";
+import { h_flex, v_flex, InputState, Input, ScrollHandle } from "gpui-base";
 import { spaces, panes, terminals, run, theme, shared, setShared, props, openOverlay, closeOverlay, home, appHome, notify, checking, knownAgents, readTextFile, window } from "herdr";
 import { exec } from "./posix.js";
-import { PROVIDERS, inWorkspace, whereOf, liveOf, keyOf, titleOf, matches, dayLabel, ago, span, modelLabel, resumeArgv, presetOf, tokens, compactionText, compactionsTip, runState, runMatches, runSessions, clock, ranText, READS } from "./histfacts.js";
-import { forest, treeRows, chipText, kidNames, indent, historyMenu, wipeCheck, holdState, liveUnder, helpersOf } from "./treefacts.js";
+import { PROVIDERS, inWorkspace, whereOf, liveOf, openAt, keyOf, titleOf, matches, dayLabel, ago, span, modelLabel, resumeArgv, presetOf, tokens, compactionText, compactionsTip, runState, runTip, runMatches, runSessions, clock, ranText, READS } from "./histfacts.js";
+import { forest, treeRows, chipText, kidNames, indent, historyMenu, wipeCheck, openWords, holdState, liveUnder, helpersOf } from "./treefacts.js";
 import { menuHeight, wipeTargets } from "./menufacts.js";
 // The system's trash by its name: the Recycle Bin on Windows, the Trash elsewhere.
 const trashName = () => (window()?.platform === "windows" ? "Recycle Bin" : "Trash");
@@ -74,10 +76,15 @@ const RESUMED = "workspaces.history.resumed";
 const PAGE = 120; // rows drawn at first, and more with each "Show more"
 const REPORT_LINES = 60; // lines of a run's report shown when it's opened
 // What a day's heading counts among its runs, and in which color (null: the heading's own).
-const LOOK = [["needs you", "blocked"], ["failed", "blocked"], ["failed to start", "blocked"], ["timed out", "blocked"], ["stuck", "blocked"], ["running", "working"], ["queued", null]];
+// A run that needs a look is counted in the blocked color (needs you, no outcome, failures,
+// a check that failed or isn't allowed, a miss), the same rule as Automations and the bell.
+const LOOK = [["needs you", "blocked"], ["no outcome", "blocked"], ["failed", "blocked"], ["failed to start", "blocked"], ["timed out", "blocked"], ["stuck", "blocked"],
+  ["check failed", "blocked"], ["check not allowed", "blocked"], ["missed", "blocked"], ["running", "working"], ["queued", null]];
+// What an open conversation's agent is doing, in words, by Herdr's status (the open tag's tooltip).
+const DOING = { working: "it's working", blocked: "it's waiting on you", done: "it has finished" };
 const LOG_LINES = 25; // lines of a script run's log shown when it's opened
-// A state word as the day's heading counts it: "failed · exit 1" is a failure.
-const lookWord = (word) => (/^failed · exit/.test(word) ? "failed" : word);
+// A state word as the day's heading counts it: "failed · exit 1" is a failure, "check failed ×3" one run.
+const lookWord = (word) => (/^failed · exit/.test(word) ? "failed" : word.replace(/ ×\d+$/, ""));
 const SPANS = [90, 365, 3650]; // days back: the first read, then each "Look further back"
 const STALE = 20e3; // ms after which the screen, shown again, reads again
 // A pane beside the terminals narrower than this keeps search in its slim row and folds the
@@ -109,8 +116,8 @@ done`;
 // Puts $1 on the clipboard (as ws-agents/main.js' COPY).
 const COPY = `
 if command -v pbcopy >/dev/null 2>&1; then printf %s "$1" | pbcopy
-elif command -v wl-copy >/dev/null 2>&1; then printf %s "$1" | wl-copy
-elif command -v xclip >/dev/null 2>&1; then printf %s "$1" | xclip -selection clipboard
+elif command -v wl-copy >/dev/null 2>&1; then printf %s "$1" | wl-copy >/dev/null 2>&1
+elif command -v xclip >/dev/null 2>&1; then printf %s "$1" | xclip -selection clipboard >/dev/null 2>&1
 elif command -v powershell >/dev/null 2>&1; then HERDR_CLIP=$1 powershell -NoProfile -NonInteractive -Command 'for ($i = 0; $i -lt 5; $i++) { try { Set-Clipboard -Value $env:HERDR_CLIP -ErrorAction Stop; exit 0 } catch { Start-Sleep -Milliseconds 150 } }; exit 1'
 else echo "no clipboard command (pbcopy, wl-copy, xclip, PowerShell)" >&2; exit 1; fi`;
 // When each given transcript was last written (seconds, a tab, the path), after
@@ -157,6 +164,11 @@ const message = (e) => String(e?.message ?? e);
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 // What the switcher takes as a workspace or automation name in a command (automations.js: openAt).
 const PLAIN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+// A pointer position as a key ("x,y"), or undefined when there is none.
+const pointKey = (p) => (p && Number.isFinite(p.x) && Number.isFinite(p.y) ? `${p.x},${p.y}` : undefined);
+// Whether the switcher (its sidebar copy) is there to take a command: it says so in shared
+// "workspaces.switcher.alive" every 5 s; missing or older than 15 s, it's away (the sidebar is hidden).
+const switcherHere = () => Date.now() - (shared("workspaces.switcher.alive")?.at ?? 0) < 15000;
 // Whether an add-on is on in Settings > Features (nothing known yet counts as on).
 const featureOn = (key) => shared("workspaces.settings")?.features?.[key] !== false;
 
@@ -292,14 +304,19 @@ export default class History extends View {
     this.wipedAt = shared(WIPED)?.at ?? 0;
     this.rescans = []; // times to read again (after handing a wipe to the Agents list)
     this.query = InputState.new({ value: "", placeholder: "Search conversations" });
-    this.query.on("change", (_e, cx) => { this.max = PAGE; cx.notify(); });
-    // Enter on a search goes to its first result.
-    this.query.on("submit", (_e, cx) => { if (this.query.value().trim()) { const first = this.view().shown.find((x) => x.hit && !x.s.readonly); if (first) this.act(first.s, first.at, cx); } });
+    // With text in the search box, one match is highlighted (the first; ↑ ↓ move it) and
+    // Enter takes it (`hi`: its place among the matches, picks()). `scrollHi`: bring it into view.
+    this.hi = 0;
+    this.scrollHi = false;
+    this.listScroll = ScrollHandle.new();
+    this.query.on("change", (_e, cx) => { this.max = PAGE; this.hi = 0; this.listScroll.scroll_to_item(0); cx.notify(); });
+    this.query.on("submit", (_e, cx) => { const x = this.picked(); if (x) this.act(x.s, x.at, cx); });
     this.mode = "conversations"; // or "automations": the runs
     this.hideQuiet = true; // runs a check kept from starting, misses and skips
     this.runQuery = InputState.new({ value: "", placeholder: "Search runs" });
-    this.runQuery.on("change", (_e, cx) => { this.max = PAGE; cx.notify(); });
-    this.runQuery.on("submit", (_e, cx) => { if (this.runQuery.value().trim()) { const first = this.runsView().shown[0]; if (first) this.runAct(first.r, first.st, cx); } });
+    this.runQuery.on("change", (_e, cx) => { this.max = PAGE; this.hi = 0; this.listScroll.scroll_to_item(0); cx.notify(); });
+    this.runQuery.on("submit", (_e, cx) => { const x = this.picked(); if (x) this.runAct(x.r, x.st, cx); });
+    this.away = null; // the run whose "Open the automation" found the switcher away
     if (checking()) return;
     // A tab or dialog takes the keyboard for its search; a pane beside the terminals only when
     // it's the focused pane (just opened), not when its tab comes back after a start.
@@ -345,13 +362,15 @@ export default class History extends View {
     if ((want.ws ?? null) !== (this.workspace ?? null)) return;
     setShared(HIST_OPEN, { ...want, taken: true });
     const r = (shared("workspaces.automation.runs") ?? []).find((x) => x.id === want.runId) ?? null;
+    if (!r) notify({ title: "That run isn't listed any more", body: "The runner keeps only each automation's latest runs.", level: "info" });
     if (this.mode !== "automations") { this.mode = "automations"; this.max = PAGE; }
-    if (r && r.status !== "started") this.hideQuiet = false;
+    if (r && runState(r).quiet) this.hideQuiet = false;
     // Nothing in the way of the run: no search left in the box, and its row on the page.
     if (this.runQuery.value()) this.runQuery.set_value("");
     const at = this.runsView().shown.findIndex((x) => x.r.id === want.runId);
     if (at >= this.max) this.max = at + 1;
     this.open = `run:${want.runId}`;
+    this.scrollRun = r && at >= 0 ? r.id : null; // brought into view when it's next drawn (render())
     if (r) this.loadLog(r, cx);
     this.input().focus();
     cx.notify();
@@ -378,6 +397,7 @@ export default class History extends View {
     if (r.code === 0) { try { data = JSON.parse(r.stdout); } catch { data = null; } }
     if (data?.sessions) {
       this.rows = data.sessions; this.notes = data.notes ?? []; this.error = null; this.core = data.core || "default";
+      this.limit = Number(data.limit) || 1200; this.left = Number(data.left) || 0;
       this.keys = new Set(this.rows.map(keyOf));
       if (this.provider && !this.rows.some((s) => s.provider === this.provider)) this.provider = null;
     } else {
@@ -391,7 +411,8 @@ export default class History extends View {
   }
 
   // What the list shows now: the rows as trees (treefacts.js), under the filters, and what
-  // each is open in. `shown`: the rows to draw in order ({ s, depth, kids, open, hit, at }),
+  // each is open in. `shown`: the rows to draw in order ({ s, depth, kids, open, hit, at,
+  // maybe }: at, the terminal known to hold it; maybe, one only guessed, histfacts.js openAt()),
   // `here`: the conversations in the trees shown (sub-agents aside), `searched`: those the
   // search lets through, `hidden`: those whose folder is gone, behind the chip.
   view() {
@@ -414,12 +435,56 @@ export default class History extends View {
     const searched = here.filter(said);
     const filtering = Boolean(q.trim()) || Boolean(this.provider);
     const shown = treeRows(f, { pass, root: rootOk, unfolded: this.unfolded, filtering })
-      .map((x) => ({ ...x, hit: pass(x.s), at: x.s.readonly ? null : live.get(keyOf(x.s)) ?? null }));
+      .map((x) => ({ ...x, hit: pass(x.s), ...(x.s.readonly ? { at: null, maybe: null } : openAt(live, keyOf(x.s))) }));
     return { f, live, here, searched, shown, hidden: behind.filter((s) => !s.readonly).length, status: new Map(terms.map((x) => [x.address, x.status])) };
   }
 
   // The search box of the list shown.
   input() { return this.mode === "automations" ? this.runQuery : this.query; }
+
+  // What Enter in the search box can take, in the list's order, while it has text: the
+  // matching conversations drawn (sub-agents aside), or the runs drawn.
+  picks() {
+    if (!this.input().value().trim()) return [];
+    if (this.mode === "automations") return this.runsView().shown.slice(0, this.max);
+    const out = [];
+    let roots = 0;
+    for (const x of this.view().shown) {
+      if (x.depth === 0 && ++roots > this.max) break;
+      if (x.hit && !x.s.readonly) out.push(x);
+    }
+    return out;
+  }
+  // The highlighted one (`hi`, kept inside the list).
+  picked() {
+    const list = this.picks();
+    return list.length ? list[Math.min(this.hi, list.length - 1)] : null;
+  }
+  // A key in a search box: Esc clears it (an empty box lets it through), ↑ ↓ move the
+  // highlight among the matches. Esc arrives here as a key only on the screen, in a tab or in
+  // a pane; as a dialog it comes as overlay.close (render()'s on_action).
+  searchKey(e, input, cx) {
+    if (e.key === "escape" && input.value()) { input.set_value(""); this.hi = 0; this.max = PAGE; }
+    else if ((e.key === "down" || e.key === "up") && input.value().trim()) {
+      const n = this.picks().length;
+      if (!n) return;
+      this.hi = Math.max(0, Math.min(n - 1, Math.min(this.hi, n - 1) + (e.key === "down" ? 1 : -1)));
+      this.scrollHi = true;
+    } else return;
+    cx.stop_propagation();
+    cx.notify();
+  }
+
+  // What Enter does to it, for the hint at the box's end: "Go to", "Resume" or nothing.
+  pickWord(x) {
+    if (!x) return "";
+    if (this.mode !== "automations") return x.at ? "Go to" : x.s.gone ? "" : "Resume";
+    if (x.st.open) return "Go to";
+    const own = x.s; // as runAct() finds it
+    if (!own) return "";
+    const { at } = openAt(liveOf(this.rows.filter((s) => !s.readonly), liveTerms(), shared(RESUMED) ?? {}), keyOf(own));
+    return at ? "Go to" : own.gone ? "" : "Resume";
+  }
 
   // The Automations view: the runs of the workspace shown (or of every one), each with
   // its state now (`st`, histfacts.js: runState).
@@ -436,7 +501,7 @@ export default class History extends View {
       const mine = Boolean(term) && (!term.labels?.["herdr.tab"] || term.labels["herdr.tab"] === r.tab);
       const s = sessions.get(r.id) ?? null;
       const found = Boolean(s) && !s.stub;
-      return { r, s, st: runState(r, { status: mine ? term.status ?? null : null, live: mine, open: Boolean(r.tab && tabs.has(r.tab)), found, said: found ? s.said ?? null : null, outcome: found ? s.outcome ?? null : null }) };
+      return { r, s, st: runState(r, { status: mine ? term.status ?? null : null, live: mine, open: Boolean(r.tab && tabs.has(r.tab)), found, said: found ? s.said ?? null : null, outcome: found ? s.outcome ?? null : null, records: featureOn("notifications") }) };
     });
     const q = this.runQuery.value();
     const searched = rows.filter(({ r, s, st }) => runMatches(r, q, `${defOf(r.ws)?.name ?? ""} ${st.word} ${s?.said ?? ""}`));
@@ -448,6 +513,7 @@ export default class History extends View {
   toggleRun(r, s, cx) {
     const id = `run:${r.id}`;
     this.open = this.open === id ? null : id;
+    this.away = null;
     if (this.open && s && !s.stub && s.saidMore && s.file && READS.has(s.provider)) this.readReport(s, cx);
     if (this.open) this.loadLog(r, cx);
     cx.notify();
@@ -511,7 +577,7 @@ export default class History extends View {
     const own = this.rows.filter((x) => !x.readonly);
     const s = runSessions(shared("workspaces.automation.runs"), own).get(r.id);
     if (!s) return;
-    const at = liveOf(own, liveTerms(), shared(RESUMED) ?? {}).get(keyOf(s));
+    const { at } = openAt(liveOf(own, liveTerms(), shared(RESUMED) ?? {}), keyOf(s)); // a guess resumes
     if (at) this.goTo(at);
     else if (!s.gone) this.resume(s, cx);
   }
@@ -523,10 +589,17 @@ export default class History extends View {
     run("tab.select", { id: r.tab });
   }
 
-  // The Automations screen, on that automation (the switcher's sidebar copy takes the command).
-  openAutomation(r) {
-    if (PLAIN.test(String(r.ws)) && PLAIN.test(String(r.name))) run(`ws-switcher.automation/${r.ws}/${r.name}`, {});
-    else run("mod.open", { name: "ws-automations" });
+  // The Automations screen, on that automation: asked of the switcher through shared state
+  // ("workspaces.notifications.act", as the bell asks), which its sidebar copy drains. While
+  // the sidebar is hidden nothing would take it: the row says so instead (`away`).
+  openAutomation(r, cx) {
+    if (!switcherHere()) { this.away = r.id; cx.notify(); return; }
+    this.away = null;
+    if (!PLAIN.test(String(r.name)) || !(r.ws === "*" || PLAIN.test(String(r.ws)))) return run("mod.open", { name: "ws-automations" });
+    const now = Date.now(), q = shared("workspaces.notifications.act");
+    const ask = { action: "open", target: { kind: "automation", ws: r.ws, name: r.name }, id: `${now}-history-${Math.random().toString(36).slice(2, 7)}`, at: now };
+    setShared("workspaces.notifications.act", [...(Array.isArray(q) ? q : []).filter((a) => a && typeof a === "object" && now - (a.at ?? 0) < 15000), ask].slice(-32));
+    if (this.dialog) closeOverlay(props().overlay);
   }
 
   // The agent as Herdr knows it: its icon, its name and how it's started.
@@ -541,11 +614,28 @@ export default class History extends View {
     return (a ? a.tint : provider !== "claude" && provider !== "codex") ? svg(path).size(size).flex_none().text_color(t.muted) : image(path).size(size).flex_none();
   }
 
+  // Where a terminal is, for people: "web › Claude Code (t7)", its space and tab (an unnamed tab
+  // by its place, "tab 2"); a helper with no pane of its own, its address.
+  termPlace(address) {
+    const p = panes().find((x) => x.terminal === address);
+    const sp = p ? spaces().find((x) => (x.tabs ?? []).some((tb) => tb.id === p.tab)) : null;
+    const tab = sp?.tabs.find((tb) => tb.id === p.tab);
+    return tab ? `${sp.name} › ${tab.named ? tab.name : `tab ${tab.index}`} (${address})` : address;
+  }
+
   // The workspace a folder belongs to: the screen's own first, then any other.
   owner(cwd) {
     const mine = defOf(this.workspace);
     if (mine && inWorkspace(cwd, mine, trees())) return mine;
     return defs().find((d) => inWorkspace(cwd, d, trees())) ?? null;
+  }
+
+  // owner(), for the rows of one draw: the workspaces read once, each folder looked up once.
+  ownerOf(cwd) {
+    if (!this.owners) this.owners = { mine: defOf(this.workspace), all: defs(), trees: trees(), by: new Map() };
+    const o = this.owners;
+    if (!o.by.has(cwd)) o.by.set(cwd, (o.mine && inWorkspace(cwd, o.mine, o.trees) ? o.mine : o.all.find((d) => inWorkspace(cwd, d, o.trees))) ?? null);
+    return o.by.get(cwd);
   }
 
   // Back to the terminals: the screen gives way, the dialog closes.
@@ -607,9 +697,18 @@ export default class History extends View {
     if (props()?.histMenu) return this.menuView(t);
     if (props()?.wipe) return this.wipeDialog(t);
     const def = defOf(this.workspace);
+    this.owners = null; // each folder's workspace, worked out once per draw (ownerOf())
     const shell = v_flex().id("history").size_full().min_h(0).bg(this.dialog ? t.popover : t.canvas).text_size(13).text_color(t.foreground)
       .on_size_change((size, cx) => { if (size.width !== this.width) { this.width = size.width; cx.notify(); } })
-      .when(this.follow, (el) => el.track_focus(this.handle));
+      .when(this.follow, (el) => el.track_focus(this.handle))
+      // As a dialog, Herdr's Esc comes as the action overlay.close (never as a key): while the
+      // search box holds text it's claimed to empty the box first; empty, Herdr closes the dialog.
+      .when(this.dialog && Boolean(this.input().value()), (el) => el.on_action("overlay.close", (_e, cx) => {
+        cx.stop_propagation();
+        this.input().set_value(""); this.hi = 0; this.max = PAGE;
+        this.input().focus();
+        cx.notify();
+      }));
     // In a pane beside the terminals there's less room: the rows keep what matters.
     const tight = this.width > 0 && this.width < 720;
     // Between two workspaces (the timer is a moment behind): nothing of the last one.
@@ -619,6 +718,11 @@ export default class History extends View {
     const { f, here, searched, shown, hidden, status } = this.view();
     const rv = autos ? this.runsView() : null;
     const now = Date.now();
+    // The match Enter takes (picks()): its row is highlighted, its word ends the search box.
+    const target = this.picked();
+    this.hiKey = target ? (autos ? `run:${target.r.id}` : keyOf(target.s)) : null;
+    const enterWord = this.pickWord(target);
+    let hiChild = -1; // its place among the list's children, to scroll to
 
     const button = (id, text, action, { tip = null, solid = false } = {}) => div().id(id).h(26).px(10).flex().flex_none().items_center().rounded(7)
       .text_size(12).cursor_pointer()
@@ -649,20 +753,35 @@ export default class History extends View {
       chip("scope-ws", !everywhere, (cx) => this.rescope("ws", cx), [def.name], `What ran in ${def.name}'s folders and worktrees`),
       chip("scope-all", everywhere, (cx) => this.rescope("all", cx), ["Everywhere"], "Every conversation on this computer, whatever folder it ran in"),
     ] : []);
-    const refresh = () => button("hist-refresh", "Refresh", (cx) => this.load(cx), { tip: "Read the conversations again" });
+    const refreshTip = autos ? "Read the runs' reports again" : "Read the conversations again";
+    const refresh = () => button("hist-refresh", "Refresh", (cx) => this.load(cx), { tip: refreshTip });
+    // Beside the terminals: an icon at the slim row's end, where it's always in view.
+    const refreshIcon = () => div().id("hist-refresh").size(26).flex_none().flex().items_center().justify_center().rounded(6).cursor_pointer()
+      .text_color(t.muted).hover((x) => x.bg(t.hover).text_color(t.foreground)).tooltip(refreshTip).on_click((_e, cx) => this.load(cx))
+      .child(svg("mods/ws-files/refresh.svg").size(14));
     const narrowPane = this.beside && !(this.width >= PANE_NARROW);
-    const searchBox = (input) => h_flex().w(tight ? 150 : 240).h(28).px(9).gap(7).flex_none().items_center().rounded(7).border_1().border_color(t.input).bg(t.background)
-      .when(narrowPane, (el) => el.w_auto().flex_1().min_w(90))
+    // Esc clears it (on an empty box it goes on to close, as before), ↑ ↓ move the highlight,
+    // an × clears it, and while it has text (and there is room) its end says what Enter does.
+    const searchBox = (input) => h_flex().id(`${autos ? "runs" : "hist"}-search`).w(tight ? 150 : 240).h(28).px(9).gap(7).flex_none().items_center().rounded(7).border_1().border_color(t.input).bg(t.background)
+      .when(narrowPane, (el) => el.w_auto().flex_1().min_w(140))
+      .on_key_down((e, cx) => this.searchKey(e, input, cx))
       .child(svg("mods/workspace-chrome/search.svg").size(12).flex_none().text_color(t.dim))
-      .child(Input.new(input).flex_1().min_w(0).text_size(12).text_color(t.foreground));
+      .child(Input.new(input).flex_1().min_w(0).text_size(12).text_color(t.foreground))
+      .when(!tight && Boolean(enterWord) && Boolean(input.value().trim()), (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(`↩ ${enterWord}`)))
+      .when(Boolean(input.value()), (el) => el.child(div().id(`${autos ? "runs" : "hist"}-search-x`).flex_none().cursor_pointer().text_color(t.dim).hover((x) => x.text_color(t.foreground))
+        .tooltip("Clear the search").on_click((_e, cx) => { input.set_value(""); this.hi = 0; this.max = PAGE; input.focus(); cx.notify(); })
+        .child(svg("mods/workspace-chrome/x.svg").size(12))));
     // A pane beside the terminals: one slim row (Herdr's pane header names it). Narrow, search
     // takes the room the scope chips and Refresh had; they go to the filter strip below.
+    // Narrow, it wraps: when search and Refresh don't fit beside the switch, they take a second line.
     const slim = () => h_flex().min_h(36).flex_none().px(10).py(4).gap(8).items_center().border_b(1).border_color(t.border)
+      .when(narrowPane, (el) => el.flex_wrap())
       .child(modes)
       .when(!narrowPane && (!tight || (!autos && !this.loaded)), (el) => el.child(div().min_w(0).truncate().text_size(12).text_color(t.dim).child(counted)))
       .when(this.reading && this.loaded, (el) => el.child(svg("mods/workspace-chrome/spinner.svg").size(13).flex_none().text_color(t.dim).spin(900)))
-      .when(!narrowPane, (el) => el.child(div().flex_1()).children(scopes()).child(refresh()))
-      .when(narrowPane, (el) => el.child(searchBox(autos ? this.runQuery : this.query)));
+      .when(!narrowPane, (el) => el.child(div().flex_1()).children(scopes()))
+      .when(narrowPane, (el) => el.child(searchBox(autos ? this.runQuery : this.query)))
+      .child(refreshIcon());
     // Tight (a pane beside the terminals), the header wraps rather than lose its chips and Refresh.
     const header = this.beside ? slim() : h_flex().h(48).flex_none().px(16).gap(10).items_center().border_b(1).border_color(t.border)
       .when(tight, (el) => el.h_auto().min_h(48).py(9).flex_wrap())
@@ -681,8 +800,7 @@ export default class History extends View {
         .child(h_flex().id("runs-chips").flex_1().min_w(0).h_full().gap(6).items_center().when(narrowPane, (el) => el.overflow_x_scrollbar())
           .when(narrowPane, (el) => el.children(scopes()))
           .child(chip("runs-quiet", this.hideQuiet, () => { this.hideQuiet = !this.hideQuiet; }, ["Hide quiet runs", ...(this.hideQuiet && rv.quiet ? [count(rv.quiet)] : [])],
-            "Runs that never started: a check that printed nothing (or the same as before) or failed, a missed schedule, a run skipped while the last one was still working"))
-          .when(narrowPane, (el) => el.child(refresh())))
+            "Runs that had nothing to do: a check that printed nothing (or the same as before), or a run skipped while the last one was still working. A check that failed or isn't allowed and a missed schedule always show.")))
         .when(!narrowPane, (el) => el.child(searchBox(this.runQuery)));
       const live = liveOf(this.rows.filter((s) => !s.readonly), liveTerms(), shared(RESUMED) ?? {});
       // Each day's heading counts what needs a look, in the list as it's filtered.
@@ -707,13 +825,15 @@ export default class History extends View {
         // Its conversation's helpers and sub-agents, as in the Conversations list.
         const s = st.open || st.quiet ? null : conv;
         const under = s ? f.kids.get(keyOf(s)) ?? [] : [];
+        if (this.hiKey === `run:${r.id}`) hiChild = kids.length;
+        if (this.scrollRun === r.id) { this.listScroll.scroll_to_item(kids.length); this.scrollRun = null; }
         kids.push(this.item(this.runRow(r, st, conv, live, t, now, everywhere, tight, under), t,
           this.open === `run:${r.id}` ? this.runDetails(r, st, conv, t, now) : null));
         if (under.length && this.unfolded.has(keyOf(s))) {
           for (const x of treeRows({ ...f, roots: [s] }, { unfolded: this.unfolded }).slice(1)) {
-            const at = x.s.readonly ? null : live.get(keyOf(x.s)) ?? null;
-            kids.push(this.item(this.row(x.s, at, at ? status.get(at) : null, t, now, everywhere ? null : def, tight, x), t,
-              this.open === keyOf(x.s) ? this.details(x.s, at, t, x.depth) : null));
+            const { at, maybe } = x.s.readonly ? { at: null, maybe: null } : openAt(live, keyOf(x.s));
+            kids.push(this.item(this.row(x.s, at, at ? status.get(at) : null, t, now, everywhere ? null : def, tight, { ...x, maybe }), t,
+              this.open === keyOf(x.s) ? this.details(x.s, at, t, x.depth, maybe) : null));
           }
         }
       }
@@ -723,10 +843,11 @@ export default class History extends View {
       }
       if (!rv.shown.length) {
         kids.push(div().p(16).text_color(t.dim).child(this.runQuery.value().trim() ? "None like that."
-          : rv.quiet ? `Only quiet runs: ${plural(rv.quiet, "check")} that kept an automation from starting.`
+          : rv.quiet ? `Only quiet runs: ${plural(rv.quiet, "run")} that had nothing to do.`
           : everywhere || !def ? "No automation runs yet." : `No automation runs in ${def.name} yet.`));
       }
-      return shell.child(header).child(filters).child(v_flex().id("runs-list").flex_1().min_h(0).overflow_y_scrollbar().px(10).pb(16).children(kids));
+      if (this.scrollHi && hiChild >= 0) { this.listScroll.scroll_to_item(hiChild); this.scrollHi = false; }
+      return shell.child(header).child(filters).child(v_flex().id("runs-list").flex_1().min_h(0).overflow_y_scrollbar().track_scroll(this.listScroll).px(10).pb(16).children(kids));
     }
 
     const providers = Object.keys(PROVIDERS).filter((k) => searched.some((s) => s.provider === k));
@@ -740,8 +861,7 @@ export default class History extends View {
           [this.icon(k, t, 13), this.agent(k)?.name ?? PROVIDERS[k].name, count(searched.filter((s) => s.provider === k).length)])))
         .when(hidden > 0 || this.gone, (el) => el.child(chip("gone", this.gone, () => { this.gone = !this.gone; },
           [this.gone ? "Hide folder gone" : "Folder gone", ...(this.gone ? [] : [count(hidden)])],
-          "Conversations whose folder isn't there any more (a removed worktree, a deleted scratch folder). They can be read about here but not resumed.")))
-        .when(narrowPane, (el) => el.child(refresh())))
+          "Conversations whose folder isn't there any more (a removed worktree, a deleted scratch folder). They can be read about here but not resumed."))))
       .when(!narrowPane, (el) => el.child(searchBox(this.query)));
 
     const kids = [];
@@ -749,14 +869,15 @@ export default class History extends View {
     const roots = shown.filter((x) => x.depth === 0).length;
     // A tree is listed under the day of its newest activity; the page counts trees.
     for (const x of shown) {
-      const { s, at } = x;
+      const { s, at, maybe } = x;
       if (x.depth === 0) {
         if (++drawn > this.max) break;
         const label = dayLabel(f.latest.get(keyOf(s)) ?? s.updated, now);
         if (label !== day) { day = label; kids.push(div().h(30).mt(4).px(8).flex().flex_none().items_end().pb(5).text_size(11.5).text_color(t.dim).child(label)); }
       }
+      if (this.hiKey === keyOf(s)) hiChild = kids.length;
       kids.push(this.item(this.row(s, at, at ? status.get(at) : null, t, now, everywhere ? null : def, tight, x), t,
-        this.open === keyOf(s) ? this.details(s, at, t, x.depth) : null));
+        this.open === keyOf(s) ? this.details(s, at, t, x.depth, maybe) : null));
     }
     if (roots > this.max) {
       kids.push(h_flex().h(40).flex_none().items_center().justify_center()
@@ -764,15 +885,24 @@ export default class History extends View {
     }
     if (this.error) kids.push(div().p(16).text_color(t.blocked).child(this.error));
     else if (this.loaded && !shown.length) {
-      kids.push(div().p(16).text_color(t.dim).child(this.query.value().trim() || this.provider ? "None like that."
+      kids.push(div().p(16).text_color(t.dim).child(this.query.value().trim() ? `No title, prompt or folder like that${def && !everywhere ? ` in ${def.name}` : ""}${since}.`
+        : this.provider ? "None like that."
         : everywhere || !def ? `No conversations${since}.` : `No conversations in ${def.name}${since}.`));
     }
+    // The reader stopped at its limit (scan.js: the newest 1,200): reading further back would
+    // add nothing, so the end says so instead of offering it.
+    const capped = this.loaded && !this.error && this.left > 0 && roots <= this.max;
+    if (capped) {
+      kids.push(div().px(16).py(12).text_size(12).text_color(t.dim)
+        .child(`The newest ${this.limit.toLocaleString("en-US")} conversations are listed; ${this.left.toLocaleString("en-US")} older ${this.left === 1 ? "one isn't" : "ones aren't"} listed or searched.${everywhere && def ? ` Pick ${def.name} to narrow it.` : ""}`));
+    }
     // The end of what was read: older ones are one more read away.
-    if (this.loaded && !this.error && this.span < SPANS.length - 1 && roots <= this.max) {
+    if (this.loaded && !this.error && !capped && this.span < SPANS.length - 1 && roots <= this.max) {
       kids.push(h_flex().h(40).flex_none().items_center().justify_center()
         .child(button("older", "Look further back", (cx) => { this.span++; this.load(cx); }, { tip: this.span === 0 ? "The last year" : "Everything that's kept" })));
     }
-    const body = v_flex().id("hist-list").flex_1().min_h(0).overflow_y_scrollbar().px(10).pb(16).children(kids);
+    if (this.scrollHi && hiChild >= 0) { this.listScroll.scroll_to_item(hiChild); this.scrollHi = false; }
+    const body = v_flex().id("hist-list").flex_1().min_h(0).overflow_y_scrollbar().track_scroll(this.listScroll).px(10).pb(16).children(kids);
     return shell.child(header).child(filters).child(body)
       .when(this.notes.length > 0, (el) => el.child(div().min_h(28).flex_none().px(16).py(6).border_t(1).border_color(t.border).text_size(11.5).text_color(t.dim)
         .child(this.notes.join(" "))));
@@ -787,16 +917,22 @@ export default class History extends View {
   }
 
   // `at`: the terminal it's open in now, if any, and `status`, that agent's. `x`: where
-  // it sits in its tree ({ depth, kids, open }, treefacts.js treeRows()).
+  // it sits in its tree ({ depth, kids, open }, treefacts.js treeRows()), and `x.maybe`, a
+  // terminal only guessed to hold it (tag "open?", Resume stays; Go to in its menu).
   row(s, at, status, t, now, def, tight, x = { depth: 0, kids: [], open: false }) {
     const key = keyOf(s);
+    // Its tooltips stay away while its right-click menu is up (`tipOff`, as the buttons'), until the
+    // pointer leaves the row.
+    const hush = this.tipOff === `h-${key}`;
     const preset = presetOf(s) || s.helper?.preset || "";
-    const sub = [this.startedBy(s), whereOf(s.cwd, def, home(), trees()), s.branch, s.last ? `last: ${s.last}` : s.title ? s.first : ""].filter(Boolean).join("  ·  ");
+    // Under Everywhere, the workspace its folder belongs to comes first, and the folder from there.
+    const ws = !def && this.scope === "all" ? this.ownerOf(s.cwd) : null;
+    const sub = [this.startedBy(s), ws?.name, whereOf(s.cwd, def ?? ws, home(), trees()), s.branch, s.last ? `last: ${s.last}` : s.title ? s.first : ""].filter(Boolean).join("  ·  ");
     const tag = (text, c, tip) => div().flex_none().h(20).px(6).flex().items_center().rounded(5).bg(t.raised).text_size(11.5).text_color(c)
-      .when(Boolean(tip), (el) => el.tooltip(tip)).child(text);
+      .when(Boolean(tip), (el) => el.when(!hush, (el) => el.tooltip(tip))).child(text);
     const name = s.helper?.name || "";
     const act = (id, text, action, tip, solid) => div().id(id).h(24).px(9).flex().flex_none().items_center().rounded(6)
-      .text_size(11.5).cursor_pointer().tooltip(tip).on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .text_size(11.5).cursor_pointer().when(!hush, (el) => el.tooltip(tip)).on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .when(solid, (el) => el.bg(t.solid).text_color(t.solid_foreground).font_medium().hover((x) => x.opacity(0.88)))
       .when(!solid, (el) => el.border_1().border_color(t.input).text_color(t.muted).hover((x) => x.bg(t.hover).text_color(t.foreground)))
       .on_click((_e, cx) => { cx.stop_propagation(); action(cx); }).child(text);
@@ -805,26 +941,31 @@ export default class History extends View {
     const folds = x.kids.length > 0;
     const shell = (folds ? v_flex().pt(4).pb(6) : h_flex().h(s.readonly ? 40 : 46).gap(10).items_center())
       .id(`h-${key}`).pl(8 + indent(x.depth)).pr(8).flex_none().rounded(7).cursor_pointer()
+      .when(this.open !== key && this.hiKey === key, (el) => el.bg(t.selected))
       .when(this.open !== key, (el) => el.hover((el) => el.bg(t.hover)))
       .on_click((_e, cx) => { this.open = this.open === key ? null : key; cx.notify(); })
-      .when(!s.readonly, (el) => el.on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openMenu(s, at); }));
+      .on_hover((over, cx) => { if (!over && this.tipOff === `h-${key}`) { this.tipOff = null; cx.notify(); } })
+      .when(!s.readonly, (el) => el.on_mouse_down("right", (e, cx) => { cx.stop_propagation(); this.tipOff = `h-${key}`; cx.notify(); this.openMenu(s, at, x.maybe ?? null, e?.position ?? null); }));
+    const agentName = this.agent(s.provider)?.name || PROVIDERS[s.provider]?.name || "agent";
+    const guessTip = x.maybe ? `${/^[aeiou]/i.test(agentName) ? "An" : "A"} ${agentName} is running in this folder (${x.maybe}). History can't tell whether it holds this conversation.` : "";
     const fill = (el) => el
       .child(this.icon(s.provider, t, s.readonly ? 13 : 16))
       .child(v_flex().flex_1().min_w(0).gap(2)
         .child(h_flex().min_w(0).gap(7).items_center()
-          .when(Boolean(name), (el) => el.child(div().flex_none().max_w(180).truncate().font_medium().text_color(s.gone && !at ? t.muted : t.foreground).child(name)))
-          .child(div().flex_1().min_w(0).truncate().text_size(s.readonly ? 12 : 13).text_color(s.gone && !at ? t.muted : name || s.readonly ? t.muted : t.foreground).child(titleOf(s))))
-        .child(div().truncate().text_size(11.5).text_color(t.dim).child(sub)))
+          .when(Boolean(name), (el) => el.child(div().id(`hn-${key}`).flex_none().max_w(180).truncate().font_medium().text_color(s.gone && !at ? t.muted : t.foreground).when(!hush, (el) => el.tooltip(name)).child(name)))
+          .child(div().id(`ht-${key}`).flex_1().min_w(0).truncate().text_size(s.readonly ? 12 : 13).text_color(s.gone && !at ? t.muted : name || s.readonly ? t.muted : t.foreground).when(!hush, (el) => el.tooltip(titleOf(s))).child(titleOf(s))))
+        .child(div().id(`hs-${key}`).truncate().text_size(11.5).text_color(t.dim).when(Boolean(sub), (el) => el.when(!hush, (el) => el.tooltip(sub))).child(sub)))
       .when(Boolean(preset) && !tight, (el) => el.child(tag(preset, t.muted, "Started from this agent preset; Resume starts it the same way")))
       .when(Boolean(s.readonly) && !tight, (el) => el.child(tag(s.sub?.type || "sub-agent", t.dim, "The agent's own sub-agent: read here, it can't be resumed on its own")))
       .when(s.via === "app" && !tight, (el) => el.child(tag("app", t.muted, "Started in the agent's desktop app or an editor, not in a terminal. Resume continues it here.")))
       .when(Boolean(at), (el) => el.child(h_flex().flex_none().h(20).px(6).gap(5).items_center().rounded(5).bg(t.raised).text_size(11.5).text_color(t.accent)
-        .tooltip(`Open in ${at} now`)
+        .when(!hush, (el) => el.tooltip(`Open in ${this.termPlace(at)} now${DOING[status] ? `; ${DOING[status]}` : ""}`))
         .child(div().size(6).rounded_full().bg(status ? (t[status] ?? t.idle) : t.idle)).child("open")))
+      .when(!at && Boolean(x.maybe), (el) => el.child(tag("open?", t.muted, guessTip).id(`hg-${key}`)))
       .when(Boolean(s.gone && !at), (el) => el.child(tag("folder gone", t.dim, `${tilde(s.cwd)} isn't there any more, so it can't be resumed there`)))
       .when(Boolean(s.model) && !tight, (el) => el.child(div().flex_none().max_w(150).truncate().text_size(11.5).text_color(t.dim).child(modelLabel(s.model))))
       .when(s.compactions > 0 && !tight && featureOn("numbers"), (el) => el.child(h_flex().id(`hc-${key}`).flex_none().gap(3).items_center().text_size(11.5).text_color(t.dim)
-        .tooltip(compactionsTip(s.compactions, s.compacted?.[s.compacted.length - 1]))
+        .when(!hush, (el) => el.tooltip(compactionsTip(s.compactions, s.compacted?.[s.compacted.length - 1])))
         .child(svg("mods/ws-history/compacted.svg").size(11).text_color(t.dim)).child(String(s.compactions))))
       .child(div().w(30).flex_none().text_size(11.5).text_color(t.dim).child(ago(s.updated, now)))
       .child(h_flex().w(62).flex_none().justify_end()
@@ -848,14 +989,15 @@ export default class History extends View {
   // the count alone. (A negative margin to pull it up made the row lose its height.)
   foldLine(id, key, kids, open, left, t, tip) {
     const names = open ? "" : kidNames(kids);
+    const hush = this.tipOff === `h-${key}`; // its row's right-click menu is up (row())
     return h_flex().id(id).h(18).ml(left).gap(6).items_center().flex_none().cursor_pointer()
       .text_size(11.5).text_color(t.muted).hover((el) => el.text_color(t.foreground))
-      .tooltip(open ? "Fold them away" : tip)
+      .when(!hush, (el) => el.tooltip(open ? "Fold them away" : tip))
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .on_click((_e, cx) => { cx.stop_propagation(); if (this.unfolded.has(key)) this.unfolded.delete(key); else this.unfolded.add(key); cx.notify(); })
       .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(10).flex_none())
       .child(div().flex_none().child(chipText(kids)))
-      .when(Boolean(names), (el) => el.child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(names)));
+      .when(Boolean(names), (el) => el.child(div().id(`${id}-n`).flex_1().min_w(0).truncate().text_color(t.dim).when(!hush, (el) => el.tooltip(names)).child(names)));
   }
 
   // "started by …" for a row whose parent isn't listed: its title when the reader knew it,
@@ -874,7 +1016,7 @@ export default class History extends View {
   // that never started is drawn quieter. `s`: its conversation (runsView()).
   runRow(r, st, s, live, t, now, everywhere, tight, under = []) {
     const own = st.open || st.quiet ? null : s; // the conversation Go to and Resume act on
-    const at = own ? live.get(keyOf(own)) ?? null : null;
+    const at = own ? openAt(live, keyOf(own)).at : null; // a guess keeps Resume (no tag here)
     const opened = this.open === `run:${r.id}`;
     const wsName = everywhere ? defOf(r.ws)?.name ?? r.ws : null;
     const said = s && !s.stub ? s.said ?? "" : "";
@@ -894,6 +1036,7 @@ export default class History extends View {
     const folds = under.length > 0 && Boolean(key);
     const shell = (folds ? v_flex().pt(4).pb(6) : h_flex().h(st.quiet ? 38 : 46).gap(10).items_center())
       .id(`run-${r.id}`).px(8).flex_none().rounded(7).cursor_pointer()
+      .when(!opened && this.hiKey === `run:${r.id}`, (el) => el.bg(t.selected))
       .when(!opened, (el) => el.hover((x) => x.bg(t.hover)))
       .on_click((_e, cx) => this.toggleRun(r, s, cx));
     const fill = (el) => el
@@ -901,17 +1044,19 @@ export default class History extends View {
         .text_color(st.quiet ? t.dim : st.tone === "blocked" ? t.blocked : t.muted))
       .child(v_flex().flex_1().min_w(0).gap(2)
         .child(h_flex().min_w(0).gap(7).items_center()
-          .child(div().flex_none().max_w(320).truncate().text_color(st.quiet ? t.muted : t.foreground).text_size(st.quiet ? 12 : 13).child(r.name))
+          // Tight, the name gives way too, rather than run under the state word.
+          .child(div().id(`rn-${r.id}`).when(!tight, (el) => el.flex_none()).when(tight, (el) => el.min_w(0)).max_w(320).truncate().text_color(st.quiet ? t.muted : t.foreground).text_size(st.quiet ? 12 : 13).tooltip(r.name).child(r.name))
           // A script's run: the shell it ran with, as a quiet tag.
           .when(shellRun && !st.quiet, (el) => el.child(div().flex_none().px(6).h(17).flex().items_center().rounded(5).bg(t.selected).text_size(10.5).text_color(t.accent).child(r.shell || "sh")))
-          .when(Boolean(wsName), (el) => el.child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(wsName))))
-        .child(div().truncate().text_size(11.5).text_color((said && sub === said) || (out && sub === out) ? t.muted : t.dim).when(Boolean(out) && sub === out, (el) => el.font_family("JetBrains Mono")).child(sub)))
-      .child(div().flex_none().text_size(11.5).text_color(t[st.tone] ?? t.dim).child(st.word))
+          .when(Boolean(wsName), (el) => el.child(div().id(`rw-${r.id}`).flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).tooltip(wsName).child(wsName))))
+        .child(div().id(`rs-${r.id}`).truncate().when(Boolean(sub), (el) => el.tooltip(sub)).text_size(11.5).text_color((said && sub === said) || (out && sub === out) ? t.muted : t.dim).when(Boolean(out) && sub === out, (el) => el.font_family("JetBrains Mono")).child(sub)))
+      .child(div().id(`rst-${r.id}`).flex_none().text_size(11.5).text_color(t[st.tone] ?? t.dim).when(Boolean(runTip(st, r.kind)), (el) => el.tooltip(runTip(st, r.kind))).child(st.word))
       .child(div().w(30).flex_none().text_size(11.5).text_color(t.dim).child(ago(r.at, now)))
-      .child(h_flex().w(80).flex_none().gap(6).justify_end()
+      // Its buttons; tight (beside the terminals), only as wide as they are.
+      .child(h_flex().when(!tight, (el) => el.w(80)).flex_none().gap(6).justify_end()
         .when(st.open, (el) => el.child(act(`rgo-${r.id}`, "Go to", () => this.goToRun(r), "Show its tab", st.word === "needs you")))
         // A script's run that ended: Run again (opened, it's below with the log instead).
-        .when(shellRun && !st.open && !opened && !st.quiet && st.word !== "running" && st.word !== "queued" && featureOn("automations"), (el) => el.child(act(`rag-${r.id}`, "Run again", () => this.runAgain(r), "Run its script again now")))
+        .when(shellRun && !st.open && !opened && st.ran !== false && st.word !== "running" && st.word !== "queued" && featureOn("automations"), (el) => el.child(act(`rag-${r.id}`, "Run again", () => this.runAgain(r), "Run its script again now")))
         .when(!st.open && Boolean(at), (el) => el.child(act(`rgo-${r.id}`, "Go to", () => this.goTo(at), `Its conversation is open in ${at} now`)))
         .when(!st.open && !at && Boolean(own) && !own.gone && this.starting === key, (el) => el.child(div().text_size(11.5).text_color(t.dim).child("Starting…")))
         .when(!st.open && !at && Boolean(own) && !own.gone && this.starting !== key, (el) => el.child(act(`rre-${r.id}`, "Resume", (cx) => this.resume(own, cx),
@@ -943,10 +1088,10 @@ export default class History extends View {
       .when(solid, (el) => el.bg(t.solid).text_color(t.solid_foreground).font_medium().hover((x) => x.opacity(0.88)))
       .when(!solid, (el) => el.border_1().border_color(t.input).text_color(t.muted).hover((x) => x.bg(t.hover).text_color(t.foreground)))
       .tooltip(tip).on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-      .on_click((_e, cx) => { cx.stop_propagation(); action(); }).child(text);
+      .on_click((_e, cx) => { cx.stop_propagation(); action(cx); }).child(text);
     const shellRun = r.kind === "shell";
     const ended = st.word !== "running" && st.word !== "queued" && !st.open;
-    const automation = btn(`rau-${r.id}`, "Open the automation", `Open ${r.name} in Automations`, () => this.openAutomation(r), false);
+    const automation = btn(`rau-${r.id}`, "Open the automation", `Open ${r.name} in Automations`, (cx) => this.openAutomation(r, cx), false);
     const again = btn(`rra-${r.id}`, "Run again", shellRun ? "Run its script again now" : "Start it again now, in a new tab", () => this.runAgain(r), shellRun);
     const logBtn = btn(`rlf-${r.id}`, "Open log in Files", "Its whole output, in Files", () => this.openLog(r), false);
     // A script's output: its log file's first lines, as it printed them.
@@ -959,21 +1104,24 @@ export default class History extends View {
         .children(logLines.slice(0, LOG_LINES).map((p) => div().truncate().child(p || " ")))
         .when(logLines.length > LOG_LINES, (el) => el.child(div().text_color(t.dim).child("… open log in Files for full output")));
     return v_flex().pl(33).pr(8).pt(2).pb(12).gap(7).text_size(12)
-      .when(Boolean(said), (el) => el.child(line(st.word === "needs you" ? "It asked" : "It said", report)))
+      .when(Boolean(said), (el) => el.child(line(st.word === "needs you" ? "It asked" : st.word === "no outcome" ? "It ended on" : "It said", report)))
       .when(Boolean(output), (el) => el.child(line("Output", output)))
       .when(shellRun && !r.logFile && Boolean(r.closed), (el) => el.child(line("Output", r.summary || "It printed nothing.")))
       .child(line(r.status === "started" || r.status === "running" ? "Ran" : "When", ranText(r, st, s, now)))
       .when(Boolean(r.cmd), (el) => el.child(line("Check", r.cmd)))
       .when(Boolean(r.folder), (el) => el.child(line("Folder", tilde(r.folder))))
       .when(featureOn("automations"), (el) => el.child(h_flex().gap(8).child(div().w(84).flex_none())
-        .when(ended && (shellRun || !st.quiet), (el) => el.child(again))
+        .when(ended && (shellRun || st.ran !== false), (el) => el.child(again))
         .when(shellRun && Boolean(r.logFile), (el) => el.child(logBtn))
-        .child(automation)));
+        .child(automation)
+        .when(this.away === r.id, (el) => el.child(div().text_color(t.muted).child("Show the sidebar to do this")))));
   }
 
   // Under an opened row, inside its highlight (item()): what was asked first and last,
-  // where and when, and the command Resume runs.
-  details(s, at, t, depth = 0) {
+  // where and when, the command Resume runs, and two of its menu's items as buttons, as a
+  // run's (Copy conversation id; Wipe… where the menu offers it; a sub-agent, Copy alone).
+  // `maybe`: a terminal only guessed to hold it (row()).
+  details(s, at, t, depth = 0, maybe = null) {
     const a = this.agent(s.provider);
     const argv = resumeArgv(s, a?.run) ?? [];
     const quote = (w) => (/^[A-Za-z0-9_\/.:=@%+-]+$/.test(w) ? w : `'${w.replace(/'/g, "'\\''")}'`);
@@ -982,6 +1130,16 @@ export default class History extends View {
       .child(div().flex_1().min_w(0).text_color(t.muted).child(text));
     const started = s.helper ? [s.helper.name && `as ${s.helper.name}`, s.helper.preset && `(${s.helper.preset})`].filter(Boolean).join(" ") : "";
     const parent = s.parent ? this.rows.find((x) => keyOf(x) === s.parent) : null;
+    // Quiet bordered, as a run's buttons; `danger`: the text in the delete colour.
+    // A tooltip stays up over what its button opened (Wipe…'s dialog): `tipOff` drops it from the
+    // click until the pointer leaves the button.
+    const btn = (id, text, tip, action, danger) => div().id(id).h(24).px(9).flex().flex_none().items_center().rounded(6).text_size(11.5).cursor_pointer()
+      .border_1().border_color(t.input).text_color(danger ? t.blocked : t.muted)
+      .hover((x) => x.bg(t.hover).text_color(danger ? t.blocked : t.foreground))
+      .when(this.tipOff !== id, (el) => el.tooltip(tip))
+      .on_hover((over, cx) => { if (!over && this.tipOff === id) { this.tipOff = null; cx.notify(); } })
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_click((_e, cx) => { cx.stop_propagation(); action(cx); }).child(text);
     return v_flex().pl((s.readonly ? 31 : 34) + indent(depth)).pr(8).pt(2).pb(12).gap(7).text_size(12)
       .when(Boolean(s.parent), (el) => el.child(line(s.readonly ? "Sub-agent of" : "Started by", `${parent ? `“${titleOf(parent)}”` : this.startedBy(s).replace(/^started by /, "")}${started ? `  ${started}` : ""}`)))
       .when(Boolean(s.first), (el) => el.child(line("First asked", s.first)))
@@ -995,8 +1153,11 @@ export default class History extends View {
           .children([...(s.compacted ?? [])].reverse().slice(0, 5).map((c) => div().child(compactionText(c))))
           .when(s.compactions > Math.min(5, s.compacted?.length ?? 0), (el) => el.child(div().text_color(t.dim)
             .child(`${s.compactions === 1 ? "Once" : `${s.compactions} times`} in all`))))))
-      .when(Boolean(at), (el) => el.child(line("Open in", at)))
-      .when(!s.gone && !at && !s.readonly, (el) => el.child(line("Resume runs", argv.map((w) => (quote(w) === w ? tilde(w) : quote(w))).join(" "))));
+      .when(Boolean(at), (el) => el.child(line("Open in", this.termPlace(at))))
+      .when(!s.gone && !at && !s.readonly, (el) => el.child(line("Resume runs", argv.map((w) => (quote(w) === w ? tilde(w) : quote(w))).join(" "))))
+      .child(h_flex().gap(8).child(div().w(84).flex_none())
+        .child(btn(`hcp-${keyOf(s)}`, "Copy conversation id", "Put its id on the clipboard", (cx) => this.copyId(s.id, cx), false))
+        .when(!s.readonly && this.canWipe(s, at, maybe), (el) => el.child(btn(`hwp-${keyOf(s)}`, "Wipe…", "Move its files to the Trash; asks first", (cx) => { this.tipOff = `hwp-${keyOf(s)}`; cx.notify(); this.openWipe(this.menuFacts(s, at, maybe)); }, true))));
   }
 
   // --- The right-click menu and the Wipe dialog ---
@@ -1004,6 +1165,7 @@ export default class History extends View {
   // A popup or dialog of its own (props histMenu / wipe): nothing of the list.
   initOverlay(p, cx) {
     this.at = 0;
+    this.pointerLast = pointKey(p.pointer);
     this.busy = false;
     this.error = null;
     this.hint = null;
@@ -1014,15 +1176,50 @@ export default class History extends View {
 
   // What a row's menu and its Wipe need, worked out here where the list is: the row, the
   // terminal it's open in, the helpers under it, and which terminals hold what.
-  openMenu(s, at) {
+  // `maybe`: a terminal only guessed to hold it (its menu offers both Go to and Resume).
+  menuFacts(s, at, maybe = null) {
     const f = forest(this.rows);
     const lean = (x) => ({ provider: x.provider, id: x.id, file: x.file ?? null, cwd: x.cwd, title: titleOf(x), name: x.helper?.name || "", terminal: x.terminal ?? null, gone: Boolean(x.gone), readonly: Boolean(x.readonly), via: x.via ?? "" });
-    const agyOn = shared("workspaces.settings")?.experimental?.[AGY_WIPE] === true;
-    const wipe = WIPES.has(s.provider) ? wipeTargets({ kind: s.provider, session: s.id, file: s.file }).length > 0
-      : s.provider === "antigravity" && agyOn && !at && Boolean(s.file);
-    const menu = { from: this.me, key: keyOf(s), row: lean(s), at, gone: Boolean(s.gone), readonly: Boolean(s.readonly), wipe, agy: s.provider === "antigravity",
+    return { from: this.me, key: keyOf(s), row: lean(s), at, maybe, gone: Boolean(s.gone), readonly: Boolean(s.readonly), wipe: this.canWipe(s, at, maybe), agy: s.provider === "antigravity",
       helpers: helpersOf(f, s).map(lean), direct: (f.kids.get(keyOf(s)) ?? []).filter((x) => !x.readonly).map(lean), core: this.core };
-    openOverlay({ mod: "ws-history", kind: "popup", width: 220, height: menuHeight(historyMenu(menu)), props: { histMenu: menu } });
+  }
+
+  // Whether Wipe can be offered: its agent's files are known (Antigravity's, behind its
+  // experiment, only for one in no terminal, a guessed one too: its wipe can't check).
+  canWipe(s, at, maybe = null) {
+    const agyOn = shared("workspaces.settings")?.experimental?.[AGY_WIPE] === true;
+    return WIPES.has(s.provider) ? wipeTargets({ kind: s.provider, session: s.id, file: s.file }).length > 0
+      : s.provider === "antigravity" && agyOn && !at && !maybe && Boolean(s.file);
+  }
+
+  // `pointer`: where the right-click was (window points), where the menu's pointer rule starts (pointerRow()).
+  openMenu(s, at, maybe = null, pointer = null) {
+    const menu = this.menuFacts(s, at, maybe);
+    openOverlay({ mod: "ws-history", kind: "popup", width: 220, height: menuHeight(historyMenu(menu)), props: { histMenu: menu, pointer } });
+  }
+
+  // Copy conversation id (the menu's and the opened row's button): a toast says how it went;
+  // `after`, once it has (the menu closes then: its tasks end when it does).
+  copyId(id, cx, after = null) {
+    return cx.spawn(async () => {
+      const r = await exec("sh", ["-c", COPY, "sh", id]).catch((e) => ({ code: 1, stderr: message(e) }));
+      if (r?.code !== 0) notify({ title: "Couldn't copy the conversation id", body: String(r?.stderr ?? "").trim() || "it didn't say why", level: "error" });
+      else notify({ title: "Conversation id copied", body: id, level: "success", timeout: 2500 });
+      after?.();
+    });
+  }
+
+  // Wipe (the menu's and the opened row's button): its dialog, or the Agents list's for
+  // Antigravity. `f`: menuFacts().
+  openWipe(f) {
+    if (f.agy) {
+      // The Agents list's Wipe, as it does it (agywipe.js), for a conversation open in no terminal.
+      setShared(ACT, { from: f.from, key: f.key, action: "rescan", at: Date.now() });
+      return openOverlay({ mod: "ws-agents", kind: "dialog", modal: true, width: 480, height: 410, props: { wipe: {
+        address: null, name: f.row.title, pane: null, tab: null, space: null, status: null, kind: "agy", remote: false,
+        session: f.row.id, file: f.row.file, cwd: f.row.cwd, cmd: null, agyWipe: true, agyFresh: true, pid: null } } });
+    }
+    return openOverlay({ mod: "ws-history", kind: "dialog", modal: true, width: 480, height: wipeHeight(f), props: { wipe: f } });
   }
 
   // What the menu asked this History for (shared ACT): it can resume, the popup can't.
@@ -1031,28 +1228,46 @@ export default class History extends View {
     const s = this.rows.find((x) => keyOf(x) === asked.key);
     if (!s) return;
     if (asked.action === "goto" && asked.terminal) return this.goTo(asked.terminal);
-    if (asked.action === "resume") this.act(s, liveOf(this.rows.filter((x) => !x.readonly), liveTerms(), shared(RESUMED) ?? {}).get(keyOf(s)) ?? null, cx);
+    if (asked.action === "resume") this.act(s, openAt(liveOf(this.rows.filter((x) => !x.readonly), liveTerms(), shared(RESUMED) ?? {}), keyOf(s)).at, cx);
+  }
+
+  // A row under a pointer that moves becomes the keys' row. pointerLast starts at the press that
+  // opened the menu (props.pointer) and follows every move; a move at the same place as the last
+  // one is no move (a resting pointer, or one re-sent with no movement), so it never takes the row.
+  pointerRow(i, e, cx) {
+    const here = pointKey(e?.position);
+    if (here === undefined || here === this.pointerLast) return;
+    const first = this.pointerLast === undefined;
+    this.pointerLast = here;
+    if (first) return; // no press known: the first move is only where it rests
+    if (this.at !== i) { this.at = i; cx.notify(); }
   }
 
   menuView(t) {
     const f = props().histMenu;
     const items = historyMenu(f);
+    // Esc (and Cmd/Ctrl+W) reach a popup as Herdr's actions, never as keys: Herdr closes it,
+    // except while Copy runs (`busy`), whose task ends when the popup does: claimed then, to wait.
+    const wait = (_e, cx) => cx.stop_propagation();
     return v_flex().id("hist-menu").track_focus(this.handle).w_full().min_h(0).p(5).bg(t.popover).text_size(12.8)
+      .when(this.busy, (el) => el.on_action("overlay.close", wait).on_action("tab.close", wait).on_action("pane.close", wait))
       .on_key_down((e, cx) => {
         if (e.key === "down") this.at = (this.at + 1) % items.length;
         else if (e.key === "up") this.at = (this.at + items.length - 1) % items.length;
         else if (e.key === "enter") return this.pick(items[this.at], cx);
-        else if (e.key === "escape") return closeOverlay(props().overlay);
+        // Esc never comes here: Herdr's Esc is the action overlay.close (above).
         else return;
         cx.notify();
       })
-      .child(div().px(8).pt(4).pb(6).text_size(11).text_color(t.dim).truncate().child(f.row.name ? `${f.row.name} · ${f.row.title}` : f.row.title))
+      .child(div().id("hm-title").px(8).pt(4).pb(6).text_size(11).text_color(t.dim).truncate().tooltip(f.row.name ? `${f.row.name} · ${f.row.title}` : f.row.title).child(f.row.name ? `${f.row.name} · ${f.row.title}` : f.row.title))
       .children(items.map((it, i) => v_flex()
         .when(Boolean(it.sep), (el) => el.child(div().mx(7).my(4).h(1).bg(t.border)))
         .child(h_flex().id(`hm-${it.id}`).h(31).px(8).gap(9).rounded(7).items_center()
           .text_color(it.danger ? t.blocked : t.foreground)
           .when(i === this.at, (el) => el.bg(t.selected))
-          .hover((el) => el.bg(t.hover))
+          // The pointer moves the keys' row too (pointerRow()), so it is the one row lit (no hover fill
+          // of its own: a menu opened under a resting pointer would show two), and Enter runs it.
+          .on_mouse_move((e, cx) => this.pointerRow(i, e, cx))
           .on_click((_e, cx) => this.pick(it, cx))
           .child(svg(it.icon).size(14).flex_none().text_color(it.danger ? t.blocked : t.muted))
           .child(div().flex_1().min_w(0).truncate().child(it.label))
@@ -1070,27 +1285,16 @@ export default class History extends View {
     switch (it.id) {
       case "resume":
       case "goto":
-        setShared(ACT, { from: f.from, key: f.key, action: it.id, terminal: f.at ?? null, at: Date.now() });
+        setShared(ACT, { from: f.from, key: f.key, action: it.id, terminal: f.at ?? f.maybe ?? null, at: Date.now() });
         return done();
       case "copy": {
         this.busy = true;
-        return cx.spawn(async () => {
-          const r = await exec("sh", ["-c", COPY, "sh", f.row.id]).catch((e) => ({ code: 1, stderr: message(e) }));
-          if (r?.code !== 0) notify({ title: "Couldn't copy the session id", body: String(r?.stderr ?? "").trim() || "it didn't say why", level: "error" });
-          else notify({ title: "Session id copied", body: f.row.id, level: "success", timeout: 2500 });
-          done();
-        });
+        cx.notify(); // drawn again, so the popup claims Esc while it copies
+        return this.copyId(f.row.id, cx, done);
       }
       case "wipe":
         done();
-        if (f.agy) {
-          // The Agents list's Wipe, as it does it (agywipe.js), for a conversation open in no terminal.
-          setShared(ACT, { from: f.from, key: f.key, action: "rescan", at: Date.now() });
-          return openOverlay({ mod: "ws-agents", kind: "dialog", width: 480, height: 410, props: { wipe: {
-            address: null, name: f.row.title, pane: null, tab: null, space: null, status: null, kind: "agy", remote: false,
-            session: f.row.id, file: f.row.file, cwd: f.row.cwd, cmd: null, agyWipe: true, agyFresh: true, pid: null } } });
-        }
-        return openOverlay({ mod: "ws-history", kind: "dialog", width: 480, height: wipeHeight(f), props: { wipe: f } });
+        return this.openWipe(f);
     }
   }
 
@@ -1214,32 +1418,45 @@ export default class History extends View {
       .border_color(kind ? t.blocked : t.input).bg(kind === "danger" ? t.blocked : t.raised)
       .text_color(kind === "danger" ? "#ffffff" : kind === "more" ? t.blocked : t.foreground).text_size(12.5).font_medium().cursor_pointer()
       .when(this.busy || off, (el) => el.opacity(0.5)).hover((el) => el.opacity(0.88)).on_click(action).child(label);
-    const enter = (cx) => this.doWipe(false, cx);
     const line = (text, color, size = 11.5) => div().pt(8).text_size(size).text_color(color).child(text);
+    // Esc, and Cmd/Ctrl+W, reach a dialog as Herdr's actions, never as keys: claimed here, so
+    // they close it only when it isn't wiping (wipeClose()).
+    const onClose = (_e, cx) => { cx.stop_propagation(); this.wipeClose(); };
     return v_flex().id("hist-wipe").track_focus(this.handle).size_full().min_h(0).p(18).bg(t.popover).text_size(13)
-      .on_key_down((e, cx) => {
-        if (e.key === "escape") closeOverlay(props().overlay);
-        else if (e.key === "enter") enter(cx);
-        else return;
-        cx.stop_propagation();
-      })
+      .on_action("overlay.close", onClose)
+      .on_action("tab.close", onClose)
+      .on_action("pane.close", onClose)
+      .on_key_down((e, cx) => this.wipeKey(e, cx))
       .child(h_flex().flex_none().items_center()
-        .child(div().flex_1().min_w(0).truncate().text_size(15).font_semibold().text_color(t.foreground).child(`Wipe “${f.row.title}”?`))
+        .child(div().id("hist-wipe-title").flex_1().min_w(0).truncate().text_size(15).font_semibold().text_color(t.foreground).tooltip(f.row.title).child(`Wipe “${f.row.title}”?`))
         .child(div().text_size(11).text_color(t.dim).child("Esc")))
       // What it says scrolls when it's more than the dialog holds; the buttons stay.
       .child(v_flex().id("hist-wipe-text").flex_1().min_h(0).overflow_y_scrollbar()
-        .child(div().pt(12).text_color(t.muted).child(`Moves this conversation to the ${trashName()} (${what}), so History won't list it and it can't be resumed.${c?.ok && c.close ? ` It's open in ${c.close}: Wipe closes that first.` : ""}`))
+        .child(div().pt(12).text_color(t.muted).child(`Moves this conversation to the ${trashName()} (${what}), so History won't list it and it can't be resumed.${c?.ok && c.close ? openWords(c.close, liveTerms().find((x) => x.address === c.close)?.status ?? null) : ""}`))
         .when(f.helpers.length > 0, (el) => el.child(line(`${helperWords(f, wipeable.length)}${opens > (c?.close ? 1 : 0) ? " Wipe all closes the ones that are open." : ""}`, t.muted, 12)))
         .when(!this.checks && !this.error, (el) => el.child(line("Looking at what has it open…", t.dim)))
         .when(Boolean(c) && !c.ok && !this.error, (el) => el.child(line(`Can't wipe it now: ${c.why}`, t.blocked)))
-        .when(ends.length > 0 && !this.error, (el) => el.child(line(`Closing ${c.close} would also end ${who(ends)}, still running, so Wipe waits until they're done${wipeable.length ? "; Wipe all wipes the ones History lists here too" : ""}.`, t.blocked)))
+        .when(ends.length > 0 && !this.error, (el) => el.child(line(`Closing ${c.close} would also end ${who(ends)}, still running. Wipe is possible once they're done${wipeable.length ? "; Wipe all wipes the ones History lists here too" : ""}.`, t.blocked)))
         .when(Boolean(blockedHelper) && c?.ok && !this.error, (el) => el.child(line(`Wipe all can't go on: ${blockedHelper.x.name || blockedHelper.x.title}: ${blockedHelper.why}`, t.muted)))
         .when(wipeable.length > 0 && allEnds.length > 0 && !blockedHelper && c?.ok && !this.error, (el) => el.child(line(`Wipe all also ends ${who(allEnds)}, still running (their conversations stay).`, t.muted)))
         .when(Boolean(this.error), (el) => el.child(line(this.error, t.blocked))))
       .child(h_flex().flex_none().pt(14).gap(8).justify_end()
-        .child(button("hist-wipe-cancel", "Cancel", null, () => closeOverlay(props().overlay), false))
+        .child(button("hist-wipe-cancel", "Cancel", null, () => this.wipeClose(), false))
         .when(wipeable.length > 0, (el) => el.child(button("hist-wipe-all", this.busy ? "Wiping…" : `Wipe all ${wipeable.length + 1}`, "more", (_e, cx) => this.doWipe(true, cx), !c?.ok || Boolean(blockedHelper))))
         .child(button("hist-wipe-go", this.busy ? "Wiping…" : "Wipe", "danger", (_e, cx) => this.doWipe(false, cx), !c?.ok || ends.length > 0)));
+  }
+
+  // Enter in the Wipe dialog is Wipe. (Esc never comes here as a key: Herdr's Esc is the
+  // action overlay.close, claimed on the dialog's root.)
+  wipeKey(e, cx) {
+    if (e.key !== "enter") return;
+    this.doWipe(false, cx);
+    cx.stop_propagation();
+  }
+  // Esc, Cmd/Ctrl+W and Cancel: close the Wipe dialog, but not while it wipes: it mustn't
+  // stop half way.
+  wipeClose() {
+    if (!this.busy) closeOverlay(props().overlay);
   }
 
   // Looks again (what has it open may have changed while the dialog was open), closes the

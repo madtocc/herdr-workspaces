@@ -137,6 +137,11 @@ export function brokerView(status, { mac = true, busy = null, error = null, read
     } else if (state === "running") {
       v.chip = { label: run, tone: signed && status.hardened !== false ? "ok" : "warn" };
       v.buttons = [btn("restart", "Restart"), ...uninstall()];
+      // All well: only the count. The LaunchAgent and the socket are for when something is wrong.
+      if (v.chip.tone === "ok" && status.loaded && typeof status.count === "number" && !error && !status.error && !readError) {
+        v.factParts = [plural(status.count, "Protected secret")];
+        v.facts = v.factParts[0];
+      }
     } else {
       v.chip = { label: run, tone: "warn" };
       v.buttons = [btn("start", "Start", "primary"), ...uninstall()];
@@ -145,6 +150,8 @@ export function brokerView(status, { mac = true, busy = null, error = null, read
     if (confirm && !busy) { v.note = UNINSTALL_NOTE; v.buttons = uninstall(); }
   }
   if (!v.factParts.length && v.facts) v.factParts = [v.facts];
-  v.error = firstLine(error) ?? firstLine(status?.error) ?? firstLine(readError);
+  // The home folder as ~, as in the facts ("see ~/.herdr/vault/broker.log").
+  const err = firstLine(error) ?? firstLine(status?.error) ?? firstLine(readError);
+  v.error = err && home ? err.split(`${home}/`).join("~/") : err;
   return v;
 }

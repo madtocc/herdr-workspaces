@@ -26,7 +26,7 @@
 //   is the editors installed and the apps macOS offers for a text file, found once a window
 //   while Files is shown; its popup is the window's `picking` ("wsx-files-app"), so a section
 //   change closes it as it closes the font lists.
-// - Vault: PROTECTED BROKER (MACOS), the Keychain-ACL broker's row (brokerfacts.js: its state from
+// - Vault: PROTECTED BROKER (MACOS), the Protected broker's row (brokerfacts.js: its state from
 //   `herdr-ws-secret broker status --json`, read every 10 s while the page is shown, and its
 //   buttons, which run `herdr-ws-secret broker install|restart|uninstall --json`; Uninstall asks
 //   in the row first), then DEFAULTS FOR NEW SECRETS and VISIBILITY: "vault" in
@@ -44,6 +44,7 @@ import * as fs from "fs/promises";
 import { SETTINGS_FILE, EXPERIMENTS, FEATURES, FILES_SETTINGS, EDITOR_CATALOG, LINUX_APPS_SH, parseLinuxApps, AUTOMATIONS_SETTINGS, VAULT_SETTINGS, parseSettings, withExperiment, withFeature, withFileSetting, withAutomationSetting, withVaultSetting, experimentOn, featureOn, fileSetting, automationSetting, vaultSetting, appChoices, appLabel, automationCount, automationsLine, platformWords } from "./settingsfacts.js";
 import { BROKER_OPS, STATUS_ARGS, parseBrokerStatus, actionError, brokerView, pressBroker } from "./brokerfacts.js";
 import { HIDDEN, hiddenFile, parseHidden, saveHidden, shownAgents, countLine, notInstalledLine } from "./hidefacts.js";
+import { DESK_TITLE, DESK_ABOUT, parseDeskStatus, deskLine } from "./deskfacts.js";
 
 // Our sections in the window's list, after Herdr's.
 export const PACKAGE_SECTIONS = [
@@ -72,6 +73,29 @@ const guideFile = () => `${home()}/.herdr/AGENTS.md`;
 const guideStarter = () => `${appHome()}/mods/ws-switcher/guide.md`;
 const tilde = (p) => (p.startsWith(`${home()}/`) ? `~${p.slice(home().length)}` : p);
 const errMsg = (e) => String(e?.message ?? e);
+
+// The switcher's sidebar copy does what this window asks through shared keys (the runner's switches,
+// opening a file in Files); with the sidebar hidden Herdr unloads it. It says it's there in shared
+// "workspaces.switcher.alive" { at }, every 5 s: missing or older than 15 s, it's away.
+function switcherHere() {
+  const a = shared("workspaces.switcher.alive");
+  return Boolean(a && typeof a.at === "number" && Date.now() - a.at < 15000);
+}
+// The away line: COMMON's words, the same in every screen, in the row's quiet colour.
+const AWAY = "Show the sidebar to do this";
+
+// While an away line shows, redraw every 2 s so it goes as soon as the sidebar is back (the
+// switcher's heartbeat doesn't redraw this window by itself); then the asks are forgotten.
+function watchAway(x, cx) {
+  if (x.awayWatch) return;
+  x.awayWatch = true;
+  const tick = (cx) => {
+    if ((x.runnerAway || x.guideAway) && !switcherHere()) cx.timer.after(2000, tick);
+    else { x.awayWatch = false; x.runnerAway = null; x.guideAway = false; }
+    cx.notify();
+  };
+  cx.timer.after(2000, tick);
+}
 
 // Opens a file in Herdr's Files view: the switcher's sidebar copy takes the ask (shared
 // "workspaces.files.open", a short list: the newest last, each id once, none older than 15s) and
@@ -103,6 +127,9 @@ export function packageInit(view, cx) {
     quietTo: InputState.new({ value: "", placeholder: "08:00" }),
     quietCustom: false,
     broker: newBroker(),
+    desk: null, // Desktop notifications: herdr-ws-notify --status's answer (deskfacts parseDeskStatus)
+    deskBusy: true, // until that answer comes (and while --on / --off run): the switch is greyed
+    deskAt: 0,
   };
   for (const input of [view.wsx.quietFrom, view.wsx.quietTo]) {
     input.on("change", (_e, cx) => cx.notify());
@@ -117,9 +144,18 @@ export function packageInit(view, cx) {
     }
     if (view.section === "files" && (await findApps(view.wsx))) cx.notify();
     if (view.section === "vault" && (await readBroker(view.wsx))) cx.notify();
+    if (view.section === "features" && (await readDesk(view.wsx))) cx.notify();
   });
   refresh(cx);
   cx.timer.every(3000, refresh);
+  // Features opened: Desktop notifications' state read at once, not at the next 3 s read (the switch
+  // is greyed until it answers). Only a comparison every 250 ms; nothing redraws unless it reads.
+  let shownSection = view.section;
+  cx.timer.every(250, (cx) => {
+    if (view.section === shownSection) return;
+    shownSection = view.section;
+    if (view.section === "features") cx.spawn(async (cx) => { if (await readDesk(view.wsx)) cx.notify(); });
+  });
   cx.spawn(async (cx) => {
     view.wsx.known = await knownAgents().catch(() => view.wsx.known);
     cx.notify();
@@ -145,6 +181,7 @@ async function load(x, wait = false) {
         // A hand edit of the file reaches the mods that follow it while this window is open
         // (ws-agents reads the file into shared state too, but only every minute).
         if (JSON.stringify(x.settings) !== JSON.stringify(shared("workspaces.settings") ?? null)) setShared("workspaces.settings", x.settings);
+        fillQuiet(x);
       }
     }
     const sw = async (path) => ((await readTextFile(path).catch(() => null)) ?? "").trim() !== "off";
@@ -302,6 +339,39 @@ const isMac = () => (window()?.platform ?? "macos") === "macos";
 
 // herdr-ws-secret broker status --json, when the last read is 10 s old (or force), never during
 // an action (its own read follows it). Not on macOS there's nothing to ask. True when it read.
+// Desktop notifications' state: herdr-ws-notify --status, when Features is shown and the last answer
+// is 30 s old, or force (after a flip: a read already on its way is waited for, since it may have
+// started before the flip, and then it reads again). The switch stays greyed until it answers.
+async function readDesk(x, force = false) {
+  if (x.deskReading) {
+    if (!force) return false;
+    await x.deskReading.catch(() => null);
+  }
+  if (!force && x.desk && Date.now() - x.deskAt < 30000) return false;
+  const reading = (async () => {
+    const r = await exec(bin("herdr-ws-notify"), ["--status"], { timeout: 10000 }).catch((e) => ({ code: 1, stdout: "", stderr: errMsg(e) }));
+    x.desk = parseDeskStatus(r);
+    x.deskAt = Date.now();
+    x.deskBusy = false;
+  })();
+  x.deskReading = reading;
+  try { await reading; return true; } finally { if (x.deskReading === reading) x.deskReading = null; }
+}
+
+// The switch: herdr-ws-notify --on / --off (it writes ~/.herdr/notify/switch), then --status again.
+function flipDesk(x, cx) {
+  if (x.deskBusy || !x.desk || x.desk.on === null) return;
+  const on = !x.desk.on;
+  x.deskBusy = true;
+  cx.notify();
+  cx.spawn(async (cx) => {
+    const r = await exec(bin("herdr-ws-notify"), [on ? "--on" : "--off"], { timeout: 10000 }).catch((e) => ({ code: 1, stdout: "", stderr: errMsg(e) }));
+    if (r.code !== 0) notify({ title: "Couldn't change it", body: String(r.stderr || r.stdout).trim() || "herdr-ws-notify failed.", level: "error" });
+    await readDesk(x, true);
+    cx.notify();
+  });
+}
+
 async function readBroker(x, force = false) {
   const b = x.broker ?? (x.broker = newBroker());
   if (!isMac() || b.reading || (b.busy && !force) || (!force && Date.now() - b.at < 10000)) return false;
@@ -346,6 +416,18 @@ function brokerAct(x, op, cx) {
 }
 
 const HHMM = /^([01]?\d|2[0-3]):([0-5]\d)$/;
+// Saved custom quiet hours into Custom's two boxes, once per saved value, when both are empty and
+// Custom isn't being changed: otherwise they'd show their 22:00 / 08:00 placeholders under
+// "Now: 23:00 – 07:00". Once: boxes emptied to type new times aren't refilled by the next read.
+export function fillQuiet(x) {
+  const quiet = automationSetting(x.settings, "quiet-hours");
+  if (!quiet || quiet === "22:00-08:00" || x.quietCustom || !x.quietFrom || !x.quietTo) return;
+  if (x.quietFilled === quiet) return;
+  x.quietFilled = quiet;
+  if (x.quietFrom.value() || x.quietTo.value()) return;
+  const [a, b] = String(quiet).split("-");
+  x.quietFrom.set_value(a ?? ""); x.quietTo.set_value(b ?? "");
+}
 const twoDigits = (v) => { const m = HHMM.exec(String(v ?? "").trim()); return m ? `${m[1].padStart(2, "0")}:${m[2]}` : null; };
 // Custom quiet hours, from the two boxes: saved when both are times and they differ.
 function saveQuiet(x, cx) {
@@ -415,8 +497,11 @@ function flipGuide(x, cx) {
 }
 
 // Edit opens ~/.herdr/AGENTS.md in Files (the Settings window closes so it's seen); with none yet,
-// it's first written from the starter (create-only).
+// it's first written from the starter (create-only). With the switcher away nothing would open it:
+// the row says so and the window stays.
 function editGuide(x, cx) {
+  if (!switcherHere()) { x.guideAway = true; watchAway(x, cx); cx.notify(); return; }
+  x.guideAway = false;
   cx.spawn(async (cx) => {
     const existing = await readTextFile(guideFile()).catch(() => null);
     if (existing == null) {
@@ -513,20 +598,23 @@ function button(t, id, label, onClick, tip = "") {
 function agentsPage(t, x) {
   const g = x.guide ?? { on: true, bytes: 0 };
   const guideSize = g.bytes < 1024 ? `${g.bytes} bytes` : `${(g.bytes / 1024).toFixed(1)} KB`;
-  const guideNote = !x.guide ? "" : !g.bytes ? "No guide yet" : g.on ? `On: ${guideSize}` : "Off: agents go without it";
+  const guideAway = Boolean(x.guideAway) && !switcherHere();
+  const guideNote = guideAway ? AWAY
+    : !x.guide ? "" : !g.bytes ? "No guide yet" : g.on ? `On: ${guideSize}` : "Off: agents go without it";
   const guideBtn = !x.guide || g.bytes ? "Edit" : "Write one";
   const guideTip = g.bytes ? `Open ${tilde(guideFile())} in Files` : `Write ${tilde(guideFile())} from the starter, then open it in Files`;
 
   const r = x.resume ?? { on: true, count: 0, ready: true };
   const resumeNote = !x.resume ? ""
-    : !r.ready ? "Not set up in herdr-core's config.toml (see the recipe)."
+    : !r.ready ? "Not set up in herdr-core's config.toml: run the installer again, or add the shell line from the README's Install."
     : !r.on ? "Off: tabs come back as shells"
     : r.count === 1 ? "On: 1 agent would come back" : `On: ${r.count} agents would come back`;
 
   const hidden = shared(HIDDEN) ?? x.hidden ?? [];
   const installed = x.known.filter((a) => a.installed);
   const shown = new Set(shownAgents(installed, hidden).map((a) => a.key));
-  const missing = notInstalledLine(x.known);
+  // By the names the rows above use (hidefacts' line takes keys; its copies stay as they are).
+  const missing = notInstalledLine(x.known.map((a) => ({ ...a, key: a.name || a.key })));
   const iconOf = (a) => !a.icon
     ? svg("mods/workspace-chrome/terminal.svg").size(16).flex_none().text_color(t.muted)
     : (a.tint ? svg(a.icon).text_color(t.foreground) : image(a.icon)).size(16).flex_none().rounded(3);
@@ -565,6 +653,27 @@ function agentsPage(t, x) {
       .child("Hidden agents are only left out of the + menu. Presets and automations can still start them."));
 }
 
+// Keep running and Start at login (key "on" | "login"): the switch moves at once and its line says
+// "Turning on…" until the switcher's answer (shared "workspaces.runner") agrees, or 20 s pass (a
+// failure is the switcher's own toast). With the switcher away nothing would take the ask: the line
+// says so instead.
+const RUNNER_WAIT = 20000;
+// The ask still on its way (the switcher hasn't answered it yet), or null.
+function runnerPending(x, runner) {
+  const a = x.runnerAsk;
+  return a && Date.now() - a.at < RUNNER_WAIT && Boolean(runner[a.key]) !== a.want ? a : null;
+}
+function askRunner(x, key, want, cx) {
+  // One at a time: a click while one is on its way does nothing (its line says what's happening).
+  if (runnerPending(x, shared("workspaces.runner") ?? {})) return;
+  if (!switcherHere()) { x.runnerAway = key; watchAway(x, cx); cx.notify(); return; }
+  x.runnerAway = null;
+  x.runnerAsk = { key, want, at: Date.now() };
+  setShared("workspaces.runner.set", { [key]: want, at: Date.now() });
+  cx.notify();
+  cx.timer.after(RUNNER_WAIT + 100, (cx) => cx.notify());
+}
+
 // Automations: the background runner (Keep running, Start at login), then the limits and quiet
 // hours and the drafter from "automations" in the settings file. A broken file: one note, those
 // three greyed at their defaults (what the runner uses until it's fixed); the runner's switches
@@ -573,15 +682,21 @@ function automationsPage(t, x) {
   const broken = x.settings.error;
   const off = Boolean(broken) || x.busy;
   const runner = shared("workspaces.runner") ?? { on: false, running: false };
-  const runnerNote = !runner.on ? "Off: they run while Herdr is open"
+  // An ask still on its way: the switch shows what was asked.
+  const ask = runnerPending(x, runner);
+  const away = x.runnerAway && !switcherHere() ? x.runnerAway : null;
+  const onShown = ask?.key === "on" ? ask.want : Boolean(runner.on);
+  const loginShown = ask?.key === "login" ? ask.want : Boolean(runner.login);
+  const turning = (key) => (ask?.key === key ? (ask.want ? "Turning on…" : "Turning off…") : away === key ? AWAY : null);
+  const runnerNote = turning("on") ?? (!runner.on ? "Off: they run while Herdr is open"
     : !runner.running ? "On, but not running yet"
     : runner.via === "launchd" || runner.via === "systemd" || runner.via === "task" ? `On: running via ${runner.via === "task" ? "Task Scheduler" : runner.via}${runner.pid ? ` (pid ${runner.pid})` : ""}`
-    : `On: running in herdr-core${runner.pid ? ` (pid ${runner.pid})` : ""}`;
+    : `On: running in herdr-core${runner.pid ? ` (pid ${runner.pid})` : ""}`);
   const platform = window()?.platform ?? "macos";
   const mac = platform === "macos";
   const canLogin = mac || platform === "linux" || platform === "windows";
-  const loginNote = !canLogin ? "macOS, Linux and Windows only."
-    : runner.login ? `On: ${tilde(runner.plist || (mac ? `${home()}/Library/LaunchAgents/dev.herdr.ws-runner.plist` : `${home()}/.config/systemd/user/herdr-ws-runner.service`))}` : "";
+  const loginNote = turning("login") ?? (!canLogin ? "macOS, Linux and Windows only."
+    : runner.login ? `On: ${tilde(runner.plist || (mac ? `${home()}/Library/LaunchAgents/dev.herdr.ws-runner.plist` : `${home()}/.config/systemd/user/herdr-ws-runner.service`))}` : "");
   const s = (key) => AUTOMATIONS_SETTINGS.find((a) => a.key === key);
   const val = (key) => automationSetting(x.settings, key);
   const quiet = val("quiet-hours");
@@ -620,13 +735,13 @@ function automationsPage(t, x) {
     .child(row(t, "wsx-s-runner", "Keep running",
       "Automations and board cards' pull requests keep running in a background process after you close Herdr. Turning it off turns off Start at login too.",
       runnerNote,
-      toggle(t, "wsx-s-runner-switch", runner.on, () => setShared("workspaces.runner.set", { on: !runner.on, at: Date.now() })),
-      Boolean(runner.on && !runner.running)))
+      toggle(t, "wsx-s-runner-switch", onShown, (_e, cx) => askRunner(x, "on", !onShown, cx)),
+      Boolean(!ask && away !== "on" && runner.on && !runner.running)))
     .child(row(t, "wsx-au-login", "Start at login",
       canLogin ? `Install a ${mac ? "macOS LaunchAgent" : platform === "windows" ? "scheduled task (Task Scheduler)" : "systemd user unit"} so automations run after a reboot without opening Herdr. Shell scripts run without starting herdr-core.`
         : "Start the background runner when you sign in, so automations run after a reboot without opening Herdr.",
       loginNote,
-      toggle(t, "wsx-au-login-switch", Boolean(runner.login), () => setShared("workspaces.runner.set", { login: !runner.login, at: Date.now() }), !canLogin),
+      toggle(t, "wsx-au-login-switch", loginShown, (_e, cx) => askRunner(x, "login", !loginShown, cx), !canLogin),
       false, !canLogin))
     .child(div().h(14))
     .child(heading(t, "Limits & quiet hours"))
@@ -670,6 +785,13 @@ function featuresPage(t, x) {
     if (g) g.list.push(f);
     else groups.push({ name: f.group, list: [f] });
   }
+  // Desktop notifications go under the bell's row, in its group (Notifications).
+  const desk = x.desk;
+  const deskOn = desk?.on === true;
+  const line = deskLine(desk, window()?.platform ?? "macos");
+  const deskRow = row(t, "wsx-f-desktop", DESK_TITLE, DESK_ABOUT, line.text,
+    toggle(t, "wsx-f-desktop-switch", deskOn, (_e, cx) => flipDesk(x, cx), Boolean(x.deskBusy) || !desk || desk.on === null),
+    line.warn, !deskOn);
   return v_flex().w_full()
     .child(div().pb(4).text_size(18).font_semibold().text_color(t.foreground).child("Features"))
     .child(div().pb(18).text_size(12.5).line_height("18px").text_color(t.dim)
@@ -679,12 +801,13 @@ function featuresPage(t, x) {
     .children(groups.map((g, i) => v_flex().w_full()
       .when(i > 0, (el) => el.child(div().h(22)))
       .child(heading(t, g.name))
-      .children(g.list.map((f) => {
+      .children(g.list.flatMap((f) => {
         const on = featureOn(x.settings, f.key);
         const extra = broken ? "" : f.key === "automations" ? automationsLine(autos, on) : on ? "" : f.off;
-        return row(t, `wsx-f-${f.key}`, f.title, f.what, extra,
+        const r = row(t, `wsx-f-${f.key}`, f.title, f.what, extra,
           toggle(t, `wsx-f-${f.key}-switch`, on, (_e, cx) => setSetting(x, withFeature, featureOn, f.key, cx), Boolean(broken) || x.busy),
           false, !on);
+        return f.key === "notifications" ? [r, deskRow] : [r];
       }))));
 }
 
@@ -791,7 +914,7 @@ function vaultPage(t, x) {
   const brokerRow = h_flex().id("wsx-v-broker").w_full().gap(16).py(12).items_center().border_b(1).border_color(t.border)
     .child(v_flex().flex_1().min_w(0).gap(3)
       .child(h_flex().gap(8).items_center()
-        .child(div().text_size(14).text_color(t.foreground).child("Keychain-ACL broker"))
+        .child(div().text_size(14).text_color(t.foreground).child("Protected broker"))
         .when(Boolean(v.chip), (el) => el.child(chip(v.chip))))
       .when(Boolean(v.about), (el) => el.child(div().text_size(12.5).line_height("18px").text_color(t.dim).child(v.about)))
       // Each fact unbroken; the line wraps between them (a path never breaks in its middle).

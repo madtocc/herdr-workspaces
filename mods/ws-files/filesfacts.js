@@ -96,6 +96,30 @@ export function languageOf(path) {
   return LANG[ext] ?? (ext || "text");
 }
 
+// How Tab indents in the editor, read from the file: a tab for Makefiles, Go and a file whose
+// indented lines mostly start with one; otherwise the step its spaces go up by (2 to 8), or
+// nothing (the editor's 2) when no line says. The first 2,000 lines are enough.
+export function indentStyle(text, path) {
+  const name = baseName(path).toLowerCase(), ext = extOf(path);
+  if (name === "makefile" || name === "gnumakefile" || ext === "mk" || ext === "go") return { hard_tabs: true, tab_size: 4 };
+  let tabs = 0, spaced = 0;
+  const steps = new Map();
+  for (const line of String(text ?? "").split("\n", 2000)) {
+    if (line[0] === "\t") { tabs++; continue; }
+    const m = /^( +)(\S)/.exec(line);
+    if (!m || m[2] === "*") continue; // a block comment's " * " is no indent
+    spaced++;
+    const n = m[1].length;
+    if (n >= 2) steps.set(n, (steps.get(n) ?? 0) + 1);
+  }
+  if (tabs > spaced) return { hard_tabs: true, tab_size: 4 };
+  // The smallest indent (2 to 8) at least two lines use, when the others are its multiples mostly.
+  const step = [...steps.keys()].filter((n) => n <= 8 && steps.get(n) >= 2).sort((a, b) => a - b)[0];
+  if (!step) return {};
+  const fits = [...steps].reduce((k, [n, c]) => k + (n % step === 0 ? c : 0), 0);
+  return fits * 10 >= spaced * 8 ? { tab_size: step } : {};
+}
+
 // Whether a Cmd-clicked path (one that's there) is Files' to open: folders, and every file but
 // the binaries above (those go on to the system's opener). catchMode: the "catch" setting
 // (settings.jsonc "files"); "everything" takes every file and folder, binaries included.
@@ -194,6 +218,27 @@ export function relFromRoot(root, absPath) {
   if (a === r) return "";
   const prefix = r.endsWith("/") ? r : `${r}/`;
   return a.startsWith(prefix) ? a.slice(prefix.length) : null;
+}
+
+// A link's scheme for words ("vscode:"), never the link itself (it can be long, or hold a home path).
+export function linkScheme(href) {
+  const m = /^([a-z][a-z0-9+.-]*):/i.exec(String(href ?? "").trim());
+  return m ? `${m[1].slice(0, 24).toLowerCase()}:` : "other";
+}
+
+// Files moved to another folder (its terminal's cd, another space): the open file (relative to the
+// old root) as a path under the new one, when it's there too on the same machine; else null.
+export function keptFile(oldRoot, file, oldOn, cwd, on) {
+  if (!oldRoot || !file || !cwd || (oldOn ?? null) !== (on ?? null)) return null;
+  return relFromRoot(cwd, `${oldRoot}/${file}`) || null;
+}
+
+// A trash from any copy of Files: what the open file does when it was in what went (isUnder).
+// The copy whose menu asked (it said "Its unsaved edits are lost too") closes it; another copy with
+// a draft keeps the draft, as for a file deleted on disk ("Save as new"); without one it closes.
+export function afterTrash({ under, dirty, asked }) {
+  if (!under) return null;
+  return dirty && !asked ? "keep" : "close";
 }
 
 // The UTF-16 offset of a 1-based line and column, for EditorState.set_selected_range. A line past
@@ -575,3 +620,179 @@ export function movedPath(path, from, to) {
 
 // Whether `path` is the entry at `gone` or inside it (absolute or relative alike).
 export const isUnder = (path, gone) => path != null && gone != null && (path === gone || path.startsWith(`${gone}/`));
+
+// The tree from the keyboard: where the cursor (a row's path, or null) goes on a key, and what to do
+// there. ↑ ↓ move (from no cursor: the first row, or the last for ↑); → opens a closed folder, and on
+// an open one goes to its first row; ← closes an open folder, else goes up to the folder holding the
+// row; Enter opens a file, or opens or closes a folder. rows: filterEntries' [{ path, dir, depth, open }].
+// Returns { cursor, act }: act "open" or "close" (that folder), "pick" (that file), or null.
+export function treeStep(rows, cursor, key) {
+  const list = Array.isArray(rows) ? rows : [], n = list.length;
+  if (!n) return { cursor: null, act: null };
+  const i = list.findIndex((r) => r.path === cursor);
+  const at = (j) => ({ cursor: list[j].path, act: null });
+  if (key === "down") return at(i < 0 ? 0 : Math.min(n - 1, i + 1));
+  if (key === "up") return at(i < 0 ? n - 1 : Math.max(0, i - 1));
+  if (i < 0) return at(0);
+  const r = list[i];
+  if (key === "right") {
+    if (!r.dir) return at(i);
+    if (!r.open) return { cursor: r.path, act: "open" };
+    return list[i + 1] && list[i + 1].depth > r.depth ? at(i + 1) : at(i);
+  }
+  if (key === "left") {
+    if (r.dir && r.open) return { cursor: r.path, act: "close" };
+    for (let j = i - 1; j >= 0; j--) if (list[j].depth < r.depth) return at(j);
+    return at(i);
+  }
+  if (key === "enter") return { cursor: r.path, act: r.dir ? (r.open ? "close" : "open") : "pick" };
+  return { cursor: list[i].path, act: null };
+}
+
+// Whether the switcher's sidebar copy is away (shared "workspaces.switcher.alive" { at }, which it
+// refreshes every 5s): the key missing or older than 15s. An ask it drains would then go nowhere.
+export const SWITCHER_FRESH = 15000;
+export function switcherAway(alive, now) {
+  const at = Number(alive?.at);
+  return !Number.isFinite(at) || now - at > SWITCHER_FRESH;
+}
+
+// The filter box's flat list (D6-a) ---------------------------------------------------------
+// Every file under the folder, names only, for the filter box: git's own list in a repo (tracked and
+// untracked, not ignored; ignored ones too while Show ignored is on), else find (no dot folders or
+// node_modules while it's off). Folders come from the files' paths, so an empty folder isn't listed.
+// $1 the folder, $2 "git" or "", $3 "1" with Show ignored, $4 the most lines (one more says it was cut).
+// In a repo, after a line holding only \001, the paths to leave out: tracked files deleted from the
+// folder, and submodules (git lists one as a file; it's a folder of another repo).
+export const LIST_CAP = 20000;
+export const LIST_ALL_SH = `cd "$1" || exit 1
+{ if [ "$2" = git ]; then
+    git --no-optional-locks ls-files -z --cached --others --exclude-standard | tr '\\000' '\\n'
+    [ "$3" = 1 ] && git --no-optional-locks ls-files -z --others --ignored --exclude-standard | tr '\\000' '\\n'
+  elif [ "$3" = 1 ]; then find . -mindepth 1 -name .git -prune -o ! -type d -print
+  else find . -mindepth 1 \\( -name '.*' -o -name node_modules \\) -prune -o ! -type d -print
+  fi; } | head -n "$4"
+if [ "$2" = git ]; then
+  printf '\\001\\n'
+  git --no-optional-locks ls-files -z --deleted | tr '\\000' '\\n' | head -n "$4"
+  git --no-optional-locks -c core.quotepath=off ls-files -s | sed -n 's/^160000 [0-9a-f]* [0-9]\t//p' | head -n 1000
+fi; true`;
+
+// The listing's output: relative paths, each once ("./" gone), without those after the \001 line
+// (deleted, submodules), and whether it was cut at `cap`.
+export function parseListing(stdout, cap = LIST_CAP) {
+  const text = String(stdout ?? ""), at = text.indexOf("\u0001\n");
+  const clean = (line) => { const p = line.replace(/^\.\//, "").replace(/\/+$/, ""); return p && p !== "." ? p : null; };
+  const seen = new Set();
+  for (const line of (at < 0 ? text : text.slice(0, at)).split("\n")) { const p = clean(line); if (p) seen.add(p); }
+  const all = [...seen], cut = all.length > cap;
+  const out = new Set(at < 0 ? [] : text.slice(at + 2).split("\n").map(clean).filter(Boolean));
+  return { paths: all.slice(0, cap).filter((p) => !out.has(p)), cut };
+}
+
+// The line under the flat list. where: the folder's name; skipped: hidden files and folders (a name
+// starting with a dot) and node_modules were left out (find, without Show ignored).
+export function foundLine({ busy = false, listed = true, total = 0, cut = false, where = "the folder", skipped = false, max = 200, cap = LIST_CAP } = {}) {
+  if (busy && !listed) return "Looking in every folder…";
+  const first = `the first ${grouped(cap)} names of ${where}`;
+  if (!total) {
+    if (cut) return `No file or folder in ${first} is called that`;
+    return skipped ? `No file or folder in ${where} is called that (hidden files and folders and node_modules aren't looked in)` : `No file or folder in ${where} is called that`;
+  }
+  if (total > max) return `The first ${max} of ${grouped(total)}${cut ? "+" : ""} · type more to narrow`;
+  if (cut) return `${total} in ${first} · names only`;
+  return skipped ? `${total} in ${where}, not counting hidden files and folders or node_modules · names only` : `${total} in every folder of ${where} · names only`;
+}
+
+// The rows for a query: every file and folder whose name holds it (any case), the best first: the
+// name starting with it, then files before folders, then the shorter name, then the shallower path, then by path. `limit` rows,
+// and how many there are in all. Each row: { path, name, dir, folder (its parent, "" the top), at
+// (where the query starts in the name) }.
+export function findNames(paths, query, limit = 200) {
+  const q = String(query ?? "").trim().toLowerCase();
+  if (!q) return { rows: [], total: 0 };
+  const dirs = new Set(), hits = [];
+  const consider = (path, dir) => {
+    const i = path.lastIndexOf("/"), name = path.slice(i + 1), at = name.toLowerCase().indexOf(q);
+    if (at >= 0) hits.push({ path, name, dir, folder: i < 0 ? "" : path.slice(0, i), at });
+  };
+  for (const p of paths ?? []) {
+    consider(p, false);
+    for (let i = p.indexOf("/"); i > 0; i = p.indexOf("/", i + 1)) {
+      const d = p.slice(0, i);
+      if (!dirs.has(d)) { dirs.add(d); consider(d, true); }
+    }
+  }
+  const depth = (p) => p.split("/").length;
+  hits.sort((a, b) => Number(a.at !== 0) - Number(b.at !== 0) || Number(a.dir) - Number(b.dir) || a.name.length - b.name.length
+    || depth(a.path) - depth(b.path) || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  return { rows: hits.slice(0, limit), total: hits.length };
+}
+
+// A count with thousands marked ("1,240"): the mods' toLocaleString doesn't group.
+export const grouped = (n) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+
+// The recovery copy of an unsaved draft (D6) -----------------------------------------------
+// Written under appHome()/data/ws-files/drafts/<draftKey>.json while a file has unsaved edits:
+// { v: 1, abs, on, text, base (textHash of the file as it was read), at }. Gone on save, discard,
+// reload, or when the edits are typed back to the file.
+
+// FNV-1a, 32 bits, as 8 hex digits.
+function fnv(s, seed) {
+  let h = seed >>> 0;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return h.toString(16).padStart(8, "0");
+}
+// A file's name in the drafts folder: the same for the same file on the same machine.
+export function draftKey(abs, on) {
+  const s = `${on ?? ""}\u0000${String(abs ?? "").replace(/\\/g, "/")}`;
+  return fnv(s, 0x811c9dc5) + fnv(s, 0x01000193);
+}
+// A text's fingerprint (whether the file changed on disk since the draft).
+export function textHash(s) {
+  const t = String(s ?? "");
+  return `${t.length}-${fnv(t, 0x811c9dc5)}${fnv(t, 0x2f5a1e3d)}`;
+}
+
+// What a recovery copy means for the file just opened with `disk` as its text: null (none, or not
+// this file), "drop" (nothing to recover: the draft is the file as it is), else { at, changed }
+// (changed: the file is no longer what the draft was made on).
+export function draftOffer(draft, { abs, on, disk }) {
+  if (!draft || typeof draft !== "object" || typeof draft.text !== "string") return null;
+  if (String(draft.abs ?? "").replace(/\\/g, "/") !== String(abs ?? "").replace(/\\/g, "/") || (draft.on ?? null) !== (on ?? null)) return null;
+  if (draft.text === disk) return "drop";
+  const at = Number(draft.at);
+  return { at: Number.isFinite(at) && at > 0 ? at : null, changed: draft.base !== textHash(disk) };
+}
+
+// The strip's title: with no time that can be read, none.
+export function draftTitle(at, now) {
+  const when = Number.isFinite(at) && at > 0 ? draftWhen(at, now) : "";
+  return when ? `An unsaved draft from ${when} is still here.` : "An unsaved draft is still here.";
+}
+
+// A copy is written only when it can be read back whole: the mods' fs writes up to 8 MiB at once.
+export const DRAFT_MAX_BYTES = 8_000_000;
+export function draftFits(body) {
+  const s = String(body ?? "");
+  if (s.length * 3 <= DRAFT_MAX_BYTES) return true;
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    n += c < 0x80 ? 1 : c < 0x800 ? 2 : c >= 0xd800 && c <= 0xdbff ? (i++, 4) : 3;
+    if (n > DRAFT_MAX_BYTES) return false;
+  }
+  return true;
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+// When a draft was written, in the strip: "14:02" today, "Yesterday 14:02", else "Nov 24 14:02".
+export function draftWhen(at, now) {
+  const d = new Date(at), n = new Date(now);
+  const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  const day = (x) => `${x.getFullYear()}-${x.getMonth()}-${x.getDate()}`;
+  if (day(d) === day(n)) return hm;
+  const y = new Date(n.getFullYear(), n.getMonth(), n.getDate() - 1);
+  if (day(d) === day(y)) return `Yesterday ${hm}`;
+  return `${MONTHS[d.getMonth()]} ${d.getDate()} ${hm}`;
+}

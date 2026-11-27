@@ -145,16 +145,16 @@ export function sortItems(items, order = "board") {
   return items.map((i, n) => [i, at(i), n]).sort((a, b) => (a[1] === null) - (b[1] === null) || (a[1] === null ? 0 : dir * (a[1] - b[1])) || a[2] - b[2]).map((x) => x[0]);
 }
 
-// How long ago, short: "5 min", "3 h", "12 d", "4 mo", "2 y". "" with no date.
+// How long ago, short, as Notes and Worktrees write it: "5m", "3h", "12d", "4mo", "2y". "" with no date.
 export function age(when, now) {
   const at = Date.parse(when ?? "");
   if (Number.isNaN(at)) return "";
   const m = Math.max(0, Math.floor((now - at) / 60000));
-  if (m < 60) return `${Math.max(1, m)} min`;
-  if (m < 1440) return `${Math.floor(m / 60)} h`;
+  if (m < 60) return `${Math.max(1, m)}m`;
+  if (m < 1440) return `${Math.floor(m / 60)}h`;
   const d = Math.floor(m / 1440);
-  if (d < 60) return `${d} d`;
-  return d < 730 ? `${Math.floor(d / 30)} mo` : `${Math.floor(d / 365)} y`;
+  if (d < 60) return `${d}d`;
+  return d < 730 ? `${Math.floor(d / 30)}mo` : `${Math.floor(d / 365)}y`;
 }
 
 // The repos on the board, most items first, and whether it has drafts.
@@ -302,13 +302,13 @@ export function keptBoard(text, url, now) {
   return { at: c.at, board: c.board };
 }
 
-// "3 min ago", "just now"
+// "3m ago", "just now"
 export function ago(at, now) {
   const m = Math.floor((now - at) / 60000);
   if (m < 1) return "just now";
-  if (m < 60) return `${m} min ago`;
+  if (m < 60) return `${m}m ago`;
   const h = Math.floor(m / 60);
-  return h < 24 ? `${h} h ago` : `${Math.floor(h / 24)} d ago`;
+  return h < 24 ? `${h}h ago` : `${Math.floor(h / 24)}d ago`;
 }
 
 // gh's first error line as something to act on.

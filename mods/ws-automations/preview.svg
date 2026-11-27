@@ -59,9 +59,9 @@
   <g transform="translate(19 744) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915" /> <circle cx="12" cy="12" r="3" /></g><text x="44" y="756" fill="#a5a8ae" font-size="13">Settings</text>
   <g transform="translate(19 772) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g><text x="44" y="784" fill="#a5a8ae" font-size="13">Add machine</text>
   <!-- tab bar and pane -->
-  <rect x="300" y="8" width="56.06" height="32" rx="8" fill="#26272c"/>
-  <text x="314" y="29" fill="#e8e9eb" font-size="13">1</text>
-  <g transform="translate(332.06 18.5) scale(0.4583)" fill="none" stroke="#7d8089" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18" /> <path d="m6 6 12 12" /></g>
+  <rect x="300" y="8" width="71.06" height="32" rx="8" fill="#26272c"/>
+  <text x="314" y="29" fill="#e8e9eb" font-size="13">zsh</text>
+  <g transform="translate(347.06 18.5) scale(0.4583)" fill="none" stroke="#7d8089" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18" /> <path d="m6 6 12 12" /></g>
   <g transform="translate(1112 17) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g>
   <!-- Views (ws-tabs, at the bar's right end): its menu opens the views, full size or beside -->
   <rect x="1135.5" y="10.5" width="77" height="27" rx="7" fill="#26272c" stroke="#2f3137"/>
@@ -93,7 +93,8 @@
   <rect x="150" y="44" width="980" height="52" rx="0" fill="#222328"/><rect x="150" y="96" width="980" height="1" rx="0" fill="#303237"/>
   <g transform="translate(170 62) scale(0.6667)" fill="none" stroke="#a5a8ae" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4.5 13.5H12L11 22l8.5-11.5H12z"/></g>
   <text x="196" y="76" fill="#e8e9eb" font-size="15" font-weight="600">Automations</text><text x="295" y="76" fill="#7d8089" font-size="13">for Acme</text>
-  <text x="1110" y="75" fill="#7d8089" font-size="11.5" text-anchor="end">Esc</text>
+  <!-- Close: the Files dialog's × (26px icon button), where the header said "Esc" -->
+  <g transform="translate(1096 63) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></g>
   <rect x="150" y="97" width="268" height="659" rx="0" fill="#17181b"/><rect x="418" y="97" width="1" height="659" rx="0" fill="#303237"/>
   <rect x="162" y="109" width="244" height="32" rx="7" fill="#ececed"/><g transform="translate(226 119) scale(0.5000)" fill="none" stroke="#17181b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g><text x="244" y="129.5" fill="#17181b" font-size="13" font-weight="500">New automation</text>
   <text x="168" y="166" fill="#7d8089" font-size="11">Acme</text>
@@ -156,8 +157,8 @@
   <rect x="419" y="700" width="711" height="56" rx="0" fill="#1d1e22"/><rect x="419" y="700" width="711" height="1" rx="0" fill="#303237"/>
   <rect x="446" y="714" width="61.5" height="28" rx="6" fill="none" stroke="#2f3137"/><text x="458" y="732.5" fill="#e5534b" font-size="12.5">Delete</text>
   <text x="521.5" y="732.5" fill="#7d8089" font-size="11.5">~/.herdr/workspaces/acme/automations/review-new-prs.md</text>
-  <rect x="1046.75" y="714" width="55.25" height="28" rx="6" fill="#ececed"/><text x="1060.75" y="732.5" fill="#17181b" font-size="12.5" font-weight="500">Save</text>
-  <rect x="968.25" y="714" width="70.5" height="28" rx="6" fill="none" stroke="#2f3137"/><text x="980.25" y="732.5" fill="#e8e9eb" font-size="12.5">Run now</text>
-  <rect x="893.25" y="714" width="67" height="28" rx="6" fill="none" stroke="#2f3137"/><text x="905.25" y="732.5" fill="#e8e9eb" font-size="12.5">Preview</text>
+  <rect x="1023.75" y="714" width="78.25" height="28" rx="6" fill="#ececed"/><text x="1037.75" y="732.5" fill="#17181b" font-size="12.5" font-weight="500">Save</text><text x="1071.75" y="732.5" fill="#17181b" font-size="11" opacity="0.6">⌘S</text>
+  <rect x="945.25" y="714" width="70.5" height="28" rx="6" fill="none" stroke="#2f3137"/><text x="957.25" y="732.5" fill="#e8e9eb" font-size="12.5">Run now</text>
+  <rect x="870.25" y="714" width="67" height="28" rx="6" fill="none" stroke="#2f3137"/><text x="882.25" y="732.5" fill="#e8e9eb" font-size="12.5">Preview</text>
   </g>
 </svg>

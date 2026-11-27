@@ -62,7 +62,7 @@
   <text x="333" y="29" fill="#a5a8ae" font-size="13">Board</text>
   <rect x="390.1" y="16" width="1" height="16" fill="#2f3137"/>
   <rect x="399.1" y="8" width="78" height="32" rx="8" fill="#26272c"/>
-  <text x="429.1" y="29" fill="#e8e9eb" font-size="13">1</text>
+  <text x="429.1" y="29" fill="#e8e9eb" font-size="13">zsh</text>
   <g transform="translate(1112 17) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g>
   <rect x="1135.5" y="10.5" width="77" height="27" rx="7" fill="#26272c" stroke="#2f3137"/>
   <g transform="translate(1145 17) scale(0.5833)" fill="none" stroke="#e8e9eb" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></g>
@@ -96,7 +96,7 @@
   <g transform="translate(1121 780) scale(0.5)"><defs><linearGradient id="agy-grad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFE432"/><stop offset=".35" stop-color="#FC413D"/><stop offset=".65" stop-color="#00B95C"/><stop offset="1" stop-color="#3186FF"/></linearGradient></defs><path d="M21.751 22.607c1.34 1.005 3.35.335 1.508-1.508C17.73 15.74 18.904 1 12.037 1 5.17 1 6.342 15.74.815 21.1c-2.01 2.009.167 2.511 1.507 1.506 5.192-3.517 4.857-9.714 9.715-9.714 4.857 0 4.522 6.197 9.714 9.715z" fill="url(#agy-grad)"/></g><text x="1138" y="790" fill="#a5a8ae" font-size="11.5">18%</text>
   <text x="1266" y="790" fill="#7d8089" font-size="11.5" text-anchor="end">⌘⇧P  commands</text>
 
-  <!-- the list (ws-notifications): Needs you pinned above Updates; each row one click to its thing; workspace marks say where -->
+  <!-- the list (ws-notifications): Needs you pinned above Updates; each row one click to its thing, with a quiet × after its time; workspace marks say where -->
   <rect x="875.5" y="44.5" width="392" height="552" rx="10" fill="#202227" stroke="#33363c" filter="url(#shadow)"/>
   <text x="891" y="72" fill="#e8e9eb" font-size="13.5" font-weight="600">Notifications</text>
   <text x="1252" y="72" fill="#a5a8ae" font-size="11.5" text-anchor="end">Mark all read</text>
@@ -107,14 +107,14 @@
   <text x="891" y="158" fill="#e5534b" font-size="10.5" font-weight="600" letter-spacing=".5">NEEDS YOU</text><text x="1252" y="158" fill="#e5534b" font-size="10.5" font-weight="600" text-anchor="end">2</text>
   <g>
     <circle cx="897" cy="181" r="3.5" fill="#e5534b"/>
-    <text x="910" y="186" fill="#e8e9eb" font-size="12.8" font-weight="500">Claude Code needs you</text><text x="1252" y="186" fill="#7d8089" font-size="11" text-anchor="end">2m</text>
+    <text x="910" y="186" fill="#e8e9eb" font-size="12.8" font-weight="500">Claude Code needs you</text><text x="1224" y="186" fill="#7d8089" font-size="11" text-anchor="end">2m</text><g transform="translate(1236 176) scale(0.5)" fill="none" stroke="#7d8089" stroke-width="2.4" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></g>
     <text x="910" y="205" fill="#a5a8ae" font-size="11.8">Waiting for permission to run the migration</text>
     <rect x="910" y="215" width="12" height="12" rx="3" fill="#e3814f"/><text x="916" y="224" fill="#fff" font-size="7.5" font-weight="700" text-anchor="middle">G</text><text x="927" y="225" fill="#7d8089" font-size="11">Globex · web · fix-checkout</text>
   </g>
   <rect x="876.0" y="237" width="391" height="1" fill="#2a2c31"/>
   <g>
     <circle cx="897" cy="253" r="3.5" fill="#e5534b"/>
-    <text x="910" y="258" fill="#e8e9eb" font-size="12.8" font-weight="500">Allow nightly-audit's check?</text><text x="1252" y="258" fill="#7d8089" font-size="11" text-anchor="end">14m</text>
+    <text x="910" y="258" fill="#e8e9eb" font-size="12.8" font-weight="500">Allow nightly-audit's check?</text><text x="1224" y="258" fill="#7d8089" font-size="11" text-anchor="end">14m</text><g transform="translate(1236 248) scale(0.5)" fill="none" stroke="#7d8089" stroke-width="2.4" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></g>
     <text x="910" y="277" fill="#a5a8ae" font-size="11.8">git log --since=yesterday · waiting for approval</text>
     <rect x="910" y="287" width="12" height="12" rx="3" fill="#5b8def"/><text x="916" y="296" fill="#fff" font-size="7.5" font-weight="700" text-anchor="middle">A</text><text x="927" y="297" fill="#7d8089" font-size="11">Acme · Automations</text>
   </g>
@@ -122,25 +122,25 @@
   <text x="891" y="330" fill="#7d8089" font-size="10.5" font-weight="600" letter-spacing=".5">UPDATES</text><text x="1252" y="330" fill="#7d8089" font-size="10.5" font-weight="600" text-anchor="end">3</text>
   <g>
     <circle cx="897" cy="353" r="3.5" fill="#76a8ff"/>
-    <text x="910" y="358" fill="#e8e9eb" font-size="12.8" font-weight="500">Claude Code finished</text><text x="1252" y="358" fill="#7d8089" font-size="11" text-anchor="end">5m</text>
+    <text x="910" y="358" fill="#e8e9eb" font-size="12.8" font-weight="500">Claude Code finished</text><text x="1224" y="358" fill="#7d8089" font-size="11" text-anchor="end">5m</text><g transform="translate(1236 348) scale(0.5)" fill="none" stroke="#7d8089" stroke-width="2.4" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></g>
     <text x="910" y="377" fill="#a5a8ae" font-size="11.8">Kept the return path in the login URL</text>
     <rect x="910" y="387" width="12" height="12" rx="3" fill="#5b8def"/><text x="916" y="396" fill="#fff" font-size="7.5" font-weight="700" text-anchor="middle">A</text><text x="927" y="397" fill="#7d8089" font-size="11">Acme · api</text>
   </g>
   <rect x="876.0" y="409" width="391" height="1" fill="#2a2c31"/>
   <g>
     <circle cx="897" cy="425" r="3.5" fill="#3fae6a"/>
-    <text x="910" y="430" fill="#e8e9eb" font-size="12.8" font-weight="500">ACM-5 is ready to merge</text><text x="1252" y="430" fill="#7d8089" font-size="11" text-anchor="end">18m</text>
+    <text x="910" y="430" fill="#e8e9eb" font-size="12.8" font-weight="500">ACM-5 is ready to merge</text><text x="1224" y="430" fill="#7d8089" font-size="11" text-anchor="end">18m</text><g transform="translate(1236 420) scale(0.5)" fill="none" stroke="#7d8089" stroke-width="2.4" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></g>
     <text x="910" y="449" fill="#a5a8ae" font-size="11.8">4 checks passed, approved, no conflicts</text>
     <rect x="910" y="459" width="12" height="12" rx="3" fill="#5b8def"/><text x="916" y="468" fill="#fff" font-size="7.5" font-weight="700" text-anchor="middle">A</text><text x="927" y="469" fill="#7d8089" font-size="11">Acme · Board · PR #31</text>
   </g>
   <rect x="876.0" y="481" width="391" height="1" fill="#2a2c31"/>
   <g opacity="0.7">
     <circle cx="897" cy="497" r="3" fill="none" stroke="#7d8089" stroke-width="1.5"/>
-    <text x="910" y="502" fill="#a5a8ae" font-size="12.8" font-weight="400">pr-review finished</text><text x="1252" y="502" fill="#7d8089" font-size="11" text-anchor="end">42m</text>
+    <text x="910" y="502" fill="#a5a8ae" font-size="12.8" font-weight="400">pr-review finished</text><text x="1224" y="502" fill="#7d8089" font-size="11" text-anchor="end">42m</text><g transform="translate(1236 492) scale(0.5)" fill="none" stroke="#7d8089" stroke-width="2.4" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></g>
     <text x="910" y="521" fill="#7d8089" font-size="11.8">Left 2 review notes on PR #31</text>
     <rect x="910" y="531" width="12" height="12" rx="3" fill="#5b8def"/><text x="916" y="540" fill="#fff" font-size="7.5" font-weight="700" text-anchor="middle">A</text><text x="927" y="541" fill="#7d8089" font-size="11">Acme · Automations</text>
   </g>
   <rect x="876.0" y="560" width="391" height="1" fill="#33363c"/>
   <path d="M876.0 561 H1267.0 V586 a10 10 0 0 1 -10 10 H886.0 a10 10 0 0 1 -10 -10 Z" fill="#1b1c20"/>
-  <text x="891" y="582" fill="#7d8089" font-size="11">↑↓ move · Enter open · Esc close</text><text x="1252" y="582" fill="#a5a8ae" font-size="11.5" text-anchor="end">Clear read (1)</text>
+  <text x="891" y="582" fill="#7d8089" font-size="11">↑↓ move · Enter open · ⌫ close · Esc</text><text x="1252" y="582" fill="#a5a8ae" font-size="11.5" text-anchor="end">Clear read (1)</text>
 </svg>

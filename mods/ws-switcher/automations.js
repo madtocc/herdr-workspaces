@@ -131,6 +131,9 @@ const OLD_CALL = 3600e3;    // an outside call that waited longer than this (Her
 
 // The last line every run's agent is asked for: how it went, in a word History can read
 // (ws-history/histfacts.js: reportOf). An agent that's waiting on an answer leaves it out.
+// A check's words for what didn't happen: a shell automation has a script, not an agent.
+const noRun = (a) => (a.run === "shell" ? "its script didn't run" : "no agent started");
+const untilCheck = (a) => (a.run === "shell" ? "Its script doesn't run until the check works." : "No agent starts until the check works.");
 const OUTCOME_ASK = "When you're done, end your last message with a line of its own saying how it went: `Outcome: done`, `Outcome: failed` or `Outcome: nothing to do`. Herdr shows it in History. If you need an answer from the person before you can finish, ask, and leave that line out.";
 const withOutcome = (task) => (task ? `${task}\n\n${OUTCOME_ASK}` : task);
 const KEEP_TABS = 3;        // each automation keeps its newest runs' tabs; older finished ones close
@@ -605,6 +608,8 @@ export class Runner {
   save() { if (this.restored) this.store.write(this.state); }
   // Its check may run: it has none, or you allowed the line as it's written now.
   // A global one's line is allowed once, for every workspace: "*/<name>".
+  // A global automation's toast body starts with the workspace it ran for (it runs in every one).
+  where(ws, a) { return a.scope === "global" ? `${this.def(ws)?.name ?? ws}: ` : ""; }
   akey(ws, a) { return `${a.scope === "global" ? "*" : ws}/${a.name}`; }
   checkAllowed(ws, a) { return !a.check || this.state.allowed[this.akey(ws, a)] === a.check; }
   // Its script may run: it isn't a shell automation, or you allowed the script as it's written now.
@@ -721,16 +726,23 @@ export class Runner {
       // Its agent's first finished turn is noted (`turnDone`): its timeout was for that turn, not for
       // what you ask it after. A run that keeps its tab never closes: the automations waiting on it
       // start then, with what its agent said (read off its screen: how it went decides which start).
+      // An agent asked for its outcome line also gets that line noted then, as closeRun() notes it at
+      // close, for the bell: `turnOutcome` is "done", "failed" or "nothing to do", or "none" when it
+      // ended its turn without the line (it asked you something, say). Read with Notifications on, or
+      // for the automations waiting on it.
       if (!r.turnDone && step.seen?.worked && step.seen.since === now && (ag?.status === "done" || ag?.status === "idle")) {
         const a = this.find(r.ws, r.name);
         const kept = Boolean(a?.keep || r.card) && !r.chained;
         this.patch(r.id, { turnDone: now, ...(kept ? { chained: true } : {}) });
-        if (kept && this.hasFollowers(r.ws, r.name)) {
+        const followers = kept && this.hasFollowers(r.ws, r.name);
+        const note = kept && r.reports && this.h.featureOn?.("notifications") !== false;
+        if (followers || note) {
           cx.spawn(async () => {
             const report = r.reports ? await this.report(r.terminal, r) : null;
             // Asked for its outcome line and didn't give one (it asked you something, say): not known, nothing starts.
             const outcome = report?.outcome ?? (r.reports ? null : "done");
-            if (outcome === "done" || outcome === "failed") {
+            if (r.reports && report) this.patch(r.id, { turnOutcome: outcome ?? "none" });
+            if (followers && (outcome === "done" || outcome === "failed")) {
               this.triggerChains(r.ws, r.name, outcome, { output: report?.summary ?? r.summary ?? "", chainDepth: r.chainDepth ?? 0, runId: r.id });
             }
           });
@@ -1103,7 +1115,7 @@ export class Runner {
       return `Without a tab its script is stopped after ${formatDuration(SCRIPT_MAX)}, whatever its timeout says. For longer, give it terminal: true.`;
     }
     const failing = this.checkFailing(ws, a);
-    if (failing) return `Its check failed ${shortTime(failing.at)}: ${failing.what} No agent starts until the check works. Try it under Details.`;
+    if (failing) return `Its check failed ${shortTime(failing.at)}: ${failing.what} ${untilCheck(a)} Try it under Details.`;
     if (a.trigger.kind === "once") return a.enabled && a.trigger.at < Date.now() - 60e3 ? "Its time has passed and it didn't run. Change the date, or use Run now." : null;
     if (a.trigger.kind === "files") return def ? this.warnings[folderPath(def, a.trigger.folder)] ?? null : null;
     if (a.trigger.kind !== "github") return null;
@@ -1271,7 +1283,7 @@ export class Runner {
       try { await this.launch(ws, a, why, vars, at, place, manual, { ...extra, key }); }
       catch (e) {
         this.log({ ws, name: a.name, at, why, status: "failed", note: message(e) });
-        notify({ title: `${a.name} didn't start`, body: message(e), level: "error" });
+        notify({ title: `${a.name} didn't start`, body: `${this.where(ws, a)}${message(e)}`, level: "error", action: openAt(ws, a) });
       }
       const left = (this.starting.get(key) ?? 1) - 1;
       if (left > 0) this.starting.set(key, left); else { this.starting.delete(key); this.queue.delete(key); }
@@ -1479,11 +1491,11 @@ export class Runner {
     if (toast && outcome === "failed" && shouldNotify(level, "problem")) {
       notify({
         title: vault ? `${a.name} didn't run` : timedOut ? `${a.name} timed out` : a.run === "shell" ? (exitCode == null ? `${a.name} stopped` : `${a.name} failed (exit ${exitCode})`) : `${a.name} failed`,
-        body: timedOut ? `Stopped after ${formatDuration(timeoutMs)}.${summary && !/^Timed out/.test(summary) ? ` ${summary}` : ""}` : summary || "It gave no reason.",
+        body: this.where(ws, a) + (timedOut ? `Stopped after ${formatDuration(timeoutMs)}.${summary && !/^Timed out/.test(summary) ? ` ${summary}` : ""}` : summary || "It gave no reason."),
         level: timedOut ? "warning" : "error", ...action,
       });
     } else if (toast && outcome === "done" && a.run === "shell" && shouldNotify(level, "finished")) {
-      notify({ title: `${a.name} finished`, body: summary || "Its script worked.", level: "info", ...action });
+      notify({ title: `${a.name} finished`, body: this.where(ws, a) + (summary || "Its script worked."), level: "info", ...action });
     }
     // `automation done` ones start when it did its work, `automation failed` ones when it failed or
     // timed out. One that had nothing to do, or whose end isn't known (its tab closed first), starts neither.
@@ -1580,11 +1592,11 @@ export class Runner {
     if (res.out && !res.same) return true;
     const what = res.error ?? (res.same ? "same" : "");
     const again = this.repeat(ws, a, at, why, res.error ? "failed" : "quiet", what, (row) => (res.error ? `Its check failed${row}: ${what}`
-      : `Its check printed ${res.same ? "the same as last time" : "nothing"}${row}, so no agent started`));
+      : `Its check printed ${res.same ? "the same as last time" : "nothing"}${row}, so ${noRun(a)}`));
     const open = { action: openAt(ws, a) };
-    if (res.error && !again) notify({ title: `${a.name}'s check failed`, body: `${what} No agent starts until the check works.`, level: "warning", ...open });
+    if (res.error && !again) notify({ title: `${a.name}'s check failed`, body: `${what} ${untilCheck(a)}`, level: "warning", ...open });
     // A one-time one won't be back: say that it came to nothing.
-    if (!res.error && a.trigger.kind === "once") notify({ title: `${a.name} had nothing to do`, body: `${why}: its check printed nothing, so no agent started.`, level: "info", ...open });
+    if (!res.error && a.trigger.kind === "once") notify({ title: `${a.name} had nothing to do`, body: `${why}: its check printed nothing, so ${noRun(a)}.`, level: "info", ...open });
     return false;
   }
 

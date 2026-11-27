@@ -64,7 +64,7 @@
   <text x="333" y="29" fill="#a5a8ae" font-size="13">Board</text>
   <rect x="390.1" y="16" width="1" height="16" fill="#2f3137"/>
   <rect x="399.1" y="8" width="78" height="32" rx="8" fill="#26272c"/>
-  <text x="429.1" y="29" fill="#e8e9eb" font-size="13">1</text>
+  <text x="429.1" y="29" fill="#e8e9eb" font-size="13">zsh</text>
   <g transform="translate(1112 17) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g>
   <!-- Views (ws-tabs, at the bar's right end): its menu opens the views, full size or beside -->
   <rect x="1135.5" y="10.5" width="77" height="27" rx="7" fill="#26272c" stroke="#2f3137"/>
@@ -169,7 +169,7 @@
   <text x="1004" y="543.0" fill="#7d8089" font-size="12" text-anchor="end">hidden</text>
   <rect x="1016" y="529.0" width="36" height="20" rx="10" fill="#34363b"/><circle cx="1026" cy="539.0" r="8" fill="#a5a8ae"/>
   <rect x="419" y="558.0" width="633" height="1" fill="#303237"/>
-  <text x="419" y="576.0" fill="#7d8089" font-size="12">Not installed: copilot, amp.</text>
+  <text x="419" y="576.0" fill="#7d8089" font-size="12">Not installed: Copilot, Amp.</text>
   <text x="419" y="595.0" fill="#7d8089" font-size="12">Hidden agents are only left out of the + menu. Presets and automations can still start them.</text>
   </g>
 </svg>

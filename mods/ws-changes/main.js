@@ -37,16 +37,33 @@
 //    left rail at >= 640px (matching ws-files) and as a clickable header switcher popover
 //    under 640px (e.g. beside a terminal); hidden completely for a single repo with no
 //    worktrees.
+// 8. UX fixes (from the audit of package 0.33.0): Commit says what it takes ("Commit all 4 files", the box "Message for
+//    all changes"); each of its steps may take 10 minutes (hooks), and running out says what
+//    happened instead of "failed" (staging gave up; nothing committed; or committed while a hook ran on); a cut diff ends with "… 2,340 more lines not shown"; the
+//    nested scan says when it stopped at 40 repos or 500 folders (repos.js stopWords); cut paths
+//    have a tooltip; Open in Files says "Show the sidebar to do this" while the switcher's sidebar
+//    copy is away (shared "workspaces.switcher.alive").
+//    Small fixes: Commit is grey with nothing to commit, a failure gives git's first line and last
+//    two (no "Error:"), a commit says "Committed 4 files to main"; counts read "1,000+ files"; the picker's
+//    filter takes the keyboard (and gives it back when the picker's button closes it) and Enter takes the
+//    first checkout that matches (repos.js firstMatch); no tooltip on the picker while
+//    it's open; the filter's × is a 20px target.
+// 9. The git brake, from Herdr 0.1.18's Changes (gitscan.js, copied in ws-files): the checkout's
+//    status and every worktree's count go through one shared git status per repo; a file event
+//    reads again only once the last status allows, the repos and counts on the poll (10s, longer
+//    after a slow status), nothing while the window is behind; with only new files, no HEAD or
+//    numstat runs.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list, Popup, h_resizable, resizable_panel } from "gpui-base";
 import { spaces, panes, focused, readTextFile, watchFolder, theme, settings, props, shared, setShared, checking, machines, home, window } from "herdr";
 import { exec } from "./posix.js";
 import { locate, toRemember, placeKey } from "./follow.js";
+import { repoStatus, dueNow, statusRequest, settleRequest } from "./gitscan.js";
 import {
   SKIP_DIRS, MAX_REPOS, MAX_DIRS, FILTER_THRESHOLD,
   normPath, baseName, maxScanDepth,
   parseWorktrees, countPorcelainZ, parseScanOutput, posixScanScript,
-  buildGroups, pickInitial, filterGroups,
+  buildGroups, pickInitial, filterGroups, firstMatch, stopWords,
 } from "./repos.js";
 
 const NARROW = 640, RAIL = 248, SLOW = 6;
@@ -57,6 +74,13 @@ const countLines = (text) => text ? text.split("\n").length - Number(text.endsWi
 const wideGlyph = /[\p{Ideographic}\p{Emoji_Presentation}\p{Extended_Pictographic}\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\ufe10-\ufe19\ufe30-\ufe6f\uff01-\uff60\uffe0-\uffe6]/gu;
 const fade = (c, a) => (/^#[0-9a-f]{6}$/i.test(String(c)) ? `${c}${Math.round(a * 255).toString(16).padStart(2, "0")}` : c);
 const draftKey = (root, on) => `${on ?? ""}::${normPath(root)}`;
+// A commit's two steps (add, commit) may each take this long: hooks that lint or test. Herdr's cap.
+const COMMIT_TIMEOUT = 600000;
+// The diff shows this many lines; a last row says how many more there are.
+const DIFF_LINES = 1500;
+const SCAN = { exec, active: () => window()?.active !== false };
+// 2340 → "2,340" (the mods' JavaScript has no grouping in toLocaleString).
+const grouped = (n) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 
 // Keep room for spacing marks and give wide glyphs at least two columns.
 function displayColumns(text) {
@@ -87,11 +111,12 @@ function diffRows(lines) {
   });
 }
 
-// Bounded nested-repo scan for local Windows (matches posixScanScript's NUL output).
+// Bounded nested-repo scan for local Windows (matches posixScanScript's NUL output, its
+// ":stopped:" token included).
 function windowsScanArgs(cwd, maxDepth) {
   const skip = SKIP_DIRS.map((s) => `'${s}'`).join(",");
   const escaped = String(cwd ?? "").replace(/['‘’‚‛]/g, "$&$&");
-  const script = `[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); & { param($root,$max,$maxR,$maxD) $skip=@(${skip}); $real=(Resolve-Path -LiteralPath $root -ErrorAction SilentlyContinue).Path; if(-not $real){$real=$root}; $out=[System.Collections.Generic.List[string]]::new(); $out.Add($real); $cnt=0; $vis=0; function walk($d,$dep){ if($dep -gt $max -or $script:cnt -ge $maxR -or $script:vis -gt $maxD){return}; foreach($c in (Get-ChildItem -LiteralPath $d -Directory -ErrorAction SilentlyContinue)){ if($c.Name.StartsWith('.') -or $skip -contains $c.Name){continue}; $script:vis++; if($script:vis -gt $maxD){return}; if(Test-Path -LiteralPath (Join-Path $c.FullName '.git')){ $out.Add($c.FullName); $script:cnt++; if($script:cnt -ge $maxR){return} } elseif($dep -lt $max){ walk $c.FullName ($dep+1) } } }; walk $root 1; [Console]::Write(($out -join [char]0)) } '${escaped}' ${maxDepth} ${MAX_REPOS} ${MAX_DIRS}`;
+  const script = `[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); & { param($root,$max,$maxR,$maxD) $skip=@(${skip}); $real=(Resolve-Path -LiteralPath $root -ErrorAction SilentlyContinue).Path; if(-not $real){$real=$root}; $out=[System.Collections.Generic.List[string]]::new(); $out.Add($real); $cnt=0; $vis=0; function walk($d,$dep){ if($dep -gt $max -or $script:cnt -ge $maxR -or $script:vis -gt $maxD){return}; foreach($c in (Get-ChildItem -LiteralPath $d -Directory -ErrorAction SilentlyContinue)){ if($c.Name.StartsWith('.') -or $skip -contains $c.Name){continue}; $script:vis++; if($script:vis -gt $maxD){$script:stop='dirs'; return}; if(Test-Path -LiteralPath (Join-Path $c.FullName '.git')){ $out.Add($c.FullName); $script:cnt++; if($script:cnt -ge $maxR){$script:stop='repos'; return} } elseif($dep -lt $max){ walk $c.FullName ($dep+1) } } }; walk $root 1; if($script:stop){ $out.Add(':stopped:' + $script:stop) }; [Console]::Write(($out -join [char]0)) } '${escaped}' ${maxDepth} ${MAX_REPOS} ${MAX_DIRS}`;
   return ["-NoProfile", "-Command", script];
 }
 
@@ -103,7 +128,7 @@ export default class Changes extends View {
     this.userPicked = false; this.popOpen = false; this.scanning = false; this.noRepos = false;
     this.loadSeq = 0; this.drafts = new Map();
     this.filterQuery = ""; this.filtering = false;
-    this.input = InputState.new({ placeholder: "Commit message" });
+    this.input = InputState.new({ placeholder: "Message for all changes" });
     this.input.on("change", (_e, cx) => {
       const hadMessage = Boolean(this.message.trim());
       this.message = this.input.value();
@@ -121,10 +146,15 @@ export default class Changes extends View {
     this.filterInput.on("change", (_e, cx) => { this.filterQuery = this.filterInput.value(); cx.notify(); });
     this.filterInput.on("focus", (_e, cx) => { this.filtering = true; cx.notify(); });
     this.filterInput.on("blur", (_e, cx) => { this.filtering = false; cx.notify(); });
+    // Enter takes the first checkout the filter leaves, as a click on it does.
+    this.filterInput.on("submit", (_e, cx) => {
+      const c = firstMatch(this.groups, this.filterQuery);
+      if (c) this.selectCheckout(c.path, cx);
+    });
     this.shown = false;
     if (!checking()) {
       this.refresh(cx);
-      cx.timer.every(10000, (cx) => this.refresh(cx));
+      cx.timer.every(500, (cx) => this.refreshIfDue(cx));
       cx.timer.every(400, (cx) => this.tick(cx));
     }
   }
@@ -170,11 +200,29 @@ export default class Changes extends View {
     const seen = this.seen();
     if (!seen) this.held = null;
     this.remember(seen);
-    if (!seen) { if (this.shown) { this.shown = false; this.popOpen = false; this.unwatch(); } return; }
+    if (!seen) { if (this.shown) { this.shown = false; this.popOpen = false; this.popTook = false; this.unwatch(); } return; }
     const back = !this.shown;
     this.shown = true;
     if (back && props()?.screen) this.handle.focus();
     if (back || this.key() !== this.context?.key) this.refresh(cx);
+  }
+
+  // The brake (gitscan.js, as Herdr 0.1.18's Changes): a file event reads the checkout again once
+  // the last status allows (watchAt); the repos, their worktrees and every count only on the poll
+  // (pollAt: 10s, longer after a slow status); nothing while the window is behind, one catch-up
+  // when it's in front again; nothing while a read or a commit runs.
+  refreshIfDue(cx) {
+    const active = window()?.active !== false, context = this.context;
+    const refocused = active && this.windowActive === false;
+    this.windowActive = active;
+    if (!context || !this.shown) return;
+    const busy = Boolean(this.busy || this.loading || this.scanning || this.reading);
+    const due = dueNow(context, Date.now(), { active: active && !busy, refocused, watched: Boolean(this.watched) });
+    if (due === "poll") this.refresh(cx, { due: true });
+    else if (due === "dirty" && this.selectedPath) {
+      const req = statusRequest(context, Date.now());
+      cx.spawn(async (cx) => this.loadCheckout(this.selectedPath, context, cx, req));
+    }
   }
 
   unwatch() {
@@ -190,9 +238,11 @@ export default class Changes extends View {
       try {
         while (this.watched === root) {
           this.watching = watchFolder(root);
-          await this.watching;
-          if (this.watched === root && this.context && this.selectedPath === normPath(root)) {
-            this.loadCheckout(this.selectedPath, this.context, cx);
+          const paths = await this.watching;
+          // A change: read again when the brake allows (refreshIfDue), not at once.
+          if ((!Array.isArray(paths) || paths.length) && this.watched === root && this.context && this.selectedPath === normPath(root)) {
+            this.context.dirtyAt = Date.now() + 1;
+            this.refreshIfDue(cx);
           }
         }
       } catch { if (this.watched === root) this.watched = null; }
@@ -237,16 +287,19 @@ export default class Changes extends View {
     return parseScanOutput(r.code === 0 ? r.stdout : "", MAX_REPOS);
   }
 
-  // Read changed-file counts for every checkout in `list` with bounded concurrency.
-  async readDirtyCounts(list, on, context, cx, skipPath = null) {
+  // Read changed-file counts for every checkout in `list` with bounded concurrency, through the shared
+  // scan (gitscan.js): a fresh status of that checkout (Files', another copy's) is used again.
+  async readDirtyCounts(list, on, context, cx, skipPath = null, req = null) {
     const todo = list.filter((c) => c.path !== skipPath);
+    const ask = req?.urgent ? { ...req } : { after: 0, visiting: false, urgent: false, allowInactive: Boolean(req?.allowInactive) };
     let next = 0;
     await Promise.all(Array.from({ length: Math.min(SLOW, todo.length) }, async () => {
       while (next < todo.length && this.current(context)) {
         const item = todo[next++];
-        const s = await exec("git", [...READ, "status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"], { cwd: item.path, on }).catch(() => ({ code: 1, stdout: "" }));
+        const scan = await repoStatus(item.path, on, ask, cx, () => this.current(context), SCAN).catch(() => null);
         if (!this.current(context)) return;
-        item.dirty = s.code === 0 ? countPorcelainZ(s.stdout) : null;
+        if (!scan) continue; // the window is behind: the count it had stays
+        item.dirty = scan.status?.code === 0 ? countPorcelainZ(scan.status.stdout) : null;
         cx.notify();
       }
     }));
@@ -262,14 +315,35 @@ export default class Changes extends View {
     }
   }
 
+  // The picker closed without a pick (its button, Esc, a press outside): when its filter took the
+  // keyboard on opening, it goes back to the message box if that had it, else to the view. Not on
+  // `this.filtering`: by the click, the frame drawn without the filter has already blurred it. A press
+  // outside runs this in the capture phase, so whatever it lands on still takes the keyboard after.
+  // A press outside that lands on nothing taking the keyboard (the counts text, the diff: the view's
+  // root takes it) gets the message box back on its release (`popRefocus`, the root's on_mouse_up).
+  closePop(outside = false) {
+    this.popOpen = false;
+    if (!this.popTook) return;
+    this.popTook = false;
+    if (this.popBack) this.input.focus(); else this.handle.focus();
+    if (outside && this.popBack) this.popRefocus = Date.now();
+  }
+
+  refocusAfterPress() {
+    const at = this.popRefocus;
+    this.popRefocus = 0;
+    if (at && Date.now() - at < 2000 && this.handle.is_focused()) this.input.focus();
+  }
+
   // Switch active checkout within the current visit (user click in rail/popover or ↩ button).
   selectCheckout(targetPath, cx) {
     const path = normPath(targetPath);
     if (!path || !this.context) return;
-    const wasPop = this.popOpen;
+    const wasPop = this.popOpen, back = this.popTook && this.popBack;
     this.userPicked = true;
-    this.popOpen = false;
-    if (wasPop) this.handle.focus();
+    this.popOpen = false; this.popTook = false;
+    // A pick from the picker: the keyboard where it was when the picker opened (the message box), else the view.
+    if (wasPop) { if (back) this.input.focus(); else this.handle.focus(); }
     if (path === this.selectedPath && this.root === path) { cx.notify(); return; }
     if (this.root && this.message.trim()) this.drafts.set(draftKey(this.root, this.on), this.message);
     const entry = this.flat.find((c) => c.path === path) ?? null;
@@ -288,10 +362,13 @@ export default class Changes extends View {
     this.message = saved;
     this.input.set_value(saved);
     cx.notify();
-    this.loadCheckout(path, this.context, cx);
+    const context = this.context;
+    cx.spawn(async (cx) => this.loadCheckout(path, context, cx));
   }
 
-  refresh(cx, { force = false } = {}) {
+  // due: the brake's poll (refreshIfDue); anything else (a new place, coming into view, Refresh) reads
+  // a fresh status.
+  refresh(cx, { force = false, due = false } = {}) {
     if (!this.seen()) return; // hidden: no git, no watch
     const loc = this.place(), { cwd, on } = loc, next = placeKey(loc);
     const visitChanged = next !== this.context?.key;
@@ -300,24 +377,26 @@ export default class Changes extends View {
       // inside it, a terminal's folder unknown for a moment after a restart) gets it back.
       const stash = this.message.trim() && this.root ? { message: this.message, root: this.root, on: this.on } : this.context?.stash ?? null;
       if (this.root && this.message.trim()) this.drafts.set(draftKey(this.root, this.on), this.message);
-      this.context = { key: next, cwd, on, stash };
+      this.context = { key: next, cwd, on, stash, dirtyAt: 0 };
       this.root = null; this.on = on; this.branch = null; this.files = []; this.open = null;
       this.groups = []; this.flat = []; this.selectedPath = null; this.followedRoot = null;
-      this.userPicked = false; this.popOpen = false; this.noRepos = false; this.scanning = false;
-      this.filterQuery = ""; this.filterInput.set_value("");
+      this.userPicked = false; this.popOpen = false; this.popTook = false; this.noRepos = false; this.scanning = false;
+      this.filterQuery = ""; this.filterInput.set_value(""); this.scanStop = null;
       this.setLines([]); this.message = ""; this.input.set_value(""); this.error = null; this.note = null;
       this.unwatch(); this.closed = false; this.limited = false; this.loading = false;
       this.loadSeq++;
       cx.notify();
     }
-    if (!cwd || this.busy) return;
+    if (!cwd) { this.context.pollAt = Date.now() + 10000; return; }
+    if (this.busy) return;
     const context = this.context;
     const quiet = !visitChanged && !force && (this.flat.length > 0 || this.noRepos);
     if (this.scanning) return;
-    this.discover(cwd, on, context, cx, { quiet });
+    const req = statusRequest(context, Date.now(), { force: !due && !visitChanged, visiting: visitChanged });
+    this.discover(cwd, on, context, cx, { quiet, req });
   }
 
-  discover(cwd, on, context, cx, { quiet = false } = {}) {
+  discover(cwd, on, context, cx, { quiet = false, req = null } = {}) {
     this.scanning = true;
     if (!quiet) cx.notify();
     cx.spawn(async (cx) => {
@@ -330,6 +409,7 @@ export default class Changes extends View {
         let repos = [];
         let followedRoot = null;
         let realCwd = "";
+        let stopped = null;
 
         if (direct) {
           followedRoot = direct.top;
@@ -337,7 +417,7 @@ export default class Changes extends View {
         } else {
           const scanned = await this.scanNested(cwd, on);
           if (!this.current(context)) return;
-          realCwd = scanned.realCwd;
+          realCwd = scanned.realCwd; stopped = scanned.stopped;
           const seenCommon = new Set();
           let nextIdx = 0;
           await Promise.all(Array.from({ length: Math.min(SLOW, scanned.dirs.length) }, async () => {
@@ -361,6 +441,7 @@ export default class Changes extends View {
 
         if (!this.current(context)) return;
         if (quiet) this.carryDirty(repos, prevFlat);
+        this.scanStop = stopped;
         const { groups, flat } = buildGroups({ cwd, realCwd, userHome, repos, followedRoot });
 
         if (!flat.length) {
@@ -380,12 +461,12 @@ export default class Changes extends View {
         // Non-git folder initial visit: count dirty checkouts first so we auto-open the first
         // dirty checkout (else the first repo) without flashing a clean one first.
         if (!followedRoot && !this.userPicked && !this.selectedPath) {
-          if (flat.length > 1) await this.readDirtyCounts(flat, on, context, cx);
+          if (flat.length > 1) await this.readDirtyCounts(flat, on, context, cx, null, req);
           if (!this.current(context)) return;
           if (!this.userPicked && !this.selectedPath) {
             this.selectedPath = pickInitial({ flat: this.flat, followedRoot: null, previousPick: null });
             cx.notify();
-            await this.loadCheckout(this.selectedPath, context, cx);
+            await this.loadCheckout(this.selectedPath, context, cx, req);
           }
           return;
         }
@@ -396,8 +477,8 @@ export default class Changes extends View {
           this.open = null; this.closed = false; this.setLines([]);
           cx.notify();
         }
-        const tasks = [this.loadCheckout(pick, context, cx)];
-        if (flat.length > 1) tasks.push(this.readDirtyCounts(flat, on, context, cx, pick));
+        const tasks = [this.loadCheckout(pick, context, cx, req)];
+        if (flat.length > 1) tasks.push(this.readDirtyCounts(flat, on, context, cx, pick, req));
         await Promise.all(tasks);
       } catch (e) {
         if (this.current(context)) this.error = String(e);
@@ -408,21 +489,30 @@ export default class Changes extends View {
     });
   }
 
-  async loadCheckout(targetPath, context, cx) {
+  // One checkout's changes. Its status comes through the shared scan (gitscan.js); req is the read's
+  // request (statusRequest), a fresh one (a click, a commit) when none is given. With only new files,
+  // no HEAD or numstat runs (as Herdr 0.1.18).
+  async loadCheckout(targetPath, context, cx, req = null) {
     const root = normPath(targetPath);
     if (!root || this.busy) return;
     const on = context.on ?? null;
     const seq = ++this.loadSeq;
     const sameRoot = this.root === root;
     if (!sameRoot) { this.loading = true; cx.notify(); }
+    this.reading = seq;
+    req ??= statusRequest(context, Date.now(), { force: true });
     try {
       const git = (args) => exec("git", [...READ, ...args], { cwd: root, on });
-      const status = await git(["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"]);
-      if (!this.current(context) || this.loadSeq !== seq) return;
+      const scan = await repoStatus(root, on, req, cx, () => this.current(context) && this.loadSeq === seq, SCAN);
+      if (!scan || !this.current(context) || this.loadSeq !== seq) return;
+      settleRequest(context, req, scan);
+      if (scan.error) throw scan.error;
+      const status = scan.status;
       if (status.code !== 0) throw new Error(status.stderr || "Could not read git status");
-      const head = await git(["rev-parse", "--verify", "HEAD"]);
+      const tracked = status.stdout.split("\0").filter(Boolean).slice(0, 1000).some((entry) => !entry.startsWith("??"));
+      const head = tracked ? await git(["rev-parse", "--verify", "HEAD"]) : { code: 1 };
       const stats = {};
-      const results = head.code === 0
+      const results = !tracked ? [] : head.code === 0
         ? [await git(["diff", "HEAD", "--numstat", "-z", "--no-renames"])]
         : [await git(["diff", "--cached", "--numstat", "-z", "--no-renames"]), await git(["diff", "--numstat", "-z", "--no-renames"])];
       for (const result of results) {
@@ -469,6 +559,7 @@ export default class Changes extends View {
       if (this.current(context) && this.loadSeq === seq) this.error = String(e);
     } finally {
       if (this.current(context) && this.loadSeq === seq) this.loading = false;
+      if (this.reading === seq) this.reading = 0;
       cx.notify();
     }
   }
@@ -476,14 +567,14 @@ export default class Changes extends View {
   async load(path, context, seq = this.loadSeq) {
     const file = this.files.find((f) => f.path === path), root = this.root, on = this.on;
     if (!file) return;
-    let lines;
+    let lines, total = null;
     if (file.fresh || (!this.hasHead && file.status === "A")) {
       const text = await readTextFile(`${root}/${path}`, { on }).catch(() => null);
       if (text === null) lines = ["Cannot preview this file (binary, too large, or unreadable)"];
       else if (text.includes("\0")) lines = ["Binary file · no text diff"];
       else {
-        file.add = countLines(text);
-        lines = [`@@ -0,0 +1,${file.add} @@`, ...text.slice(0, 400000).replace(/\n$/, "").split("\n").slice(0, 1500).map(l => `+${l}`)];
+        file.add = countLines(text); total = file.add + 1;
+        lines = [`@@ -0,0 +1,${file.add} @@`, ...text.slice(0, 400000).replace(/\n$/, "").split("\n").slice(0, DIFF_LINES).map(l => `+${l}`)];
       }
     } else {
       const r = await exec("git", [...READ, "diff", ...(this.hasHead ? ["HEAD"] : []), "--no-ext-diff", "--no-textconv", "--no-color", "--", path], { cwd: root, on });
@@ -492,7 +583,11 @@ export default class Changes extends View {
       lines = first < 0 ? [file.binary ? "Binary file changed" : "No text diff available"] : all.slice(first);
     }
     if (this.current(context) && this.loadSeq === seq && this.open === path) {
-      this.setLines(lines.slice(0, 1500).map(line => line.length > 4000 ? line.slice(0, 4000) + "… (line truncated)" : line));
+      const shown = lines.slice(0, DIFF_LINES).map(line => line.length > 4000 ? line.slice(0, 4000) + "… (line truncated)" : line);
+      // A diff that was cut says so at its end (a plain row, diffRows).
+      const more = (total ?? lines.length) - shown.length;
+      if (more > 0) shown.push(`… ${grouped(more)} more line${more === 1 ? "" : "s"} not shown`);
+      this.setLines(shown);
     }
   }
 
@@ -504,16 +599,20 @@ export default class Changes extends View {
 
   // Asks the switcher to open a changed file in Files (shared "workspaces.files.open", a short list
   // like "workspaces.view": the newest last, each id once, none older than 15s).
-  openInFiles(path) {
+  // While the switcher's sidebar copy is away (shared "workspaces.switcher.alive" missing or older
+  // than 15s), nobody would drain the ask: the note line says so instead.
+  openInFiles(path, cx) {
     if (!this.root) return;
     const loc = this.place(), now = Date.now(), queue = shared("workspaces.files.open");
+    const alive = Number(shared("workspaces.switcher.alive")?.at);
+    if (!Number.isFinite(alive) || now - alive > 15000) { this.note = "Show the sidebar to do this"; this.noteTone = "quiet"; cx.notify(); return; }
     const ask = { path: `${this.root}/${path}`, isDir: false, line: null, on: this.on ?? null, space: loc.space ?? null, tab: loc.tab ?? null, placement: "beside",
       id: `${now}-changes-${Math.random().toString(36).slice(2, 8)}`, at: now };
     setShared("workspaces.files.open", [...(Array.isArray(queue) ? queue : []).filter((a) => a && typeof a === "object" && now - (a.at ?? 0) < 15000), ask].slice(-64));
   }
 
   pick(path, cx) {
-    this.open = this.open === path ? null : path; this.setLines([]); this.note = null;
+    this.open = this.open === path ? null : path; this.setLines([]); this.note = null; this.noteTone = null;
     this.closed = !this.open;
     const context = this.context, seq = this.loadSeq;
     if (this.open) cx.spawn(async (cx) => {
@@ -524,26 +623,78 @@ export default class Changes extends View {
     cx.notify();
   }
 
+  // Commit: git add -A, then git commit, each allowed 10 minutes (hooks that lint or test). When
+  // exec stops a step there (its time, or Herdr's own words for it), that isn't git failing on its
+  // own: Herdr ends git, its hooks run on to their end, orphaned. What it means depends on the step:
+  // add -A ran out (nothing committed, what's staged unknown), or the commit did, which HEAD read
+  // before and after tells apart (a slow post-commit hook: the commit was made).
   commit(cx) {
-    if (!this.message.trim() || !this.root || this.busy || this.loading || this.context?.key !== this.key()) return;
+    if (!this.message.trim() || !this.root || !this.files.length || this.busy || this.loading || this.context?.key !== this.key()) return;
     const root = this.root, on = this.on, context = this.context, message = this.message.trim();
-    this.busy = true; this.note = null;
+    const what = `Committed ${this.countWords()}${this.branch ? ` to ${this.branch}` : ""}`;
+    this.busy = true; this.note = null; this.noteTone = null;
+    const head = async () => {
+      const r = await exec("git", [...READ, "rev-parse", "--verify", "-q", "HEAD"], { cwd: root, on }).catch(() => null);
+      return r ? (r.code === 0 ? r.stdout.trim() : "") : null; // "" no commit yet, null couldn't ask
+    };
+    const done = () => {
+      this.drafts.delete(draftKey(root, on));
+      if (this.current(context)) { this.message = ""; this.input.set_value(""); }
+    };
     cx.spawn(async (cx) => {
+      let step = "add", since = Date.now(), before = null;
       try {
         for (const args of [["add", "-A"], ["commit", "-m", message]]) {
-          const r = await exec("git", args, { cwd: root, on });
+          if (args[0] === "commit") { before = await head(); step = "commit"; }
+          since = Date.now();
+          const r = await exec("git", args, { cwd: root, on, timeout: COMMIT_TIMEOUT });
           if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim());
         }
-        this.drafts.delete(draftKey(root, on));
-        if (this.current(context)) { this.message = ""; this.input.set_value(""); }
-      } catch (e) { if (this.current(context)) this.note = `Commit failed: ${e}`; }
-      finally {
+        done();
+        if (this.current(context)) { this.note = what; this.noteTone = "quiet"; }
+      } catch (e) {
+        const stopped = Date.now() - since >= COMMIT_TIMEOUT - 2000 || /took longer than .* and was stopped/.test(String(e?.message ?? e));
+        // Git's own words without "Error:": its first line and its last two (a hook's reason is at the end).
+        const said = String(e?.message ?? e).split("\n").map((l) => l.trim()).filter(Boolean);
+        let note = `Commit failed: ${(said.length > 3 ? [said[0], "…", ...said.slice(-2)] : said).join(" ")}`, tone = null;
+        if (stopped && step === "add") { note = "Staging gave up after 10 minutes, so nothing was committed. Commit from the terminal to see what git is doing."; tone = "wait"; }
+        else if (stopped) {
+          const after = await head();
+          tone = "wait";
+          if (after && before !== null && after !== before) { note = "The commit was made, but a hook was still running after 10 minutes and was stopped. Check git log before committing again."; done(); }
+          else if (after === null || before === null) note = "Commit gave up after 10 minutes. Check git log before committing again.";
+          else note = "Commit gave up after 10 minutes, so nothing was committed; the changes are staged. Commit from the terminal to see the hooks' output.";
+        }
+        // A step stopped while it held the index (add -A does) leaves git's lock behind for good:
+        // every later git command there fails until it's gone.
+        if (stopped) {
+          // The lock's path as git gives it: in a linked worktree it isn't .git/index.lock.
+          const lock = await exec("sh", ["-c", 'p=$(git rev-parse --git-path index.lock) && test -e "$p" && printf "%s" "$p"'], { cwd: root, on }).catch(() => null);
+          const where = lock?.code === 0 ? String(lock.stdout ?? "").trim() : "";
+          if (where) note += ` Git left ${where} behind: delete it once no git is running in this repo.`;
+        }
+        if (this.current(context)) { this.note = note; this.noteTone = tone; }
+      } finally {
         this.busy = false;
-        if (this.current(context)) this.loadCheckout(this.selectedPath ?? root, context, cx);
+        if (this.current(context)) await this.loadCheckout(this.selectedPath ?? root, context, cx);
         cx.notify();
       }
     });
     cx.notify();
+  }
+
+  // "1 file", "4 files", "1,000+ files" (the list stops at 1,000).
+  countWords() {
+    const n = this.files.length;
+    return `${grouped(n)}${this.limited ? "+" : ""} ${n === 1 && !this.limited ? "file" : "files"}`;
+  }
+
+  // What Commit takes: every change in the checkout (git add -A), so the button says how many.
+  commitLabel() {
+    const n = this.files.length;
+    if (!n) return "Commit";
+    if (n === 1) return "Commit 1 file";
+    return `Commit all ${grouped(n)}${this.limited ? "+" : ""} files`;
   }
 
   gutter(size) { return Math.ceil(this.gutterChars * charWidth(size)) + 2; }
@@ -627,7 +778,7 @@ export default class Changes extends View {
         })
         .child(svg("mods/workspace-chrome/search.svg").size(12).flex_none().text_color(t.dim))
         .child(div().flex_1().min_w(0).child(Input.new(this.filterInput).text_size(12).text_color(t.foreground)))
-        .when(Boolean(this.filterQuery), (e) => e.child(div().id(`${id}-clear`).flex_none().cursor_pointer().text_color(t.dim).hover((s) => s.text_color(t.foreground))
+        .when(Boolean(this.filterQuery), (e) => e.child(div().id(`${id}-clear`).flex_none().size(20).mr(-4).flex().items_center().justify_center().cursor_pointer().text_color(t.dim).hover((s) => s.text_color(t.foreground))
           .on_click((_e, cx) => { this.filterQuery = ""; this.filterInput.set_value(""); cx.notify(); })
           .child(svg("mods/workspace-chrome/x.svg").size(12)))));
   }
@@ -650,7 +801,13 @@ export default class Changes extends View {
       .when(showFilter, (e) => e.child(this.filterBox(t, "changes-rail-filter")))
       .child(v_flex().id("changes-rail-list").flex_1().min_h(0).overflow_y_scrollbar().p(6).gap(1)
         .children(rows)
-        .when(!rows.length, (e) => e.child(div().p(8).text_size(12).text_color(t.dim).child("No matching repos or worktrees"))));
+        .when(!rows.length, (e) => e.child(div().p(8).text_size(12).text_color(t.dim).child("No matching repos or worktrees"))))
+      .when(Boolean(this.scanStop), (e) => e.child(this.stopLine(t)));
+  }
+
+  // The scan stopped early (repos.js MAX_DIRS, MAX_REPOS): a line under the repos says so.
+  stopLine(t) {
+    return div().flex_none().px(12).py(6).border_t(1).border_color(t.border).text_size(11).text_color(t.dim).child(stopWords(this.scanStop));
   }
 
   // Clickable header switcher + anchored popover (used in narrow panes < 640px when > 1 checkout).
@@ -661,10 +818,16 @@ export default class Changes extends View {
     const trigger = h_flex().id("changes-repo-trigger").h(slim ? 24 : 26).max_w(slim ? 235 : 320).px(8).gap(6).items_center().rounded(6)
       .border_1().border_color(this.popOpen ? t.input : t.border).bg(this.popOpen ? t.hover : t.surface).cursor_pointer()
       .hover((s) => s.bg(t.hover).border_color(t.input))
-      .tooltip("Switch repository or worktree")
-      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .when(!this.popOpen, (e) => e.tooltip("Switch repository or worktree"))
+      // A press on this button while the list is open is a press outside the list, which closed it in
+      // the same press (capture runs first): the click that follows mustn't open it again.
+      .on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); this.popSkip = Boolean(this.popShut) && Date.now() - this.popShut < 100; })
       .on_click((_e, cx) => {
-        this.popOpen = !this.popOpen;
+        if (this.popSkip) { this.popSkip = false; cx.notify(); return; } // the press outside closed it (closePop)
+        if (this.popOpen) { this.closePop(); cx.notify(); return; }
+        this.popOpen = true;
+        // Its filter takes the keyboard while it's open (popTook); where it was is noted for closePop().
+        if (this.flat.length > FILTER_THRESHOLD) { this.popBack = this.typing; this.popTook = true; this.filterInput.focus(); }
         if (this.popOpen && !this.scanning) this.refresh(cx);
         cx.notify();
       })
@@ -678,7 +841,7 @@ export default class Changes extends View {
     const folder = baseName(loc.cwd ?? "") || loc.cwd || "";
     const listH = Math.min(300, Math.max(44, rows.length * 30 + 12));
     const pop = v_flex().id("changes-repo-menu").w(300).mt(4).rounded(8).shadow_md().border_1().border_color(t.border).bg(t.popover).text_size(12.5).text_color(t.foreground)
-      .on_mouse_down_out((_e, cx) => { this.popOpen = false; cx.notify(); })
+      .on_mouse_down_out((_e, cx) => { this.closePop(true); this.popShut = Date.now(); cx.notify(); })
       .on_scroll_wheel((_e, cx) => cx.stop_propagation())
       .child(h_flex().h(30).flex_none().px(10).gap(6).items_center().border_b(1).border_color(t.border).text_size(11).text_color(t.dim)
         .child(div().flex_1().min_w(0).truncate().child(this.followedRoot ? `${folder} checkouts` : `Repos in ${folder}`))
@@ -690,7 +853,8 @@ export default class Changes extends View {
       .when(showFilter, (e) => e.child(this.filterBox(t, "changes-pop-filter")))
       .child(v_flex().id("changes-pop-list").h(listH).overflow_y_scrollbar().p(5).gap(1)
         .children(rows)
-        .when(!rows.length, (e) => e.child(div().p(8).text_size(12).text_color(t.dim).child("No matching repos or worktrees"))));
+        .when(!rows.length, (e) => e.child(div().p(8).text_size(12).text_color(t.dim).child("No matching repos or worktrees"))))
+      .when(Boolean(this.scanStop), (e) => e.child(this.stopLine(t)));
 
     return Popup.new("changes-repo-popup", trigger).when(this.popOpen, (el) => el.content(pop));
   }
@@ -714,7 +878,7 @@ export default class Changes extends View {
       return h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
         .child(div().font_semibold().child("Changes"))
         .when(showSwitcher, (e) => e.child(this.repoSwitcher(t, loc, activeEntry, true)))
-        .when(!showSwitcher, (e) => e.child(div().px(5).py(1).rounded(4).border_1().border_color(t.border).text_size(10).text_color(t.muted).child(`${this.files.length} files`)))
+        .when(!showSwitcher, (e) => e.child(div().px(5).py(1).rounded(4).border_1().border_color(t.border).text_size(10).text_color(t.muted).child(this.countWords())))
         .when(Boolean(returnBtn), (e) => e.child(returnBtn))
         .child(div().flex_1()).child(div().text_size(11).text_color(t.ansi2).child(`+${add}`)).child(div().text_size(11).text_color(t.ansi1).child(`−${del}`));
     }
@@ -724,7 +888,7 @@ export default class Changes extends View {
     const where = this.noRepos ? baseName(loc.cwd ?? "") : [repoName, this.root || activeEntry ? branch : null].filter(Boolean).join(" · ");
     const totals = this.files.length
       ? [div().flex_none().text_color(t.ansi2).child(`+${add}`), div().flex_none().text_color(t.ansi1).child(`−${del}`),
-        div().flex_none().text_color(t.dim).child(`· ${this.files.length} ${this.files.length === 1 ? "file" : "files"}${this.limited ? "+" : ""}`)]
+        div().flex_none().text_color(t.dim).child(`· ${this.countWords()}`)]
       : [];
     if (p.screen) {
       return h_flex().h(48).flex_none().px(16).gap(10).items_center().border_b(1).border_color(t.border)
@@ -751,7 +915,8 @@ export default class Changes extends View {
         .child(svg("mods/ws-changes/changes.svg").size(16).text_color(t.muted)))
       .child(div().text_size(13.5).font_semibold().text_color(t.foreground).child(`No git repositories in ${folder}`))
       .child(div().max_w(380).text_size(12).text_color(t.dim).text_center()
-        .child("This folder isn't a git repository, and no nested repositories were found inside it."));
+        .child("This folder isn't a git repository, and no nested repositories were found inside it."))
+      .when(Boolean(this.scanStop), (e) => e.child(div().max_w(380).text_size(12).text_color(t.dim).text_center().child(stopWords(this.scanStop))));
   }
 
   viewer(t, size, add, del, loc, showSwitcher, enabled) {
@@ -765,25 +930,27 @@ export default class Changes extends View {
             const parts = f.path.split("/"), name = parts.pop();
             return h_flex().id(`change-${f.path}`).h(28).flex_none().px(8).gap(8).items_center().rounded(7).cursor_pointer().when(this.open === f.path, (el) => el.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.pick(f.path, cx))
               .child(div().w(14).text_size(11).text_color(f.status === "A" ? t.ansi2 : f.status === "D" ? t.ansi1 : f.status === "U" ? t.ansi1 : t.blocked).child(f.status))
-              .child(h_flex().flex_1().min_w(0).child(div().text_color(t.dim).truncate().child(parts.length ? parts.join("/") + "/" : "")).child(div().max_w(260).min_w(0).truncate().child(name)))
+              .child(h_flex().id(`change-name-${f.path}`).flex_1().min_w(0).tooltip(f.path).child(div().text_color(t.dim).truncate().child(parts.length ? parts.join("/") + "/" : "")).child(div().max_w(260).min_w(0).truncate().child(name)))
               .when(f.add > 0, (el) => el.child(div().text_size(11).text_color(t.ansi2).child(`+${f.add}`))).when(f.del > 0, (el) => el.child(div().text_size(11).text_color(t.ansi1).child(`−${f.del}`)))
               .when(this.open === f.path && f.status !== "D", (el) => el.child(div().id(`change-files-${f.path}`).size(20).flex_none().flex().items_center().justify_center().rounded(5).text_color(t.muted)
                 .hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip("Open in Files")
-                .on_click((_e, cx) => { cx.stop_propagation(); this.openInFiles(f.path); })
+                .on_click((_e, cx) => { cx.stop_propagation(); this.openInFiles(f.path, cx); })
                 .child(svg("mods/ws-files/external-link.svg").size(12))));
           })).when(!this.files.length, (el) => el.child(div().p(8).text_color(t.dim).child(this.error || (this.loading || this.scanning ? "Loading changes…" : this.root ? "No uncommitted changes" : "No folder")))))
           .child(Scrollbar.vertical("changes-list").absolute().inset_0()))
         .when(this.limited, (el) => el.child(div().px(12).py(4).text_size(11).text_color(t.dim).child("Showing the first 1,000 changed files")))
+        // One repo found (no rail, no picker) by a scan that stopped early: the line goes here.
+        .when(Boolean(this.scanStop) && this.flat.length <= 1, (el) => el.child(div().px(12).py(4).text_size(11).text_color(t.dim).child(stopWords(this.scanStop))))
         .child(div().flex_1().min_h(0).relative().font_family(settings().font_family ?? "JetBrains Mono").text_size(size)
           .child(div().id("changes-diff-x").size_full().overflow_x_scrollbar()
             .child(div().w_full().min_w(Math.max(300, this.longest * charWidth(size) + this.gutter(size) + 20)).h_full().child(v_virtual_list("changes-diff", this.rows.length, rowHeight(size), (i) => String(i),
               (range) => this.rows.slice(range.start, range.end).map((row) => this.diffRow(row, t, size))).size_full())))
           .child(Scrollbar.vertical("changes-diff").viewport_from_layout().absolute().inset_0())
           .when(!this.open && this.files.length > 0, (el) => el.child(div().absolute().top(6).px(12).text_size(11).text_color(t.dim).child("Select a file to view its changes"))))
-        .when(Boolean(this.note), (el) => el.child(div().px(10).pb(8).text_size(11).text_color(t.ansi1).child(this.note)))
+        .when(Boolean(this.note), (el) => el.child(div().px(10).pb(8).text_size(11).text_color(this.noteTone === "wait" ? t.blocked : this.noteTone === "quiet" ? t.muted : t.ansi1).child(this.note)))
         .child(h_flex().flex_none().p(10).gap(8).border_t(1).border_color(t.border)
           .child(div().id("commit-message").flex_1().min_w(0).h(32).px(10).flex().items_center().rounded(8).border_1().border_color(this.typing ? t.accent : t.border).cursor_text().on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.input).h_full().text_size(12).text_color(t.foreground)))
-          .child(div().id("commit").h(32).px(14).flex().items_center().rounded(8).bg(enabled ? t.solid : t.raised).text_color(enabled ? t.solid_foreground : t.dim).text_size(12).when(enabled, (el) => el.cursor_pointer()).on_click((_e, cx) => this.commit(cx)).child(this.busy ? "Committing…" : "Commit"))));
+          .child(div().id("commit").h(32).px(14).flex().items_center().rounded(8).bg(enabled ? t.solid : t.raised).text_color(enabled ? t.solid_foreground : t.dim).text_size(12).when(enabled, (el) => el.cursor_pointer()).on_click((_e, cx) => this.commit(cx)).child(this.busy ? "Committing…" : this.commitLabel()))));
   }
 
   render(cx) {
@@ -792,7 +959,7 @@ export default class Changes extends View {
     const t = theme(), cfg = settings(), size = cfg.font_size;
     const add = this.files.reduce((n, f) => n + f.add, 0), del = this.files.reduce((n, f) => n + f.del, 0);
     // Not while what's shown is a place behind (the timer hasn't read the new one yet): it would do nothing.
-    const enabled = Boolean(this.message.trim() && this.root && !this.busy && !this.loading && this.context?.key === this.key());
+    const enabled = Boolean(this.message.trim() && this.root && this.files.length && !this.busy && !this.loading && this.context?.key === this.key());
     // A card of its own only where nothing frames it (Herdr's panel); a pane's frame or the view's area is the card.
     const card = !p.screen && !p.beside;
     const width = this.size?.width ?? 0;
@@ -810,16 +977,18 @@ export default class Changes extends View {
       : content;
 
     return v_flex().id("changes").size_full().min_h(0).overflow_hidden().bg(t.background).text_color(t.foreground).text_size(13).track_focus(this.handle)
+      // The release of a press outside the picker (closePop): the view took the keyboard, nothing else did.
+      .on_mouse_up("left", () => this.refocusAfterPress()).on_mouse_up("right", () => this.refocusAfterPress())
       .when(card, (e) => e.rounded(10).border_1().border_color(t.border))
       .on_size_change((s, cx) => {
         if (s.width === this.size?.width && s.height === this.size?.height) return;
         this.size = { width: s.width, height: s.height };
         const z = Number(settings().zoom) > 0 ? Number(settings().zoom) : 1;
-        if (s.width / z >= NARROW) this.popOpen = false;
+        if (s.width / z >= NARROW) { this.popOpen = false; this.popTook = false; }
         cx.notify();
       })
       .on_key_down((e, cx) => {
-        if (e.key === "escape" && this.popOpen) { this.popOpen = false; this.handle.focus(); cx.stop_propagation(); cx.notify(); return; }
+        if (e.key === "escape" && this.popOpen) { this.closePop(); cx.stop_propagation(); cx.notify(); return; }
         if (e.key === "escape" && this.typing) { this.typing = false; this.handle.focus(); cx.stop_propagation(); cx.notify(); }
       })
       .child(body);

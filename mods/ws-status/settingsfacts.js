@@ -62,7 +62,7 @@ export const FEATURES = [
   { key: "numbers", group: "Status bar and agent rows", title: "Agent numbers",
     what: "The model, how full the context is and how often it was compacted, on each agent's row and in History.",
     off: "Off: agent rows show the name and status only." },
-  { key: "notifications", group: "Tab bar", title: "Notifications bell",
+  { key: "notifications", group: "Notifications", title: "Notifications bell",
     what: "A bell at the right end of the tab bar: what needs you and what finished, in every workspace.",
     off: "Off: the bell is gone and nothing new is kept. What it kept stays in ~/.herdr/notifications.json." },
   { key: "vault", group: "Screens", title: "Secrets",
@@ -259,10 +259,10 @@ export const VAULT_SETTINGS = [
     values: [{ value: "4h", label: "4h" }, { value: "24h", label: "24h" }, { value: "7d", label: "7d" }, { value: "30d", label: "30d" }, { value: "never", label: "Never" }],
     what: "Expired secrets are refused automatically so temporary cookies and rollout tokens don't linger.",
     comment: "how long a new secret lasts before it's refused, \"4h\", \"24h\", \"7d\", \"30d\" or \"never\". Each secret can still pick its own." },
-  { key: "notify", title: "Notify in Bell when used", type: "choice", default: "protected",
+  { key: "notify", title: "Show secret use in the bell", type: "choice", default: "protected",
     values: [{ value: "off", label: "Off" }, { value: "protected", label: "Protected only" }, { value: "always", label: "Always" }],
-    what: "Records a quiet Bell entry when an agent uses a secret (which host or CLI, never the value).",
-    comment: "which uses of a secret leave a quiet entry in the bell (who, and which host or command; never the value): \"off\", \"protected\" (Protected secrets only) or \"always\"." },
+    what: "Leaves a quiet bell entry when an agent uses a secret or is refused one (which host or command, never the value). Protected only leaves none for Standard secrets.",
+    comment: "which uses of a secret, and tries that were refused, leave a quiet entry in the bell (who, and which host or command; never the value): \"off\", \"protected\" (Protected secrets only) or \"always\"." },
 ];
 export const VAULT_KEYS = VAULT_SETTINGS.map((v) => v.key);
 export const VAULT_DEFAULTS = Object.fromEntries(VAULT_SETTINGS.map((v) => [v.key, v.default]));

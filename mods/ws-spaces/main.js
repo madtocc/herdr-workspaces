@@ -11,11 +11,21 @@
 // shows ws-switcher's scratch folders),
 // holding or right-clicking the + opens ws-switcher's New space dialog, and a click
 // on a space goes back to the tabs from one of the workspace's screens (showTabs()).
+// Since then: the dialogs it opens are modal (`modal: true`); the + forgets a press let go off it (no
+// dialog 0.45 s later, and the next click makes a space again); a space's cut name has a tooltip with
+// its folder and branch; and, from Herdr 0.1.18's `spaces`, the shown space is scrolled into view
+// (`activeAt`, counted after the workspace filter, never for the empty workspace's folder rows).
+// Also from Herdr's spaces (0.1.15 to 0.1.18, names.js): a damaged saved value is replaced, not
+// fatal; only git's own "not a git repository" forgets a place's repo; a repo kept as project/.bare
+// is named after the project; a leading emoji is the whole avatar. The rail's cells have the space's
+// name as a tooltip, the + and the + menu's New space say where they start, and the empty
+// workspace's list says how many folders it leaves to the switcher menu.
 
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex } from "gpui-base";
-import { spaces, machines, panes, run, openOverlay, hc, theme, shared, setShared, watchFolder, window, layout } from "herdr";
+import { v_flex, h_flex, ScrollHandle } from "gpui-base";
+import { spaces, machines, panes, run, openOverlay, hc, theme, shared, setShared, watchFolder, window, layout, home } from "herdr";
 import { exec } from "./posix.js";
+import { repoName, spaceAvatar, sameAsName } from "./names.js";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -45,6 +55,8 @@ const HOLD = 450; // ms the Spaces + is held before it asks for a name and folde
 const railCell = (el) => h_flex().flex_none().justify_center().child(el);
 const where = (s, ps) => JSON.stringify([s.machine ?? null, place(s, ps)]);
 const base = (path) => path.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
+// A path with the home folder as ~, for tooltips (either separator: a Windows path has backslashes).
+const tildePath = (path) => { const h = home(); return path && h && (path === h || path.startsWith(h + "/") || path.startsWith(h + "\\")) ? `~${path.slice(h.length)}` : path ?? ""; };
 // The name in a scratch folder's name ("2026-11-20-1020-bot-idea" -> "bot-idea"), null
 // for one made unnamed. The same rule as ws-switcher's scratchLabel() (scratch.js): change both.
 const scratchName = (folder) => base(folder).match(/^\d{4}-\d\d-\d\d-\d{4}-(?!\d$)(.+)$/)?.[1] ?? null;
@@ -93,10 +105,15 @@ export default class Spaces extends View {
     this.over = null;
     this.holding = null; // when the Spaces + was pressed, while it's held
     this.held = false; // the hold opened the dialog, so the release is no click
+    this.scroll = ScrollHandle.new();
+    this.activeAt = -1; // the shown space's place among the list's children (headers and rows), -1 when not drawn
     this.machines = [];
-    this.reconnecting = JSON.parse(localStorage.getItem("machines.reconnecting") ?? "{}");
-    for (const state of Object.values(this.reconnecting)) state.busy = false;
-    this.folded = new Set(JSON.parse(localStorage.getItem("machines.folded") ?? "[]"));
+    try {
+      this.reconnecting = JSON.parse(localStorage.getItem("machines.reconnecting") ?? "{}");
+      if (!this.reconnecting || typeof this.reconnecting !== "object" || Array.isArray(this.reconnecting)) this.reconnecting = {};
+      for (const state of Object.values(this.reconnecting)) state.busy = false;
+    } catch { this.reconnecting = {}; }
+    try { this.folded = new Set(JSON.parse(localStorage.getItem("machines.folded") ?? "[]")); } catch { this.folded = new Set(); }
     this.refreshMachines(cx);
     cx.timer.every(15000, cx => this.refreshMachines(cx));
     // `git status` walks the whole tree, on another machine a process there:
@@ -236,15 +253,17 @@ export default class Spaces extends View {
       const r = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v2", "--branch"], { cwd, on });
       if (r.code !== 0) {
         // Only git's own "no" is remembered as no repo; anything else is asked again.
-        if (!/not a git repository/i.test(r.stderr)) this.unsure.add(key);
-        this.git[key] = null;
+        if (!/not a git repository/i.test(r.stderr)) {
+          this.unsure.add(key);
+          this.git[key] ??= null;
+        } else this.git[key] = null;
         return;
       }
       // The repo's own .git folder names it; a worktree's top differs from it.
       const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on });
       const common = await exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd, on });
       const repo = common.stdout.trim();
-      const name = repo.endsWith("/.git") ? base(repo.slice(0, -5)) : base(repo).replace(/\.git$/, "");
+      const name = repoName(repo);
       const info = { name, branch: null, ahead: 0, behind: 0, repo: JSON.stringify([on, repo]), linked: repo !== `${top.stdout.trim()}/.git` };
       for (const line of r.stdout.split("\n")) {
         if (line.startsWith("# branch.head ")) info.branch = line.slice(14);
@@ -331,7 +350,12 @@ export default class Spaces extends View {
   grouped(t, collapsed) {
     const ws = workspace();
     const rows = this.ordered().filter((r) => inWorkspace(r.w, ws));
-    const draw = (r) => (collapsed ? this.compact(r, t) : this.row(r, t));
+    const ps = panes();
+    const draw = (r) => (collapsed ? this.compact(r, t) : this.row(r, t, ps));
+    // Where the shown space's row lands among the children this returns: the list scrolls by its direct
+    // children, and machine headers and loading rows count too.
+    this.activeAt = -1;
+    let before = 0;
     const remote = [...new Set([...rows.map(r => r.w.machine).filter(Boolean), ...this.machines.map(m => m.name), ...Object.keys(this.reconnecting)])].sort();
     const loading = m => {
       const layout = machines().find(k => k.name === m)?.layout;
@@ -339,7 +363,12 @@ export default class Spaces extends View {
         || spaces().some(s => (s.machine ?? null) === m && !this.shown.has(s.id));
     };
     const loadingRow = m => h_flex().id(`machine-loading-${m ?? "local"}`).h(28).flex_none().px(collapsed ? 0 : 8).items_center().when(collapsed, el => el.justify_center()).text_size(12).text_color(t.dim).child(collapsed ? "…" : "Loading…");
-    if (!remote.length) return loading(null) && !rows.length ? [loadingRow(null)] : rows.length || !ws ? rows.map(draw) : this.emptyWorkspace(ws, t, collapsed);
+    if (!remote.length) {
+      if (loading(null) && !rows.length) return [loadingRow(null)];
+      if (!rows.length && ws) return this.emptyWorkspace(ws, t, collapsed);
+      this.activeAt = rows.findIndex((r) => r.w.active);
+      return rows.map(draw);
+    }
     const machineNames = [null, ...remote];
     return machineNames.flatMap((m) => {
       const mine = rows.filter((r) => (r.w.machine ?? null) === m);
@@ -380,11 +409,15 @@ export default class Spaces extends View {
           .child(h_flex().size(18).rounded(5).border_1().border_color(t.dim).items_center().justify_center()
             .child(svg("mods/workspace-chrome/plus.svg").size(10))))
         .when(!collapsed, el => el.child(svg("mods/workspace-chrome/plus.svg").size(12)).child("New space there"));
-      if (!collapsed && rebuilt) return [head];
+      if (!collapsed && rebuilt) { before += 1; return [head]; }
       // Another machine with nothing in the shown workspace stays out of it.
       if (ws && m && !mine.length) return [];
       const cell = collapsed ? railCell : (el) => el;
-      return [cell(head), ...(folded ? [] : mine.length ? mine.map(draw) : [loading(m) ? loadingRow(m) : cell(empty)])];
+      const items = [cell(head), ...(folded ? [] : mine.length ? mine.map(draw) : [loading(m) ? loadingRow(m) : cell(empty)])];
+      const first = folded ? -1 : mine.findIndex((r) => r.w.active);
+      if (first >= 0) this.activeAt = before + 1 + first;
+      before += items.length;
+      return items;
     });
   }
 
@@ -393,7 +426,7 @@ export default class Spaces extends View {
   // and master/main go: nearly every space is on one.
   gitTail(g, tree, name, t) {
     const raw = g.branch ?? "detached";
-    const same = (a) => a.toLowerCase() === name.toLowerCase();
+    const same = sameAsName(name);
     const branch = same(raw) || raw === "master" || raw === "main" ? "" : raw;
     const repo = tree || same(g.name) ? "" : g.name;
     const where = [repo, branch].filter(Boolean).join(" \u00b7 ");
@@ -410,7 +443,7 @@ export default class Spaces extends View {
       .when(g.behind > 0, (el) => el.child(div().flex_none().text_color(t.ansi1).child(`\u2193${g.behind}`)));
   }
 
-  row({ w, i, g, tree }, t) {
+  row({ w, i, g, tree }, t, ps) {
     const on = w.active;
     const fromIndex = this.pressed === null ? -1 : spaces().findIndex(s => s.id === this.pressed);
     const colors = shared("space.colors") ?? {};
@@ -461,8 +494,9 @@ export default class Spaces extends View {
           .gap(9)
           .items_center()
           .when(Boolean(tree), el => el.pl(22).child(svg("mods/workspace-chrome/branch.svg").size(13).text_color(t.dim)))
-          .when(!tree, el => el.child(h_flex().size(18).flex_none().rounded(5).bg(fill).items_center().justify_center().text_size(10.5).font_bold().text_color("#ffffff").child([...w.name][0]?.toUpperCase() ?? "?")))
-          .child(div().flex_shrink(0).max_w(150).truncate().text_color(t.foreground).child(w.name))
+          .when(!tree, el => el.child(h_flex().size(18).flex_none().rounded(5).bg(fill).items_center().justify_center().text_size(10.5).font_bold().text_color("#ffffff").child(spaceAvatar(w.name))))
+          .child(div().id(`space-name-${w.id}`).flex_shrink(0).max_w(150).truncate().text_color(t.foreground)
+            .tooltip([w.name, [tildePath(place(w, ps)), g?.branch].filter(Boolean).join(" · ")].filter(Boolean).join("\n")).child(w.name))
           .child(g ? this.gitTail(g, tree, w.name, t) : div().flex_1()),
       );
   }
@@ -478,6 +512,7 @@ export default class Spaces extends View {
       .items_center()
       .when(w.active, (el) => el.bg(t.selected))
       .when(!w.active, (el) => el.hover((s) => s.bg(t.hover)))
+      .tooltip(w.name)
       .on_click(() => { showTabs(); run("space.select", { id: w.id }); })
       .child(div().text_color(w.active ? t.foreground : t.muted).child(String(i + 1)))
       .child(div().absolute().right(5).text_color(tone(t, w.status)).child(glyph(w.status))));
@@ -485,9 +520,15 @@ export default class Spaces extends View {
 
   // The New space dialog (ws-switcher's), for the shown workspace. In Scratch it has
   // only the name, and is what a plain click on the + opens too (ws-switcher's askScratch()).
+  // Tall enough for its error line, and for its folder chips (the root and up to five folders, then
+  // Choose…) where they wrap: about 7px a letter at 11.5px, 16px padding and a 6px gap each, in 424px.
   askNewSpace() {
     const ws = workspace();
-    openOverlay({ mod: "ws-switcher", kind: "dialog", width: 460, height: ws?.scratch ? 234 : 330,
+    const picks = ws && !ws.scratch ? [ws.root, ...ws.folders].filter(Boolean).slice(0, 6) : [];
+    const labels = [...picks.map((f) => (f === ws.root ? `${base(f)} (root)` : base(f))), "Choose…"];
+    let lines = 1, x = 0;
+    for (const l of labels) { const w = 16 + 7 * l.length; if (x && x + w > 424) { lines++; x = 0; } x += w + 6; }
+    openOverlay({ mod: "ws-switcher", kind: "dialog", modal: true, width: 460, height: ws?.scratch ? 260 : 356 + 30 * (lines - 1),
       props: { dialog: "new-space", id: ws?.id ?? null, ...(ws?.scratch ? { scratch: true } : {}) } });
   }
 
@@ -511,7 +552,8 @@ export default class Spaces extends View {
     if (collapsed) return [railCell(open("ws-open-root", "", ws.root || "~", `New space in ${ws.name}`))];
     return [
       div().px(8).pt(4).pb(6).text_size(12).text_color(t.dim).child(`No spaces in ${ws.name} yet.`),
-      ...folders.slice(0, 12).map((f) => { const name = ws.scratch ? scratchName(f) : null; return open(`ws-open-${f}`, name ?? base(f), f, f, name); }),
+      ...folders.slice(0, 12).map((f) => { const name = ws.scratch ? scratchName(f) : null; return open(`ws-open-${f}`, name ?? base(f), f, tildePath(f), name); }),
+      ...(folders.length > 12 ? [div().px(8).pt(4).text_size(12).text_color(t.dim).child(`${folders.length - 12} more in the switcher menu`)] : []),
     ];
   }
 
@@ -530,23 +572,35 @@ export default class Spaces extends View {
       changed = true;
     }
     if (changed) setShared("space.colors", kept);
+    const list = this.grouped(t, collapsed);
+    // Bring the shown space into view when it, or its place in the list, changes; a row already in view stays put.
+    const active = sp.find((p) => p.active)?.id;
+    if (active !== this.revealed || this.activeAt !== this.revealedAt) {
+      this.revealed = active;
+      this.revealedAt = this.activeAt;
+      if (this.activeAt >= 0) this.scroll.scroll_to_item(this.activeAt);
+    }
     return v_flex().size_full().min_h(0).bg(t.chrome).text_size(13)
       .child(h_flex().h(31).pl(16).pr(10).items_center().justify_between().text_size(11.5).text_color(t.dim)
         .when(collapsed, el => el.pl(0).pr(0).justify_center())
         .when(!collapsed, el => el.child("Spaces"))
         .child(div().id("space-new").size(26).flex_none().flex().items_center().justify_center().rounded(6).hover(s => s.bg(t.hover).text_color(t.foreground))
           .when(this.holding !== null, el => el.bg(t.selected))
-          .tooltip(workspace()?.scratch ? "New scratch space" : "New space. Hold or right-click to name it and choose its folder")
+          .tooltip(workspace()?.scratch ? "New scratch space" : `New space${workspace()?.root ? ` in ${tildePath(workspace().root)}` : ""}. Hold or right-click to name it and choose its folder`)
           // A click: a space in the workspace's root. Held for HOLD ms, or right-clicked:
           // ws-switcher's New space dialog. In Scratch a click opens it too: a scratch space
           // is named when it's made.
+          // A press let go off the + sends it no mouse up: leaving it forgets the press, so no dialog
+          // opens later and the next click is a click again.
+          .on_hover((on, cx) => { if (!on && this.holding !== null) { this.holding = null; cx.notify(); } })
           .on_mouse_down("left", (_e, cx) => {
+            this.held = false;
             const at = this.holding = Date.now();
             cx.notify();
             cx.timer.after(HOLD, (cx) => { if (this.holding === at) { this.holding = null; this.held = true; this.askNewSpace(); cx.notify(); } });
           })
           .on_mouse_up("left", (_e, cx) => {
-            if (this.held) { this.held = false; return; }
+            if (this.held) { this.held = false; this.holding = null; return; }
             if (this.holding === null) return;
             this.holding = null;
             cx.notify();
@@ -555,8 +609,10 @@ export default class Spaces extends View {
           })
           .on_mouse_down("right", () => { this.holding = null; this.askNewSpace(); })
           .child(svg("mods/workspace-chrome/plus.svg").size(14))))
-      .child(v_flex().flex_1().min_h(0).px(collapsed ? 0 : 8).pb(14).overflow_y_scrollbar().mode("always")
+      .child(v_flex().flex_1().min_h(0).px(collapsed ? 0 : 8).pb(14).overflow_y_scrollbar().mode("always").track_scroll(this.scroll)
+        // A block above (another mod's) growing, or the window resizing, shrinks this list and can push the shown space out.
+        .on_size_change((_size, cx) => { if (this.activeAt >= 0) { this.scroll.scroll_to_item(this.activeAt); cx.notify(); } })
         .on_mouse_up("left", (_e, cx) => { this.pressed = null; cx.notify(); })
-        .children(this.grouped(t, collapsed)));
+        .children(list));
   }
 }

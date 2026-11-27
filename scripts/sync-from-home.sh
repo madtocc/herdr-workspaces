@@ -91,6 +91,12 @@ cmp -s "$src/mods/ws-changes/follow.js" "$src/mods/ws-files/follow.js" || {
   exit 1
 }
 
+# Changes and Files share one git status per repo, and its brake.
+cmp -s "$src/mods/ws-changes/gitscan.js" "$src/mods/ws-files/gitscan.js" || {
+  echo "mods/ws-changes/gitscan.js and mods/ws-files/gitscan.js differ: make them the same first" >&2
+  exit 1
+}
+
 # The bell's rules: the switcher keeps its log and count, ws-notifications draws its list.
 cmp -s "$src/mods/ws-switcher/notif.js" "$src/mods/ws-notifications/notif.js" || {
   echo "mods/ws-switcher/notif.js and mods/ws-notifications/notif.js differ: make them the same first" >&2

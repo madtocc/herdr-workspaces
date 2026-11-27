@@ -9,6 +9,7 @@
 // to be the height the layout file gives it less 28 px a hidden row (footer.js,
 // fitFooter()), so none leaves a hole; with every row shown, the file's height. The file
 // (layouts/<shared "layout">.json) is read at start, when the layout changes and every 30 s.
+// The three screens open as modal dialogs (`modal: true`): a click beside one doesn't close it.
 
 import { View, div, image, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
@@ -97,11 +98,11 @@ export default class WorkspaceChrome extends View {
       return v_flex().size_full().bg(t.chrome).border_t(1).border_color(t.border).px(8).pt(4).pb(8).text_size(13)
         .when(collapsed, el => el.px(0).items_center())
         .when(shown.includes("automations"), el => el.child(row("automations", "mods/ws-automations/automations.svg", "Automations", false, () => openOverlay({
-          mod: "ws-automations", kind: "dialog", width: 940, height: 680, props: { workspace: shared("workspaces.active") ?? null } }))))
+          mod: "ws-automations", kind: "dialog", modal: true, width: 940, height: 680, props: { workspace: shared("workspaces.active") ?? null } }))))
         .child(row("presets", "presets", "Agent presets", false, () => openOverlay({
-          mod: "ws-presets", kind: "dialog", width: 900, height: 640, props: { workspace: shared("workspaces.active") ?? null } })))
+          mod: "ws-presets", kind: "dialog", modal: true, width: 900, height: 640, props: { workspace: shared("workspaces.active") ?? null } })))
         .when(shown.includes("vault"), el => el.child(row("vault", "vault", "Secrets", false, () => openOverlay({
-          mod: "ws-vault", kind: "dialog", width: 940, height: 680, props: { workspace: shared("workspaces.active") ?? null } }))))
+          mod: "ws-vault", kind: "dialog", modal: true, width: 940, height: 680, props: { workspace: shared("workspaces.active") ?? null } }))))
         .child(row("settings", "settings", "Settings", false, () => run("mod.open", { name: "ws-settings" }))
           .when(Boolean(updates().app.ready), el => el.child(collapsed ? ready.absolute().top(5).right(6) : ready)))
         .child(row("machine", "plus", "Add machine", true, () => run("mod.open", { name: "machine-add" })));

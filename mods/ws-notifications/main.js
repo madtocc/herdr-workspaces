@@ -5,7 +5,10 @@
 // A row is one click to its thing: an agent, a run's tab (or the run in History once its tab
 // closed), the card on its board, the automation. A click on a Needs you row goes there and leaves
 // it; on an update it also marks it read. Mark all read marks every update read and Clear read (N)
-// takes the read ones away. ↑ ↓ move, Enter opens, Esc closes. With items in more than one workspace
+// takes the read ones away. Every row has a quiet × (Backspace or Delete on the selected row does the
+// same): an update, a gone row or a failure goes; a waiting agent, helper or failing pull request is
+// hidden until it's over (notif.js forgetEpisodes) and is a row again the next time. ↑ ↓ move, Enter
+// opens, Esc closes. A row's time ("4m", "3d") has the date and hour as its tooltip. With items in more than one workspace
 // (and one shown), All workspaces | <shown> chips filter the list.
 //
 // It only reads and asks: the log (~/.herdr/notifications.json, as the switcher's sidebar copy
@@ -16,14 +19,16 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
-import { agents, terminals, spaces, shared, setShared, props, closeOverlay, theme, checking } from "herdr";
+import { agents, terminals, spaces, shared, setShared, props, closeOverlay, theme, checking, window } from "herdr";
 import {
-  ACT_KEY, STORE_KEY, SIZES, buildItems, hasMultiWs, filterScope, summaryOf, headHeight, rowHeight, ago, moveSel, pushQueue,
+  ACT_KEY, STORE_KEY, SIZES, buildItems, hasMultiWs, filterScope, summaryOf, headHeight, rowHeight, ago, stamp, moveSel, pushQueue,
 } from "./notif.js";
 
 export const OPEN_KEY = "workspaces.notifications.open";
 const settings = () => shared("workspaces.settings") ?? null;
 const featureOn = (key) => settings()?.features?.[key] !== false;
+// The key that closes a row, as its keyboard names it: the sign on a Mac, the word elsewhere.
+const backKey = () => (window()?.platform === "macos" ? "⌫" : "Backspace");
 
 let asked = 0;
 // An ask for the switcher's sidebar copy, which keeps the log.
@@ -65,6 +70,21 @@ export default class Notifications extends View {
   }
 
   shut() { closeOverlay(props()?.overlay); }
+
+  // A row's × (or Backspace/Delete on it): gone from the list at once, the switcher writes the log.
+  // The keyboard's row moves to the next one (the one before, at the end).
+  dismiss(it, cx) {
+    if (!it) return;
+    const rows = this.rows ?? [];
+    if (this.sel === it.id) {
+      const at = rows.findIndex((x) => x.id === it.id);
+      this.sel = (rows[at + 1] ?? rows[at - 1] ?? null)?.id ?? null;
+    }
+    if (this.hover === it.id) this.hover = null;
+    this.dismissed.add(it.id);
+    ask("dismiss", { item: it.id });
+    cx.notify();
+  }
 
   // A row's click (or Enter): to its thing; an update is read from now on. A row whose thing is gone
   // and has no other way in does nothing (Mark all read, then Clear read, takes it away).
@@ -158,10 +178,10 @@ export default class Notifications extends View {
       const clickable = !(it.gone && !it.fallbackLabel) && Boolean(it.target);
       const detail = it.goneNote
         ? h_flex().h(17).mt(2).flex_none().min_w(0).gap(4).text_size(11.8)
-          .when(Boolean(it.detail) && !it.gone, (el) => el.child(div().min_w(0).truncate().text_color(read ? t.dim : t.muted).child(`${it.detail} ·`)))
+          .when(Boolean(it.detail) && !it.gone, (el) => el.child(div().id(`n-row-${i}-detail`).min_w(0).truncate().tooltip(it.detail).text_color(read ? t.dim : t.muted).child(`${it.detail} ·`)))
           .child(div().flex_none().italic().text_color(t.dim).child(it.goneNote))
           .when(Boolean(it.fallbackLabel), (el) => el.child(div().flex_none().text_color(t.dim).child("·")).child(div().flex_none().font_medium().text_color(t.accent).child(it.fallbackLabel)))
-        : it.detail ? div().h(17).mt(2).flex_none().min_w(0).truncate().text_size(11.8).text_color(read ? t.dim : t.muted).child(it.detail) : null;
+        : it.detail ? div().id(`n-row-${i}-detail`).h(17).mt(2).flex_none().min_w(0).truncate().tooltip(it.detail).text_size(11.8).text_color(read ? t.dim : t.muted).child(it.detail) : null;
       return h_flex().id(`n-row-${i}`).h(rowHeight(it)).flex_none().px(14).pt(9).gap(10).items_start()
         .border_b(1).border_color(t.border)
         .bg(on || hovered ? t.hover : t.popover)
@@ -173,12 +193,17 @@ export default class Notifications extends View {
           .child(dot ? div().size(7).rounded(4).bg(dot) : div().size(7).rounded(4).border(1.5).border_color(t.dim).opacity(0.6)))
         .child(v_flex().flex_1().min_w(0)
           .child(h_flex().h(18).flex_none().gap(8).items_center()
-            .child(div().flex_1().min_w(0).truncate().text_size(12.8).text_color(read || it.gone ? t.muted : t.foreground).when(!read && !it.gone, (el) => el.font_medium()).child(it.title))
-            .child(div().flex_none().text_size(11).text_color(t.dim).child(ago(it.at, now))))
+            .child(div().id(`n-row-${i}-title`).flex_1().min_w(0).truncate().tooltip(it.title).text_size(12.8).text_color(read || it.gone ? t.muted : t.foreground).when(!read && !it.gone, (el) => el.font_medium()).child(it.title))
+            .child(div().id(`n-row-${i}-time`).flex_none().text_size(11).text_color(t.dim).when(Boolean(it.at), (el) => el.tooltip(stamp(it.at, now))).child(ago(it.at, now)))
+            .child(h_flex().id(`n-row-${i}-x`).size(20).flex_none().rounded(5).items_center().justify_center().cursor_pointer()
+              .text_color(t.dim).hover((st) => st.bg(t.hover).text_color(t.foreground)).tooltip(`Close ${backKey()}`)
+              .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+              .on_click((_e, cx) => { cx.stop_propagation(); this.dismiss(it, cx); })
+              .child(svg("mods/ws-notifications/x.svg").size(12))))
           .when(Boolean(detail), (el) => el.child(detail))
           .child(h_flex().h(16).mt(3).flex_none().min_w(0).gap(5).items_center().text_size(11).text_color(t.dim)
             .when(!filtered && Boolean(it.wsName), (el) => el.child(markOf(it.wsName, it.wsColor, 12)))
-            .child(div().min_w(0).truncate().child(where))));
+            .child(div().id(`n-row-${i}-where`).min_w(0).truncate().when(Boolean(where), (el) => el.tooltip(where)).child(where))));
     };
     const list = [];
     let i = 0;
@@ -188,7 +213,7 @@ export default class Notifications extends View {
 
     const foot = h_flex().id("n-foot").h(SIZES.foot).flex_none().px(14).items_center().justify_between()
       .border_t(1).border_color(t.border).bg(t.chrome).text_size(11).text_color(t.dim)
-      .child(div().flex_none().child("↑↓ move · Enter open · Esc close"))
+      .child(div().flex_none().child(`↑↓ move · Enter open · ${backKey()} close · Esc`))
       .when(readRows.length > 0, (el) => el.child(link("n-clear-read", `Clear read (${readRows.length})`, (cx) => {
         for (const x of readRows) this.dismissed.add(x.id);
         ask("clearRead", { items: readRows.map((x) => x.id) });
@@ -208,7 +233,8 @@ export default class Notifications extends View {
   }
 
   key(e, cx) {
-    if (e.key === "escape") { cx.stop_propagation(); this.shut(); return; }
+    // Esc (and Cmd/Ctrl+W) never come here: Herdr sends them to a popup as its overlay.close (tab.close,
+    // pane.close) action and closes the list itself, which is all Esc does here; close() then says it's shut.
     const rows = this.rows ?? [];
     if (e.key === "down" || e.key === "up") {
       this.sel = moveSel(rows, this.sel, e.key === "down" ? 1 : -1);
@@ -220,6 +246,9 @@ export default class Notifications extends View {
       }
       cx.stop_propagation(); cx.notify(); return;
     }
-    if (e.key === "enter") { cx.stop_propagation(); this.activate(rows.find((x) => x.id === this.sel) ?? null, cx); }
+    if (e.key === "enter") { cx.stop_propagation(); this.activate(rows.find((x) => x.id === this.sel) ?? null, cx); return; }
+    // One press, one row: a held key's repeats would close the rows after it, one by one.
+    if ((e.key === "backspace" || e.key === "delete") && e.is_held) { cx.stop_propagation(); return; }
+    if ((e.key === "backspace" || e.key === "delete") && this.sel) { cx.stop_propagation(); this.dismiss(rows.find((x) => x.id === this.sel) ?? null, cx); }
   }
 }

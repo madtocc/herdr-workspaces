@@ -12,7 +12,10 @@
 //     agent that used a Vault secret (quiet: logged here, never a toast; usageEvent), an agent that finished, an automation run that finished (not "nothing to do"; as the run's
 //     `notify` level allows: a shell run only with results or all, none of any with none), a card's pull
 //     request ready to merge, merged or closed, and a few things only the system says (a machine
-//     needs a login, the background runner didn't start, Settings fell back).
+//     needs a login, the background runner didn't start, Settings fell back), and every error toast,
+//     whole. A run that needs a look (failed, timed out, its check failed or isn't allowed, missed,
+//     didn't start, or "no outcome": asked for its Outcome line and ended without one) is drawn in
+//     the blocked colour wherever it is.
 // Everything else (working or idle agents, runs still going, quiet or skipped checks, drafts,
 // running checks, plain confirmations) stays out. Live things (agents, runs, pull requests'
 // state) come from what Herdr and the runners publish; the rest is a log of events kept in
@@ -181,13 +184,59 @@ export function appendUsage(store, ev, now) {
   return pruneStore({ ...s, events }, now);
 }
 
-// A finished agent's row is read or dismissed for that one finish: once the agent is seen working or
-// idle again, its marks go, so its next finish is news. (Its id is stable across a restart, when Herdr
-// forgets when its tab last changed.) agents: agents(); returns the store, the same one if nothing went.
-export function forgetEpisodes(store, agents) {
-  const again = (agents ?? []).filter((a) => a.status === "working" || a.status === "idle").map((a) => `agent:${a.address}:${a.tab}:done`);
-  if (!again.length) return store;
-  const drop = (m) => { const out = { ...obj(m) }; let n = 0; for (const k of again) if (own(out, k)) { delete out[k]; n++; } return [out, n]; };
+// A row is read or dismissed for that one time: once what it's about is over, its marks go, so the
+// next time is news (a row again), never kept out for a week by an old dismissal. Only on a sign that
+// it's over, never because something isn't listed (a restart lists nothing for a moment):
+//   agent:<address>:<tab>:done       the agent seen working or idle again
+//   agent:<address>:<tab>:blocked    the agent seen working, idle or done (it stopped needing you), or
+//                                    its tab changed after the mark (it may have worked and stopped
+//                                    again between two looks; after a restart Herdr doesn't know when
+//                                    a tab changed, and the mark stays)
+//   sub:<address>:blocked|error      the helper seen in another state
+//   run:<id>:needs                   the run closed, or its agent seen working, idle or done (not stuck)
+//   run:<id>:asked                   the run closed, or its agent seen working (it was answered)
+//   prn:<file>:<label>:<number>      the card's pull request seen with another status (not while
+//                                    GitHub can't be read: then it has none)
+// A failed, timed-out or no-outcome run's row, and a failed check's, is run:<id>, and every run has an
+// id of its own: dismissing one never hides the next. (Ids are stable across a restart, when Herdr
+// forgets when a tab last changed.) agents: agents(); terminals: terminals(); runs:
+// workspaces.automation.runs; prs: workspaces.prs; spaces: spaces() (each tab's changed_at). Returns
+// the store, the same one if nothing went.
+const OVER = new Set(["working", "idle", "done"]);
+export function forgetEpisodes(store, agents, { terminals = [], runs = [], prs = null, spaces = [] } = {}) {
+  const again = new Set();
+  const changed = new Map();
+  for (const sp of spaces ?? []) for (const c of sp?.tabs ?? []) if (c && typeof c.changed_at === "number") changed.set(c.id, c.changed_at);
+  // A blocked mark (read or dismissed) made before its tab last changed.
+  const stale = [];
+  for (const a of agents ?? []) {
+    if (a.status === "working" || a.status === "idle") again.add(`agent:${a.address}:${a.tab}:done`);
+    if (OVER.has(a.status)) again.add(`agent:${a.address}:${a.tab}:blocked`);
+    else if (changed.has(a.tab)) stale.push([`agent:${a.address}:${a.tab}:blocked`, changed.get(a.tab)]);
+  }
+  const s0 = store ?? emptyStore();
+  for (const [k, at] of stale) for (const m of [s0.read, s0.dismissed]) if (own(obj(m), k) && m[k] < at) again.add(k);
+  for (const k of terminals ?? []) {
+    if (!k || k.state !== "live" || !k.parent || !(OVER.has(k.status) || k.status === "blocked" || k.status === "error")) continue;
+    if (k.status !== "blocked") again.add(`sub:${k.address}:blocked`);
+    if (k.status !== "error") again.add(`sub:${k.address}:error`);
+  }
+  for (const r of runs ?? []) {
+    if (!r || typeof r !== "object" || r.status !== "started") continue;
+    const ag = r.terminal ? (agents ?? []).find((x) => x.address === r.terminal && (!r.tab || x.tab === r.tab)) : null;
+    if (r.closed || (!r.stuck && OVER.has(ag?.status))) again.add(`run:${r.id}:needs`);
+    if (r.closed || ag?.status === "working") again.add(`run:${r.id}:asked`);
+  }
+  // A pull request's marks other than the one it needs now (none: it's fine now).
+  const prNow = [];
+  if (prs && typeof prs === "object") {
+    for (const [file, e] of Object.entries(prs)) {
+      if (!e || typeof e.label !== "string" || !e.label) continue;
+      prNow.push([`prn:${file}:`, own(NEEDS_PR, e.label) ? `prn:${file}:${e.label}:${e.number ?? ""}` : null]);
+    }
+  }
+  const over = (k) => again.has(k) || (k.startsWith("prn:") && prNow.some(([pre, cur]) => k.startsWith(pre) && k !== cur));
+  const drop = (m) => { const out = { ...obj(m) }; let n = 0; for (const k of Object.keys(out)) if (over(k)) { delete out[k]; n++; } return [out, n]; };
   const [read, a] = drop(store.read), [dismissed, b] = drop(store.dismissed);
   return a || b ? { ...store, read, dismissed } : store;
 }
@@ -235,7 +284,27 @@ export function classifyToast(toast) {
   if ((m = /^(\S+) merged$/.exec(title))) return pr(m[1], "merged", { tone: "done", title: `${m[1]} merged`, detail: trimDot(body) });
   if ((m = /^(\S+): pull request closed$/.exec(title))) return pr(m[1], "closed", { tone: "dim", title: `${m[1]}: pull request closed`, detail: trimDot(body) });
   if ((m = /^(\S+): pull request #\d+ needs someone$/.exec(title))) return pr(m[1], "needs", { tone: "warn", title, detail: trimDot(body) });
+  // An error, kept whole (a toast shows a line of it for a few seconds), so a missed one can be read
+  // later. Not one a live row already tells: Herdr's own "<agent> needs you" (level error, its action
+  // agent.focus), the runner's toasts for a run that failed, stopped, timed out or didn't run (their
+  // action opens the automation: ws-switcher.automation/<ws>/<name>, or mod.open of ws-automations),
+  // and its "<automation> didn't start" (no action; the run's own row says it).
+  if (n.level === "error") {
+    if (/ didn't start$/.test(title)) return null;
+    if (act && (act.name === "agent.focus" || act.name.startsWith("ws-switcher.automation/") || (act.name === "mod.open" && obj(act.args).name === "ws-automations"))) return null;
+    const whole = body.replace(/\s+/g, " ").trim();
+    return ev(`err:${hashOf(`${title}\n${whole}`)}`, {
+      kind: "error", tone: "blocked", title: title.slice(0, 200), detail: whole.slice(0, 2000), place: "Shown as a toast",
+      target: act ? { kind: "action", name: act.name, args: obj(act.args) } : null,
+    });
+  }
   return null;
+}
+// A short, stable name for a text (FNV-1a), so an error's key stays small in the log.
+function hashOf(s) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return h.toString(36);
 }
 const firstSentence = (s) => trimDot(String(s ?? "").split(/(?<=\.)\s/)[0] ?? "");
 
@@ -322,8 +391,22 @@ export function buildItems({ agents = [], terminals = [], spaces = [], defs = []
             detail: r.stuck && ag?.status !== "blocked" ? "Its agent is asking something before it starts" : "Its agent is waiting for you",
             at: tabs.get(r.tab)?.changed_at ?? r.at ?? now, target: go });
         } else if (ag?.status === "done" && !(r.reports && !a?.keep && !r.card)) {
-          add({ id: `run:${r.id}`, group: "updates", tone: "done", title: `${r.name} finished`, ...base,
-            detail: r.summary ?? r.why ?? "", at: tabs.get(r.tab)?.changed_at ?? r.at ?? now, target: go });
+          // A run that keeps its tab (keep, or a card's): the runner reads its outcome line when its first
+          // turn ends (turnOutcome at turnDone; "none": it ended without one, it asked you something,
+          // say). That holds only for that turn: while its tab hasn't changed since (Herdr forgets when
+          // after a restart: then it's taken as that turn). "none" needs you, as History says it while
+          // the tab is open; "failed" is a failure (Needs you too); the rest, or a later turn, finished as before.
+          const tab = tabs.get(r.tab);
+          const first = Boolean(r.turnDone && r.turnOutcome) && (tab?.changed_at == null || tab.changed_at <= r.turnDone);
+          if (first && r.turnOutcome === "none") {
+            add({ id: `run:${r.id}:asked`, group: "needs", tone: "blocked", title: `${r.name} needs you`, ...base,
+              detail: "Its agent stopped without saying how it went", at: r.turnDone, target: go });
+          } else {
+            const failed = first && r.turnOutcome === "failed";
+            // A failure is pinned under Needs you, as a failed shell run's is (the red badge).
+            add({ id: `run:${r.id}`, group: failed ? "needs" : "updates", tone: failed ? "blocked" : "done", title: `${r.name} ${failed ? "failed" : "finished"}`, ...base,
+              detail: r.summary ?? r.why ?? "", at: tab?.changed_at ?? r.at ?? now, target: go });
+          }
         }
         continue;
       }
@@ -347,10 +430,14 @@ export function buildItems({ agents = [], terminals = [], spaces = [], defs = []
             at: r.closed, target: history ? { kind: "history", ws: r.ws, runId: r.id } : auto });
           continue;
         }
+        // Asked for its Outcome line and ended its turn without one (it asked you something, say): how it
+        // went isn't known, so it reads "no outcome", as in History, never "finished". Like a failure, it
+        // needs a look (the blocked colour) and the "problems" level shows it.
+        const unknown = !failed && r.kind !== "shell" && Boolean(r.reports) && !r.outcome;
         // What finished as the run's level says: a shell run only with results or all; none, never.
-        if (level === "none" || (!failed && level === "problems")) continue;
+        if (level === "none" || (!failed && !unknown && level === "problems")) continue;
         const it = { ...base, ...(r.kind === "shell" ? { place: "Automations · Shell" } : {}), at: r.closed, target: history ? { kind: "history", ws: r.ws, runId: r.id } : null };
-        add({ id: `run:${r.id}`, group: "updates", tone: failed ? "warn" : "done", title: `${r.name} ${failed ? "failed" : "finished"}`, ...it,
+        add({ id: `run:${r.id}`, group: "updates", tone: failed || unknown ? "blocked" : "done", title: unknown ? `${r.name}: no outcome` : `${r.name} ${failed ? "failed" : "finished"}`, ...it,
           detail: r.summary ?? "", ...(r.summary ? {} : history ? { goneNote: "Tab closed", fallbackLabel: "Open in History" } : { gone: true, goneNote: "Tab closed" }) });
         continue;
       }
@@ -367,7 +454,9 @@ export function buildItems({ agents = [], terminals = [], spaces = [], defs = []
         if (global) { if (once.has(`waiting/${r.name}`)) continue; once.add(`waiting/${r.name}`); }
         // A shell automation's script nobody allowed (made outside Herdr, or changed on disk) before its check.
         const script = a.scriptAllowed === false;
-        add({ id: global ? `run:*/${r.name}:waiting` : `run:${r.id}`, group: "needs", tone: "blocked", title: script ? `Allow ${r.name}'s script?` : `Allow ${r.name}'s check?`,
+        // Each wait is a row of its own, so a closed one comes back at the next: one workspace's by its
+        // run id, an every-workspace one's by its entry's minute (as a miss's).
+        add({ id: global ? `run:*/${r.name}:waiting:${Math.floor((r.at ?? 0) / 60e3)}` : `run:${r.id}`, group: "needs", tone: "blocked", title: script ? `Allow ${r.name}'s script?` : `Allow ${r.name}'s check?`,
           detail: script ? "Added outside Herdr · waiting for approval" : `${r.cmd ?? a.check ?? ""} · waiting for approval`, ...every, at: r.at ?? now, target: everyGo });
         continue;
       }
@@ -375,11 +464,11 @@ export function buildItems({ agents = [], terminals = [], spaces = [], defs = []
       if (r.status === "failed" && r.check) {
         add({ id: `run:${r.id}`, group: "needs", tone: "blocked", title: `${r.name}'s check failed`, detail: trimDot(r.what ?? r.note ?? ""), ...base, at: r.at ?? now, target: auto });
       } else if (r.status === "failed") {
-        add({ id: `run:${r.id}`, group: "updates", tone: "warn", title: `${r.name} didn't start`, detail: trimDot(r.note ?? r.what ?? ""), ...base, at: r.at ?? now, target: auto });
+        add({ id: `run:${r.id}`, group: "updates", tone: "blocked", title: `${r.name} didn't start`, detail: trimDot(r.note ?? r.what ?? ""), ...base, at: r.at ?? now, target: auto });
       } else if (r.status === "missed") {
         const key = `missed/${r.name}/${Math.floor((r.at ?? 0) / 60e3)}`;
         if (global) { if (once.has(key)) continue; once.add(key); }
-        add({ id: global ? `run:*/${r.name}:missed:${Math.floor((r.at ?? 0) / 60e3)}` : `run:${r.id}`, group: "updates", tone: "warn", title: `${r.name} didn't run`, detail: trimDot(r.why ?? "Missed while Herdr was closed"), ...every, at: r.at ?? now, target: everyGo });
+        add({ id: global ? `run:*/${r.name}:missed:${Math.floor((r.at ?? 0) / 60e3)}` : `run:${r.id}`, group: "updates", tone: "blocked", title: `${r.name} didn't run`, detail: trimDot(r.why ?? "Missed while Herdr was closed"), ...every, at: r.at ?? now, target: everyGo });
       }
     }
   }
@@ -479,13 +568,18 @@ export function hasMultiWs(items, activeWs) {
 export const filterScope = (items, scope, activeWs) => (scope === "current" && activeWs ? (items ?? []).filter((x) => x.ws === activeWs) : items ?? []);
 
 // The summary under the title: [{ text, tone }] ("2 need you · 3 unread", "0 unread · 4 recent").
+// Unread updates in the blocked colour (an error, a run that failed or has no outcome, one that didn't
+// start or run) are counted apart, in red, before the other unread: "2 failed · 1 unread". The badge
+// stays blue for them: red is for Needs you.
 export function summaryOf(items) {
   const needs = items.filter((x) => x.group === "needs").length;
-  const unread = items.filter((x) => x.group === "updates" && x.unread).length;
+  const failed = items.filter((x) => x.group === "updates" && x.unread && x.tone === "blocked").length;
+  const unread = items.filter((x) => x.group === "updates" && x.unread && x.tone !== "blocked").length;
   const readN = items.filter((x) => x.group === "updates" && !x.unread).length;
   const parts = [];
   if (needs) parts.push({ text: `${needs} need${needs === 1 ? "s" : ""} you`, tone: "blocked" });
-  if (unread) parts.push({ text: needs ? `${unread} unread` : `${unread} unread update${unread === 1 ? "" : "s"}`, tone: "done" });
+  if (failed) parts.push({ text: `${failed} failed`, tone: "blocked" });
+  if (unread) parts.push({ text: needs || failed ? `${unread} unread` : `${unread} unread update${unread === 1 ? "" : "s"}`, tone: "done" });
   if (!parts.length && readN) parts.push({ text: `0 unread · ${readN} recent`, tone: "muted" });
   return parts;
 }
@@ -508,14 +602,27 @@ export function panelHeight(items, { multiWs = false } = {}) {
   return Math.min(SIZES.max, h);
 }
 
-// "now", "4m", "2h", "Yesterday", "3d".
+// How long ago, the one way every screen writes it, always rounded down: "now", "5m", "3h", "12d"
+// (under 60 days), "4mo" (days/30, under 730 days), "2y" (days/365). Never "60m", "24h" or "27mo".
 export function ago(ms, now) {
-  const d = Math.max(0, now - ms);
-  if (d < 60e3) return "now";
-  if (d < 3600e3) return `${Math.floor(d / 60e3)}m`;
-  if (d < 86400e3) return `${Math.floor(d / 3600e3)}h`;
-  if (d < 2 * 86400e3) return "Yesterday";
-  return `${Math.floor(d / 86400e3)}d`;
+  const s = Math.max(0, (now - ms) / 1000);
+  if (s < 60) return "now";
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h`;
+  const days = Math.floor(s / 86400);
+  if (days < 60) return `${days}d`;
+  if (days < 730) return `${Math.floor(days / 30)}mo`;
+  return `${Math.floor(days / 365)}y`;
+}
+
+// The date and hour behind ago(), for its tooltip: "27 Nov 14:05", with the year when it isn't this one's
+// ("3 Dec 2025 23:10"). Local time. "" without a time.
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+export function stamp(ms, now) {
+  if (!ms) return "";
+  const d = new Date(ms), two = (n) => String(n).padStart(2, "0");
+  const year = d.getFullYear() === new Date(now ?? Date.now()).getFullYear() ? "" : ` ${d.getFullYear()}`;
+  return `${d.getDate()} ${MONTHS[d.getMonth()]}${year} ${two(d.getHours())}:${two(d.getMinutes())}`;
 }
 
 // The next row for up (-1) or down (+1), wrapping; sel: the id highlighted now (null: none).

@@ -143,16 +143,15 @@ export function matches(note, text, query) {
   return words.every((w) => hay.includes(w));
 }
 
-// "now", "5m", "3h", "2d", "4w", then the date.
+// "now", "5m", "3h", "12d", "4mo", "2y": as the board and Worktrees write it.
 export function ago(ms, now) {
   const s = Math.max(0, (now - ms) / 1000);
   if (s < 60) return "now";
   if (s < 3600) return `${Math.floor(s / 60)}m`;
   if (s < 86400) return `${Math.floor(s / 3600)}h`;
-  if (s < 86400 * 7) return `${Math.floor(s / 86400)}d`;
-  if (s < 86400 * 7 * 8) return `${Math.floor(s / 86400 / 7)}w`;
-  const d = new Date(ms);
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const d = Math.floor(s / 86400);
+  if (d < 60) return `${d}d`;
+  return d < 730 ? `${Math.floor(d / 30)}mo` : `${Math.floor(d / 365)}y`;
 }
 
 // Whether a folder watch's paths touch this workspace's notes (a root path, or none

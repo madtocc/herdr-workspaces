@@ -19,6 +19,15 @@
 //   workspaces.create    a time: the menu asks this block to make a workspace
 //   workspaces.scratch   { at, name? }: the New scratch space dialog asks this block for a scratch space (scratch.js)
 //   workspaces.scratch.folders  the Scratch workspace's folders, newest first, for the menu and ws-spaces
+//   workspaces.scratch.state    folder -> { kept } | { trashAt } | { empty } | { used }: what each waits for, so its row
+//                        in the menu says "kept" or "5 days left" (scratch.js scratchWhen())
+//   workspaces.scratch.keep     { <folder name>: { keep, at } }: a scratch folder row's Keep or Don't keep, asked of
+//                        this block by the menu popup (works with the sidebar hidden after start, where a mod
+//                        command is refused); each name's newest ask is done once (requests())
+//   workspaces.switcher.menu    { overlay, at } or { overlay: null, closedAt }: the switcher menu (a popup of this
+//                        mod) is open, so the block's click closes it and its tooltip isn't drawn over it
+//   workspaces.switcher.alive   { at }: this sidebar copy is running (refreshed every 5 s). A screen that asks it to do
+//                        something treats it as away when the key is missing or older than 15 s, and says so
 //   workspaces.board, workspaces.worktrees, workspaces.notes  { id, at }: ask this block to show that workspace's
 //                        Board, Worktrees or Notes full size (nothing in the package sets them now; kept for scripts)
 //   workspaces.history   { id, at }: the same for History; with no id, History for All spaces
@@ -121,8 +130,8 @@ import * as fs from "fs/promises";
 import { Runner, runnerDir, globalDir } from "./automations.js";
 import { PrWatcher } from "./prs.js";
 import { GhWatcher } from "./ghboard.js";
-import { Scratch, isScratch, scratchDef, scratchLabel } from "./scratch.js";
-import { dir, expand, tilde, under, base, subdirs, loadDefs, loadOrder, orderFile, templatesDir, loadPresetDir, presetsFor, presetLaunch, withTask, notesOnly } from "./defs.js";
+import { Scratch, isScratch, scratchDef, scratchLabel, scratchWhen, scratchDeleteButton, scratchRoot, keepPending, commandFailTitle } from "./scratch.js";
+import { dir, expand, tilde, under, base, subdirs, parseJsonc, loadDefs, loadOrder, orderFile, templatesDir, loadPresetDir, presetsFor, presetLaunch, withTask, notesOnly } from "./defs.js";
 import { arrange, move as moveRow, groupOf, groupName, renamed, withGroup, orderText } from "./arrange.js";
 import { buildSettings, hash, SOURCE as SETTINGS_SOURCE, TARGET as SETTINGS_TARGET } from "./settingsbuild.js";
 import { SETTINGS_FILE, parseSettings, automationSetting } from "./settingsfacts.js";
@@ -152,6 +161,7 @@ const PALETTE = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
 // The spaces list's avatar colors, so a workspace mark matches.
 const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b7cf6", ansi2: "#3fae6a", ansi1: "#d9649a" };
 const URGENT = { blocked: 2, done: 1 };
+const SWITCHER_MENU = "workspaces.switcher.menu";
 // Settings > Features, for what's drawn and opened (the runners go by this.features).
 const featureOn = (key) => shared("workspaces.settings")?.features?.[key] !== false;
 // The views opened as panes (beside.js).
@@ -280,10 +290,14 @@ function urgent(list) {
   return best;
 }
 
+// The switcher's sidebar copy isn't running (its alive key missing or older than 15 s): an ask would wait unseen.
+const switcherAway = () => { const a = shared("workspaces.switcher.alive"); return !a || !(Date.now() - Number(a.at) <= 15000); };
+
 // New scratch space, wherever it's asked for (the menu, the Spaces +, the empty work
 // area, the command): the New space dialog in its Scratch form, which asks for the name.
-// ws-spaces opens the same one (askNewSpace()); keep the two sizes alike.
-const askScratch = () => openOverlay({ mod: "ws-switcher", kind: "dialog", width: 460, height: 234,
+// ws-spaces and ws-tabs open the same one; keep the sizes alike. Each dialog here is opened with room
+// for its error line (or the Esc note), and keeps its buttons at the bottom.
+const askScratch = () => openOverlay({ mod: "ws-switcher", kind: "dialog", modal: true, width: 460, height: 260,
   props: { dialog: "new-space", id: scratchDef(shared("workspaces.defs"))?.id ?? null, scratch: true } });
 
 function mark(def, defs, t, size) {
@@ -359,6 +373,7 @@ export default class Workspaces extends View {
     if (props()?.empty) return;
     if (props()?.popup) {
       this.handle.focus();
+      if (!checking()) setShared(SWITCHER_MENU, { overlay: props()?.overlay ?? null, at: Date.now() });
       // The group submenus' boxes: a new group's name, and a group's new name.
       this.newGroupIn = InputState.new({ value: "", placeholder: "New group…" });
       this.renameIn = InputState.new({ value: "" });
@@ -371,15 +386,17 @@ export default class Workspaces extends View {
       if (props().dialog === "new-space") this.initNewSpace(cx);
       if (props().dialog === "rename") {
         this.text = (shared("workspaces.defs") ?? []).find((d) => d.id === props().id)?.name ?? "";
+        this.typedFrom = this.text; // what Esc compares with: a changed name asks once before it goes
         this.input = InputState.new({ value: this.text });
         this.input.set_selected_range({ start: 0, end: this.text.length });
-        this.input.on("change", (_e, cx) => { this.text = this.input.value(); this.error = null; cx.notify(); });
+        this.input.on("change", (_e, cx) => { this.text = this.input.value(); this.error = null; this.escAsked = false; cx.notify(); });
         this.input.on("submit", (_e, cx) => this.rename(cx));
         this.input.focus();
         cx.timer.after(600, () => this.input.focus());
       }
       return;
     }
+    this.startedAt = Date.now(); // an open mark older than this copy is from before a restart
     this.known = new Set(spaces().map((s) => s.id)); // decided: no "made while shown" fallback
     this.born = {};
     this.shown = spaces().find((s) => s.active)?.id ?? null;
@@ -398,6 +415,8 @@ export default class Workspaces extends View {
     { const q = shared("workspaces.files.open"); this.filesLast = Array.isArray(q) && q.length ? q[q.length - 1]?.id : null; }
     this.runAsked = shared("workspaces.automation.run")?.at;
     this.scratchAsked = shared("workspaces.scratch")?.at;
+    // The rows' Keep asks already there at start were for an earlier run: none is done again.
+    this.keepSeen = Object.fromEntries(Object.entries(shared("workspaces.scratch.keep") ?? {}).map(([k, v]) => [k, v?.at]));
     this.allowAsked = shared("workspaces.automation.allow")?.at;
     this.setAsked = shared("workspaces.runner.set")?.at;
     this.arrangeAsked = shared("workspaces.arrange")?.at;
@@ -424,7 +443,8 @@ export default class Workspaces extends View {
     });
     // Commands for this copy: "ws-switcher.scratch-new" (bind it to a key) asks for a scratch
     // space's name, and "ws-switcher.scratch-new/<name>" makes one at once (a script; a blank
-    // name is "Scratch <time>"); the scratch toast's Keep is "ws-switcher.scratch-keep/<folder>";
+    // name is "Scratch <time>"); the scratch toast's Keep is "ws-switcher.scratch-keep/<folder>" (a scratch folder
+    // row's Keep and Don't keep come as shared "workspaces.scratch.keep", or "ws-switcher.scratch-row/keep|unkeep/<folder>");
     // a toast about one automation is "ws-switcher.automation/<workspace>/<name>" (automations.js: openAt);
     // "ws-switcher.board", "ws-switcher.worktrees", "ws-switcher.history" and "ws-switcher.notes" show the
     // shown workspace's view full size, and go back to the tabs when it's the one shown (the tab bar's
@@ -490,7 +510,19 @@ export default class Workspaces extends View {
     // in the background, and a new space waits SETTLE for its folder.
     // Board off: no pull request follow-through or GitHub board item status (no gh, no messages).
     cx.timer.every(100, (cx) => this.drainViews(cx));
+    // Says this sidebar copy is running, for the screens that ask it to do things (History, Settings,
+    // Files' Cmd-click): they treat it as away when this is missing or older than 15 s.
+    if (!checking()) {
+      setShared("workspaces.switcher.alive", { at: Date.now() });
+      cx.timer.every(5000, () => setShared("workspaces.switcher.alive", { at: Date.now() }));
+    }
     cx.timer.every(500, (cx) => { this.sync(); this.requests(cx); this.notif.tick(); this.followFeatures(); this.followBeside(cx); if (this.mine()) { this.runner.tick(cx); if (this.features.on("board")) { this.prs.tick(cx); this.gh.tick(cx); } } this.scratch.tick(cx); if (spaces().some((s) => !this.known.has(s.id))) cx.notify(); });
+  }
+
+  async close() {
+    if (!props()?.popup) return;
+    const o = shared(SWITCHER_MENU);
+    if (!o || o.overlay === (props()?.overlay ?? null)) setShared(SWITCHER_MENU, { overlay: null, closedAt: Date.now() });
   }
 
   // A command for this copy (see init): "scratch-new", "scratch-keep/…", "automation/…", "show/…",
@@ -501,10 +533,11 @@ export default class Workspaces extends View {
       else if (c.startsWith("scratch-new/")) await this.scratch.create(c.slice("scratch-new/".length));
       else if (screenOf(c) && !screenOf(c).space) this.toggleScreen(c, cx);
       else if (c.startsWith("scratch-keep/")) await this.scratch.keep(c);
+      else if (c.startsWith("scratch-row/")) await this.scratch.setKept(c);
       else if (c.startsWith("automation/")) this.openAutomation(c);
       else if (c.startsWith("show/")) this.showScreen(c, cx);
       else if (c === "settings" || c.startsWith("settings/")) openSettings(c.slice("settings/".length), cx);
-    } catch (e) { notify({ title: c.startsWith("automation/") ? "Couldn't open Automations" : "Couldn't make a scratch space", body: String(e?.message ?? e), level: "error" }); }
+    } catch (e) { notify({ title: commandFailTitle(c, (k) => screenOf(k)?.name ?? null), body: String(e?.message ?? e), level: "error" }); }
   }
 
   // A notification's row was clicked (notif.js buildItems' target): its agent, its run's tab, the run
@@ -548,7 +581,7 @@ export default class Workspaces extends View {
         // A Vault usage note: the Vault dialog, on the workspace the use was in.
         if (!featureOn("vault")) return;
         const ws = id(target.ws) && (shared("workspaces.defs") ?? []).some((d) => d.id === target.ws) ? target.ws : shared("workspaces.active") ?? null;
-        openOverlay({ mod: "ws-vault", kind: "dialog", width: 940, height: 680, props: { workspace: ws } });
+        openOverlay({ mod: "ws-vault", kind: "dialog", modal: true, width: 940, height: 680, props: { workspace: ws } });
         return;
       }
       case "action": {
@@ -566,6 +599,17 @@ export default class Workspaces extends View {
       const saved = await loadOrder();
       const defs = await loadDefs(saved);
       this.loaded = true;
+      // A workspace.jsonc that read before and doesn't now (a save with a mistake): said once, not only in
+      // the menu row's tooltip. Not at start: a file broken then is the row's dim name and tooltip.
+      const readBefore = this.readOk ?? null;
+      this.readOk = new Map(defs.filter((d) => !d.error).map((d) => [d.id, d.name]));
+      // Read again a moment later first: an editor that empties the file before it writes it is no mistake.
+      if (readBefore) for (const d of defs) if (d.error && readBefore.has(d.id)) cx.timer.after(1500, (cx) => cx.spawn(async () => {
+        const text = await readTextFile(`${d.dir}/workspace.jsonc`).catch(() => null);
+        let error = null;
+        try { parseJsonc(text ?? ""); } catch (e) { error = String(e?.message ?? e); }
+        if (text !== null && error) notify({ title: `${readBefore.get(d.id)}'s workspace.jsonc doesn't read`, body: `Open its files from the switcher menu (right-click “${d.id}”): ${error}`, level: "error" });
+      }));
       // What's shown already has a drag or group change being written: only a read
       // that began after it was written may replace it.
       if (!this.arranging && gen === this.arrangeGen) {
@@ -751,7 +795,7 @@ export default class Workspaces extends View {
     const workspace = ws === "-" ? active ?? defs[0]?.id ?? null : defs.some((d) => d.id === ws) ? ws : null;
     const a = workspace ? ((shared("workspaces.automations") ?? {})[workspace] ?? []).find((x) => x.name === name && (ws !== "-" || x.scope === "global")) : null;
     openOverlay({
-      mod: "ws-automations", kind: "dialog", width: 940, height: 680,
+      mod: "ws-automations", kind: "dialog", modal: true, width: 940, height: 680,
       props: a ? { workspace, pick: { scope: a.scope ?? "workspace", name: a.name } } : { workspace: workspace ?? active },
     });
   }
@@ -924,8 +968,8 @@ export default class Workspaces extends View {
   }
 
   // The empty block: the shown workspace has no spaces. What still opens (the workspace's views,
-  // from the tab bar's Views), and that + starts a space. With an older layout, which has no tab bar
-  // over this block, a New space button does it here (as the Spaces + does; Scratch: names one first).
+  // from the tab bar's Views), and a "New space in <workspace>" button that starts one (as the Spaces
+  // + does; Scratch: names one first), in both layouts.
   empty(t) {
     const ws = (shared("workspaces.defs") ?? []).find((d) => d.id === shared("workspaces.active")) ?? null;
     const make = () => {
@@ -938,17 +982,20 @@ export default class Workspaces extends View {
     return v_flex().size_full().items_center().justify_center().gap(4).px(24).text_size(12.8).text_color(t.muted)
       .when(Boolean(ws), (el) => el.child(div().font_medium().text_size(14).text_color(t.foreground).child(`${ws.name} has no spaces yet`))
         .when(Boolean(list) && bar, (el) => el.child(div().text_center().child(`${list} still ${views.length === 1 ? "opens" : "open"} from Views.`)))
-        .when(bar, (el) => el.child(div().text_center().child(`Start a ${ws.scratch ? "scratch space" : "space"} with + to work beside an agent.`)))
-        .when(!bar, (el) => el.child(div().id("empty-new").mt(8).px(10).py(5).rounded(7).cursor_pointer().text_color(t.muted)
+        .child(div().text_center().child(`Start a ${ws.scratch ? "scratch space" : "space"} to work beside an agent.`))
+        .child(div().id("empty-new").mt(8).px(10).py(5).rounded(7).cursor_pointer().text_color(t.muted)
           .border(1).border_color(t.border).hover((s) => s.bg(t.hover).text_color(t.foreground))
           .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-          .on_click(make).child(ws?.scratch ? "New scratch space…" : "New space"))));
+          .on_click(make).child(ws.scratch ? "New scratch space…" : `New space in ${ws.name}`)));
   }
 
   async create() {
     const root = await pickFolder({ prompt: "Use as workspace" });
     if (!root) return;
     const defs = shared("workspaces.defs") ?? [];
+    // A folder a workspace already has as its root: that workspace, not a second one with its name.
+    const had = defs.find((d) => !d.error && !d.scratch && d.root && d.root === expand(root));
+    if (had) { notify({ title: `${had.name} already uses that folder`, body: `${tilde(had.root)} is ${had.name}'s: it's shown now.`, level: "info" }); choose(had.id); return; }
     const slug = base(root).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "workspace";
     let id = slug;
     for (let n = 2; defs.some((d) => d.id === id) || (await fs.exists(`${dir()}/${id}`)); n++) id = `${slug}-${n}`;
@@ -971,8 +1018,9 @@ export default class Workspaces extends View {
     const now = new Date(), hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
     this.nameIn = InputState.new({ value: "", placeholder: scratch ? `Scratch ${hhmm}` : "Called after its folder" });
     this.folderIn = InputState.new({ value: scratch ? "" : tilde(start) });
+    this.typedFrom = this.folderIn.value(); // what Esc compares with: a name typed or the folder changed asks once
     for (const input of [this.nameIn, this.folderIn]) {
-      input.on("change", (_e, cx) => { this.error = null; cx.notify(); });
+      input.on("change", (_e, cx) => { this.error = null; this.escAsked = false; cx.notify(); });
       input.on("submit", (_e, cx) => this.newSpace(cx));
     }
     this.nameIn.focus();
@@ -1069,6 +1117,41 @@ export default class Workspaces extends View {
     });
   }
 
+  // The scratch-trash dialog's confirm: the folder to the Trash, only one directly in ~/.herdr/scratch that
+  // nothing is in (no space, no terminal), then gone from the menu at once (the tidy forgets it).
+  trashFolder(cx) {
+    if (this.busy) return;
+    const folder = String(props().folder ?? "");
+    const root = scratchRoot(home());
+    const inside = folder.startsWith(root + "/") && /^[^/.][^/]*$/.test(folder.slice(root.length + 1));
+    const ps = panes();
+    const busyThere = spaces().some((s) => !s.machine && (s.folder === folder || s.folder?.startsWith(folder + "/")))
+      || ps.some((p) => p.cwd === folder || p.cwd?.startsWith(folder + "/"));
+    if (!inside) { this.error = "That isn't a scratch folder."; cx.notify(); return; }
+    if (busyThere) { this.error = "A space or a terminal is in it now: close it first."; cx.notify(); return; }
+    this.busy = true;
+    this.error = null;
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        const r = await exec("sh", ["-c", TRASH, "sh", folder, `${root}/.trash`, `${base(folder)}-${Date.now()}`]);
+        if (r.code !== 0) throw new Error(r.stderr.trim() || `exit ${r.code}`);
+        const where = r.stdout.trim();
+        setShared("workspaces.scratch.folders", (shared("workspaces.scratch.folders") ?? []).filter((f) => f !== folder));
+        const state = { ...(shared("workspaces.scratch.state") ?? {}) };
+        delete state[folder];
+        setShared("workspaces.scratch.state", state);
+        const label = scratchLabel(folder) ?? base(folder);
+        notify({ title: `Scratch folder moved to the ${trashName()}`, body: where === "Trash" ? `${label} is in the ${trashName()}.` : `${label} is in ${tilde(where)}.`, level: "success" });
+        closeOverlay(props().overlay);
+      } catch (e) {
+        this.error = `Couldn't move it: ${e?.message ?? e}`;
+        this.busy = false;
+        cx.notify();
+      }
+    });
+  }
+
   newSpaceDialog(t, ws, { frame, title, button, error, close }) {
     const defs = shared("workspaces.defs") ?? [];
     const field = (label, input) => [div().pt(14).pb(7).text_size(11.5).text_color(t.dim).child(label),
@@ -1078,8 +1161,8 @@ export default class Workspaces extends View {
     el.children(field("Name", this.nameIn));
     if (scratch) {
       return el.child(div().pt(10).text_size(11.5).text_color(t.dim).child("Its new folder in ~/.herdr/scratch carries the name, and is tidied away when you're done unless you keep it. Blank name: Scratch and the time."))
-        .when(Boolean(this.error), (e) => e.child(error()))
-        .child(h_flex().pt(18).gap(8).justify_end()
+        .when(Boolean(this.error || this.escAsked), (e) => e.child(error()))
+        .child(div().flex_1().min_h(0)).child(h_flex().pt(18).gap(8).justify_end()
           .child(button("ws-new-cancel", "Cancel", false, close))
           .child(button("ws-new-create", "Create", true, (_e, cx) => this.newSpace(cx))));
     }
@@ -1090,7 +1173,7 @@ export default class Workspaces extends View {
     const picks = ws ? [ws.root, ...ws.folders].filter(Boolean).slice(0, 6) : [];
     const chip = (id, label, tip, action) => div().id(id).h(24).px(8).flex().items_center().rounded(6).border_1().border_color(t.input)
       .text_size(11.5).text_color(t.muted).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip(tip).on_click(action).child(label);
-    const setFolder = (path, cx) => { this.folderIn.set_value(tilde(path)); this.error = null; cx.notify(); };
+    const setFolder = (path, cx) => { this.folderIn.set_value(tilde(path)); this.error = null; this.escAsked = false; cx.notify(); };
     return el.children(field("Folder", this.folderIn))
       .child(h_flex().pt(8).gap(6).flex_wrap()
         .children(picks.map((f, i) => chip(`ws-new-pick-${i}`, f === ws.root ? `${base(f)} (root)` : base(f), tilde(f), (_e, cx) => setFolder(f, cx))))
@@ -1099,33 +1182,77 @@ export default class Workspaces extends View {
           if (picked) setFolder(picked, cx);
         }))))
       .child(div().pt(10).text_size(11.5).text_color(t.dim).child(`${joins} Blank name: called after its folder.`))
-      .when(Boolean(this.error), (e) => e.child(error()))
-      .child(h_flex().pt(18).gap(8).justify_end()
+      .when(Boolean(this.error || this.escAsked), (e) => e.child(error()))
+      .child(div().flex_1().min_h(0)).child(h_flex().pt(18).gap(8).justify_end()
         .child(button("ws-new-cancel", "Cancel", false, close))
         .child(button("ws-new-create", "Create", true, (_e, cx) => this.newSpace(cx))));
+  }
+
+  // What the dialog holds that Esc would drop: Rename's changed name, New space's typed name or changed
+  // folder. Delete holds nothing.
+  typed() {
+    const p = props();
+    if (p.dialog === "rename") return (this.text ?? "").trim() !== (this.typedFrom ?? "").trim();
+    if (p.dialog === "new-space") return Boolean(this.nameIn?.value().trim()) || (this.folderIn?.value() ?? "") !== (this.typedFrom ?? "");
+    return false;
   }
 
   dialog(t) {
     const p = props();
     const d = (shared("workspaces.defs") ?? []).find((x) => x.id === p.id);
-    const close = () => closeOverlay(p.overlay);
-    const button = (id, label, primary, action) => h_flex().id(id).h(32).px(14).items_center().rounded(8)
-      .border_1().border_color(primary ? t.solid : t.input).bg(primary ? t.solid : t.raised)
-      .text_color(primary ? t.solid_foreground : t.foreground).text_size(12.5).font_medium().cursor_pointer()
-      .when(this.busy, (el) => el.opacity(0.5)).hover((s) => s.opacity(0.88)).on_click(action).child(label);
+    // These dialogs are modal (a click beside them doesn't close them). While one is deleting, creating
+    // or saving, nothing closes it: its task ends with it. Esc with something typed asks once first.
+    const close = () => { if (!this.busy) closeOverlay(p.overlay); };
+    const escape = (cx) => {
+      if (this.busy) return;
+      // Only where the frame draws the ask line: in "This workspace is gone." nothing is left to lose.
+      if (this.typed() && !this.escAsked && (d || p.dialog === "new-space")) { this.escAsked = true; cx.notify(); return; }
+      close();
+    };
+    // danger: a delete's button, in the danger fill (`blocked`), as Files' Move to Trash has it (D2).
+    const button = (id, label, primary, action, danger = false) => h_flex().id(id).h(32).px(danger ? 13 : 14).items_center().rounded(8)
+      .border_1().border_color(danger ? t.blocked : primary ? t.solid : t.input).bg(danger ? t.blocked : primary ? t.solid : t.raised)
+      .text_color(danger || primary ? t.solid_foreground : t.foreground).text_size(12.5).font_medium().cursor_pointer()
+      .when(this.busy, (el) => el.opacity(0.45)).hover((s) => s.opacity(0.88)).on_click(action).child(label);
     const title = (text) => h_flex().items_center()
       .child(div().flex_1().min_w(0).truncate().text_size(15).font_semibold().text_color(t.foreground).child(text))
       .child(div().text_size(11).text_color(t.dim).child("Esc"));
-    const error = () => div().pt(8).text_size(11.5).text_color(t.blocked).child(this.error ?? "");
+    // The error line, which also says what a first Esc did (in `working`, as Secrets says it).
+    const error = () => this.escAsked
+      ? div().pt(8).text_size(11.5).text_color(t.working).child("Press Esc again to close and drop what you typed.")
+      : div().pt(8).text_size(11.5).text_color(t.blocked).child(this.error ?? "");
+    // Esc, and Cmd/Ctrl+W, reach a dialog as Herdr's actions (overlay.close, tab.close, pane.close), never
+    // as keys: claimed here, so the first asks when something typed would be lost and a busy dialog stays.
+    // A handler that returns without closing keeps the dialog. (These dialogs are only ever overlays.)
+    const onClose = (_e, cx) => { cx.stop_propagation(); escape(cx); };
     const frame = (id, enter) => v_flex().id(id).track_focus(this.handle).size_full().min_h(0).p(18).bg(t.popover).text_size(13)
+      // A click anywhere in it takes back the first Esc.
+      .on_mouse_down("left", (_e, cx) => { if (this.escAsked) { this.escAsked = false; cx.notify(); } })
+      .on_action("overlay.close", onClose)
+      .on_action("tab.close", onClose)
+      .on_action("pane.close", onClose)
+      // Enter only: Herdr's Esc comes as overlay.close (above), never as a key here.
       .on_key_down((e, cx) => {
-        if (e.key === "escape") close();
-        else if (e.key === "enter" && enter) enter(cx);
+        if (e.key === "enter" && enter) enter(cx);
         else return;
         cx.stop_propagation();
       });
     if (p.dialog === "new-space") return this.newSpaceDialog(t, d ?? null, { frame, title, button, error, close });
-    if (!d) return frame("ws-gone", null).child(title("Workspace")).child(div().pt(12).text_color(t.muted).child("This workspace is gone."));
+    // A scratch folder's Move to Trash… (its right-click in the menu): it asks first, as a delete does.
+    if (p.dialog === "scratch-trash") {
+      const folder = String(p.folder ?? "");
+      const name = scratchLabel(folder) ?? base(folder);
+      return frame("ws-scratch-trash", (cx) => this.trashFolder(cx))
+        .child(title(`Move ${name} to the ${trashName()}?`))
+        .child(div().pt(12).text_color(t.muted).child(`Moves ${tilde(folder)} and the files in it to the ${trashName()}.`))
+        .when(Boolean(this.error), (el) => el.child(error()))
+        .child(div().flex_1().min_h(0)).child(h_flex().pt(18).gap(8).justify_end()
+          .child(button("ws-scratch-trash-cancel", "Cancel", false, close))
+          .child(button("ws-scratch-trash-yes", this.busy ? "Moving…" : `Move to ${trashName()}`, false, (_e, cx) => this.trashFolder(cx), true)));
+    }
+    // Its workspace went while the dialog was open (its folder moved or removed): only a way out.
+    if (!d) return frame("ws-gone", null).child(title("Workspace")).child(div().pt(12).text_color(t.muted).child("This workspace is gone."))
+      .child(div().flex_1().min_h(0)).child(h_flex().pt(18).gap(8).justify_end().child(button("ws-gone-cancel", "Cancel", false, close)));
 
     if (p.dialog === "rename") {
       return frame("ws-rename", null)
@@ -1133,21 +1260,25 @@ export default class Workspaces extends View {
         .child(div().pt(16).pb(7).text_size(11.5).text_color(t.dim).child("Name"))
         .child(Input.new(this.input).h(36).px(10).rounded(9).border_1().border_color(t.input).bg(t.background).text_size(12.8).text_color(t.foreground))
         .child(div().pt(6).text_size(11.5).text_color(t.dim).child(`Changes "name" in ${tilde(d.dir)}/workspace.jsonc.`))
-        .when(Boolean(this.error), (el) => el.child(error()))
-        .child(h_flex().pt(18).gap(8).justify_end()
+        .when(Boolean(this.error || this.escAsked), (el) => el.child(error()))
+        .child(div().flex_1().min_h(0)).child(h_flex().pt(18).gap(8).justify_end()
           .child(button("ws-rename-cancel", "Cancel", false, close))
           .child(button("ws-rename-save", "Save", true, (_e, cx) => this.rename(cx))));
     }
 
-    return frame("ws-delete", (cx) => this.remove(cx))
+    // Enter confirms a delete, but not Scratch's: it closes its spaces, ending what runs there, which
+    // the Trash can't bring back.
+    return frame("ws-delete", d.scratch ? null : (cx) => this.remove(cx))
       .child(title(`Delete “${d.name}”?`))
       .child(div().pt(12).text_color(t.muted).child(
         d.scratch ? scratchDeleteText(d) :
         `Moves ${tilde(d.dir)} (its workspace.jsonc and AGENTS.md) to the ${trashName()}. Your repos and folders aren't touched, and its spaces stay open: they join the workspace their folder is in, else show under All spaces.`))
       .when(Boolean(this.error), (el) => el.child(error()))
-      .child(h_flex().pt(18).gap(8).justify_end()
+      .child(div().flex_1().min_h(0)).child(h_flex().pt(18).gap(8).justify_end()
         .child(button("ws-delete-cancel", "Cancel", false, close))
-        .child(button("ws-delete-yes", this.busy ? "Deleting…" : `Move to ${trashName()}`, true, (_e, cx) => this.remove(cx))));
+        // Scratch's says it closes its spaces too (D2); every delete is in the danger fill.
+        .child(button("ws-delete-yes", this.busy ? "Deleting…" : d.scratch ? scratchDeleteButton(spaces().filter((s) => (shared("workspaces.assigned") ?? {})[s.id] === d.id).length, trashName()) : `Move to ${trashName()}`,
+          false, (_e, cx) => this.remove(cx), true)));
   }
 
   render(cx) {
@@ -1162,18 +1293,24 @@ export default class Workspaces extends View {
     const active = defs.find((d) => d.id === shared("workspaces.active")) ?? null;
     // No count of spaces and no dot for another workspace's agents here: the spaces list shows the
     // spaces, and the tab bar's bell (ws-notifications) says what needs you and where.
-    const open = () => openOverlay({ mod: "ws-switcher", kind: "popup", width: 288, height: 600, props: { popup: true } });
+    // Open already: the click closes it (a press outside a popup may close it first: then it stays closed).
+    const m = shared(SWITCHER_MENU), up = Boolean(m?.overlay) && (m.at ?? 0) >= this.startedAt;
+    const open = () => {
+      if (up) { closeOverlay(m.overlay); setShared(SWITCHER_MENU, { overlay: null, closedAt: Date.now() }); return; }
+      if (Date.now() - (m?.closedAt ?? 0) < 300) return;
+      openOverlay({ mod: "ws-switcher", kind: "popup", width: 288, height: 600, props: { popup: true } });
+    };
     if (narrow()) {
       return h_flex().size_full().bg(t.chrome).items_center().justify_center()
         .child(h_flex().id("ws-rail").relative().size(32).rounded(6).items_center().justify_center().cursor_pointer()
-          .hover((s) => s.bg(t.hover)).tooltip(active?.name ?? "All spaces").on_click(open)
+          .hover((s) => s.bg(t.hover)).when(!up, (el) => el.tooltip(active?.name ?? "All spaces")).on_click(open)
           .child(mark(active, defs, t, 20)));
     }
     return h_flex().size_full().bg(t.chrome).px(8).items_center().text_size(13)
       .child(h_flex().id("ws-current").flex_1().min_w(0).h(34).px(8).gap(9).rounded(8).items_center().cursor_pointer()
         .hover((s) => s.bg(t.hover)).on_click(open)
         .child(mark(active, defs, t, 20))
-        .child(div().flex_1().min_w(0).truncate().font_medium().text_color(t.foreground).child(active?.name ?? "All spaces"))
+        .child(div().id("ws-current-name").flex_1().min_w(0).truncate().font_medium().text_color(t.foreground).when(!up, (el) => el.tooltip(active?.name ?? "All spaces")).child(active?.name ?? "All spaces"))
         .child(svg("mods/workspace-chrome/chevron-down.svg").size(11).flex_none().text_color(t.dim)));
   }
 
@@ -1190,6 +1327,13 @@ export default class Workspaces extends View {
         catch (e) { notify({ title: "Couldn't make the workspace", body: String(e?.message ?? e), level: "error" }); }
         cx.notify();
       });
+    }
+    // A scratch folder row's Keep or Don't keep (the menu popup's setKeep()): each name's newest ask, once.
+    const keepAsks = shared("workspaces.scratch.keep") ?? {};
+    for (const [name, ask] of Object.entries(keepAsks)) {
+      if (!ask || ask.at === this.keepSeen[name]) continue;
+      this.keepSeen[name] = ask.at;
+      if (Date.now() - ask.at < 15000) cx.spawn(async () => { await this.scratch.setKept(`scratch-row/${ask.keep ? "keep" : "unkeep"}/${name}`); });
     }
     const scratchAsk = shared("workspaces.scratch") ?? null;
     if (scratchAsk?.at !== this.scratchAsked) {
@@ -1241,11 +1385,6 @@ export default class Workspaces extends View {
         this.background(cx);
       });
     }
-    const arrangeAsk = shared("workspaces.arrange") ?? null;
-    if (arrangeAsk?.at !== this.arrangeAsked) {
-      this.arrangeAsked = arrangeAsk?.at;
-      if (arrangeAsk && Date.now() - arrangeAsk.at < 15000) this.applyArrange(arrangeAsk, cx);
-    }
     const boardAsk = shared("workspaces.board") ?? null;
     if (boardAsk?.at !== this.boardAsked) {
       this.boardAsked = boardAsk?.at;
@@ -1275,6 +1414,12 @@ export default class Workspaces extends View {
   // the list's newest id with the one seen last. Never from render (a task started there stops at its
   // first await). Also the beside asks waiting for their tab's split (nextBeside()).
   drainViews(cx) {
+    // The menu's fold, drop and group asks (workspaces.arrange): here, so a click never waits half a second.
+    const arrangeAsk = shared("workspaces.arrange") ?? null;
+    if (arrangeAsk?.at !== this.arrangeAsked) {
+      this.arrangeAsked = arrangeAsk?.at;
+      if (arrangeAsk && Date.now() - arrangeAsk.at < 15000) this.applyArrange(arrangeAsk, cx);
+    }
     // The bell's list's asks and the toasts shown since (notiflog.js).
     this.notif?.drain(cx);
     const queue = shared("workspaces.view");
@@ -1319,7 +1464,7 @@ export default class Workspaces extends View {
     const at = Date.now(), asked = { id: ask.id, path: ask.path, isDir: Boolean(ask.isDir), line: ask.line ?? null, col: ask.col ?? null, at };
     if (!space) {
       if (ask.isDir) { notify({ title: "Files belongs to a space", body: "Start a space with + first.", level: "info" }); return; }
-      openOverlay({ mod: "ws-files", kind: "dialog", width: 960, height: 680, props: { file: ask.path, line: ask.line ?? null } });
+      openOverlay({ mod: "ws-files", kind: "dialog", modal: true, width: 960, height: 680, props: { file: ask.path, line: ask.line ?? null } });
       return;
     }
     const active = shared("workspaces.active") ?? null;
@@ -1644,7 +1789,8 @@ export default class Workspaces extends View {
     const active = defs.find((d) => d.id === shared("workspaces.active")) ?? null;
     const assigned = shared("workspaces.assigned") ?? {};
     const sp = spaces(), ps = panes();
-    const shown = sp.find((s) => s.active) ?? null;
+    // While the workspace has no space, Herdr's active one is another workspace's, under the empty block: not offered.
+    const shown = shared("workspaces.covered") ? null : sp.find((s) => s.active) ?? null;
     let height = 10; // the menu's padding; each part adds its own
     const icon = (name) => svg(`mods/workspace-chrome/${name}.svg`).size(14).flex_none().text_color(t.muted);
     const hint = (...kids) => h_flex().flex_none().gap(8).items_center().text_size(11).text_color(t.dim).children(kids);
@@ -1660,9 +1806,25 @@ export default class Workspaces extends View {
         .child(lead).child(div().flex_1().min_w(0).truncate().child(label)).child(tail);
     };
     const frame = (items) => v_flex().id("ws-menu").track_focus(this.handle).on_key_down((e) => this.key(e, defs))
+      // In a submenu (Move to, a workspace's own menu and its group, a group's own, a scratch folder's),
+      // Herdr's Esc (overlay.close) goes back a level, as ‹ Back does; at the menu's top level Herdr closes it.
+      .when(this.inSubmenu(), (el) => el.on_action("overlay.close", (_e, cx) => { cx.stop_propagation(); this.goBack(cx); }))
       .w_full().h(Math.min(600, height)).p(5).bg(t.popover).text_size(12.8).overflow_y_scrollbar()
       .on_mouse_up("left", (_e, cx) => { if (this.dragFrom) { this.dragFrom = this.dragOver = null; cx.notify(); } })
       .children(items);
+
+    // A submenu whose space, workspace, group or folder went away is gone: its flag goes too, so Esc and the
+    // digit keys work on the main menu at once.
+    if (this.moving && !shown) this.moving = false;
+    if (this.wsMenu && !defs.some((d) => d.id === this.wsMenu)) this.wsMenu = null;
+    if (this.grouping && !defs.some((d) => d.id === this.grouping && !d.scratch && !d.error)) this.grouping = null;
+    if (this.folderMenu && !(shared("workspaces.scratch.folders") ?? []).includes(this.folderMenu)) this.folderMenu = null;
+    if (this.renaming && !arrange(defs, shared("workspaces.order") ?? {}).some((it) => it.group === this.renaming)) this.renaming = null;
+    // Every submenu starts with ‹ Back (D3-6): one level up, as Esc.
+    const back = () => [row("ws-back", svg("mods/workspace-chrome/chevron-left.svg").size(14).flex_none().text_color(t.muted),
+      div().text_color(t.muted).child("Back"), div(), (cx) => this.goBack(cx), { keep: true }), line()];
+    const askFor = (dialog, height, id) => openOverlay({ mod: "ws-switcher", kind: "dialog", modal: true, width: 420, height, props: { dialog, id } });
+    const trashIcon = () => svg("mods/workspace-chrome/archive.svg").size(14).flex_none().text_color(t.blocked);
 
     // "Move to…": where the shown space goes. Its new workspace is then shown.
     if (this.moving && shown) {
@@ -1671,7 +1833,7 @@ export default class Workspaces extends View {
         setShared("workspaces.assigned", { ...(shared("workspaces.assigned") ?? {}), [shown.id]: to });
         setShared("workspaces.active", to || null);
       };
-      return frame([head(`Move “${shown.name}” to`),
+      return frame([...back(), head(`Move “${shown.name}” to`),
         ...defs.map((d) => row(`ws-to-def-${d.id}`, mark(d, defs, t, 18), d.name, hint(check(owner === d.id)), () => move(d.id))),
         line(),
         row("ws-to-none", mark(null, defs, t, 18), "No workspace", hint(check(!owner)), () => move(false),
@@ -1692,7 +1854,7 @@ export default class Workspaces extends View {
     const picking = this.grouping ? defs.find((d) => d.id === this.grouping && !d.scratch && !d.error) : null;
     if (picking) {
       const now = groupOf(picking);
-      return frame([head(`Group for “${picking.name}”`),
+      return frame([...back(), head(`Group for “${picking.name}”`),
         ...groupNames.map((n) => row(`ws-grp-${n}`, icon("layers"), n, hint(check(now === n)), () => this.setGroup(picking.id, n))),
         row("ws-grp-none", div().w(14).flex_none(), "No group", hint(check(!now)), () => this.setGroup(picking.id, null)),
         line(),
@@ -1701,11 +1863,41 @@ export default class Workspaces extends View {
     const editing = this.renaming ? tree.find((it) => it.group === this.renaming) : null;
     if (editing) {
       const n = editing.members.length;
-      return frame([head(`The “${editing.group}” group`),
+      return frame([...back(), head(`The “${editing.group}” group`),
         box(this.renameIn, "Enter renames it."),
         line(),
         row("ws-grp-ungroup", icon("layers"), "Ungroup", hint(`${n} ${n === 1 ? "workspace" : "workspaces"}`), () => this.ungroup(editing),
           { tip: "Its workspaces stay where they are in the list, without a group" })]);
+    }
+
+    // A workspace's own menu (D3-5): its row right-clicked, or Scratch's header. What the actions below do
+    // for the shown one, for this one; no group for Scratch or a workspace whose file doesn't parse.
+    const owner = this.wsMenu ? defs.find((d) => d.id === this.wsMenu) : null;
+    if (owner) {
+      const now = groupOf(owner);
+      return frame([...back(), head(owner.name),
+        row("ws-m-rename", icon("square-pen"), `Rename ${owner.name}…`, div(), () => askFor("rename", 236, owner.id)),
+        row("ws-m-files", icon("file-text"), `Open ${owner.name}'s files`, div(), () => openFolder(owner.dir), { tip: tilde(owner.dir) }),
+        ...(owner.scratch || owner.error ? [] : [row("ws-m-group", icon("layers"), now ? `Change ${owner.name}'s group…` : `Put ${owner.name} in a group…`, hint(now ?? "", "›"),
+          (cx) => { this.grouping = owner.id; this.newGroupIn.set_value(""); this.newGroupIn.focus(); cx.notify(); },
+          { keep: true, tip: "Workspaces in the same group sit together in this list, under a header that folds" })]),
+        line(),
+        row("ws-m-delete", trashIcon(), `Delete ${owner.name}…`, div(), () => askFor("delete", owner.scratch ? 256 : 226, owner.id), { danger: true })]);
+    }
+    // A scratch folder's menu (D4, its row right-clicked): Open, Keep or Don't keep, Move to Trash….
+    const fm = this.folderMenu;
+    if (fm) {
+      const st = (shared("workspaces.scratch.state") ?? {})[fm];
+      const name = scratchLabel(fm);
+      return frame([...back(), head(name ?? base(fm)),
+        row("ws-f-open", icon("folder"), "Open", div(), () => run("space.new", { folder: fm, ...(name ? { name } : {}) }), { tip: tilde(fm) }),
+        ...(st?.kept || isFinite(Number(st?.trashAt)) ? [switcherAway()
+          ? row("ws-f-keep", div().w(14).flex_none(), st.kept ? "Don't keep" : "Keep", hint("Show the sidebar to do this"), () => {}, { dim: true, keep: true })
+          : row("ws-f-keep", div().w(14).flex_none(), st.kept ? "Don't keep" : "Keep", div(), () => this.setKeep(fm, !st.kept),
+            { tip: st.kept ? `Takes its .keep out: it goes to the ${trashName()} after 7 days unused` : "Writes a .keep file in it: it stays until you delete it" })] : []),
+        line(),
+        row("ws-f-trash", trashIcon(), `Move to ${trashName()}…`, div(),
+          () => openOverlay({ mod: "ws-switcher", kind: "dialog", modal: true, width: 420, height: 200, props: { dialog: "scratch-trash", folder: fm } }), { danger: true })]);
     }
 
     // Making a workspace comes first, above the list it adds to. A scratch space is made
@@ -1718,7 +1910,8 @@ export default class Workspaces extends View {
     // scratch spaces and kept folders, with a + for a new one. A row can be dragged:
     // a workspace dropped on a workspace goes above or below it, in its group; on a
     // header's lower part it goes into that group; a header moves its whole group.
-    // Right-click a workspace for its group, a header to rename or ungroup it.
+    // Right-click a workspace (or Scratch's header) for its own menu, a group's header to rename or ungroup
+    // it, a scratch folder for Open, Keep and Move to Trash.
     const rows = this.rowsOf(tree, active);
     const drop = this.dropAt(rows);
     // Pressed, then let go on the same row: a click. On another: a drop there.
@@ -1755,12 +1948,12 @@ export default class Workspaces extends View {
           .on_click(() => { closeOverlay(props().overlay); askScratch(); })
           .child(svg("mods/workspace-chrome/plus.svg").size(13));
         items.push(drag(h_flex().id("ws-scratch-head").h(28).pl(8).pr(2).gap(6).rounded(7).items_center().flex_none().cursor_pointer()
-          .hover((s) => s.bg(t.selected)).tooltip(r.shut ? "Click to open" : "Click to fold")
+          .hover((s) => s.bg(t.selected)).tooltip(`${r.shut ? "Click to open" : "Click to fold"}${r.def ? "; right-click for more" : ""}`)
           .child(svg(`mods/workspace-chrome/chevron-${r.shut ? "right" : "down"}.svg`).size(10).flex_none().text_color(t.dim))
           .child(div().flex_1().min_w(0).truncate().text_size(11.5).font_medium().text_color(t.muted).child(r.def?.name ?? "Scratch"))
           .child(hint(status ? div().size(6).rounded_full().bg(t[status]) : div(), r.shut && r.open.length ? String(r.open.length) : ""))
           .child(plus),
-          r, () => this.foldScratch(), () => {}));
+          r, () => this.foldScratch(), (cx) => { if (r.def) { this.wsMenu = r.def.id; this.handle.focus(); cx.notify(); } }));
         continue;
       }
       if (r.kind === "scratch-space") {
@@ -1779,15 +1972,37 @@ export default class Workspaces extends View {
         continue;
       }
       if (r.kind === "scratch-folder") {
-        // A kept folder: its space was closed with files in it. A click opens it again.
+        // A folder whose space was closed with files in it: it says whether it's kept or how long it
+        // has before the Trash (the tooltip: on which day). A click opens it again.
         height += 30;
         const name = scratchLabel(r.folder);
-        items.push(drag(h_flex().id(`ws-scratch-f-${r.folder}`).h(30).pl(24).pr(8).gap(9).rounded(7).items_center().flex_none().cursor_pointer()
-          .text_color(t.muted).hover((x) => x.bg(t.selected)).tooltip(`${tilde(r.folder)}: kept, its space is closed`)
+        const st = (shared("workspaces.scratch.state") ?? {})[r.folder];
+        const when = scratchWhen(st, Date.now(), trashName());
+        // On hover, after the words, a small Keep (on its way to the Trash) or Don't keep (kept) (D4-a). Pressed,
+        // it stays at 0.45 until the shared state says the folder changed (10 s at most).
+        const pending = this.keeping?.[r.folder];
+        if (pending && !keepPending(pending, Boolean(st?.kept), Date.now())) delete this.keeping[r.folder];
+        const canKeep = Boolean(st?.kept) || isFinite(Number(st?.trashAt));
+        // Nobody would do it (the switcher isn't running): on hover the away line takes the tail words' place,
+        // with no button, so the name keeps its room (COMMON's "The switcher says it's there").
+        const awayHere = canKeep && switcherAway() && this.overFolder === r.folder;
+        const keepBtn = !awayHere && canKeep && (this.overFolder === r.folder || this.keeping?.[r.folder])
+          ? h_flex().id(`ws-scratch-keep-${r.folder}`).h(24).px(9).flex_none().items_center().rounded(6).border_1().border_color(t.input).bg(t.background)
+            .text_size(11.5).text_color(st?.kept ? t.muted : t.foreground).cursor_pointer().hover((x) => x.bg(t.hover))
+            .when(Boolean(this.keeping?.[r.folder]), (el) => el.opacity(0.45))
+            .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+            .on_click((_e, cx) => { if (!this.keeping?.[r.folder]) this.setKeep(r.folder, !st?.kept, cx); })
+            .child(st?.kept ? "Don't keep" : "Keep")
+          : null;
+        items.push(drag(h_flex().id(`ws-scratch-f-${r.folder}`).h(30).pl(24).pr(keepBtn ? 3 : 8).gap(9).rounded(7).items_center().flex_none().cursor_pointer()
+          .text_color(t.muted).hover((x) => x.bg(t.selected)).tooltip(`${tilde(r.folder)}: ${when.tip}`)
+          .on_hover((on, cx) => { if (on) this.overFolder = r.folder; else if (this.overFolder === r.folder) this.overFolder = null; cx.notify(); })
           .child(div().w(18).flex_none().flex().justify_center().child(icon("folder")))
           .child(div().flex_1().min_w(0).truncate().child(name ?? base(r.folder)))
-          .child(hint("Open")),
-          r, () => { closeOverlay(props().overlay); run("space.new", { folder: r.folder, ...(name ? { name } : {}) }); }, () => {}));
+          .child(awayHere ? div().flex_none().text_size(11.5).text_color(t.muted).child("Show the sidebar to do this") : hint(when.tail || "Open"))
+          .when(Boolean(keepBtn), (el) => el.child(keepBtn)),
+          r, () => { closeOverlay(props().overlay); run("space.new", { folder: r.folder, ...(name ? { name } : {}) }); },
+          (cx) => { this.folderMenu = r.folder; this.handle.focus(); cx.notify(); }));
         continue;
       }
       if (r.kind === "scratch-none") {
@@ -1815,11 +2030,11 @@ export default class Workspaces extends View {
       height += 30;
       items.push(drag(h_flex().id(`ws-def-${d.id}`).h(30).px(8).when(Boolean(r.group), (el) => el.pl(24)).gap(9).rounded(7).items_center().flex_none().cursor_pointer()
         .text_color(d.error ? t.dim : t.foreground).hover((s) => s.bg(t.selected))
-        .tooltip(d.error ? `workspace.jsonc: ${d.error}` : tilde(d.root))
+        .tooltip(d.error ? `workspace.jsonc: ${d.error} · right-click for more` : `${tilde(d.root)} · drag to reorder, right-click for more`)
         .child(mark(d, defs, t, 18)).child(div().flex_1().min_w(0).truncate().child(d.name))
         .child(hint(status ? div().size(6).rounded_full().bg(t[status]) : div(), String(mine.length), check(active?.id === d.id))),
         r, () => { closeOverlay(props().overlay); choose(d.id); },
-        (cx) => { if (d.scratch || d.error) return; this.grouping = d.id; this.newGroupIn.set_value(""); this.newGroupIn.focus(); cx.notify(); }));
+        (cx) => { this.wsMenu = d.id; this.handle.focus(); cx.notify(); }));
     }
 
     // The actions before the folders: a workspace can have many folders.
@@ -1833,16 +2048,16 @@ export default class Workspaces extends View {
     items.push(row("ws-edit", icon("file-text"), active ? `Open ${active.name}'s files` : "Open the workspaces folder", div(),
       () => openFolder(target), { tip: tilde(target) }));
     if (active) {
-      const ask = (dialog, height) => openOverlay({ mod: "ws-switcher", kind: "dialog", width: 420, height, props: { dialog, id: active.id } });
-      items.push(row("ws-rename", icon("square-pen"), `Rename ${active.name}…`, div(), () => ask("rename", 210)));
+      const ask = (dialog, height) => askFor(dialog, height, active.id);
+      items.push(row("ws-rename", icon("square-pen"), `Rename ${active.name}…`, div(), () => ask("rename", 236)));
       if (!active.scratch && !active.error) {
         const now = groupOf(active);
         items.push(row("ws-group", icon("layers"), now ? `Change ${active.name}'s group…` : `Put ${active.name} in a group…`, hint(now ?? "", "›"),
           (cx) => { this.grouping = active.id; this.newGroupIn.set_value(""); this.newGroupIn.focus(); cx.notify(); },
           { keep: true, tip: "Workspaces in the same group sit together in this list, under a header that folds" }));
       }
-      items.push(row("ws-delete", svg("mods/workspace-chrome/archive.svg").size(14).flex_none().text_color(t.blocked), `Delete ${active.name}…`, div(),
-        () => ask("delete", active.scratch ? 230 : 200), { danger: true }));
+      items.push(row("ws-delete", trashIcon(), `Delete ${active.name}…`, div(),
+        () => ask("delete", active.scratch ? 256 : 226), { danger: true }));
     }
 
     // Scratch's folders are in its group above.
@@ -1887,6 +2102,32 @@ export default class Workspaces extends View {
     if (!shut) for (const f of kept) rows.push({ key: `f:${f}`, kind: "scratch-folder", folder: f, top });
     if (!shut && !open.length && !kept.length) rows.push({ key: "s:none", kind: "scratch-none", top });
     return rows;
+  }
+
+  // Whether the menu shows a submenu (Esc and ‹ Back go up a level).
+  inSubmenu() { return Boolean(this.moving || this.grouping || this.renaming || this.wsMenu || this.folderMenu); }
+
+  // ‹ Back, or Esc in a submenu: a workspace's group opened from its own menu goes back to that menu;
+  // anything else to the main menu.
+  goBack(cx) {
+    if (this.grouping && this.wsMenu) this.grouping = null;
+    else { this.moving = false; this.grouping = null; this.renaming = null; this.wsMenu = null; this.folderMenu = null; }
+    this.handle.focus();
+    cx.notify();
+  }
+
+  // A scratch folder kept or let go from its row (the sidebar copy writes or takes out .keep).
+  // Asked through shared state, not a mod command: Herdr refuses one while the sidebar is hidden, even
+  // with the sidebar copy still running. Its look stays pressed at least 500 ms, so the second click
+  // of a double-click can't land on the opposite button.
+  setKeep(folder, keep, cx) {
+    const at = Date.now();
+    this.keeping = { ...(this.keeping ?? {}), [folder]: { keep, at } };
+    const name = base(folder);
+    const asks = Object.fromEntries(Object.entries(shared("workspaces.scratch.keep") ?? {}).filter(([, v]) => at - Number(v?.at) < 60000));
+    setShared("workspaces.scratch.keep", { ...asks, [name]: { keep, at } });
+    cx?.timer?.after(600, (cx) => cx.notify());
+    cx?.notify();
   }
 
   // The Scratch header clicked: its group folded, or open again.
@@ -1974,9 +2215,10 @@ export default class Workspaces extends View {
     });
   }
 
-  // 0 shows every space, 1-9 the workspaces in the menu's order.
+  // 0 shows every space, 1-9 the workspaces in the menu's order. (Herdr's Esc comes as overlay.close,
+  // never as a key here: menu() claims it in a submenu.)
   key(e, defs) {
-    if (this.moving || this.grouping || this.renaming || e.modifiers?.control || e.modifiers?.platform || e.modifiers?.alt) return;
+    if (this.inSubmenu() || e.modifiers?.control || e.modifiers?.platform || e.modifiers?.alt) return;
     if (!/^[0-9]$/.test(e.key)) return;
     const n = Number(e.key);
     if (n > defs.length) return;

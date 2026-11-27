@@ -32,10 +32,11 @@ bar's bell (below), not on the switcher.
   compacted (hover for the effort, tokens, last compaction and cost), and the
   status bar shows how much of your Claude and Antigravity plans you've used, as
   each one's own `/usage` gives it, with every limit and when it resets a click away.
-- **Agent menu**: right-click an agent in the Agents list to peek at it, send it
-  a message without going there, interrupt or compact it, fork its conversation
-  into a new tab, rename or pin it, copy its terminal or session id, close it, or
-  wipe it (close it and move its conversation to the Trash).
+- **Agent menu**: right-click an agent in the Agents list (or click the ⋯ on a
+  hovered row) to peek at it, send it a message without going there, interrupt
+  or compact it, fork its conversation into a new tab, rename its tab or pin it, copy
+  its terminal or conversation id, close it, or wipe it (close it and move its
+  conversation to the Trash).
 
 ![The Agents list's right-click menu](previews/agent-menu.png)
 
@@ -68,10 +69,13 @@ needs you and blue for unread updates only.
   nothing to do), an automation that didn't start or was missed while Herdr was
   closed, a card's pull request ready to merge, merged or closed, and what only
   the system says (a machine needs a login, the background runner didn't
-  start).
+  start). Every error a toast showed is kept there too, with its whole text.
+  A run that failed, ended without its outcome line, didn't start or was
+  missed is red.
 - **One click goes there**: the agent, the run's tab or the run in History, the
   card on its board, the automation. An update is read once clicked; Mark all
-  read and Clear read tidy the rest, and updates go after 7 days.
+  read and Clear read tidy the rest, and updates go after 7 days. A row's ×
+  (or Backspace) closes it; what still waits on you comes back the next time.
 - **It remembers** across restarts, the background runner's news from while
   Herdr was closed included.
 
@@ -143,7 +147,7 @@ the workspace: a pill in the tab bar of each of its spaces.
 - **Resume** continues a conversation in a new tab, in the folder it ran in.
   One started from a preset comes back as that preset.
 - **Open ones say so** and offer Go to instead, so a conversation isn't opened
-  twice.
+  twice. Where History can only guess, the row says "open?" and keeps Resume.
 - **This workspace or everywhere**, a chip per agent, and search across titles,
   prompts, folders and models.
 - **Compactions**: a Claude Code, Pi or Antigravity conversation shows how many
@@ -321,7 +325,8 @@ ours at the end, after Privacy:
   applies at once, to every open Files.
 - **Secrets**: the Protected broker (Install & enable, Restart, Update, Uninstall,
   with what it's doing now), the tier and expiry a new secret starts with, and
-  which uses show in the bell (off, Protected only, always).
+  Show secret use in the bell: whether uses, and tries that were refused, leave
+  an entry there (off, Protected only, always).
 - **Experimental**: features that lean on things other programs don't promise to
   keep the same, each off until you turn it on and saying why it's experimental
   (the first: wiping Antigravity conversations from the Agents list's menu).
@@ -415,8 +420,8 @@ says how), or by hand:
    folders in `mods/` to `~/.config/herdr-app/mods/` (rename them if a name is taken).
 2. For agent instructions from the + menu, put the launcher on your `PATH` and
    point Herdr's `~/.config/herdr-app/programs.json` at it. `herdr-ws-run` starts automations from other
-   apps and lets agents add them, and `herdr-ws-notify --off` / `--on` is the
-   switch for the desktop notifications (on macOS, `brew install terminal-notifier`
+   apps and lets agents add them, and `herdr-ws-notify --off` / `--on` (or
+   Settings > Features > Desktop notifications) is the switch for the desktop notifications (on macOS, `brew install terminal-notifier`
    makes a click on one go to Herdr). `herdr-ws-secret` is how agents use your
    secrets (it needs Node 20 or newer):
    ```sh
@@ -551,7 +556,7 @@ agent from the Agents list's right-click menu: that Claude Code or Pi
 conversation's transcript and the folders Claude keeps for it under
 `~/.claude/`. That menu also types into an agent with `hc send` (Send a message,
 Compact), presses Esc there with `hc keys` (Interrupt) and puts a terminal or
-session id on the clipboard (`pbcopy`, `wl-copy` or `xclip`). Settings > Features,
+conversation id on the clipboard (`pbcopy`, `wl-copy` or `xclip`). Settings > Features,
 Settings > Automations, Settings > Files and Settings > Experimental write `~/.herdr/settings.jsonc` (the Files
 section asks the system which apps open a text file, with `command -v` and `osascript` (on Linux,
 `xdg-mime` and the `.desktop` files that list its type), about
@@ -584,7 +589,16 @@ image's size), links images it previews under `~/.config/herdr-app/data/ws-files
 (`ln -sf`, `unlink`), asks macOS which apps open a file (`osascript`; on Linux,
 `xdg-mime` and the `.desktop` files), looks for known editors with `command -v`,
 starts the app you pick (`open`; on Linux the editor's command, `gio launch` or
-`xdg-open`), or reveals it (`open -R`, `xdg-open` on its folder), and remembers the pick in `~/.herdr/files-prefs.json`. Its right-click menu makes,
+`xdg-open`), or reveals it (`open -R`, `xdg-open` on its folder), and remembers the pick in `~/.herdr/files-prefs.json`.
+While a file has unsaved edits, Files keeps a copy of that unsaved text, in plain text, in
+`~/.config/herdr-app/data/ws-files/drafts/` (one file per edited file), so closing the pane
+doesn't lose it. Only you can read the copies (the folder `chmod 700`, each copy `600`; on
+Windows your profile folder is yours alone), and each is written whole (beside it, then moved
+over it with `mv`) or not at all (on Windows without Git's `sh`, in place). When you open the file again, its editor stays read-only
+until you press Restore or Discard on the strip that offers the copy. The copy is deleted when
+you save, discard or reload the file, or press that Discard, and one nobody comes back for
+after 30 days (with `find`, in Git's `sh` on Windows). While its filter box has text it lists
+the names under the folder with `git ls-files` (else `find`). Its right-click menu makes,
 renames and duplicates files and folders with `mkdir`, `mv` and `cp` (never over an existing
 name), moves them to the Trash with `trash` or `gio trash` (else into `~/.herdr/trash`), counts a
 folder's files with `find`, copies paths to the clipboard and opens a terminal tab there. It and its Cmd-click handler
@@ -612,8 +626,8 @@ background which terminal started it (and for up to 30 seconds which session the
 Antigravity opens a session). Its right-click Wipe moves a Claude Code or Pi conversation's files
 to the Trash as the Agents list's does (after `terminal.kill` on the terminal it's open in; to tell
 which, it asks `hc get` for each agent terminal's program and reads Claude's `~/.claude/sessions/`,
-the launcher's notes and `ps`, and `stat` to see whether its transcript was just written), puts a session id on the clipboard for
-Copy session id, and hands an Antigravity one to the Agents list's Wipe. Nothing it reads leaves the computer. The Agents list's numbers
+the launcher's notes and `ps`, and `stat` to see whether its transcript was just written), puts a conversation id on the clipboard for
+Copy conversation id, and hands an Antigravity one to the Agents list's Wipe. Nothing it reads leaves the computer. The Agents list's numbers
 come from the same places, read by `node` every few seconds while an agent works: what Claude
 Code hands its status line, which `herdr-ws-statusline` keeps in `~/.herdr/agents/<core>/`
 (the launcher sets it as the status line, in that session's `--settings`, where you have none),
@@ -633,8 +647,9 @@ type (a new note's file is renamed while its first line is being written) and a 
 Move to the board; that and Delete move the note to the Trash. On its first run it makes
 the Scratch workspace (`~/.herdr/workspaces/scratch/`); New scratch space makes folders in
 `~/.herdr/scratch/`, and there it deletes empty ones nobody is in (`rmdir`) and moves ones
-with files to the Trash after 7 days unused, unless they have a `.keep` file. It looks at
-nothing else there. Deleting Scratch closes its spaces and moves `~/.herdr/scratch`, kept
+with files to the Trash after 7 days unused, unless they have a `.keep` file. Keep on a
+folder's row in the switcher menu writes that `.keep` (Don't keep takes it out), and its
+Move to Trash… moves the folder to the Trash when you confirm. It looks at nothing else there. Deleting Scratch closes its spaces and moves `~/.herdr/scratch`, kept
 folders included, to the Trash with it. A repo's two
 worktree scripts (`~/.herdr/workspaces/<id>/worktrees.json`) are shell lines Herdr
 runs as you: setup in a new worktree the board makes, archive before a removal.
@@ -661,15 +676,17 @@ background runner's news while no window is open. It asks macOS which app is in
 front (`lsappinfo`), then runs `terminal-notifier`, else `osascript`, or
 `notify-send` on Linux, with the notification's title and text, and nothing when
 none is installed. A click on a terminal-notifier one runs `herdr-app do` with
-the toast's own action. Its switch is `~/.herdr/notify/switch`. The launcher
+the toast's own action. Its switch is `~/.herdr/notify/switch`, which Settings >
+Features' Desktop notifications sets through it. The launcher
 reads a workspace's `BRIEF.md`, when there is one, and puts it in the
 instructions of the agents started there.
 Secrets keeps `~/.herdr/vault/` (`0700`): `meta.json` (each secret's name, scope,
 rules and last use, never a value), `standard.enc` (Standard values, encrypted),
 `usage.jsonl` (one line per use, never a value), a `.lock`, the broker's socket,
 log and binary (`bin/herdr-ws-vaultd`), `vault.key` only where there's no Keychain,
-and for a moment the screen's `.inbox-*` handoff files, which `herdr-ws-secret ingest`
-deletes. In your login Keychain it keeps one item `herdr-ws-vault-standard` (Standard's
+for a moment the screen's `.inbox-*` handoff files, which `herdr-ws-secret ingest`
+deletes, and `screen-unfinished.json` after the screen closed in the middle of a save
+(which secret, its tier, what wasn't saved and when; never a value). In your login Keychain it keeps one item `herdr-ws-vault-standard` (Standard's
 key) and one `dev.herdr.ws-vault.protected` item per Protected secret. Installing the
 Protected broker runs `/usr/bin/swiftc` and `codesign`, writes
 `~/Library/LaunchAgents/dev.herdr.ws-vaultd.plist` and loads it with `launchctl`;

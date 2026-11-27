@@ -4,5 +4,103 @@
   "cloned_from": {
     "name": "tabs",
     "version": "0.1.14"
-  }
+  },
+  "palette": [
+    {
+      "title": "Switch workspace…",
+      "command": "ws-tabs.switcher",
+      "group": "Workspaces",
+      "words": "workspace switcher menu"
+    },
+    {
+      "title": "New scratch space…",
+      "command": "ws-tabs.scratch-new",
+      "group": "Workspaces",
+      "words": "scratch idea space"
+    },
+    {
+      "title": "Show Board",
+      "command": "ws-tabs.view/board",
+      "group": "Workspaces",
+      "words": "view task cards kanban"
+    },
+    {
+      "title": "Show Notes",
+      "command": "ws-tabs.view/notes",
+      "group": "Workspaces",
+      "words": "view notes"
+    },
+    {
+      "title": "Show Worktrees",
+      "command": "ws-tabs.view/worktrees",
+      "group": "Workspaces",
+      "words": "view git worktrees branches"
+    },
+    {
+      "title": "Show History",
+      "command": "ws-tabs.view/history",
+      "group": "Workspaces",
+      "words": "view conversations resume runs"
+    },
+    {
+      "title": "Show Changes",
+      "command": "ws-tabs.view/changes",
+      "group": "Workspaces",
+      "words": "view git diff changes"
+    },
+    {
+      "title": "Show Files",
+      "command": "ws-tabs.view/files",
+      "group": "Workspaces",
+      "words": "view files browse"
+    },
+    {
+      "title": "Views…",
+      "command": "ws-tabs.views",
+      "group": "Workspaces",
+      "words": "views menu"
+    },
+    {
+      "title": "Notifications",
+      "command": "ws-tabs.notifications",
+      "group": "Workspaces",
+      "words": "bell notifications"
+    },
+    {
+      "title": "Workspaces settings: Features",
+      "command": "ws-tabs.settings/features",
+      "group": "Workspaces",
+      "words": "settings add-ons features"
+    },
+    {
+      "title": "Workspaces settings: Agents",
+      "command": "ws-tabs.settings/agents",
+      "group": "Workspaces",
+      "words": "settings agents models hide"
+    },
+    {
+      "title": "Workspaces settings: Automations",
+      "command": "ws-tabs.settings/automations",
+      "group": "Workspaces",
+      "words": "settings automations runner"
+    },
+    {
+      "title": "Workspaces settings: Files",
+      "command": "ws-tabs.settings/files",
+      "group": "Workspaces",
+      "words": "settings files editor open"
+    },
+    {
+      "title": "Workspaces settings: Secrets",
+      "command": "ws-tabs.settings/vault",
+      "group": "Workspaces",
+      "words": "settings secrets vault keys"
+    },
+    {
+      "title": "Workspaces settings: Experimental",
+      "command": "ws-tabs.settings/experimental",
+      "group": "Workspaces",
+      "words": "settings experimental"
+    }
+  ]
 }

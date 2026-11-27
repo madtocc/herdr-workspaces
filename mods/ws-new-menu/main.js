@@ -13,12 +13,22 @@
 // The views (History, Notes, Board, …) open from the tab bar's Views menu (ws-tabs), not here.
 // - props.agentsOnly (the Agents panel's +, ws-agents): only the agents and the presets,
 //   under "Start an agent in <space>"; no Terminal, no space or worktree rows.
+// - A preset's Start dialog (ws-presets) opens modal (`modal: true`): a click beside it doesn't close it.
+// - Esc with an agent's small menu open closes that menu first: claimed as Herdr's `overlay.close`
+//   action (a popup never sees Esc as a key; the old on_key_down branch never ran).
+// - "New space in a folder…" under New space (not in Scratch) opens ws-switcher's New space dialog, as a
+//   hold on the Spaces + does (askNewSpace(), the same size rule as ws-spaces').
+// - New space's tooltip says it starts where the focused terminal is; the menu marks itself open and
+//   closed in shared "workspaces.newmenu.open" (not the Agents header's agents-only copy), so the tab
+//   bar's + doesn't open it again on the click that just closed it.
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex, Popup } from "gpui-base";
-import { theme, spaces, panes, knownAgents, run, openOverlay, closeOverlay, props, window, keys, shared, setShared, home, readTextFile, writeTextFile, notify } from "herdr";
+import { theme, spaces, panes, knownAgents, run, openOverlay, closeOverlay, props, window, keys, shared, setShared, home, readTextFile, writeTextFile, notify, checking } from "herdr";
 import { HIDDEN, hiddenFile, parseHidden, saveHidden, shownAgents, keyTarget } from "./hidefacts.js";
 
+// This menu open ({ overlay, at }) or just closed ({ overlay: null, closedAt }): the tab bar's + reads it.
+const OPEN_KEY = "workspaces.newmenu.open";
 // The last agents each machine reported, shown at once while knownAgents() checks again.
 const KNOWN = "new-menu.agents";
 
@@ -54,7 +64,20 @@ function programOf(command) {
 }
 
 const openStart = (name, workspace) =>
-  openOverlay({ mod: "ws-presets", kind: "dialog", width: 560, height: 430, props: { start: name, workspace } });
+  openOverlay({ mod: "ws-presets", kind: "dialog", modal: true, width: 560, height: 430, props: { start: name, workspace } });
+// ws-switcher's New space dialog for the shown workspace (no workspace: "New space"), as ws-spaces'
+// askNewSpace() opens it, at its size: tall enough for the error line and for the folder chips (the
+// root and up to five folders, then Choose…) where they wrap, about 7px a letter in 424px.
+function askNewSpace(ws) {
+  const base = (path) => path.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
+  const picks = ws ? [ws.root, ...(ws.folders ?? [])].filter(Boolean).slice(0, 6) : [];
+  const labels = [...picks.map((f) => (f === ws.root ? `${base(f)} (root)` : base(f))), "Choose\u2026"];
+  let lines = 1, x = 0;
+  for (const l of labels) { const w = 16 + 7 * l.length; if (x && x + w > 424) { lines++; x = 0; } x += w + 6; }
+  openOverlay({ mod: "ws-switcher", kind: "dialog", modal: true, width: 460, height: 356 + 30 * (lines - 1), props: { dialog: "new-space", id: ws?.id ?? null } });
+}
+// The New space row's tooltip: Herdr starts it in the focused terminal's folder (none: no tooltip).
+const startsIn = (cwd) => { if (!cwd) return ""; const h = home(); return `In ${h && (cwd === h || cwd.startsWith(h + "/") || cwd.startsWith(h + "\\")) ? `~${cwd.slice(h.length)}` : cwd}, where this terminal is`; };
 // Opens Settings on its Agents section directly (works even while the sidebar is hidden).
 const openChoose = () => {
   setShared("workspaces.settings.section", { id: "agents", at: Date.now() });
@@ -72,6 +95,8 @@ export default class NewMenu extends View {
     // out; with none known yet, no agents until the file has been read.
     this.hiddenKnown = Array.isArray(shared(HIDDEN));
     this.menuFor = null; // the agent whose right-click menu is open
+    // Not the Agents header's agents-only copy: the mark is the tab bar's +'s, and that copy isn't its menu.
+    if (!checking() && !props()?.agentsOnly) setShared(OPEN_KEY, { overlay: props()?.overlay ?? null, at: Date.now() });
     cx.spawn(async cx => {
       const text = await readTextFile(hiddenFile(home())).catch(() => null);
       const hidden = parseHidden(text);
@@ -87,6 +112,11 @@ export default class NewMenu extends View {
       catch { this.failed = true; }
       cx.notify();
     });
+  }
+  async close() {
+    if (props()?.agentsOnly) return;
+    const o = shared(OPEN_KEY);
+    if (!o || o.overlay === (props()?.overlay ?? null)) setShared(OPEN_KEY, { overlay: null, closedAt: Date.now() });
   }
   // Hide from this menu: the row goes at once (shared "new-menu.hidden"), the file follows.
   // A file that can't be written puts the list back as the file has it.
@@ -144,11 +174,13 @@ export default class NewMenu extends View {
     };
     const keyed = (i) => (i < 9 ? String(i + 1) : "");
     const only = Boolean(props()?.agentsOnly);
-    return v_flex().min_h(0).w_full().h(Math.min(721, (only ? 39 : 167) + (Math.max(1, installed.length) + (installed.length ? 1 : 0)) * 31 + (presets.length ? 34 + presets.length * 31 : 0)))
+    return v_flex().min_h(0).w_full().h(Math.min(752, (only ? 39 : ws?.scratch ? 167 : 198) + (Math.max(1, installed.length) + (installed.length ? 1 : 0)) * 31 + (presets.length ? 34 + presets.length * 31 : 0)))
       .bg(t.popover).p(5).text_size(12.8)
       .id("new-menu").track_focus(this.handle)
+      // With an agent's small menu open, Herdr's Esc (overlay.close: it never comes as a key in a popup)
+      // closes that menu first; otherwise Herdr closes the + menu as usual.
+      .when(Boolean(this.menuFor), el => el.on_action("overlay.close", (_e, cx) => { cx.stop_propagation(); this.menuFor = null; this.handle.focus(); cx.notify(); }))
       .on_key_down((e, cx) => {
-        if (e.key === "escape" && this.menuFor) { this.menuFor = null; cx.stop_propagation(); cx.notify(); return; }
         if (e.modifiers.control || e.modifiers.platform || e.modifiers.alt) return;
         const target = keyTarget(/^[1-9]$/.test(e.key) ? Number(e.key) - 1 : -1, installed, presets);
         if (!target) return;
@@ -173,7 +205,10 @@ export default class NewMenu extends View {
             [p.description, p.scope === "workspace" ? `Only in ${ws?.name ?? "this workspace"}` : "Every workspace"].filter(Boolean).join("\n"))))))
       .when(!only, el => el
       .child(div().h(1).mx(4).my(5).bg(t.border))
-      .child(this.row("space", div().w(14).child("+"), "New space", () => run("space.new"), shortcut("space.new")))
+      .child(this.row("space", div().w(14).child("+"), "New space", () => run("space.new"), shortcut("space.new"), true, startsIn(panes().find(p => p.focused)?.cwd)))
+      // The New space dialog (ws-switcher's), as a hold on the Spaces + opens it: a name and a folder.
+      // Not in Scratch, where a space gets a new folder of its own.
+      .when(!ws?.scratch, el => el.child(this.row("space-in", svg("mods/workspace-chrome/folder.svg").size(14), "New space in a folder\u2026", () => askNewSpace(ws))))
       .child(this.row("worktree", svg("mods/workspace-chrome/branch.svg").size(14), "New worktree…", () => openOverlay({ mod: "worktree", kind: "dialog", width: 460, height: 280, props: { space: space?.id, folder: panes().find(p => p.focused)?.cwd, action: "new" } }), "", Boolean(space)))
       .child(this.row("worktree-open", svg("mods/workspace-chrome/branch.svg").size(14), "Open worktree\u2026", () => openOverlay({ mod: "worktree", kind: "dialog", width: 560, height: 480, props: { space: space?.id, folder: panes().find(p => p.focused)?.cwd, action: "open" } }), "", Boolean(space))));
   }

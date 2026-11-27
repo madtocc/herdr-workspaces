@@ -27,10 +27,10 @@
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input } from "gpui-base";
-import { spaces, panes, terminals, run, theme, shared, setShared, props, openOverlay, closeOverlay, home, readTextFile, writeTextFile, notify, checking } from "herdr";
+import { spaces, panes, terminals, run, theme, settings, shared, setShared, props, openOverlay, closeOverlay, home, readTextFile, writeTextFile, notify, checking } from "herdr";
 import { exec } from "./posix.js";
 import * as fs from "fs/promises";
-import { parseList, parseRefs, parsePrs, kindOf, labelOf, finished, ago, inside } from "./facts.js";
+import { parseList, parseRefs, parsePrs, kindOf, labelOf, finished, ago, inside, unsaved, dotTip, removeLabel, removeReserve } from "./facts.js";
 import { loadScripts, saveScripts, allowScripts, runScript, markSetUp } from "./treescripts.js";
 
 const io = { home, readTextFile, writeTextFile, exec };
@@ -131,6 +131,8 @@ function mark(def, t, size) {
 
 const STALE = 60e3; // ms after which the screen, shown again, reads the worktrees again
 const ROW_MIN = 560; // a worktree row's least width in a narrow tab or pane: it scrolls sideways
+// Full size, a window narrower than this gets the narrow tab's layout (wrapping header, rows that scroll).
+const WIDE_MIN = 760;
 
 export default class Worktrees extends View {
   init(_props, cx) {
@@ -186,6 +188,7 @@ export default class Worktrees extends View {
     this.busy = {}; // worktree path -> "setup"
     this.selected = new Set(); // the paths ticked for Remove selected
     this.anchor = null; // the row ticked or unticked last, and which of the two: a shift-click runs from it
+    this.tipGone = null; // the id of a clicked button whose tooltip is held back (tip())
   }
 
   // Reads everything again, in a task of its own. Call it from a click, a timer
@@ -305,7 +308,7 @@ export default class Worktrees extends View {
   remove(trees, live, picked = false) {
     const def = defOf(this.workspace);
     openOverlay({
-      mod: "ws-worktrees", kind: "dialog", width: 480, height: trees.length === 1 ? 290 : picked ? 380 : 320,
+      mod: "ws-worktrees", kind: "dialog", width: 480, height: trees.length === 1 ? 310 : picked ? 400 : 340, modal: true,
       props: {
         dialog: "remove", workspace: this.workspace, name: def?.name ?? "", picked,
         trees: trees.map((x) => ({
@@ -330,19 +333,28 @@ export default class Worktrees extends View {
     });
   }
 
-  // Opens a repo's scripts (again: closes them), read from the file as it is now.
+  // Opens a repo's scripts (again: closes them), read from the file as it is now. With
+  // lines typed and not saved, the first close (or another repo's Scripts) asks on the
+  // panel's own line; a click from 500 ms after that drops them.
   edit(repo, cx) {
+    const e = this.editing;
+    if (e && unsaved({ setup: e.setup.value(), archive: e.archive.value() },
+      { setup: this.scripts?.scriptOf(e.name, "setup").line, archive: this.scripts?.scriptOf(e.name, "archive").line })) {
+      const d = Date.now() - (e.askedAt ?? 0);
+      if (!e.askedAt || d < 0) { e.askedAt = Date.now(); e.error = null; return cx.notify(); }
+      if (d < 500) return;
+    }
     if (this.editing?.main === repo.main) { this.editing = null; return cx.notify(); }
     cx.spawn(async (cx) => {
       this.scripts = await loadScripts(io, this.workspace);
       const state = (kind, placeholder) => {
         const s = InputState.new({ value: this.scripts.scriptOf(repo.name, kind).line, placeholder });
-        s.on("change", (_e, cx) => { if (this.editing) { this.editing.saved = false; this.editing.error = null; } cx.notify(); });
+        s.on("change", (_e, cx) => { if (this.editing) { this.editing.saved = false; this.editing.error = null; this.editing.askedAt = 0; } cx.notify(); });
         s.on("submit", (_e, cx) => this.save(repo, cx));
         return s;
       };
       this.editing = {
-        main: repo.main, saved: false, error: null,
+        main: repo.main, name: repo.name, saved: false, error: null, askedAt: 0,
         setup: state("setup", 'e.g. pnpm install && cp "$HERDR_REPO/.env" .'),
         archive: state("archive", "e.g. docker compose down"),
       };
@@ -354,6 +366,7 @@ export default class Worktrees extends View {
   save(repo, cx) {
     const e = this.editing;
     if (!e || e.main !== repo.main) return;
+    e.askedAt = 0; // a Save answers the ask, and a failed one shows its error
     cx.spawn(async (cx) => {
       try {
         await saveScripts(io, this.workspace, repo.name, { setup: e.setup.value(), archive: e.archive.value() });
@@ -377,12 +390,16 @@ export default class Worktrees extends View {
     if (props()?.dialog) return this.dialog(t);
     const def = defOf(this.workspace);
     const shell = v_flex().id("worktrees").size_full().min_h(0).bg(t.canvas).text_size(13).text_color(t.foreground)
+      // Sizes come in window px; WIDE_MIN is in the mod's units.
+      .on_size_change((size, cx) => { const w = size.width / (Number(settings().zoom) > 0 ? Number(settings().zoom) : 1); if (w !== this.width) { this.width = w; cx.notify(); } })
       .when(this.follow, (el) => el.track_focus(this.handle));
+    // A tab or pane may be narrow; the full-size screen is when its window is.
+    const tight = !this.follow || (this.width > 0 && this.width < WIDE_MIN);
     // Between two workspaces (the timer is a moment behind): nothing of the last one.
     if (this.follow && (shared("workspaces.active") ?? null) !== this.workspace) return shell;
     if (!def) {
       return shell.items_center().justify_center().text_color(t.dim)
-        .child(this.workspace ? "This workspace is gone." : this.follow ? "Choose a workspace in the switcher to see its worktrees." : "Open the worktrees from the workspace switcher's menu.");
+        .child(this.workspace ? "This workspace is gone." : this.follow ? "Choose a workspace in the switcher to see its worktrees." : "Open the worktrees from Views, in the tab bar.");
     }
     const live = this.live();
     const all = this.repos.flatMap((r) => r.trees);
@@ -397,8 +414,8 @@ export default class Worktrees extends View {
       .text_size(12).cursor_pointer()
       .when(solid, (el) => el.bg(t.solid).text_color(t.solid_foreground).font_medium().hover((s) => s.opacity(0.88)))
       .when(!solid, (el) => el.border_1().border_color(t.input).text_color(danger ? t.blocked : t.muted).hover((s) => s.bg(t.hover).text_color(danger ? t.blocked : t.foreground)))
-      .when(Boolean(tip), (el) => el.tooltip(tip))
-      .on_click((_e, cx) => action(cx)).child(text);
+      .when(Boolean(tip), (el) => this.tip(el, id, tip))
+      .on_click((_e, cx) => { this.tipGone = id; action(cx); cx.notify(); }).child(text);
     const chip = ([key, text]) => {
       const n = all.filter(tests[key]).length, on = this.filter === key;
       return h_flex().id(`f-${key}`).h(26).px(10).gap(6).flex_none().items_center().rounded(13).border_1().cursor_pointer().text_size(12)
@@ -414,10 +431,10 @@ export default class Worktrees extends View {
     // A pane beside the terminals: one slim row (the pane's header names it), wrapping rather than
     // losing a button.
     const header = h_flex().h(48).flex_none().px(16).gap(10).items_center().border_b(1).border_color(t.border)
-      .when(!this.follow, narrow(48))
+      .when(tight, narrow(48))
       .when(this.beside, (el) => el.min_h(36).px(10).py(4).gap(8))
       .when(!this.beside, (el) => el.child(mark(def, t, 20)).child(div().font_semibold().child(`${def.name} worktrees`)))
-      .child(div().min_w(0).truncate().text_size(12).text_color(t.dim).child(this.loaded ? `${all.length} in ${plural(this.repos.filter((r) => r.trees.length).length, "repo")}` : "Reading…"))
+      .child(div().min_w(0).truncate().text_size(12).text_color(t.dim).child(this.loaded ? `${all.length} in ${plural(this.repos.length, "repo")}` : "Reading…"))
       .when(this.reading && this.loaded, (el) => el.child(svg("mods/workspace-chrome/spinner.svg").size(13).text_color(t.dim).spin(900)))
       .child(div().flex_1())
       .child(button("wt-refresh", "Refresh", (cx) => this.load(cx), { tip: "Read git and GitHub again" }))
@@ -428,7 +445,7 @@ export default class Worktrees extends View {
       .when(!picked.length && done.length > 0, (el) => el.child(button("wt-clean", `Remove ${done.length} finished…`, () => this.remove(done, live),
         { solid: true, tip: "Merged, nothing uncommitted, and nothing open or running in them" })));
 
-    const filters = h_flex().h(44).flex_none().px(16).gap(6).items_center().when(!this.follow, narrow(44)).when(this.beside, (el) => el.px(10).py(6)).children(FILTERS.map(chip))
+    const filters = h_flex().h(44).flex_none().px(16).gap(6).items_center().when(tight, narrow(44)).when(this.beside, (el) => el.px(10).py(6)).children(FILTERS.map(chip))
       .child(div().flex_1())
       .when(shown.length > 0, (el) => el.child(div().id("wt-pick-all").h(26).px(8).flex().flex_none().items_center().rounded(7).text_size(12)
         .text_color(t.muted).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
@@ -450,11 +467,11 @@ export default class Worktrees extends View {
     }
     if (this.loaded && !this.repos.length) kids.push(div().p(16).text_color(t.dim).child(`No git repository in ${tilde(def.root)} or its folders.`));
     else if (this.loaded && this.filter !== "all" && !shown.length) kids.push(div().p(16).text_color(t.dim).child("None like that."));
-    const body = v_flex().id("wt-list").flex_1().min_h(0).when(this.follow, (el) => el.overflow_y_scrollbar()).when(!this.follow, (el) => el.overflow_scrollbar()).px(10).pb(16).children(kids);
+    const body = v_flex().id("wt-list").flex_1().min_h(0).when(!tight, (el) => el.overflow_y_scrollbar()).when(tight, (el) => el.overflow_scrollbar()).px(10).pb(16).children(kids);
     const noGh = this.repos.some((r) => r.trees.length && r.prs === null);
     return shell.child(header).child(filters).child(body)
       .when(noGh, (el) => el.child(div().h(28).flex_none().px(16).flex().items_center().border_t(1).border_color(t.border).text_size(11.5).text_color(t.dim)
-        .when(!this.follow, (el) => el.h_auto().min_h(28).py(6))
+        .when(tight, (el) => el.h_auto().min_h(28).py(6))
         .child(div().flex_1().min_w(0).child("Pull requests couldn't be read for some repos (gh missing, signed out, or no GitHub remote), so nothing there counts as finished."))));
   }
 
@@ -469,7 +486,8 @@ export default class Worktrees extends View {
       .child(div().flex_1())
       .when(waiting, (el) => el.child(div().text_size(12).text_color(t.blocked).child("A script is waiting to be allowed")))
       .child(button(`sc-${r.main}`, this.editing?.main === r.main ? "Close scripts" : has ? "Scripts" : "Add scripts", (cx) => this.edit(r, cx),
-        { tip: "What runs in a new worktree, and before one is removed" }));
+        // None while its panel is open, under it: typing ends hover, so tip() alone would let it back.
+        { tip: this.editing?.main === r.main ? null : "What runs in a new worktree, and before one is removed" }));
   }
 
   scriptsPanel(r, t, button) {
@@ -486,7 +504,8 @@ export default class Worktrees extends View {
         .child(div().flex_1().text_size(12).text_color(t.blocked).child("These lines were changed outside this screen and won't run until you allow them. Read them first."))
         .child(button(`allow-${r.main}`, "Allow as written", (cx) => this.allow(r, cx)))))
       .child(h_flex().gap(8).items_center()
-        .child(div().flex_1().text_size(12).text_color(e.error ? t.blocked : t.dim).child(e.error ?? (e.saved ? "Saved." : "")))
+        .child(div().flex_1().text_size(12).text_color(e.askedAt ? t.working : e.error ? t.blocked : t.dim)
+          .child(e.askedAt ? "Not saved. Click again to close and drop what you typed, or Save." : e.error ?? (e.saved ? "Saved." : "")))
         .child(button(`save-${r.main}`, "Save", (cx) => this.save(r, cx), { solid: true })));
   }
 
@@ -501,10 +520,10 @@ export default class Worktrees extends View {
       .when(Boolean(tip), (el) => el.tooltip(tip)).child(text);
     const act = (id, text, action, tip, danger) => div().id(id).h(24).px(8).flex().flex_none().items_center().rounded(6).border_1().border_color(t.input)
       .text_size(11.5).text_color(danger ? t.blocked : t.muted).cursor_pointer().hover((s) => s.bg(t.hover).text_color(danger ? t.blocked : t.foreground))
-      .tooltip(tip).on_click((_e, cx) => action(cx)).child(text);
+      .when(true, (el) => this.tip(el, id, tip)).on_click((_e, cx) => { this.tipGone = id; action(cx); cx.notify(); }).child(text);
     const ticked = this.selected.has(x.path);
     return h_flex().id(`wt-${x.path}`).h(38).px(6).gap(8).items_center().flex_none().rounded(7).hover((s) => s.bg(t.hover))
-      .when(!this.follow, (el) => el.min_w(ROW_MIN))
+      .when(!this.follow || (this.width > 0 && this.width < WIDE_MIN), (el) => el.min_w(ROW_MIN))
       .when(ticked, (el) => el.bg(t.selected))
       .child(h_flex().id(`pick-${x.path}`).w(26).h(38).flex_none().items_center().justify_center().cursor_pointer()
         .tooltip("Tick it to remove several together. Shift-click ticks every row from the last one you ticked.")
@@ -512,20 +531,32 @@ export default class Worktrees extends View {
         .child(h_flex().size(15).rounded(4).border_1().items_center().justify_center()
           .border_color(ticked ? t.accent : t.input).when(ticked, (el) => el.bg(t.accent).text_color(t.accent_foreground)
             .child(svg("mods/workspace-chrome/check.svg").size(11)))))
-      .child(div().size(7).flex_none().rounded_full().bg(on?.status ? (t[on.status] ?? t.unknown) : inUse ? t.idle : "#00000000"))
-      .child(div().flex_none().max_w(420).truncate().child(x.branch ?? base(x.path)))
+      .child(div().id(`wt-dot-${x.path}`).size(7).flex_none().rounded_full().bg(on?.status ? (t[on.status] ?? t.unknown) : inUse ? t.idle : "#00000000")
+        .when(Boolean(dotTip(on?.status, inUse)), (el) => el.tooltip(dotTip(on?.status, inUse))))
+      .child(div().id(`wt-name-${x.path}`).flex_none().max_w(420).truncate().tooltip(x.branch ?? base(x.path)).child(x.branch ?? base(x.path)))
       .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).tooltip(tilde(x.path)).child(this.where(x.path)))
       .when(Boolean(card), (el) => el.child(tag(card, t.muted, "A board card runs here")))
-      .when(inUse, (el) => el.child(tag(on.spaces.length ? "open" : plural(on.terminals, "terminal"), t.accent,
+      .when(inUse, (el) => el.child(tag(on.spaces.length ? "in a space" : plural(on.terminals, "terminal"), t.accent,
         on.spaces.length ? `Shown as the space “${on.spaces[0].name}”` : "A terminal is in it, outside any space")))
       .when(x.dirty > 0, (el) => el.child(tag(`${x.dirty} uncommitted`, t.blocked, "Files changed or added and not committed")))
-      .child(tag(labelOf(x), color, r.prs === null ? "Pull requests couldn't be read for this repo" : null))
+      // Until GitHub has answered the first time (r.prs undefined), "…": not "no PR", which may be untrue.
+      .child(r.prs === undefined ? tag("…", t.dim, "Asking GitHub about its pull request")
+        : tag(labelOf(x), color, r.prs === null ? "Pull requests couldn't be read for this repo" : null))
       .child(div().w(34).flex_none().text_size(11.5).text_color(t.dim).child(ago(x.at)))
       .when(Boolean(setup?.line && setup.allowed && !x.setUp), (el) => el.child(busy
         ? div().w(52).flex_none().text_size(11.5).text_color(t.dim).child("Setting up…")
         : act(`su-${x.path}`, "Set up", (cx) => this.setUp(x, r, cx), `Run: ${setup.line}`)))
       .child(act(`op-${x.path}`, on?.spaces.length ? "Go to" : "Open", () => this.open(x, on ?? { spaces: [] }), on?.spaces.length ? "Show its space" : "Open it as a space"))
       .child(act(`rm-${x.path}`, "Remove…", () => this.remove([x], new Map([[x.path, on]])), "Delete the folder; the branch stays", true));
+  }
+
+  // A button's tooltip goes once it's clicked (it would stay up over the dialog it opened),
+  // and is back once the pointer has left it or is on another button (the clicked one may be
+  // gone). While the dialog is up, its backdrop keeps the screen from being hovered at all.
+  tip(el, id, text) {
+    return el.on_hover((on, cx) => {
+      if (on ? this.tipGone && this.tipGone !== id : this.tipGone === id) { this.tipGone = null; cx.notify(); }
+    }).when(this.tipGone !== id, (x) => x.tooltip(text));
   }
 
   // --- the remove dialog ---
@@ -536,6 +567,8 @@ export default class Worktrees extends View {
     this.working = false;
     this.error = "";
     this.force = false;
+    this.armed = false; // Remove pressed once where uncommitted changes would be lost
+    this.armedAt = 0;
     this.ready = false;
     this.archive = {}; // repo name -> { line, allowed }
     this.progress = null; // while removing: { at, name, step: "script" | "remove", failed }
@@ -563,11 +596,18 @@ export default class Worktrees extends View {
   }
 
   // Esc: closes the dialog, or, while it's removing, stops after the one in hand.
-  // Closing mid-way would end the task with the list never told what went.
+  // Closing mid-way would end the task with the list never told what went, so the
+  // dialog is modal (a click beside it doesn't close it) and its × does nothing then.
   cancel(cx) {
     if (!this.working) return closeOverlay(props().overlay);
     this.stop = true;
     cx.notify();
+  }
+
+  // Picked by hand (one, or ticked) and holding uncommitted changes: what Remove would lose.
+  // The finished ones never do (they're never forced).
+  loses() {
+    return this.trees.length === 1 || props().picked ? this.trees.filter((x) => x.dirty > 0) : [];
   }
 
   blocked() {
@@ -576,6 +616,11 @@ export default class Worktrees extends View {
 
   go(cx) {
     if (this.working || !this.ready || this.blocked().length) return;
+    // Uncommitted changes would be lost: the first press (Remove or Enter) asks, naming the
+    // loss on the button; the second removes. Its second half of a double-click isn't a yes.
+    if (this.loses().length && !this.armed) { this.armed = true; this.armedAt = Date.now(); cx.notify(); return; }
+    // The second half of a double-click (or the press right after "Remove anyway" appeared) isn't a yes.
+    if ((this.armed || this.force) && Date.now() - this.armedAt < 500) return;
     this.working = true;
     this.error = "";
     cx.notify();
@@ -586,35 +631,44 @@ export default class Worktrees extends View {
       const failed = [];
       let removed = 0;
       let at = 0;
-      for (const x of this.trees) {
-        if (this.stop) break;
-        const name = x.branch ?? base(x.path);
-        const a = this.archive[base(x.repo)];
-        // Said before each one, and each step of it: deleting a big checkout takes a while.
-        const say = (step) => { this.progress = { at, name, step, failed: failed.length }; cx.notify(); };
-        at++;
-        say(a?.line && !this.force ? "script" : "remove");
-        if (a?.line && !this.force) {
-          const r = await runScript(io, a.line, { path: x.path, main: x.repo, branch: x.branch, ws: p.workspace });
-          if (!r.ok) { failed.push(`${name}: its before-removal script failed. ${r.tail}`); continue; }
-          say("remove");
+      // Whatever happens in the loop, the dialog stops saying it's working (it's modal, and its
+      // × and Esc wait while it is), so it can always be closed afterwards.
+      try {
+        for (const x of this.trees) {
+          if (this.stop) break;
+          const name = x.branch ?? base(x.path);
+          const a = this.archive[base(x.repo)];
+          // Said before each one, and each step of it: deleting a big checkout takes a while.
+          const say = (step) => { this.progress = { at, name, step, failed: failed.length }; cx.notify(); };
+          at++;
+          say(a?.line && !this.force ? "script" : "remove");
+          if (a?.line && !this.force) {
+            const r = await runScript(io, a.line, { path: x.path, main: x.repo, branch: x.branch, ws: p.workspace });
+            if (!r.ok) { failed.push(`${name}: its before-removal script failed. ${r.tail}`); continue; }
+            say("remove");
+          }
+          // Spaces first: a shell sitting in the folder keeps it busy.
+          for (const id of byHand ? x.spaces : []) run("space.close", { id, confirmed: true });
+          // The finished ones are never forced: only what git itself calls clean goes.
+          // One picked by hand is, when the dialog said its changes would be lost.
+          const force = (byHand && x.dirty > 0) || (one && this.force);
+          const r = await git(x.repo, ["worktree", "remove", ...(force ? ["--force"] : []), x.path], 600000);
+          if (r.ok) removed++;
+          else failed.push(`${name}: ${r.err.split("\n").pop() || "git worktree remove failed"}`);
         }
-        // Spaces first: a shell sitting in the folder keeps it busy.
-        for (const id of byHand ? x.spaces : []) run("space.close", { id, confirmed: true });
-        // The finished ones are never forced: only what git itself calls clean goes.
-        // One picked by hand is, when the dialog said its changes would be lost.
-        const force = (byHand && x.dirty > 0) || (one && this.force);
-        const r = await git(x.repo, ["worktree", "remove", ...(force ? ["--force"] : []), x.path], 600000);
-        if (r.ok) removed++;
-        else failed.push(`${name}: ${r.err.split("\n").pop() || "git worktree remove failed"}`);
+      } catch (e) {
+        const x = this.trees[Math.max(0, at - 1)];
+        failed.push(`${x ? x.branch ?? base(x.path) : "?"}: ${message(e)}`);
+      } finally {
+        this.working = false;
+        this.progress = null;
       }
       const left = this.trees.length - removed - failed.length; // Esc stopped it before these
-      this.working = false;
-      this.progress = null;
       if (removed) setShared("workspaces.worktrees.changed", Date.now());
       if (one && failed.length) {
         this.error = failed[0];
         this.force = true;
+        this.armedAt = Date.now(); // "Remove anyway" takes the button's place: stamped as it appears
         return cx.notify();
       }
       if (!one) {
@@ -640,12 +694,32 @@ export default class Worktrees extends View {
     const dirty = (many ?? []).filter((x) => x.dirty > 0), open = (many ?? []).filter((x) => x.spaces.length);
     const loose = (many ?? []).filter((x) => !x.spaces.length && x.terminals), unmerged = (many ?? []).filter((x) => !x.merged);
     const g = this.progress, total = this.trees.length;
-    const hint = this.working ? (this.stop ? "stopping after this one…" : total > 1 ? "esc stops after this one" : "working…") : !this.ready ? "…" : blocked.length ? "esc close"
-      : this.force ? "↵ remove anyway · esc cancel" : "↵ remove · esc cancel";
+    // Cancel and Remove at the bottom right. Cancel closes, or while several are being removed,
+    // stops after the one in hand; Remove names the loss once asked.
+    const loses = this.loses(), lost = loses.reduce((n, x) => n + x.dirty, 0);
+    const canGo = !this.working && this.ready && !blocked.length;
+    const canStop = this.working && !this.stop && total > 1 && g && g.at < total;
+    const removeText = removeLabel({ working: this.working, force: this.force, armed: this.armed, one: Boolean(one), lost });
+    // Every label Remove can come to show here, laid out unseen inside it: it keeps the widest
+    // one's width, so Cancel never moves and the red never reaches where Cancel was.
+    const reserve = removeReserve({ one: Boolean(one), lost });
+    const cancelText = this.working ? (this.stop ? "Stopping after this one…" : canStop ? "Stop after this one" : "Cancel") : "Cancel";
+    const button = (id, text, danger, on, tip, action, widths = []) => h_flex().id(id).h(32).px(danger ? 13 : 14).flex_none().items_center().justify_center().rounded(8).border_1()
+      .border_color(danger ? t.blocked : t.input).bg(danger ? t.blocked : t.raised).text_color(danger ? t.solid_foreground : t.foreground)
+      .text_size(12.5).font_medium().when(!on, (el) => el.opacity(0.45)).when(on, (el) => el.cursor_pointer().hover((s) => s.opacity(0.88)))
+      .when(Boolean(tip), (el) => el.tooltip(tip))
+      .on_click((_e, cx) => { if (on) action(cx); })
+      .child(v_flex().items_center().child(div().child(text))
+        .children(widths.filter((w) => w !== text).map((w) => div().h(0).overflow_hidden().invisible().child(w))));
+    // Esc, and Cmd/Ctrl+W, reach a dialog as Herdr's actions, never as keys: claimed here, so
+    // while it removes they stop after the one in hand (cancel) instead of closing half way.
+    const onClose = (_e, cx) => { cx.stop_propagation(); this.cancel(cx); };
     return v_flex().id("wt-remove").track_focus(this.handle)
+      .on_action("overlay.close", onClose).on_action("tab.close", onClose).on_action("pane.close", onClose)
       .on_key_down((e, cx) => {
-        if (e.key === "escape") return this.cancel(cx);
-        if (e.key === "enter") this.go(cx);
+        // (Esc never arrives here: Herdr sends it as overlay.close, claimed above.)
+        // A held key repeats: only a fresh press counts, or holding Enter would answer the question.
+        if (e.key === "enter" && !e.is_held) this.go(cx);
       })
       .size_full().p(16).gap(10).bg(t.popover).text_size(13).text_color(t.muted)
       .child(div().font_semibold().text_color(t.foreground).child(one ? `Remove the worktree ${one.branch ?? base(one.path)}?`
@@ -654,28 +728,33 @@ export default class Worktrees extends View {
         ? `Deletes ${tilde(one.path)}. The branch stays, so nothing committed is lost.`
         : many ? `${names}. Their folders are deleted; the branches stay, so nothing committed is lost.`
           : `${names}. Each is merged with nothing uncommitted. Their folders are deleted; the branches stay.`))
-      .when(Boolean(many && this.ready && dirty.length), (el) => el.child(warn(`${dirty.length === 1 ? "1 has" : `${dirty.length} have`} uncommitted changes that will be lost: ${some(dirty)}.`)))
+      .when(Boolean(many && this.ready && dirty.length), (el) => el.child(warn(this.armed && !this.working // asked, not yet answered
+        ? `${dirty.length === 1 ? "1 worktree has" : `${dirty.length} worktrees have`} uncommitted changes that can't be brought back: ${some(dirty)}. Remove them anyway?`
+        : `${dirty.length === 1 ? "1 has" : `${dirty.length} have`} uncommitted changes that will be lost: ${some(dirty)}.`)))
       .when(Boolean(many && open.length), (el) => el.child(warn(`${open.length === 1 ? "1 is open as a space, which" : `${open.length} are open as spaces, which`} will be closed, and what runs there ends: ${some(open)}.`)))
       .when(Boolean(many && loose.length), (el) => el.child(warn(`${loose.length === 1 ? "1 has" : `${loose.length} have`} a terminal in it outside any space: ${some(loose)}.`)))
       .when(Boolean(many && unmerged.length), (el) => el.child(div().child(`${unmerged.length === 1 ? "1 has commits that aren't merged: they stay on its branch" : `${unmerged.length} have commits that aren't merged: they stay on their branches`}.`)))
       .when(Boolean(one && one.label), (el) => el.child(div().child(`It stands at: ${one.label}.`)))
-      .when(Boolean(one && one.dirty > 0), (el) => el.child(warn(one.dirty === 1 ? "It has 1 uncommitted change: it will be lost." : `It has ${one.dirty} uncommitted changes: they will be lost.`)))
+      .when(Boolean(one && one.dirty > 0), (el) => el.child(warn(this.armed && !this.working
+        ? `Its ${plural(one.dirty, "uncommitted change")} can't be brought back. Remove it anyway?`
+        : one.dirty === 1 ? "It has 1 uncommitted change: it will be lost." : `It has ${one.dirty} uncommitted changes: they will be lost.`)))
       .when(Boolean(one && one.spaces.length), (el) => el.child(warn("Its space will be closed, and what runs in it ends.")))
       .when(Boolean(one && !one.spaces.length && one.terminals), (el) => el.child(warn(`${plural(one.terminals, "terminal")} outside a space ${one.terminals === 1 ? "is" : "are"} in it and will lose the folder.`)))
       .children(scripts.map(([repo, a]) => div().child(`Runs first${one ? "" : ` in ${repo}`}: ${a.line}`)))
       .when(blocked.length > 0, (el) => el.child(warn(`The before-removal script of ${blocked.join(", ")} was changed outside the Worktrees screen. Allow it under Scripts first.`)))
       .when(Boolean(this.error), (el) => el.child(warn(this.error)))
-      .when(Boolean(this.error && this.force), (el) => el.child(div().child(`Enter again ${scripts.length ? "skips the script and " : ""}forces it (git worktree remove --force).`)))
+      .when(Boolean(this.error && this.force), (el) => el.child(div().child(`Remove anyway ${scripts.length ? "skips the script and " : ""}forces it (git worktree remove --force).`)))
       .child(div().flex_1())
       .when(Boolean(this.working && g), (el) => el.child(v_flex().gap(6)
         .child(h_flex().gap(8).items_center()
-          .child(div().flex_1().min_w(0).truncate().text_color(t.foreground)
+          .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).tooltip(g.name)
             .child(`${g.step === "script" ? "Running its script" : "Deleting"}${total > 1 ? ` ${g.at} of ${total}` : ""}: ${g.name}`))
           .when(g.failed > 0, (el) => el.child(div().flex_none().text_size(11.5).text_color(t.blocked).child(`${g.failed} couldn't be removed`))))
         .when(total > 1, (el) => el.child(div().h(4).w_full().rounded(2).bg(t.raised)
           .child(div().h(4).rounded(2).bg(t.accent).w(Math.round(448 * (g.at - 1) / total)))))))
-      .child(h_flex().justify_end().gap(6).text_size(11).text_color(t.dim)
-        .when(this.working, (el) => el.child(div().frames(["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"], 90)))
-        .child(hint));
+      .child(h_flex().justify_end().gap(8)
+        .child(button("wt-remove-cancel", cancelText, false, !this.working || canStop, null, (cx) => this.cancel(cx)))
+        .child(button("wt-remove-go", removeText, true, canGo,
+          !this.ready ? "Looking at it again first" : blocked.length ? "Allow its before-removal script under Scripts first" : null, (cx) => this.go(cx), reserve)));
   }
 }

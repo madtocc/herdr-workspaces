@@ -444,7 +444,10 @@ link(sessions, ledger, (a, b) => Boolean(a && b) && (a === b || real(a) === real
 const there = new Map();
 const gone = (cwd) => { if (!cwd) return false; if (!there.has(cwd)) there.set(cwd, Boolean(stat(cwd)?.isDirectory())); return !there.get(cwd); };
 const all = sessions.filter((s) => !s.readonly && s.updated >= since && wanted(s.cwd)).sort((a, b) => b.updated - a.updated);
-const live = all.filter((s) => !gone(s.cwd)).slice(0, limit);
+const usable = all.filter((s) => !gone(s.cwd));
+const live = usable.slice(0, limit);
+// How many more there are, older than the newest `limit`: the list says it stopped there.
+const left = usable.length - live.length;
 const oldest = live.length === limit ? live[live.length - 1].updated : 0;
 const lost = all.filter((s) => gone(s.cwd) && s.updated >= oldest).slice(0, Math.ceil(limit / 3));
 const keyOf = (s) => `${s.provider}/${s.id}`;
@@ -484,5 +487,5 @@ if (flag("--list")) {
   for (const n of notes) console.error(n);
 } else {
   // core: the herdr-core whose notes were read (the Wipe dialog reads Pi's stats notes there).
-  process.stdout.write(JSON.stringify({ v: 1, at: now, days, sessions: rows, counts, notes, core: process.env.HC_SESSION || "default" }));
+  process.stdout.write(JSON.stringify({ v: 1, at: now, days, sessions: rows, counts, notes, limit, left, core: process.env.HC_SESSION || "default" }));
 }

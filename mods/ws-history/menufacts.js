@@ -4,11 +4,17 @@
 //
 // An agent here is the row's facts (main.js: menuFacts()):
 //   { address, name, pane, tab, space, status, kind, pinned, top, focused, remote,
-//     session, file, cwd, cmd }
+//     session, file, cwd, cmd, helpers }
 // kind: kindOf(); session, file, cwd, cmd: what stats.js read for it (its conversation's
 // id, transcript, folder, and the launcher's note of how it was started), when it knows;
 // agyWipe: the experiment "antigravity-wipe" is on (settingsfacts.js); agyFresh: stats.js
 // found the Antigravity's note to be the running process's (not one left by an earlier one).
+// helpers: { count, working, blocked } of the live sub-agents that end when Close ends it;
+// wipeHelpers: the same for Wipe. Closing its pane (pane.close) leaves a helper started to
+// outlive it (hc run --outlive-parent: terminals()' die_with_parent false) running, with
+// whatever is under that one; terminal.kill (Wipe, and Close on a sub-agent without a pane)
+// ends every helper under it, those too. Seen in the sandbox, 2026-11-26: a helper kept as
+// its own tab ends either way.
 
 // What an agent is, by what it reports (OSC 7501 app), else by its program's key.
 const KINDS = { "claude-code": "claude", claude: "claude", codex: "codex", pi: "pi", agy: "agy", antigravity: "agy" };
@@ -36,17 +42,17 @@ export function menuItems(a) {
       COMPACTS.has(a.kind) && resting && { id: "compact", label: "Compact", icon: "mods/ws-agents/compacted.svg" },
     ],
     [
-      forks && { id: "fork", label: "Fork session", icon: "mods/ws-agents/fork.svg" },
+      forks && { id: "fork", label: "Fork conversation", icon: "mods/ws-agents/fork.svg" },
       !a.remote && { id: "handoff", label: "Hand off…", icon: "mods/ws-agents/handoff.svg" },
-      Boolean(a.tab) && { id: "rename", label: "Rename…", icon: "mods/workspace-chrome/square-pen.svg" },
+      Boolean(a.tab) && { id: "rename", label: "Rename tab…", icon: "mods/workspace-chrome/square-pen.svg" },
       a.top && { id: "pin", label: a.pinned ? "Unpin" : "Pin to top", icon: `mods/workspace-chrome/${a.pinned ? "pin-off" : "pin"}.svg` },
       // Its Herdr address (t7, vps/t7), for hc read / hc send or another agent's task.
       { id: "address", label: "Copy terminal id", icon: "mods/workspace-chrome/terminal.svg", hint: a.address },
-      known && { id: "copy", label: "Copy session id", icon: "mods/ws-agents/copy.svg" },
+      known && { id: "copy", label: "Copy conversation id", icon: "mods/ws-agents/copy.svg" },
     ],
     [
       { id: "close", label: "Close session", icon: "mods/workspace-chrome/x.svg" },
-      known && wipeTargets(a).length > 0 && { id: "wipe", label: "Wipe session…", icon: "mods/ws-agents/trash.svg", danger: true, ...(a.kind === "agy" ? { hint: "experimental" } : {}) },
+      known && wipeTargets(a).length > 0 && { id: "wipe", label: "Wipe conversation…", icon: "mods/ws-agents/trash.svg", danger: true, ...(a.kind === "agy" ? { hint: "experimental" } : {}) },
     ],
   ];
   const out = [];
@@ -60,8 +66,18 @@ export function menuItems(a) {
 // The popup's height for those items: a title line, 31 a row, 9 a line between groups.
 export const menuHeight = (items) => 10 + 24 + items.length * 31 + items.filter((it) => it.sep).length * 9;
 
-// Closing one that's in the middle of something asks first.
-export const closeAsks = (a) => a.status === "working" || a.status === "blocked";
+// Closing one that's in the middle of something asks first, and so does closing one
+// with live helpers that end with it.
+export const closeAsks = (a) => a.status === "working" || a.status === "blocked" || (a.helpers?.count ?? 0) > 0;
+
+// The sentence about the helpers that end with it (h: a.helpers for Close, a.wipeHelpers
+// for Wipe), or "" when none do: "It has 3 helpers (2 working): they end with it."
+export function helpersLine(h) {
+  if (!h?.count) return "";
+  const busy = [h.working && `${h.working} working`, h.blocked && `${h.blocked} waiting on you`].filter(Boolean).join(", ");
+  const many = h.count !== 1;
+  return `It has ${h.count} ${many ? "helpers" : "helper"}${busy ? ` (${busy})` : ""}: ${many ? "they end" : "it ends"} with it.`;
+}
 
 // The words of a launcher note (herdr-ws-agent writes them, quoted as sh reads
 // them: bare words and '…' with '\'' for a quote inside). Null when it's anything else.
@@ -372,4 +388,20 @@ export function handoffLaunch(choice, source, task, launcher = false, fallback =
     ...(outTask ? { task: outTask } : {}),
     ...(prefillText !== null ? { prefill: prefillText } : {}),
   };
+}
+
+// Hand off's Agent row with no agent to offer, in the + menu's words: the check failed, found
+// none, or hasn't answered yet. `end`: the same as a sentence, for Start's error line.
+export function agentsCheckLine({ failed = false, checked = false } = {}, end = false) {
+  if (failed) return end ? "Could not load agents." : "Could not load agents";
+  if (checked) return end ? "No agents installed." : "No agents installed";
+  return end ? "No agents yet: still checking which are installed." : "Checking installed agents…";
+}
+
+// The ⋯'s place (a press's bounds, in window points) as a popup's `at`: under the button, from
+// its left edge. Null when Herdr gave no bounds: the popup then opens at the pointer.
+export function moreAt(bounds) {
+  if (!bounds) return null;
+  const x = bounds.origin?.x ?? bounds.x, y = bounds.origin?.y ?? bounds.y, h = bounds.size?.height ?? bounds.height;
+  return [x, y, h].every((n) => typeof n === "number" && isFinite(n)) ? { x: Math.max(0, x), y: y + h + 4 } : null;
 }

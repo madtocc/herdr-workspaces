@@ -6,9 +6,11 @@
 // The "files" settings in ~/.herdr/settings.jsonc, read fresh on each click: "cmd-click" "off"
 // passes every path (as without Files), "full" opens in Files full size; "catch" "everything"
 // takes binaries too (only a path that isn't there passes).
+// While the switcher's sidebar copy is away (a hidden sidebar unloads it), nobody would open the
+// ask: every path passes, as without Files.
 import { home, shared, setShared, window, readTextFile } from "herdr";
 import { exec } from "./posix.js";
-import { parseRawLink, resolveTargetPath, shouldCatchLink, needsSniff, pushOpen } from "./filesfacts.js";
+import { parseRawLink, resolveTargetPath, shouldCatchLink, needsSniff, pushOpen, switcherAway } from "./filesfacts.js";
 import { SETTINGS_FILE, parseSettings, fileSetting } from "./settingsfacts.js";
 
 // "d", "f", "b" (a file whose first 8000 bytes hold a NUL: binary, when sniff asks) or "" for the
@@ -33,6 +35,7 @@ async function lookup(path, on, sniff) {
 export async function handleLink(click) {
   const link = click?.link, source = click?.source ?? {};
   if (link?.kind !== "file") return "pass";
+  if (switcherAway(shared("workspaces.switcher.alive"), Date.now())) return "pass";
   // The file as it is now (a hand edit counts at once), else what ws-agents last read of it.
   const raw = await readTextFile(`${home()}/${SETTINGS_FILE}`).catch(() => null);
   const cfg = raw != null ? parseSettings(raw) : (shared("workspaces.settings") ?? parseSettings(null));

@@ -27,6 +27,23 @@ export const besideCommand = (key) => `ws-tabs.beside/${key}`;
 // Whether a key is one of the views (own keys only: "constructor" isn't a view).
 export const isView = (key) => typeof key === "string" && Object.hasOwn(VIEWS, key);
 // A command's text back to { key, beside }, or null for anything else.
+// Why an ask from the tab bar (a key, the command palette, a Views row) can't be done now: a toast's
+// { title, body, action }, or null. on(key): an add-on is on in Settings > Features (Changes and Files
+// have no switch). alive: shared "workspaces.switcher.alive", which the switcher's sidebar copy sets
+// every 5 s; missing or older than ALIVE_MS, the switcher isn't running (a sidebar hidden since Herdr
+// started) and an ask that needs it would wait unseen. needsSwitcher: false for what the bar does itself.
+export const ALIVE_MS = 15000;
+const SWITCHED = { board: "board", notes: "notes", worktrees: "worktrees", history: "history", notifications: "notifications" };
+export const switcherAway = (alive, now) => !alive || !(now - Number(alive.at) <= ALIVE_MS);
+export const AWAY = { title: "Show the sidebar to do this", body: "Its switcher isn't running. Click to show it.", action: { name: "layout.show", args: { id: "sidebar" } } };
+export function askBlocker(key, { on = () => true, alive = null, now = Date.now(), needsSwitcher = true } = {}) {
+  if (Object.hasOwn(SWITCHED, key) && !on(SWITCHED[key])) {
+    const name = key === "notifications" ? "Notifications" : VIEWS[key].name;
+    return { title: `${name} ${key === "notifications" ? "are" : "is"} off`, body: "Turn it on in Settings > Features. Click to open it.", action: { name: "ws-tabs.settings/features" } };
+  }
+  return needsSwitcher && switcherAway(alive, now) ? AWAY : null;
+}
+
 export function parseCommand(c) {
   const m = /^(view|beside)\/([a-z_]+)$/.exec(String(c ?? ""));
   return m && isView(m[2]) ? { key: m[2], beside: m[1] === "beside" } : null;
@@ -109,7 +126,7 @@ export function menu({ ws, space, covered, on = () => true, panels, pills = [], 
     const keys = WORKSPACE_VIEWS.filter((k) => on(k) && !(k === "worktrees" && ws.scratch));
     if (keys.length) groups.push({ id: "workspace", title: ws.name, sub: "workspace", rows: keys.map(row) });
   } else {
-    if (on("history")) groups.push({ id: "everywhere", title: "Everywhere", sub: "", rows: [row("history")] });
+    if (on("history")) groups.push({ id: "everywhere", title: "All spaces", sub: "", rows: [row("history")] });
     const need = ["board", "notes", "worktrees"].filter((k) => on(k)).map((k) => VIEWS[k].name);
     if (need.length) note = `Choose a workspace for ${listWords(need)}.`;
   }

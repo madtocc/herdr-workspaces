@@ -20,6 +20,10 @@
 // - with files: a toast says so once, with Keep; after KEEP_DAYS unused it goes to
 //   the Trash. Keep writes a `.keep` file, and a folder with one is never touched.
 // Nothing outside ~/.herdr/scratch is looked at or changed.
+// What each folder left is waiting for goes to shared "workspaces.scratch.state" (folder -> { kept } |
+// { trashAt } | { empty } | { used }), so the switcher menu's row can say it (scratchWhen()).
+// The row's Keep / Don't keep button (and its right-click) send "ws-switcher.scratch-row/keep|unkeep/<folder>"
+// to the sidebar copy (setKept(); Don't keep starts the 7 days again from then).
 
 export const KEEP_DAYS = 7;
 const DAY = 24 * 60 * 60 * 1000;
@@ -41,7 +45,52 @@ export function scratchSlug(name) {
 // "bot-idea". null for one made unnamed (only the date and time, or with its -2).
 // ws-spaces has the same rule (scratchName()): change both.
 export const scratchLabel = (folder) => String(folder ?? "").replace(/\/+$/, "").split("/").pop().match(/^\d{4}-\d\d-\d\d-\d{4}-(?!\d$)(.+)$/)?.[1] ?? null;
+// A switcher command's failure toast title, by what was asked ("scratch-new", "scratch-keep/…",
+// "automation/…", "show/<view>/…", "settings…", a view's key). nameOf: a view's key -> its name.
+export function commandFailTitle(c, nameOf = () => null) {
+  const s = String(c ?? "");
+  if (s === "scratch-new" || s.startsWith("scratch-new/")) return "Couldn't make a scratch space";
+  if (s.startsWith("scratch-keep/") || s.startsWith("scratch-row/keep/")) return "Couldn't keep the scratch folder";
+  if (s.startsWith("scratch-row/")) return "Couldn't let the scratch folder go";
+  if (s.startsWith("automation/")) return "Couldn't open Automations";
+  if (s === "settings" || s.startsWith("settings/")) return "Couldn't open Settings";
+  const view = nameOf(s.startsWith("show/") ? s.split("/")[1] : s);
+  return view ? `Couldn't open ${view}` : "Couldn't do that";
+}
 const under = (path, dir) => path === dir || path.startsWith(dir + "/");
+
+// A folder row's words in the switcher menu, from its entry in "workspaces.scratch.state": the tail
+// ("kept", "5 days left", "1 day left", "empty") and the tooltip's end. Dates as History's headings
+// ("3 Dec"). Nothing known yet (before the first look): no tail.
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+export function scratchWhen(state, now, trashWord = "Trash") {
+  if (!state || typeof state !== "object") return { tail: "", tip: "its space is closed" };
+  if (state.kept) return { tail: "kept", tip: "kept: it stays until you delete it" };
+  if (state.empty) return { tail: "empty", tip: "empty: it's deleted in a moment" };
+  if (state.used) return { tail: "", tip: "a terminal is in it" };
+  const at = Number(state.trashAt);
+  if (!isFinite(at)) return { tail: "", tip: "its space is closed" };
+  const days = Math.max(1, Math.ceil((at - now) / DAY));
+  const d = new Date(at);
+  return { tail: `${days} ${days === 1 ? "day" : "days"} left`, tip: `goes to the ${trashWord} on ${d.getDate()} ${MONTHS[d.getMonth()]} unless you keep it` };
+}
+
+// The Delete Scratch dialog's button: it says what else it does, closing its spaces (D2).
+export const scratchDeleteButton = (open, trashWord = "Trash") =>
+  open > 0 ? `Close ${open} ${open === 1 ? "space" : "spaces"} and move to ${trashWord}` : `Move to ${trashWord}`;
+
+// A scratch folder's row keeps or lets go from the switcher menu (its Keep / Don't keep button and
+// right-click): "scratch-row/keep/<folder>" or "scratch-row/unkeep/<folder>". The folder's name, or
+// null for anything else (a name is one path part, never "." or ".." or hidden).
+export function rowCommand(command) {
+  const m = /^scratch-row\/(keep|unkeep)\/([^/]+)$/.exec(String(command ?? ""));
+  return m && /^[^/.][^/]*$/.test(m[2]) ? { keep: m[1] === "keep", name: m[2] } : null;
+}
+
+// Whether a row's pressed Keep / Don't keep still looks pressed: until the state says it's done, but at least
+// 500 ms (a double-click's second press can't land on the opposite button) and at most 10 s (a failed ask).
+export const keepPending = (pending, kept, now) =>
+  Boolean(pending) && now - pending.at <= 10000 && (kept !== pending.keep || now - pending.at < 500);
 
 export const scratchConfig = `// The Scratch workspace: for trying ideas that belong to no project. Each space
 // here gets a fresh folder in ~/.herdr/scratch; an empty one is deleted when you
@@ -176,6 +225,7 @@ export class Scratch {
     const places = this.places();
     const seen = new Set();
     const left = []; // folders still there after this look, for the menu
+    const state = {}; // what each of them waits for (scratchWhen())
     for (const line of r.stdout.split("\n")) {
       const [path, keep, count] = line.split("\t");
       if (!path) continue;
@@ -185,21 +235,22 @@ export class Scratch {
         delete this.free[path];
         this.told.delete(path);
         left.push(path);
+        state[path] = keep === "1" ? { kept: true } : { used: true };
         continue;
       }
       const since = (this.free[path] ??= now);
       const files = Number(count) > 0;
-      if (keep === "1") { left.push(path); continue; }
+      if (keep === "1") { left.push(path); state[path] = { kept: true }; continue; }
       if (!files) {
         if (now - since >= EMPTY_AFTER) await exec("sh", ["-c", `rm -f "$1/.DS_Store"; rmdir "$1"`, "sh", path]);
-        else left.push(path);
+        else { left.push(path); state[path] = { empty: true }; }
         continue;
       }
-      const name = path.split("/").pop();
+      const name = path.split("/").pop(), label = scratchLabel(path) ?? name;
       if (this.used.has(path) && !this.told.has(path)) {
         this.told.add(path);
         notify({
-          title: `Scratch folder ${name} has files`,
+          title: `Scratch folder ${label} has files`,
           body: `Click to keep it. Otherwise it goes to the ${trashName()} after ${KEEP_DAYS} days unused.`,
           level: "info",
           action: { name: `ws-switcher.scratch-keep/${name}` },
@@ -207,8 +258,8 @@ export class Scratch {
       }
       if (now - since >= KEEP_DAYS * DAY) {
         const where = await trash(path);
-        notify({ title: `Scratch folder moved to the ${trashName()}`, body: `${name}: unused for ${KEEP_DAYS} days${where && where !== "Trash" ? `, now in ${where}` : ""}.`, level: "info" });
-      } else left.push(path);
+        notify({ title: `Scratch folder moved to the ${trashName()}`, body: `${label}: unused for ${KEEP_DAYS} days${where && where !== "Trash" ? `, now in ${where}` : ""}.`, level: "info" });
+      } else { left.push(path); state[path] = { trashAt: since + KEEP_DAYS * DAY }; }
     }
     // Gone (deleted, trashed, moved out): forget it.
     for (const p of Object.keys(this.free)) if (!seen.has(p)) delete this.free[p];
@@ -218,6 +269,24 @@ export class Scratch {
     // The menu and the empty list show these, newest first.
     left.sort().reverse();
     if (JSON.stringify(left) !== JSON.stringify(shared("workspaces.scratch.folders") ?? null)) setShared("workspaces.scratch.folders", left);
+    if (JSON.stringify(state) !== JSON.stringify(shared("workspaces.scratch.state") ?? null)) setShared("workspaces.scratch.state", state);
+  }
+
+  // The menu row's Keep or Don't keep ("scratch-row/…", rowCommand()): quiet, since the row's words
+  // change at once ("kept", "7 days left"); only a failure says so. Don't keep takes the .keep file out
+  // and starts the folder's 7 days again from now, with no "has files" toast (it was told, or kept).
+  async setKept(command) {
+    const c = rowCommand(command);
+    if (!c) return;
+    const path = `${scratchRoot(this.io.home())}/${c.name}`;
+    const r = await this.io.exec("sh", ["-c", c.keep ? `[ -d "$1" ] && : > "$1/.keep"` : `[ -d "$1" ] && rm -f "$1/.keep"`, "sh", path]);
+    if (r.code !== 0) {
+      this.io.notify({ title: c.keep ? "Couldn't keep the scratch folder" : "Couldn't let the scratch folder go", body: `${scratchLabel(c.name) ?? c.name} isn't there any more.`, level: "error" });
+      return;
+    }
+    const now = Date.now();
+    if (!c.keep) { this.free[path] = now; this.told.add(path); this.save(); }
+    this.io.setShared("workspaces.scratch.state", { ...(this.io.shared("workspaces.scratch.state") ?? {}), [path]: c.keep ? { kept: true } : { trashAt: now + KEEP_DAYS * DAY } });
   }
 
   // The toast's Keep: "scratch-keep/<folder>" from nextCommand().
@@ -226,8 +295,11 @@ export class Scratch {
     if (!/^[^/.][^/]*$/.test(name)) return;
     const path = `${scratchRoot(this.io.home())}/${name}`;
     const r = await this.io.exec("sh", ["-c", `[ -d "$1" ] && : > "$1/.keep"`, "sh", path]);
+    // The menu says "kept" at once, not at the next look.
+    if (r.code === 0) this.io.setShared("workspaces.scratch.state", { ...(this.io.shared("workspaces.scratch.state") ?? {}), [path]: { kept: true } });
+    const label = scratchLabel(name) ?? name;
     this.io.notify(r.code === 0
-      ? { title: "Scratch folder kept", body: `${name} stays until you delete it (a .keep file in it says so).`, level: "success" }
-      : { title: "Couldn't keep the scratch folder", body: `${name} isn't there any more.`, level: "error" });
+      ? { title: "Scratch folder kept", body: `${label} stays in ~/.herdr/scratch until you delete it (a .keep file in it says so).`, level: "success" }
+      : { title: "Couldn't keep the scratch folder", body: `${label} isn't there any more.`, level: "error" });
   }
 }

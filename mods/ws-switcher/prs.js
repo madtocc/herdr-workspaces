@@ -36,7 +36,7 @@ const STORE = "prs";
 const label = (c) => c.charAt(0).toUpperCase() + c.slice(1).replace(/[-_]+/g, " ");
 // A toast's click: the card on its board (a workspace or card id a command can't carry: none).
 const PLAIN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-const cardAt = (t) => (PLAIN.test(String(t.ws ?? "")) && PLAIN.test(String(t.id ?? "")) ? { action: { name: `ws-switcher.show/board/${t.ws}/${t.id}`, args: {} } } : {});
+export const cardAt = (t) => (PLAIN.test(String(t.ws ?? "")) && PLAIN.test(String(t.id ?? "")) ? { action: { name: `ws-switcher.show/board/${t.ws}/${t.id}`, args: {} } } : {});
 
 // The card's agent: the one at its terminal, if it's still the one Start made
 // (an address can come back for another terminal later; a tab's id can't). Cards

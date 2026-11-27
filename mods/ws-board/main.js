@@ -41,7 +41,7 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
-import { spaces, panes, agents, terminals, run, theme, shared, setShared, props, openOverlay, closeOverlay, window, home, watchFolder, readTextFile, writeTextFile, notify, knownAgents, checking } from "herdr";
+import { spaces, panes, agents, terminals, run, theme, settings, shared, setShared, props, openOverlay, closeOverlay, window, home, watchFolder, readTextFile, writeTextFile, notify, knownAgents, checking } from "herdr";
 import { exec } from "./posix.js";
 import * as fs from "fs/promises";
 import { setUp } from "./treescripts.js";
@@ -57,12 +57,21 @@ const COLUMNS = ["backlog", "todo", "doing", "review", "done"];
 const PRIORITY = { high: 3, medium: 2, low: 1 };
 // The list's rows' least width in a narrow tab or pane (id, title, priority, folder, agent).
 const LIST_MIN = 600;
+// The board's last column (Done) shows this many cards, then "Show all N".
+const CARD_LIMIT = 60;
 // A pane beside the terminals narrower than this opens as List (unless Board was picked
 // there). Under LIST_MIN its list rows take two lines instead of scrolling sideways.
 const PANE_BOARD = 720;
+// Columns share the width down to COL_FIT each; narrower than that they take COL_MIN each
+// and scroll sideways (a full-size board in a 1280px window at 120% has about 146 each).
+const COL_FIT = 140;
+const COL_MIN = 200;
 const PALETTE = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
 const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b7cf6", ansi2: "#3fae6a", ansi1: "#d9649a" };
 const STATUS_WORD = { working: "working", blocked: "needs you", done: "finished", idle: "idle" };
+// A dialog's first Esc or Close × with something typed or changed: said on its own line, in
+// `working` as Secrets says it. A second Esc or × then closes, whichever came first.
+const ASK_AGAIN = { esc: "Press Esc again to close and drop what you typed.", x: "Click × again to close and drop what you typed." };
 const START_WITH = "workspaces.board.start"; // Start with…'s dialog asks the board copy that opened it
 // The tab bar's bell asks the board (the switcher shows it first) to open a card: { ws, taskId, at, taken? }.
 // The screen of that workspace takes it once its cards are read (a tab or pane of it after 1.5s, if the
@@ -182,6 +191,7 @@ async function loadTasks(id) {
       priority: (field(head, "priority") || "").toLowerCase() || null,
       agent: field(head, "agent"),
       terminal: field(head, "terminal"),
+      tab: field(head, "tab"),
       worktree: field(head, "worktree"),
       branch: field(head, "branch"),
       pr: field(head, "pr"),
@@ -190,6 +200,8 @@ async function loadTasks(id) {
       body: body.trim(),
     });
   }
+  // A card started with Worktree: whether that worktree is still there (Start runs in it then).
+  for (const t of tasks) t.treeThere = Boolean(t.worktree) && await fs.exists(expand(t.worktree)).catch(() => false);
   const num = (t) => Number(/(\d+)$/.exec(t.id)?.[1] ?? Infinity);
   return tasks.sort((a, b) => (PRIORITY[b.priority] ?? 0) - (PRIORITY[a.priority] ?? 0) || num(a) - num(b) || a.title.localeCompare(b.title));
 }
@@ -204,6 +216,14 @@ async function nextId(id, prefix) {
     }
   } catch {}
   return `${prefix}-${n + 1}`;
+}
+
+// The open last column's cards: the first `limit`, plus any that landed in that column while
+// this board was open (a drop, a move in the dialog, an agent's), so a card moved there is
+// seen to land. All of them once "Show all" was pressed.
+function shownCards(tasks, limit, all, landed) {
+  if (all || tasks.length <= limit) return tasks;
+  return tasks.filter((x, i) => i < limit || landed.has(x.id));
 }
 
 // --- folders, spaces and agents ---
@@ -243,11 +263,14 @@ function spaceFor(def, folder) {
   return best;
 }
 
-// What the card shows of its agent: live and its status, or gone.
+// What the card shows of its agent: live and its status, or gone. An agent at its
+// terminal counts only in the tab Start made (an address can come back for another
+// terminal later; a tab's id can't), as the pull request watcher (prs.js) checks it.
+// Cards from before `tab:` was recorded go by the tab's name, which Start sets to the id.
 function agentOf(task, ag, tm) {
   if (!task.terminal) return null;
   const a = ag.find((x) => x.address === task.terminal);
-  if (a) return { live: true, status: a.status, name: a.program?.name ?? "Agent" };
+  if (a) return (task.tab ? a.tab === task.tab : a.tab_name === task.id) ? { live: true, status: a.status, name: a.program?.name ?? "Agent" } : { live: false };
   const term = tm.find((x) => x.address === task.terminal);
   if (term && term.state === "live") return { live: true, status: null, name: term.program?.name ?? "Terminal" };
   return { live: false };
@@ -352,6 +375,16 @@ function brief(task, b) {
   ].filter(Boolean).join("\n\n");
 }
 
+// A multi-line box takes ⌘/Ctrl+Enter itself: it puts a line break at the cursor, then says
+// "submit" with `secondary` (the key never reaches the dialog). This takes that break back out.
+function dropEnterBreak(state) {
+  const at = state.selected_range()?.start ?? -1, text = state.value();
+  if (at > 0 && text[at - 1] === "\n") {
+    state.set_value(text.slice(0, at - 1) + text.slice(at));
+    state.set_selected_range({ start: at - 1, end: at - 1 });
+  }
+}
+
 function mark(def, t, size) {
   const defs = shared("workspaces.defs") ?? [];
   const c = def.color ?? PALETTE[Math.max(0, defs.findIndex((d) => d.id === def.id)) % PALETTE.length];
@@ -415,7 +448,7 @@ export default class Board extends View {
 
   openStartWith(task) {
     openOverlay({
-      mod: "ws-board", kind: "dialog", width: 600, height: 600,
+      mod: "ws-board", kind: "dialog", width: 600, height: 600, modal: true,
       props: { dialog: "start", workspace: this.workspace, task: { ...task }, owner: this.copyId },
     });
   }
@@ -435,12 +468,19 @@ export default class Board extends View {
     this.drag = null; // { id, from, moved }
     this.over = null;
     this.dropped = 0;
+    this.tipGone = null; // the id of a clicked opener whose tooltip is held back (tip())
+    this.tipOver = null; // the id of the tip() element under the pointer
     // Remembered: which view, and the list's folded sections
     // (null until changed: the last column, done, starts folded).
     // Board or List as picked here; null until picked (shownView() decides).
     this.view = ["list", "board"].includes(this.pref("view")) ? this.pref("view") : null;
     const folded = this.pref("folded");
     this.folded = folded ? new Set(JSON.parse(folded)) : null;
+    // The board view's last column folded to a strip (it starts open), and all its cards
+    // shown past the first CARD_LIMIT (for as long as this board is open).
+    this.lastFolded = this.pref("col.folded") === "1";
+    this.showAll = false;
+    this.landed = new Set(); // ids that came into the last column while this board was open
     // Tasks (this board) or GitHub (the workspace's GitHub project board).
     this.source = this.pref("source") === "github" ? "github" : "tasks";
   }
@@ -472,6 +512,11 @@ export default class Board extends View {
       const ws = this.workspace;
       const tasks = ws ? await loadTasks(ws) : [];
       if (ws !== this.workspace) return;
+      const def = defOf(ws), cols = def ? boardOf(def).columns : null, last = cols?.[cols.length - 1];
+      if (this.loaded && last) {
+        const was = new Map(this.tasks.map((x) => [x.id, x.status]));
+        for (const x of tasks) if (x.status === last && was.get(x.id) !== last) this.landed.add(x.id);
+      }
       this.tasks = tasks;
       this.loaded = true;
       this.cardAsked();
@@ -490,6 +535,7 @@ export default class Board extends View {
 
   move(task, column, cx) {
     task.status = column; // shown at once; the folder watch confirms it
+    this.landed.add(task.id); // stays in sight if it lands past the last column's first cards
     cx.spawn(async (cx) => {
       try { await this.update(task, { status: column }); }
       catch (e) { notify({ title: `Couldn't move ${task.id}`, body: message(e), level: "error" }); this.load(cx); }
@@ -506,7 +552,10 @@ export default class Board extends View {
     cx.notify();
     cx.spawn(async (cx) => {
       try {
-        const who = whoStarts(over, task.agent || b.agent, folderPath(def, task.folder));
+        // A card with its own worktree runs there, unless it's made a new one or Start with… says where.
+        const tree = !worktree && !over && task.worktree ? expand(task.worktree) : null;
+        const own = tree && await fs.exists(tree).catch(() => false) ? tree : folderPath(def, task.folder);
+        const who = whoStarts(over, task.agent || b.agent, own);
         const folder = who.folder, name = who.name;
         const text = over ? firstMessage(over.text, task) : brief(task, b);
         const preset = who.preset ? presetsFor(def.id).find((x) => x.name === name) : null;
@@ -543,7 +592,7 @@ export default class Board extends View {
 
   openTask(task, status) {
     openOverlay({
-      mod: "ws-board", kind: "dialog", width: 600, height: 620,
+      mod: "ws-board", kind: "dialog", width: 600, height: 620, modal: true,
       props: { dialog: "task", workspace: this.workspace, status, task: task ? { ...task } : null },
     });
   }
@@ -553,13 +602,14 @@ export default class Board extends View {
     if (props()?.dialog) return this.dialog(t);
     const def = defOf(this.workspace);
     const shell = v_flex().id("board").size_full().min_h(0).bg(t.canvas).text_size(13).text_color(t.foreground)
-      .on_size_change((size, cx) => { if (size.width !== this.width) { this.width = size.width; cx.notify(); } })
+      // Sizes come in window px; the limits here (PANE_BOARD, LIST_MIN, COL_MIN) are in the mod's units.
+      .on_size_change((size, cx) => { const w = size.width / (Number(settings().zoom) > 0 ? Number(settings().zoom) : 1); if (w !== this.width) { this.width = w; cx.notify(); } })
       .when(this.follow, (el) => el.track_focus(this.handle));
     // Between two workspaces (retarget() is a moment behind): nothing of the last one.
     if (this.follow && (shared("workspaces.active") ?? null) !== this.workspace) return shell;
     if (!def) {
       return shell.items_center().justify_center().text_color(t.dim)
-        .child(this.workspace ? "This board's workspace is gone." : this.follow ? "Choose a workspace in the switcher to see its board." : "Open a board from the workspace switcher's menu.");
+        .child(this.workspace ? "This board's workspace is gone." : this.follow ? "Choose a workspace in the switcher to see its board." : "Open a board from Views, in the tab bar.");
     }
     const b = boardOf(def);
     const ag = agents(), tm = terminals();
@@ -581,8 +631,8 @@ export default class Board extends View {
           this.viewToggle(t),
           h_flex().id("board-new").h(26).px(tiny ? 0 : 10).when(tiny, (el) => el.w(26).justify_center()).gap(6).flex_none().items_center().rounded(7).cursor_pointer()
             .bg(t.solid).text_color(t.solid_foreground).text_size(12).font_medium().hover((s) => s.opacity(0.88))
-            .when(tiny, (el) => el.tooltip("New task"))
-            .on_click(() => this.openTask(null, b.columns[0]))
+            .when(tiny, (el) => this.tip(el, "board-new", "New task"))
+            .on_click((_e, cx) => { this.tipClicked("board-new", cx); this.openTask(null, b.columns[0]); })
             .child(svg("mods/workspace-chrome/plus.svg").size(13)).when(!tiny, (el) => el.child("New task")),
         ]);
       if (github) return shell.child(header).child(this.github(def, b, t));
@@ -590,7 +640,8 @@ export default class Board extends View {
       return this.columns(shell, header, b, def, t, ag, tm, columnOf);
     }
     const header = h_flex().h(48).flex_none().px(16).gap(10).items_center().border_b(1).border_color(t.border)
-      .when(!this.follow, (el) => el.h_auto().min_h(48).py(9).flex_wrap())
+      // Wraps only when its parts don't fit on one line: 48px when they do (the Board | List pill is 32).
+      .h_auto().min_h(48).py(8).flex_wrap()
       .child(mark(def, t, 20))
       .child(div().flex_none().font_semibold().child(`${def.name} board`))
       .child(this.sourceToggle(t))
@@ -617,7 +668,7 @@ export default class Board extends View {
       .on_mouse_up("left", (_e, cx) => { if (this.drag) { this.drag = null; this.over = null; cx.notify(); } })
       .child(header)
       .child(h_flex().id("board-columns").flex_1().min_h(0).items_stretch().p(12).gap(10).children(columns)
-        .when(!this.follow, (el) => el.overflow_x_scrollbar()));
+        .when(this.squeezed(b), (el) => el.overflow_x_scrollbar()));
   }
 
   // Board | List, as two segments: for the tasks, or (github) for the GitHub view, each remembered apart.
@@ -652,7 +703,7 @@ export default class Board extends View {
       const tasks = this.tasks.filter((x) => columnOf(x) === col);
       const shut = folded.has(col);
       const head = h_flex().id(`sec-${col}`).h(34).flex_none().pl(14).pr(8).gap(8).items_center().cursor_pointer()
-        .when(!this.follow && !this.compact(), (el) => el.min_w(LIST_MIN))
+        .when(this.narrow(LIST_MIN + 40) && !this.compact(), (el) => el.min_w(LIST_MIN))
         .bg(t.chrome).border_b(1).border_color(t.border).hover((s) => s.bg(t.hover))
         .on_click((_e, cx) => fold(col, cx))
         .child(svg(`mods/workspace-chrome/chevron-${shut ? "right" : "down"}.svg`).size(11).flex_none().text_color(t.dim))
@@ -660,15 +711,26 @@ export default class Board extends View {
         .child(div().text_size(11.5).text_color(t.dim).child(String(tasks.length)))
         .child(div().flex_1())
         .child(div().id(`sec-new-${col}`).size(24).flex().items_center().justify_center().rounded(6).text_color(t.dim)
-          .hover((s) => s.bg(t.raised).text_color(t.foreground)).tooltip(`New task in ${label(col)}`)
+          .hover((s) => s.bg(t.raised).text_color(t.foreground)).when(true, (el) => this.tip(el, `sec-new-${col}`, `New task in ${label(col)}`))
           .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-          .on_click((_e, cx) => { cx.stop_propagation(); this.openTask(null, col); })
+          .on_click((_e, cx) => { cx.stop_propagation(); this.tipClicked(`sec-new-${col}`, cx); this.openTask(null, col); })
           .child(svg("mods/workspace-chrome/plus.svg").size(13)));
       return [head, ...(shut ? [] : tasks.map((task) => this.row(task, col === last, b, t, ag, tm)))];
     });
     // Narrow (a tab or a pane beside the terminals), the rows keep their width and the list scrolls sideways too.
-    return v_flex().id("board-list").flex_1().min_h(0).when(this.follow, (el) => el.overflow_y_scrollbar()).when(!this.follow, (el) => el.overflow_scrollbar()).children(rows)
+    const wide = !this.narrow(LIST_MIN + 40);
+    return v_flex().id("board-list").flex_1().min_h(0).when(wide, (el) => el.overflow_y_scrollbar()).when(!wide, (el) => el.overflow_scrollbar()).children(rows)
       .when(!this.tasks.length && this.loaded, (el) => el.child(div().px(16).py(12).text_size(12).text_color(t.dim).child("No tasks yet. New task adds one.")));
+  }
+
+  // Narrow: a tab or a pane always (it may be); the full-size screen once its width is
+  // known and under `least`.
+  narrow(least) { return !this.follow || (this.width > 0 && this.width < least); }
+  // The columns don't fit at COL_FIT each: they take COL_MIN and scroll sideways (a tab or
+  // pane whose width isn't known yet counts as too narrow; the screen as wide enough).
+  squeezed(b) {
+    const need = b.columns.length * (COL_FIT + 10) + 24;
+    return this.width > 0 ? this.width < need : !this.follow;
   }
 
   // A narrow pane beside the terminals: list rows of two lines (id and title, then the agent
@@ -685,36 +747,100 @@ export default class Board extends View {
       const area = this.agentArea(task, last, b, t, ag, tm, true);
       return v_flex().id(`row-${task.id}`).flex_none().pl(14).pr(10).py(7).gap(5)
         .border_b(1).border_color(t.border).cursor_pointer().hover((s) => s.bg(t.hover))
-        .on_click(() => this.openTask(task))
+        .on_click((_e, cx) => { if (!this.dialogJustClosed()) { this.tipClicked(`row-title-${task.id}`, cx); this.openTask(task); } })
         .child(h_flex().gap(10).items_center()
           .child(div().flex_none().text_size(11.5).text_color(t.dim).child(task.id))
-          .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(t.foreground).child(task.title))
+          .child(this.tip(div().id(`row-title-${task.id}`).flex_1().min_w(0).truncate().text_size(13).text_color(t.foreground), `row-title-${task.id}`, task.title).child(task.title))
           .when(Boolean(hub), (el) => el.child(hub))
           .when(Boolean(pull), (el) => el.child(pull)))
         .when(Boolean(area), (el) => el.child(h_flex().justify_end().child(area)));
     }
     return h_flex().id(`row-${task.id}`).h(40).flex_none().pl(36).pr(12).gap(12).items_center()
-      .when(!this.follow, (el) => el.min_w(LIST_MIN))
+      .when(this.narrow(LIST_MIN + 40), (el) => el.min_w(LIST_MIN))
       .border_b(1).border_color(t.border).cursor_pointer().hover((s) => s.bg(t.hover))
-      .on_click(() => this.openTask(task))
+      .on_click((_e, cx) => { if (!this.dialogJustClosed()) { this.tipClicked(`row-title-${task.id}`, cx); this.openTask(task); } })
       .child(div().w(64).flex_none().text_size(11.5).text_color(t.dim).child(task.id))
-      .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(t.foreground).child(task.title))
+      .child(this.tip(div().id(`row-title-${task.id}`).flex_1().min_w(0).truncate().text_size(13).text_color(t.foreground), `row-title-${task.id}`, task.title).child(task.title))
       .when(Boolean(hub), (el) => el.child(hub))
       .when(Boolean(pull), (el) => el.child(pull))
       .child(div().w(52).flex_none().text_size(11.5).text_color(prColor).child(pr ?? ""))
       .child(h_flex().w(120).flex_none().gap(6).items_center().text_size(11).text_color(t.dim)
-        .when(Boolean(task.folder), (el) => el.child(div().min_w(0).px(6).rounded(4).bg(t.raised).truncate().child(base(task.folder))))
+        .when(Boolean(task.folder), (el) => el.child(div().min_w(0).px(6).rounded(4).bg(t.raised).truncate().tooltip(task.folder).child(base(task.folder))))
         .when(Boolean(task.branch), (el) => el.child(svg("mods/workspace-chrome/git-branch.svg").size(11).flex_none())))
       .child(h_flex().w(210).flex_none().justify_end().child(this.agentArea(task, last, b, t, ag, tm, true) ?? div()));
+  }
+
+  // A tooltip on something that opens a dialog goes once it's clicked with the pointer on it
+  // (it would stay up over what it opened), and is back once the pointer has left it or is
+  // on another one (the clicked thing may be gone, as Start is). While the dialog is up,
+  // its backdrop keeps the board from being hovered at all.
+  tip(el, id, text) {
+    return el.on_hover((on, cx) => {
+      if (on) { this.tipOver = id; if (this.tipGone && this.tipGone !== id) { this.tipGone = null; cx.notify(); } return; }
+      if (this.tipOver === id) this.tipOver = null;
+      if (this.tipGone === id) { this.tipGone = null; cx.notify(); }
+    }).when(this.tipGone !== id, (x) => x.tooltip(text));
+  }
+  tipClicked(id, cx) { if (this.tipOver === id) { this.tipGone = id; cx?.notify(); } }
+
+  // The task dialog just closed (a save or a delete): the second half of a double-click on its
+  // button lands on the board under it, where it mustn't open or start a card.
+  // The stamp is shared state, which Herdr keeps: a clock now behind it (set back) mustn't freeze the board.
+  dialogJustClosed() { const d = Date.now() - (shared("workspaces.board.closed") ?? 0); return d >= 0 && d < 500; }
+
+  // The last column folds to a strip and back, remembered per board.
+  foldLast(cx) {
+    this.lastFolded = !this.lastFolded;
+    this.keep("col.folded", this.lastFolded ? "1" : "");
+    cx.notify();
   }
 
   column(col, tasks, def, b, t, ag, tm) {
     const dropping = this.drag?.moved && this.over === col && this.drag.from !== col;
     // Narrow (a tab or a pane beside the terminals), the columns keep a card's width and scroll sideways.
-    return v_flex().id(`col-${col}`).flex_1().min_w(this.follow ? 0 : 200).min_h(0).rounded(10).bg(t.chrome).border_1()
-      .border_color(dropping ? t.accent : t.border)
-      .on_mouse_move((_e, cx) => {
-        if (!this.drag || this.over === col) return;
+    const squeezed = this.squeezed(b);
+    const last = col === b.columns[b.columns.length - 1];
+    // Folded (as the GitHub view's finished columns): a strip with its name and count. A card
+    // dropped on it still lands in that column.
+    if (last && this.lastFolded) {
+      return this.dropOn(col, v_flex().id(`col-${col}`).w(96).flex_none().min_h(0).rounded(10).bg(t.chrome).border_1()
+        .border_color(dropping ? t.accent : t.border).p(10).gap(4).cursor_pointer().hover((s) => s.border_color(dropping ? t.accent : t.input))
+        .tooltip(`Show ${label(col)}`).on_click((_e, cx) => { if (!this.drag && Date.now() - this.dropped > 300) this.foldLast(cx); })
+        .child(div().min_w(0).truncate().text_size(12).font_semibold().text_color(t.muted).child(label(col)))
+        .child(div().text_size(11.5).text_color(t.dim).child(String(tasks.length))));
+    }
+    const all = !last || this.showAll || tasks.length <= CARD_LIMIT;
+    const shown = shownCards(tasks, CARD_LIMIT, all, this.landed);
+    return this.dropOn(col, v_flex().id(`col-${col}`).when(squeezed, (el) => el.w(COL_MIN).flex_none()).when(!squeezed, (el) => el.flex_1().min_w(0)).min_h(0).rounded(10).bg(t.chrome).border_1()
+      .border_color(dropping ? t.accent : t.border))
+      .child(h_flex().id(`col-head-${col}`).h(38).flex_none().pl(12).pr(6).gap(6).items_center()
+        // The last column's header folds it; its + keeps its own click.
+        .when(last, (el) => el.cursor_pointer().tooltip("Fold this column").on_click((_e, cx) => this.foldLast(cx)))
+        .child(div().min_w(0).truncate().text_size(12).font_semibold().text_color(t.muted).child(label(col)))
+        .child(div().flex_none().text_size(11.5).text_color(t.dim).child(String(tasks.length)))
+        .child(div().flex_1())
+        .child(div().id(`col-new-${col}`).size(24).flex_none().flex().items_center().justify_center().rounded(6).text_color(t.dim)
+          .hover((s) => s.bg(t.hover).text_color(t.foreground)).when(true, (el) => this.tip(el, `col-new-${col}`, `New task in ${label(col)}`))
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+          .on_click((_e, cx) => { cx.stop_propagation(); this.tipClicked(`col-new-${col}`, cx); this.openTask(null, col); }).child(svg("mods/workspace-chrome/plus.svg").size(13))))
+      .child(v_flex().id(`col-list-${col}`).flex_1().min_h(0).px(8).pb(8).gap(8).overflow_y_scrollbar()
+        .children(shown.map((task) => this.card(task, col, b, t, ag, tm)))
+        .when(!all, (el) => el.child(div().id(`col-more-${col}`).flex_none().px(4).py(6).text_size(12).text_color(t.muted).cursor_pointer()
+          .hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => { this.showAll = true; cx.notify(); })
+          .child(`Show all ${tasks.length}`)))
+        .when(!tasks.length && this.loaded, (el) => el.child(div().px(4).py(6).text_size(12).text_color(t.dim)
+          .child("Empty"))));
+  }
+
+  // A column, open or folded, as a place to drop a dragged card.
+  dropOn(col, el) {
+    return el
+      .on_mouse_move((e, cx) => {
+        if (!this.drag) return;
+        // Let go outside the board (the sidebar, the tab bar, another window): no release reached
+        // it, so the first move back with no button held ends the drag (else the next click moves the card).
+        if (e?.pressed_button !== "left") { this.drag = null; this.over = null; cx.notify(); return; }
+        if (this.over === col) return;
         this.over = col;
         if (col !== this.drag.from) this.drag.moved = true;
         cx.notify();
@@ -727,18 +853,7 @@ export default class Board extends View {
         const task = this.tasks.find((x) => x.id === d.id);
         if (d.moved && task && col !== d.from) { this.dropped = Date.now(); this.move(task, col, cx); }
         cx.notify();
-      })
-      .child(h_flex().h(38).flex_none().pl(12).pr(6).gap(6).items_center()
-        .child(div().text_size(12).font_semibold().text_color(t.muted).child(label(col)))
-        .child(div().text_size(11.5).text_color(t.dim).child(String(tasks.length)))
-        .child(div().flex_1())
-        .child(div().id(`col-new-${col}`).size(24).flex().items_center().justify_center().rounded(6).text_color(t.dim)
-          .hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip(`New task in ${label(col)}`)
-          .on_click(() => this.openTask(null, col)).child(svg("mods/workspace-chrome/plus.svg").size(13))))
-      .child(v_flex().id(`col-list-${col}`).flex_1().min_h(0).px(8).pb(8).gap(8).overflow_y_scrollbar()
-        .children(tasks.map((task) => this.card(task, col, b, t, ag, tm)))
-        .when(!tasks.length && this.loaded, (el) => el.child(div().px(4).py(6).text_size(12).text_color(t.dim)
-          .child("Empty"))));
+      });
   }
 
   // A task's agent: starting, live (status and Go to), or Start / Worktree.
@@ -749,8 +864,8 @@ export default class Board extends View {
     const stop = (_e, cx) => cx.stop_propagation();
     const small = (id, text, action, tip) => div().id(id).h(24).px(8).flex().flex_none().items_center().rounded(6).border_1().border_color(t.input)
       .text_size(11.5).text_color(t.muted).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
-      .when(Boolean(tip), (el) => el.tooltip(tip))
-      .on_mouse_down("left", stop).on_click((_e, cx) => { cx.stop_propagation(); action(cx); }).child(text);
+      .when(Boolean(tip), (el) => this.tip(el, id, tip))
+      .on_mouse_down("left", stop).on_click((_e, cx) => { cx.stop_propagation(); if (!this.dialogJustClosed()) { this.tipClicked(id, cx); action(cx); } }).child(text);
     if (busy) {
       return div().text_size(11.5).text_color(t.dim).child(busy === "worktree" ? "Making the worktree…" : "Starting…");
     }
@@ -761,9 +876,12 @@ export default class Board extends View {
         .child(small(`go-${task.id}`, "Go to", () => run("agent.focus", { terminal: task.terminal }), "Show this task's agent"));
     }
     if (last) return null;
+    // A list row has room for the buttons only: "Agent ended" goes into Start's tooltip there.
+    const ended = a && !a.live;
+    const where = task.treeThere ? `in its worktree${task.branch ? ` (${task.branch})` : ""}` : `in ${task.folder || "the workspace root"}`;
     return h_flex().gap(6).items_center().when(!inline, (el) => el.flex_wrap()).when(inline, (el) => el.justify_end())
-      .when(a && !a.live, (el) => el.child(div().when(!inline, (el) => el.w_full()).text_size(11.5).text_color(t.dim).child("Agent ended")))
-      .child(small(`start-${task.id}`, "Start", (cx) => this.start(task, false, cx), `Run ${task.agent || b.agent} on it in ${task.folder || "the workspace root"}`))
+      .when(ended && !inline, (el) => el.child(div().w_full().text_size(11.5).text_color(t.dim).child("Agent ended")))
+      .child(small(`start-${task.id}`, "Start", (cx) => this.start(task, false, cx), `${ended && inline ? "Its agent ended. " : ""}Run ${task.agent || b.agent} on it ${where}`))
       .child(small(`wt-${task.id}`, "Worktree", (cx) => this.start(task, true, cx), "Run it on a new branch in its own worktree"))
       .child(small(`sw-${task.id}`, "Start with…", () => this.openStartWith(task), "Pick the agent, the folder and the first message, then start it"));
   }
@@ -806,7 +924,7 @@ export default class Board extends View {
       .cursor_pointer().hover((s) => s.border_color(t.input))
       .when(this.drag?.id === task.id && this.drag.moved, (el) => el.opacity(0.4))
       .on_mouse_down("left", () => { this.drag = { id: task.id, from: col, moved: false }; this.over = col; })
-      .on_click(() => { if (Date.now() - this.dropped > 300) this.openTask(task); })
+      .on_click(() => { if (Date.now() - this.dropped > 300 && !this.dialogJustClosed()) this.openTask(task); })
       .child(h_flex().gap(6).flex_wrap().items_center().text_size(11).text_color(t.dim)
         .child(div().flex_none().child(task.id))
         .when(Boolean(task.folder), (el) => el.child(div().flex_none().px(6).rounded(4).bg(t.raised).child(base(task.folder))))
@@ -858,7 +976,7 @@ export default class Board extends View {
 
   // Every 2s while the view is the GitHub one: a newly shown board is opened (from
   // its kept copy when there is one), one read more than 10 minutes ago is read
-  // again, and "Read 3 min ago" keeps moving.
+  // again, and "Read 3m ago" keeps moving.
   ghBeat(cx) {
     if (this.source !== "github") return;
     // The screen stays in the layout once shown: it asks GitHub nothing while it isn't the one shown.
@@ -1148,9 +1266,13 @@ export default class Board extends View {
       .children(ORDERS.map(([value, text]) => chip(`gh-order-${value}`, text, g.order === value, setOrder(value))))
       .child(div().flex_1())
       .child(div().flex_none().text_size(11.5).text_color(t.dim).child(shown.length === board.items.length ? `${shown.length} items` : `${shown.length} of ${board.items.length}`))
-      .child(h_flex().w(200).h(28).flex_none().px(8).gap(6).items_center().rounded(8).border_1().border_color(t.input).bg(t.background)
+      // As Files' filter: an × while it holds text, and Esc in it empties it.
+      .child(h_flex().id("gh-search").w(200).h(28).flex_none().px(8).gap(6).items_center().rounded(8).border_1().border_color(t.input).bg(t.background)
+        .on_key_down((e, cx) => { if (e.key === "escape" && this.ghSearch.value()) { this.ghSearch.set_value(""); cx.stop_propagation(); cx.notify(); } })
         .child(svg("mods/workspace-chrome/search.svg").size(12).flex_none().text_color(t.dim))
-        .child(Input.new(this.ghSearch).flex_1().min_w(0).text_size(12).text_color(t.foreground)));
+        .child(Input.new(this.ghSearch).flex_1().min_w(0).text_size(12).text_color(t.foreground))
+        .when(Boolean(this.ghSearch.value()), (el) => el.child(div().id("gh-search-x").flex_none().cursor_pointer().text_color(t.dim).hover((x) => x.text_color(t.foreground))
+          .tooltip("Clear the search").on_click((_e, cx) => { this.ghSearch.set_value(""); cx.notify(); }).child(svg("mods/workspace-chrome/x.svg").size(12)))));
     const cols = columnsOf(board, shown);
     return v_flex().flex_1().min_h(0)
       .child(bar)
@@ -1177,8 +1299,8 @@ export default class Board extends View {
   ghAction(i, task, b, t) {
     if (task) {
       return div().id(`gh-card-${i.item}`).h(22).px(8).flex().flex_none().items_center().rounded(6).bg(t.selected)
-        .text_size(11.5).text_color(t.foreground).cursor_pointer().hover((s) => s.opacity(0.85)).tooltip("On your board: open its card")
-        .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).on_click((_e, cx) => { cx.stop_propagation(); this.openTask(task); })
+        .text_size(11.5).text_color(t.foreground).cursor_pointer().hover((s) => s.opacity(0.85)).when(true, (el) => this.tip(el, `gh-card-${i.item}`, "On your board: open its card"))
+        .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).on_click((_e, cx) => { cx.stop_propagation(); this.tipClicked(`gh-card-${i.item}`, cx); this.openTask(task); })
         .child(`${task.id} · ${label(b.columns.includes(task.status) ? task.status : b.columns[0])}`);
     }
     if (this.gh.taking[i.item]) return div().flex_none().text_size(11.5).text_color(t.dim).child("Taking…");
@@ -1212,12 +1334,12 @@ export default class Board extends View {
     const rankColor = i.priority === "high" ? t.blocked : i.priority === "medium" ? t.working : t.dim;
     return h_flex().id(`ghrow-${i.item}`).h(40).flex_none().pl(36).pr(12).gap(12).items_center().border_b(1).border_color(t.border)
       .when(Boolean(i.url), (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click(() => openLink(i.url)))
-      .child(div().w(104).flex_none().truncate().text_size(11.5).text_color(t.dim).child(refOf(i)))
-      .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(shut ? t.muted : t.foreground).child(i.title))
+      .child(div().w(104).flex_none().truncate().text_size(11.5).text_color(t.dim).tooltip(refOf(i)).child(refOf(i)))
+      .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(shut ? t.muted : t.foreground).tooltip(i.title).child(i.title))
       .when(i.prs.length > 0, (el) => el.child(h_flex().flex_none().gap(3).items_center().text_size(11).text_color(t.dim).tooltip(`Pull request #${i.prs[0]?.number} (${i.prs[0]?.state})`)
         .child(svg("mods/ws-board/pr.svg").size(11)).child(`#${i.prs[0]?.number}`)))
       .child(div().w(52).flex_none().truncate().text_size(11.5).text_color(rankColor).child(i.rank ?? ""))
-      .child(div().w(120).flex_none().truncate().text_size(11.5).text_color(t.dim).child(whoOf(i, me)))
+      .child(div().w(120).flex_none().truncate().text_size(11.5).text_color(t.dim).when(Boolean(whoOf(i, me)), (el) => el.tooltip(whoOf(i, me))).child(whoOf(i, me)))
       .child(div().w(48).flex_none().text_size(11.5).text_color(t.dim)
         .when(Boolean(i.created), (el) => el.tooltip(`Opened ${String(i.created).slice(0, 10)}`)).child(age(i.created, now)))
       .child(h_flex().w(124).flex_none().justify_end().child(this.ghAction(i, taskOf(i, this.tasks), b, t)));
@@ -1259,7 +1381,7 @@ export default class Board extends View {
     return v_flex().id(`gh-${i.item}`).flex_none().gap(6).p(10).rounded(8).bg(t.background).border_1().border_color(task ? t.accent : t.border)
       .when(Boolean(i.url), (el) => el.cursor_pointer().hover((s) => s.border_color(task ? t.accent : t.input)).on_click(() => openLink(i.url)))
       .child(h_flex().gap(6).items_center().text_size(11).text_color(t.dim)
-        .child(div().min_w(0).truncate().child(refOf(i)))
+        .child(div().min_w(0).truncate().tooltip(refOf(i)).child(refOf(i)))
         .when(Boolean(i.rank), (el) => el.child(div().flex_none().text_color(rankColor).child(i.rank)))
         .when(shut, (el) => el.child(div().flex_none().px(5).rounded(4).bg(t.raised).child(i.state)))
         .when(g.order !== "board" && Boolean(i.created), (el) => el.child(div().flex_none().tooltip(`Opened ${String(i.created).slice(0, 10)}`).child(age(i.created, Date.now()))))
@@ -1268,7 +1390,7 @@ export default class Board extends View {
           .child(svg("mods/ws-board/pr.svg").size(11)).child(`#${i.prs[0].number}`))))
       .child(div().text_size(13).text_color(shut ? t.muted : t.foreground).child(i.title))
       .child(h_flex().gap(6).items_center()
-        .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(whoOf(i, me)))
+        .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).when(Boolean(whoOf(i, me)), (el) => el.tooltip(whoOf(i, me))).child(whoOf(i, me)))
         .child(this.ghAction(i, task, b, t)));
   }
 
@@ -1331,10 +1453,65 @@ export default class Board extends View {
     };
     this.titleInput = InputState.new({ value: task?.title ?? "", placeholder: "What needs doing" });
     this.bodyInput = TextareaState.new({ value: task?.body ?? "", rows: 9, placeholder: "Details, acceptance criteria, links. Agents get this as the task." });
+    this.formAt = { ...this.form };
+    // What the fields held as the dialog opened: "changed" is against these, not the file's text.
+    this.titleAt = this.titleInput.value();
+    this.bodyAt = this.bodyInput.value();
+    this.escAsked = false;
     this.titleInput.on("submit", (_e, cx) => this.save(cx));
+    this.titleInput.on("change", (_e, cx) => { this.unask(cx); this.disarm(cx); });
+    this.bodyInput.on("change", (_e, cx) => { this.unask(cx); this.disarm(cx); });
+    // ⌘/Ctrl+Enter in the notes saves (a plain Enter is a line break there).
+    this.bodyInput.on("submit", (e, cx) => { if (!e?.secondary) return; dropEnterBreak(this.bodyInput); this.save(cx); });
     this.titleInput.focus();
     cx.timer.after(400, () => this.titleInput.focus());
     this.handle.focus();
+  }
+
+  // Esc and the Close × of both dialogs (`via`: "esc" or "x"): at once when nothing typed or
+  // changed would be lost, else the first one asks (ASK_AGAIN on the dialog's own line) and the
+  // second, either of them, closes.
+  guardedClose(changed, cx, via) {
+    if (this.busy) return; // saving or deleting: it closes by itself when that's done
+    if (changed && !this.escAsked) { this.escAsked = via; cx.notify(); return; }
+    closeOverlay(props().overlay);
+  }
+
+  // Typing or a click anywhere else in the dialog: Esc asks again before dropping anything.
+  unask(cx) {
+    if (!this.escAsked) return;
+    this.escAsked = false;
+    cx.notify();
+  }
+
+  // The delete question (asked in the footer) goes when anything else is typed or clicked.
+  disarm(cx) {
+    if (!this.confirming || this.busy) return;
+    this.confirming = false;
+    cx.notify();
+  }
+
+  // The task dialog: something typed or picked that Save hasn't written.
+  taskChanged() {
+    return this.titleInput.value() !== this.titleAt || this.bodyInput.value() !== this.bodyAt
+      || Object.keys(this.form).some((k) => this.form[k] !== this.formAt[k]);
+  }
+
+  // A dialog's Close ×, where its header said "Esc". Its press doesn't reach the dialog's
+  // own (which resets the Esc guard), so a second click closes.
+  closeX(t, id, action) {
+    return div().id(id).size(26).flex_none().flex().items_center().justify_center().rounded(6).cursor_pointer()
+      .text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip("Close")
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_click((_e, cx) => action(cx))
+      .child(svg("mods/workspace-chrome/x.svg").size(14));
+  }
+
+  // Either dialog once its workspace is gone: what happened, and the Close × (it's modal).
+  goneDialog(t, id) {
+    return v_flex().size_full().p(18).gap(10).bg(t.popover).text_color(t.muted)
+      .child(h_flex().items_center().child(div().flex_1().child("This task's workspace is gone."))
+        .child(this.closeX(t, id, () => closeOverlay(props().overlay))));
   }
 
   save(cx) {
@@ -1342,6 +1519,7 @@ export default class Board extends View {
     const def = defOf(p.workspace);
     const title = this.titleInput.value().trim();
     if (!def || this.busy) return;
+    this.confirming = false; // a key that saves takes the delete question back first
     if (!title) { this.error = "A task needs a title."; cx.notify(); return; }
     this.busy = true;
     cx.notify();
@@ -1375,6 +1553,7 @@ export default class Board extends View {
             catch (e) { if (i >= 2) throw e; } // the ID was just taken: the next one
           }
         }
+        setShared("workspaces.board.closed", Date.now());
         closeOverlay(p.overlay);
       } catch (e) {
         this.error = `Couldn't save: ${message(e)}`;
@@ -1387,8 +1566,10 @@ export default class Board extends View {
   remove(cx) {
     const p = props();
     if (!p.task || this.busy) return;
-    if (!this.confirming) { this.confirming = true; cx.notify(); return; }
+    if (!this.confirming) { this.confirming = true; this.confirmAt = Date.now(); this.escAsked = false; cx.notify(); return; }
+    if (Date.now() - this.confirmAt < 500) return; // the second half of a double-click isn't a yes
     this.busy = true;
+    this.deleting = true;
     cx.notify();
     cx.spawn(async (cx) => {
       try {
@@ -1396,10 +1577,12 @@ export default class Board extends View {
         if (r.code !== 0) throw new Error(r.stderr.trim() || `exit ${r.code}`);
         const where = r.stdout.trim();
         notify({ title: `Deleted ${p.task.id}`, body: where === "Trash" ? `Its file is in the ${trashName()}.` : `Its file is in ${tilde(where)}.`, level: "success" });
+        setShared("workspaces.board.closed", Date.now());
         closeOverlay(p.overlay);
       } catch (e) {
         this.error = `Couldn't delete it: ${message(e)}`;
         this.busy = false;
+        this.deleting = false;
         cx.notify();
       }
     });
@@ -1410,8 +1593,9 @@ export default class Board extends View {
     if (p.dialog === "start") return this.startDialog(t);
     const def = defOf(p.workspace);
     const close = () => closeOverlay(p.overlay);
-    if (!def) return v_flex().size_full().p(18).bg(t.popover).text_color(t.muted).child("This task's workspace is gone.");
+    if (!def) return this.goneDialog(t, "task-close");
     const b = boardOf(def);
+    const mac = window()?.platform === "macos";
     const section = (text) => div().pt(14).pb(6).text_size(11.5).text_color(t.dim).child(text);
     const chip = (id, text, on, action) => div().id(id).h(26).px(10).flex().items_center().rounded(13).border_1()
       .border_color(on ? t.accent : t.input).bg(on ? t.selected : t.background).text_size(12)
@@ -1425,13 +1609,41 @@ export default class Board extends View {
     const folders = [["", "Workspace root"], ...folderChoices(def).map((f) => [rel(def, f), base(f)])];
     const task = p.task;
 
+    // Esc, and Cmd/Ctrl+W, reach a dialog as Herdr's actions, never as keys: claim them here.
+    // A handler that returns without closing keeps the dialog open.
+    // While Delete asks, Esc only drops the question.
+    const onClose = (_e, cx) => { cx.stop_propagation(); if (this.confirming) this.disarm(cx); else this.guardedClose(this.taskChanged(), cx, "esc"); };
+    // Delete asked once: the footer holds only the question (Cancel where Delete was, the
+    // named delete beside it, where it goes); Save and the rest step aside.
+    const armed = Boolean(task) && this.confirming;
+    const pair = (id, action, el) => el.id(id).h(32).items_center().rounded(8).border_1().text_size(12.5).font_medium()
+      .when(this.busy, (x) => x.opacity(0.45)).when(!this.busy, (x) => x.cursor_pointer().hover((s) => s.opacity(0.88)))
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_click((_e, cx) => { if (!this.busy && Date.now() - this.confirmAt >= 500) action(cx); });
+    const named = task ? `Delete “${task.title}”` : "";
+    const question = () => [
+      pair("task-delete-cancel", (cx) => { this.confirming = false; cx.notify(); },
+        h_flex().flex_none().px(14).border_color(t.input).bg(t.raised).text_color(t.foreground).child("Cancel")),
+      pair("task-delete-yes", (cx) => this.remove(cx),
+        h_flex().min_w(0).max_w(320).px(13).border_color(t.blocked).bg(t.blocked).text_color(t.solid_foreground)
+          .when(named.length > 40, (x) => x.tooltip(named))
+          .child(div().min_w(0).truncate().child(this.deleting ? "Deleting…" : named))),
+      div().flex_1().min_w(0).text_size(11.5).text_color(t.muted).child(`It goes to the ${trashName()}.`),
+    ];
     return v_flex().id("task-dialog").track_focus(this.handle).size_full().min_h(0).p(18).bg(t.popover).text_size(13)
+      .on_action("overlay.close", onClose).on_action("tab.close", onClose).on_action("pane.close", onClose)
+      .on_mouse_down("left", (_e, cx) => { this.unask(cx); this.disarm(cx); })
       .on_key_down((e, cx) => {
-        if (e.key === "escape") { close(); cx.stop_propagation(); }
+        this.disarm(cx); // any key drops the delete question
+        // (Esc never arrives here: Herdr sends it as overlay.close, claimed above.)
+        // ⌘Enter (Ctrl+Enter elsewhere) saves from anywhere, the notes too, as Start with… starts.
+        if (e.key === "enter" && (e.modifiers?.platform || e.modifiers?.control)) this.save(cx);
+        else return;
+        cx.stop_propagation();
       })
       .child(h_flex().items_center()
         .child(div().flex_1().text_size(15).font_semibold().text_color(t.foreground).child(task ? `${task.id}` : `New task in ${def.name}`))
-        .child(div().text_size(11).text_color(t.dim).child("Esc")))
+        .child(this.closeX(t, "task-close", (cx) => { this.disarm(cx); this.guardedClose(this.taskChanged(), cx, "x"); })))
       .child(section("Title"))
       .child(Input.new(this.titleInput).h(36).px(10).rounded(9).border_1().border_color(t.input).bg(t.background).text_size(13).text_color(t.foreground))
       .child(section("Status"))
@@ -1446,13 +1658,16 @@ export default class Board extends View {
         .map(([value, name]) => chip(`ag-${value || "default"}`, name, this.form.agent === value, () => { this.form.agent = value; }))))
       .child(section("Notes"))
       .child(div().flex_1().min_h(0).child(Textarea.new(this.bodyInput).size_full().p(8).rounded(9).border_1().border_color(t.input).bg(t.background).text_size(12.5).text_color(t.foreground)))
-      .when(Boolean(this.error), (el) => el.child(div().pt(8).text_size(11.5).text_color(t.blocked).child(this.error)))
-      .child(h_flex().pt(14).gap(8).items_center()
-        .when(Boolean(task), (el) => el.child(button("task-delete", this.confirming ? "Click again to delete" : "Delete", "danger", (_e, cx) => this.remove(cx))))
-        .when(Boolean(task?.file), (el) => el.child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(tilde(task.file))))
+      .when(Boolean(this.error || this.escAsked), (el) => el.child(div().pt(8).text_size(11.5).text_color(this.escAsked ? t.working : t.blocked).child(this.escAsked ? ASK_AGAIN[this.escAsked] : this.error)))
+      .when(armed, (el) => el.child(h_flex().pt(14).gap(8).items_center().children(question())))
+      .when(!armed, (el) => el.child(h_flex().pt(14).gap(8).items_center()
+        .when(Boolean(task), (el) => el.child(button("task-delete", "Delete", "danger", (_e, cx) => this.remove(cx))))
+        .when(Boolean(task?.file), (el) => el.child(div().id("task-file").flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).tooltip(tilde(task.file)).child(tilde(task.file))))
         .when(!task, (el) => el.child(div().flex_1()))
-        .child(button("task-cancel", "Cancel", "plain", close))
-        .child(button("task-save", task ? "Save" : "Add task", "primary", (_e, cx) => this.save(cx))));
+        .child(div().flex_none().text_size(11).text_color(t.dim).child(`${mac ? "⌘" : "Ctrl+"}Enter saves`))
+        // Like Esc and the ×: nothing while it saves or deletes (it closes by itself when done).
+        .child(button("task-cancel", "Cancel", "plain", () => { if (!this.busy) close(); }))
+        .child(button("task-save", task ? "Save" : "Add task", "primary", (_e, cx) => this.save(cx)))));
   }
 
   // --- Start with… (props { dialog: "start", workspace, task, owner }) ---
@@ -1476,12 +1691,24 @@ export default class Board extends View {
       }
     });
     this.swPick = def ? firstPick(this.swChoices(), who) : null;
-    this.swFolder = def ? folderPath(def, p.task?.folder) : null;
+    // A card with its own worktree starts there unless another folder is picked.
+    this.swFolder = def ? (p.task?.treeThere ? expand(p.task.worktree) : folderPath(def, p.task?.folder)) : null;
     this.swTree = false;
+    this.swFolderAt = this.swFolder;
+    this.escAsked = false;
     this.swText = TextareaState.new({ value: def && p.task ? brief(p.task, b) : "", rows: 10, placeholder: "Its first message. Leave empty to start it idle." });
+    this.swTextAt = this.swText.value();
+    this.swText.on("change", (_e, cx) => this.unask(cx));
+    // ⌘/Ctrl+Enter in the message starts it (a plain Enter is a line break there).
+    this.swText.on("submit", (e, cx) => { if (!e?.secondary) return; dropEnterBreak(this.swText); this.swStart(); cx.notify(); });
     this.swText.focus();
     cx.timer.after(400, () => this.swText.focus());
     this.handle.focus();
+  }
+
+  // Start with…: an agent picked, another folder, the worktree box or the message changed.
+  swChanged() {
+    return this.swChosen || this.swFolder !== this.swFolderAt || this.swTree || this.swText.value() !== this.swTextAt;
   }
 
   swChoices() {
@@ -1493,6 +1720,8 @@ export default class Board extends View {
     const p = props();
     const over = overOf(this.swChoices(), this.swPick, this.swFolder, this.swText.value());
     if (!over) { this.swError = this.swChoices().length ? "Pick an agent and a folder first." : "No agents yet: still checking which are installed."; return; }
+    if (this.swDone) return; // asked once already (the key and the box can both say so)
+    this.swDone = true;
     setShared(START_WITH, { owner: p.owner, file: p.task.file, worktree: this.swTree, over, at: Date.now() });
     closeOverlay(p.overlay);
   }
@@ -1502,7 +1731,7 @@ export default class Board extends View {
     const def = defOf(p.workspace);
     const task = p.task;
     const close = () => closeOverlay(p.overlay);
-    if (!def || !task) return v_flex().size_full().p(18).bg(t.popover).text_color(t.muted).child("This task's workspace is gone.");
+    if (!def || !task) return this.goneDialog(t, "sw-close");
     const b = boardOf(def);
     const choices = this.swChoices();
     const pick = choices.find((c) => c.id === this.swPick) ?? null;
@@ -1520,33 +1749,41 @@ export default class Board extends View {
     const button = (id, text, primary, action) => h_flex().id(id).h(32).px(14).items_center().rounded(8).border_1()
       .border_color(primary ? t.solid : t.input).bg(primary ? t.solid : t.raised).text_color(primary ? t.solid_foreground : t.foreground)
       .text_size(12.5).font_medium().cursor_pointer().hover((s) => s.opacity(0.88)).on_click(action).child(text);
-    const places = [def.root, ...folderChoices(def)].filter((f, i, all) => f && all.indexOf(f) === i);
+    // The card's own worktree first, when it has one that's still there.
+    const tree = task.treeThere ? expand(task.worktree) : null;
+    const places = [tree, def.root, ...folderChoices(def)].filter((f, i, all) => f && all.indexOf(f) === i);
+    const placeName = (f) => (f === tree ? "Its worktree" : f === def.root ? `${def.name} root` : base(f));
+    // The key first: the line is cut at the end in a narrow dialog (its tooltip has it all).
+    const note = `${window()?.platform === "macos" ? "⌘" : "Ctrl+"}Enter starts it. The card moves to ${label(b.start)} and keeps its own agent and folder.`;
+    // Esc, and Cmd/Ctrl+W, reach a dialog as Herdr's actions, never as keys: claim them here.
+    const onClose = (_e, cx) => { cx.stop_propagation(); this.guardedClose(this.swChanged(), cx, "esc"); };
     return v_flex().id("start-with").track_focus(this.handle).size_full().min_h(0).p(18).bg(t.popover).text_size(13).text_color(t.foreground)
+      .on_action("overlay.close", onClose).on_action("tab.close", onClose).on_action("pane.close", onClose)
+      .on_mouse_down("left", (_e, cx) => this.unask(cx))
       .on_key_down((e, cx) => {
-        if (e.key === "escape") close();
-        else if (e.key === "enter" && (e.modifiers?.platform || e.modifiers?.control)) { this.swStart(); cx.notify(); }
+        // (Esc never arrives here: Herdr sends it as overlay.close, claimed above.)
+        if (e.key === "enter" && (e.modifiers?.platform || e.modifiers?.control)) { this.swStart(); cx.notify(); }
         else return;
         cx.stop_propagation();
       })
       .child(h_flex().gap(10).items_center()
         .child(div().flex_none().text_size(15).font_semibold().child(`Start ${task.id} with…`))
-        .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(task.title))
-        .child(div().text_size(11).text_color(t.dim).child("Esc")))
+        .child(div().id("sw-title").flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).tooltip(task.title).child(task.title))
+        .child(this.closeX(t, "sw-close", (cx) => this.guardedClose(this.swChanged(), cx, "x"))))
       .child(section("Agent"))
       .child(h_flex().gap(6).flex_wrap().children(choices.map((c) => chip(`sw-${c.id}`, [iconFor(c), c.label ?? c.name], this.swPick === c.id, () => { this.swPick = c.id; this.swChosen = true; this.swError = null; }, c.tip))))
       .when(!choices.length, (el) => el.child(div().text_size(12).text_color(t.dim).child("Checking installed agents…")))
       .child(section("Folder"))
       .child(h_flex().gap(6).flex_wrap()
-        .children(places.map((f, i) => chip(`sw-dir-${i}`, [f === def.root ? `${def.name} root` : base(f)], this.swFolder === f, () => { this.swFolder = f; }, tilde(f))))
+        .children(places.map((f, i) => chip(`sw-dir-${i}`, [placeName(f)], this.swFolder === f, () => { this.swFolder = f; }, f === tree && task.branch ? `${tilde(f)}, on ${task.branch}` : tilde(f))))
         .child(chip("sw-tree", [svg("mods/workspace-chrome/git-branch.svg").size(12).flex_none(), "In a new worktree"], this.swTree, () => { this.swTree = !this.swTree; },
           "On a new branch in its own worktree of that folder's repo, as the card's Worktree does")))
       .child(section(pick?.kind === "preset" ? "First message: after the preset's instructions" : "First message"))
       .child(div().flex_1().min_h(80).child(Textarea.new(this.swText).size_full().p(10).rounded(8).border_1().border_color(t.accent)
         .bg(t.background).text_size(12.5).text_color(t.foreground)))
-      .when(Boolean(this.swError), (el) => el.child(div().pt(8).text_size(11.5).text_color(t.blocked).child(this.swError)))
+      .when(Boolean(this.swError || this.escAsked), (el) => el.child(div().pt(8).text_size(11.5).text_color(this.escAsked ? t.working : t.blocked).child(this.escAsked ? ASK_AGAIN[this.escAsked] : this.swError)))
       .child(h_flex().pt(12).gap(8).items_center()
-        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim)
-          .child(`The card moves to ${label(b.start)}. Its own agent and folder stay as they are. ${window()?.platform === "macos" ? "⌘" : "Ctrl+"}Enter starts it`))
+        .child(div().id("sw-note").flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).tooltip(note).child(note))
         .child(button("sw-cancel", "Cancel", false, close))
         .child(button("sw-go", "Start", true, (_e, cx) => { this.swStart(); cx.notify(); })));
   }

@@ -95,63 +95,81 @@ export function countPorcelainZ(stdout) {
   return String(stdout ?? "").split("\0").filter(Boolean).length;
 }
 
+// The scanners' last token when they stopped early: ":stopped:dirs" (MAX_DIRS folders looked at) or
+// ":stopped:repos" (MAX_REPOS found). Repo paths are absolute, so it can't be one.
+const STOP = ":stopped:";
+
 // Parse NUL-delimited output of the nested repo scanner:
 // token 0 is `realCwd`, remaining tokens are repo directories (or dir/.git).
+// stopped: "dirs" or "repos" when the scan stopped before it had looked everywhere, else null.
 export function parseScanOutput(stdout, maxRepos = MAX_REPOS) {
   const parts = String(stdout ?? "").split("\0");
   const realCwd = normPath(parts[0] ?? "");
   const seen = new Set();
   const dirs = [];
-  for (const raw of parts.slice(1)) {
+  let stopped = null;
+  const rest = parts.slice(1);
+  for (let i = 0; i < rest.length; i++) {
+    const raw = rest[i];
+    if (raw.startsWith(STOP)) { stopped = raw.slice(STOP.length) === "repos" ? "repos" : "dirs"; continue; }
     const clean = normPath(raw).replace(/\/\.git$/, "");
     if (!clean || seen.has(clean)) continue;
+    if (dirs.length >= maxRepos) { stopped ??= "repos"; continue; }
     seen.add(clean);
     dirs.push(clean);
-    if (dirs.length >= maxRepos) break;
   }
-  return { realCwd, dirs };
+  return { realCwd, dirs, stopped };
+}
+
+// What the rail, the picker and the empty screen say when the scan stopped early (parseScanOutput).
+export function stopWords(stopped) {
+  if (stopped === "repos") return `Stopped after ${MAX_REPOS} repos: some may be missing. Open Changes from inside one.`;
+  if (stopped === "dirs") return `Stopped after ${MAX_DIRS} folders: some repos may be missing. Open Changes from inside one.`;
+  return "";
 }
 
 // Portable POSIX sh script: prints realCwd then each nested repo folder, NUL-delimited.
 // Unrolled to depth 3 (no `local` extension, no recursive variable clobbering).
 // Skips dot-folders (glob `*`), heavy build/vendor folders, and stops descending once `.git` is found.
+// Stopping early (max_dirs, max_repos) prints ":stopped:dirs" or ":stopped:repos" last.
 export function posixScanScript() {
   const skip = SKIP_DIRS.join("|");
   return [
     'cwd="$1"; max="$2"; max_repos="$3"; max_dirs="$4"',
     'real=$(cd "$cwd" 2>/dev/null && pwd -P) || real="$cwd"',
     'printf "%s\\0" "$real"',
-    'count=0; visited=0',
+    'count=0; visited=0; stop=',
     'skip() {',
     `  case "$1" in ${skip}) return 0 ;; esac`,
     '  return 1',
     '}',
     'for p1 in "$cwd"/*; do',
     '  [ -d "$p1" ] || continue',
-    '  visited=$((visited + 1)); [ "$visited" -gt "$max_dirs" ] && break',
+    '  visited=$((visited + 1)); [ "$visited" -gt "$max_dirs" ] && { stop=dirs; break; }',
     '  skip "${p1##*/}" && continue',
     '  if [ -e "$p1/.git" ]; then',
-    '    printf "%s\\0" "$p1"; count=$((count + 1)); [ "$count" -ge "$max_repos" ] && break; continue',
+    '    printf "%s\\0" "$p1"; count=$((count + 1)); [ "$count" -ge "$max_repos" ] && { stop=repos; break; }; continue',
     '  fi',
     '  [ "$max" -ge 2 ] || continue',
     '  for p2 in "$p1"/*; do',
     '    [ -d "$p2" ] || continue',
-    '    visited=$((visited + 1)); [ "$visited" -gt "$max_dirs" ] && break 2',
+    '    visited=$((visited + 1)); [ "$visited" -gt "$max_dirs" ] && { stop=dirs; break 2; }',
     '    skip "${p2##*/}" && continue',
     '    if [ -e "$p2/.git" ]; then',
-    '      printf "%s\\0" "$p2"; count=$((count + 1)); [ "$count" -ge "$max_repos" ] && break 2; continue',
+    '      printf "%s\\0" "$p2"; count=$((count + 1)); [ "$count" -ge "$max_repos" ] && { stop=repos; break 2; }; continue',
     '    fi',
     '    [ "$max" -ge 3 ] || continue',
     '    for p3 in "$p2"/*; do',
     '      [ -d "$p3" ] || continue',
-    '      visited=$((visited + 1)); [ "$visited" -gt "$max_dirs" ] && break 3',
+    '      visited=$((visited + 1)); [ "$visited" -gt "$max_dirs" ] && { stop=dirs; break 3; }',
     '      skip "${p3##*/}" && continue',
     '      if [ -e "$p3/.git" ]; then',
-    '        printf "%s\\0" "$p3"; count=$((count + 1)); [ "$count" -ge "$max_repos" ] && break 3',
+    '        printf "%s\\0" "$p3"; count=$((count + 1)); [ "$count" -ge "$max_repos" ] && { stop=repos; break 3; }',
     '      fi',
     '    done',
     '  done',
     'done',
+    '[ -z "$stop" ] || printf ":stopped:%s\\0" "$stop"',
     'true',
   ].join("\n");
 }
@@ -260,6 +278,19 @@ export function pickInitial({ flat = [], followedRoot = null, previousPick = nul
 }
 
 // Filter grouped repos & worktrees by substring match on repo name, branch, or relative path.
+// The checkout Enter in the filter takes: the first that matches in the list's order, the repo's
+// main when its name or main matches, else its first matching worktree (filterGroups keeps the
+// main row as the group's heading when only a worktree matched). null when nothing does.
+export function firstMatch(groups, query) {
+  const q = String(query ?? "").trim().toLowerCase();
+  for (const g of filterGroups(groups, query)) {
+    const mainHit = Boolean(g.main) && (!q || g.name.toLowerCase().includes(q) || `${g.name} ${g.main.branchLabel} ${g.main.where}`.toLowerCase().includes(q));
+    const c = mainHit ? g.main : g.worktrees[0];
+    if (c) return c;
+  }
+  return null;
+}
+
 export function filterGroups(groups, query) {
   const q = String(query ?? "").trim().toLowerCase();
   if (!q) return groups;

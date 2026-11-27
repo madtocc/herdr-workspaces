@@ -377,10 +377,12 @@ export function whereOf(cwd, def, home, trees) {
 // each only while that terminal is live and still runs that agent. For the rest,
 // each live terminal running that agent in that folder is taken to hold the folder's
 // most recently used conversation not already claimed: a guess, since two agents in
-// one folder are told apart only by which was used last.
+// one folder are told apart only by which was used last. The map's `guessed` (a Set of
+// keys) says which matches are such guesses.
 // `terms`: [{ address, program, cwd }], the live agent terminals.
 export function liveOf(sessions, terms, claims = {}) {
   const map = new Map();
+  map.guessed = new Set();
   const free = new Map(terms.map((t) => [t.address, t]));
   const runs = (s, address) => free.get(address)?.program === PROVIDERS[s.provider]?.program;
   const take = (s, address) => { map.set(keyOf(s), address); free.delete(address); };
@@ -392,12 +394,20 @@ export function liveOf(sessions, terms, claims = {}) {
   const sorted = [...sessions].sort((a, b) => b.updated - a.updated);
   for (const t of [...free.values()]) {
     const s = sorted.find((x) => !map.has(keyOf(x)) && PROVIDERS[x.provider]?.program === t.program && x.cwd === t.cwd);
-    if (s) take(s, t.address);
+    if (s) { take(s, t.address); map.guessed.add(keyOf(s)); }
   }
   return map;
 }
 
 export const keyOf = (s) => `${s.provider}/${s.id}`;
+
+// Where a conversation is open, by liveOf()'s map: `at`, a terminal known to hold it (its
+// note or History's own claim), or `maybe`, one only guessed (that agent running in its
+// folder, the newest conversation there): a guess keeps Resume and says "open?".
+export function openAt(live, key) {
+  const address = live?.get(key) ?? null;
+  return live?.guessed?.has(key) ? { at: null, maybe: address } : { at: address, maybe: null };
+}
 
 // Whether two prompts are the same one, though either may have been cut short ("…").
 export function samePrompt(a, b) {
@@ -409,12 +419,15 @@ export function samePrompt(a, b) {
 // What a row is called: its title, else the first thing asked.
 export const titleOf = (s) => s.title || clean(s.first, 120) || "(nothing asked yet)";
 
-// Every word of the search appears in the row's text, whatever the case.
+// Every word of the search appears in the row's text, whatever the case. A word of 8 characters
+// or more may also be in its conversation id (one copied from a terminal or a log); a shorter one
+// isn't looked for there, or "db" or "42" would match ids by chance (they're hex digits).
 export function matches(session, query, extra = "") {
   const words = String(query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
   if (!words.length) return true;
   const hay = [session.title, session.first, session.last, session.cwd, session.branch, session.model, PROVIDERS[session.provider]?.name, extra].join("\n").toLowerCase();
-  return words.every((w) => hay.includes(w));
+  const id = String(session.id ?? "").toLowerCase();
+  return words.every((w) => hay.includes(w) || (w.length >= 8 && id.includes(w)));
 }
 
 // --- Compactions ---
@@ -472,20 +485,28 @@ export function compactionsTip(n, last) {
 
 // A run's state in words, and its color by the Automations screen's rule (working:
 // the working color; needs you, failures, misses: the blocked one; the rest dim).
-// `quiet`: an entry for a run its check (or a miss, or a skip) kept from starting.
-// now: { status, live, open, found, said, outcome }: its agent's status word (null when
+// `ran: false`: an entry for a run that never started (its check, a miss, a skip kept it
+// from starting). `quiet`: one of those that needs no look (a check with nothing new, a
+// skip), drawn quieter and hidden behind "Hide quiet runs"; a check that failed or isn't
+// allowed and a miss aren't quiet: they show, in the blocked color.
+// now: { status, live, open, found, said, outcome, records }: its agent's status word (null when
 // nothing reports), whether its terminal is alive, whether its tab is still there,
 // whether its conversation was found, and what it said last (reportOf). Once it's
-// ended, its outcome line says how it went; without one, a report says done. A run
+// ended, how it went is the runner's record (`r.outcome`, what Automations and the bell
+// show), else its last message's outcome line; without either, a report says done. A run
 // asked for that line (`reports`) that ended its turn without one is waiting on an
-// answer, while its tab is open.
+// answer while its tab is open ("needs you"), and once it's closed, "no outcome": nobody
+// knows how it went (the runner counts it as unknown too), so it isn't "done". The same goes
+// for one the runner closed as finished without an outcome, whose report History can't read.
 // A shell automation's run (`kind: "shell"`) says how its script ended: running, timed out,
 // "failed · exit N", nothing to do or "done · 1 s" (a script shown in a tab is followed like an
 // agent's until it ends). A run waiting for a parallel slot is "queued"; an agent's stopped
 // by its timeout is "timed out".
 export function runState(r, now = {}) {
-  const { status = null, live = false, open = false, found = false, said = null, outcome = null } = now;
-  const quiet = (word, tone = "dim") => ({ word, tone, quiet: true, open: false });
+  // records: whether the runner records outcomes (Notifications on in Settings > Features; off,
+  // it never reads the line, so a missing r.outcome says nothing), as ws-automations' lookfacts.js.
+  const { status = null, live = false, open = false, found = false, said = null, outcome = null, records = true } = now;
+  const quiet = (word, tone = "dim") => ({ word, tone, quiet: tone === "dim", open: false, ran: false });
   const times = r.times > 1 ? ` ×${r.times}` : "";
   const plain = (word, tone) => ({ word, tone, quiet: false, open: false });
   if (r.status === "queued") return plain("queued", "dim");
@@ -507,21 +528,62 @@ export function runState(r, now = {}) {
     default: return quiet(String(r.status ?? ""));
   }
   const state = (word, tone, isOpen) => ({ word, tone, quiet: false, open: isOpen });
-  const ended = outcome === "failed" ? ["failed", "blocked"] : outcome === "nothing to do" ? ["nothing to do", "dim"] : outcome || said ? ["done", "muted"] : null;
+  // How it went: the runner's own record first (what Automations and the bell go by), else
+  // the outcome line of the conversation's last message (the runner records none while
+  // Notifications is off).
+  const known = OUTCOMES.includes(r.outcome) ? r.outcome : outcome;
+  const ended = known === "failed" ? ["failed", "blocked"] : known === "nothing to do" ? ["nothing to do", "dim"] : known || said ? ["done", "muted"] : null;
   const there = open && live && !r.closed;
   if (there) {
     if (status === "working") return state("running", "working", true);
     if (status === "blocked") return state("needs you", "blocked", true);
     if (r.stuck) return state("stuck", "blocked", true);
     if (status === "done" || status === "idle") {
-      if (r.reports && said && !outcome) return state("needs you", "blocked", true);
+      if (r.reports && said && !known) return state("needs you", "blocked", true);
       return ended ? state(...ended, true) : state("finished", "muted", true);
     }
     return state("open", "muted", true); // a script, or a shell
   }
+  // Asked for the line and ended without it: its last message, or the runner closed its tab
+  // as finished (a conversation History doesn't read, or one not among the rows).
+  if (r.reports && !known && (said || (records && r.closed && r.closedWhy === "finished"))) return state("no outcome", "blocked", false);
   if (ended) return state(...ended, false);
   if (found && runProvider(r) && READS.has(runProvider(r))) return state("no report", "dim", false);
   return state(r.closed ? "finished" : "closed", "dim", false);
+}
+
+// What a run's state word means, for its tooltip (`st`: runState(); `kind`: the run's, "shell" for a
+// script's). Every word runState() gives has one; "check failed ×3" goes by its first words, and a
+// script's "done" and "failed" (with or without " · 4 s" or " · exit 1") have a script's words.
+const RUN_TIPS = {
+  queued: "Waiting for its turn: as many runs as the automation allows are going already",
+  running: "At work now",
+  "needs you": "Its agent is waiting on you in its tab",
+  stuck: "It hasn't reported a minute in: probably waiting on a question",
+  "timed out": "Stopped by its timeout",
+  done: "It ended and said it's done",
+  failed: "It ended and said it failed",
+  "nothing to do": "It ran and found nothing to do",
+  "no outcome": "It was asked to end with an Outcome line and ended without one: it may have asked something",
+  "no report": "It ended without a last message: its tab was closed while it worked",
+  finished: "The runner closed its tab when its agent finished; History can't read how it went",
+  closed: "Its tab was closed before the runner saw it finish, so how it went isn't known",
+  open: "A script or a shell, still open in its tab",
+  "failed to start": "It couldn't be started",
+  "check failed": "Its check failed, so the automation didn't start",
+  quiet: "Its check printed nothing new, so the automation didn't start",
+  "check not allowed": "Its check isn't allowed yet, so the automation didn't start: allow it in Automations",
+  missed: "Its time came while Herdr was closed, too long ago to run late",
+  skipped: "Skipped, so it didn't run; the line under its name says why",
+};
+export function runTip(st, kind = null) {
+  const word = String(st?.word ?? "");
+  if (word === "finished" && st.open) return "Its agent finished its turn; its tab is still open";
+  if (/^failed · exit/.test(word) || (kind === "shell" && word === "failed")) return "Its script ended with an error";
+  if (/^done · /.test(word) || (kind === "shell" && word === "done")) return "Its script ended without an error";
+  const times = / ×(\d+)$/.exec(word);
+  const tip = RUN_TIPS[word.replace(/ ×\d+$/, "")] ?? "";
+  return tip && times ? `${tip} (${times[1]} times)` : tip;
 }
 
 // The agents whose last words History reads (scan.js): a run of another ends as
@@ -588,15 +650,19 @@ export function dayLabel(ms, now = Date.now()) {
   return `${d.getDate()} ${MONTHS[d.getMonth()]}${same ? "" : ` ${d.getFullYear()}`}`;
 }
 
-// How long ago, short: "now", "5m", "3h", "2d", "4mo".
+// How long ago, short, by the one rule every screen uses (always rounded down): "now"
+// under a minute, then "5m", "3h", "12d" (under 60 days), "4mo" (days / 30, under 730
+// days), "2y" (days / 365). Never "60m", "24h" or "27mo".
 export function ago(ms, now = Date.now()) {
   if (!ms) return "";
   const d = Math.max(0, now - ms) / 1000;
   if (d < 60) return "now";
-  if (d < 3600) return `${Math.round(d / 60)}m`;
-  if (d < 86400) return `${Math.round(d / 3600)}h`;
-  if (d < 86400 * 60) return `${Math.round(d / 86400)}d`;
-  return `${Math.round(d / 86400 / 30)}mo`;
+  if (d < 3600) return `${Math.floor(d / 60)}m`;
+  if (d < 86400) return `${Math.floor(d / 3600)}h`;
+  const days = d / 86400;
+  if (days < 60) return `${Math.floor(days)}d`;
+  if (days < 730) return `${Math.floor(days / 30)}mo`;
+  return `${Math.floor(days / 365)}y`;
 }
 
 // When a conversation ran: "20 Nov 11:02 to 14:33", or both days when they differ.

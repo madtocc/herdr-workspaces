@@ -146,8 +146,11 @@ export class NotifLog {
     const now = Date.now();
     this.usage(now);
     const off = !on();
-    // A finished agent that's working or idle again: its next finish is news.
-    const fresh = forgetEpisodes(this.store, agents());
+    // What a read or dismissed row was about is over (an agent working again, a run's question
+    // answered, a pull request fixed, a waiting agent's tab changed since): its next time is news.
+    const fresh = forgetEpisodes(this.store, agents(), {
+      terminals: terminals(), runs: shared("workspaces.automation.runs") ?? [], prs: shared("workspaces.prs") ?? null, spaces: spaces(),
+    });
     if (fresh !== this.store) { this.store = fresh; this.save(); }
     let items = off ? [] : this.items(now);
     const live = {};

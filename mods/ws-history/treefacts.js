@@ -438,14 +438,18 @@ export const indent = (depth) => Math.min(depth, 4) * 20;
 // --- The right-click menu ---
 // A History row's menu: { id, label, icon, hint?, danger?, sep? }, drawn as the Agents
 // list's (menufacts.js menuHeight() sizes it). f: { at (the terminal it's open in),
-// gone, readonly, wipe (whether Wipe can be offered: its agent's files are known) }.
+// maybe (one only guessed to hold it), gone, readonly, wipe (whether Wipe can be offered: its agent's files are known) }.
 export function historyMenu(f) {
   if (f.readonly) return [];
   const out = [];
   if (f.at) out.push({ id: "goto", label: "Go to", icon: "mods/workspace-chrome/terminal.svg", hint: f.at });
-  else if (!f.gone) out.push({ id: "resume", label: "Resume", icon: "mods/ws-history/history.svg" });
-  out.push({ id: "copy", label: "Copy session id", icon: "mods/ws-agents/copy.svg" });
-  if (f.wipe) out.push({ id: "wipe", label: "Wipe session…", icon: "mods/ws-agents/trash.svg", danger: true, sep: true, ...(f.agy ? { hint: "experimental" } : {}) });
+  else {
+    // Only guessed open there (histfacts.js openAt()): both, the guess named.
+    if (f.maybe) out.push({ id: "goto", label: `Go to ${f.maybe}`, icon: "mods/workspace-chrome/terminal.svg" });
+    if (!f.gone) out.push({ id: "resume", label: "Resume", icon: "mods/ws-history/history.svg" });
+  }
+  out.push({ id: "copy", label: "Copy conversation id", icon: "mods/ws-agents/copy.svg" });
+  if (f.wipe) out.push({ id: "wipe", label: "Wipe conversation…", icon: "mods/ws-agents/trash.svg", danger: true, sep: true, ...(f.agy ? { hint: "experimental" } : {}) });
   return out;
 }
 
@@ -499,6 +503,14 @@ export function wipeCheck(s, { targets = [], open = null, maybe = [], others = [
     return { ok: false, why: "It was written to in the last two minutes, so an agent may still have it open somewhere History can't see. Close that agent first, or try again in a couple of minutes." };
   }
   return { ok: true, close: null };
+}
+
+// The Wipe dialog's words for a conversation open in the terminal it closes first (`at`), with
+// what its agent is doing there (`status`, Herdr's word), as the Agents list's Wipe says it.
+export function openWords(at, status = null) {
+  if (!at) return "";
+  const doing = status === "working" ? "; it's working, so this also stops what it's doing" : status === "blocked" ? "; it's waiting on you there" : "";
+  return ` It's open in ${at}: Wipe closes that first${doing}.`;
 }
 
 // The live terminals under one (its hc helpers and theirs): hc ends them when it ends.

@@ -38,6 +38,14 @@ if command -v trash >/dev/null 2>&1; then trash "$1" && echo Trash && exit 0; fi
 if command -v gio >/dev/null 2>&1; then gio trash "$1" && echo Trash && exit 0; fi
 mkdir -p "$2" && mv "$1" "$2/" && echo "$2"`;
 
+// The kit's Textarea takes Cmd/Ctrl+Enter itself: it puts a line break at the cursor, then
+// emits submit with `secondary`. That break isn't part of the text: take it out again
+// (offsets are UTF-16, as a JS string counts them).
+function dropEnterBreak(box) {
+  const at = box.selected_range()?.end ?? 0;
+  if (at > 0 && box.value()[at - 1] === "\n") { box.set_selected_range({ start: at - 1, end: at }); box.replace(""); }
+}
+
 const tilde = (p) => (p === home() ? "~" : p.startsWith(home() + "/") ? "~" + p.slice(home().length) : p);
 const base = (p) => p.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
 const oneLine = (s) => s.replace(/\s*\n\s*/g, " ").trim();
@@ -89,9 +97,9 @@ function presetsFor(id) {
   return [...own, ...(p.global ?? []).filter((g) => !own.some((o) => o.name === g.name))].filter((x) => !x.error);
 }
 
-// Opens the Start dialog for a preset (from this screen or the switcher's New agent).
+// Opens the Start dialog for a preset (from this screen or the + menu's Agent presets).
 function openStart(name, workspace) {
-  openOverlay({ mod: "ws-presets", kind: "dialog", width: 560, height: 430, props: { start: name, workspace } });
+  openOverlay({ mod: "ws-presets", kind: "dialog", modal: true, width: 560, height: 430, props: { start: name, workspace } });
 }
 
 export default class Presets extends View {
@@ -101,6 +109,13 @@ export default class Presets extends View {
     this.workspace = props()?.workspace ?? null;
     if (props()?.start) {
       this.taskIn = TextareaState.new({ value: "", rows: 7, placeholder: "What should it do? Leave empty to start it idle and type to it yourself." });
+      this.taskIn.on("change", (_e, cx) => { if (this.escAsked) { this.escAsked = false; cx.notify(); } });
+      // ⌘Enter (Ctrl+Enter) in the box starts it: the box keeps that key, so it's read here.
+      this.taskIn.on("submit", (e) => {
+        if (!e?.secondary || !presetsFor(this.workspace).some((x) => x.name === props()?.start)) return;
+        dropEnterBreak(this.taskIn);
+        this.launch();
+      });
       this.taskIn.focus();
       cx.timer.after(300, () => this.taskIn.focus());
       return;
@@ -127,7 +142,8 @@ export default class Presets extends View {
     // and the field being typed in shows the accent border.
     this.focusedIn = null;
     for (const input of [this.nameIn, this.descIn, this.cmdIn, this.bodyIn, this.modelIn, this.findIn]) {
-      input.on("change", (_e, cx) => cx.notify());
+      // Typing again: an error (or a pending "click again") is over, and so is a first Esc.
+      input.on("change", (_e, cx) => { this.error = null; this.pending = null; this.escAsked = false; this.disarm(); cx.notify(); });
       input.on("focus", (_e, cx) => { this.focusedIn = input; cx.notify(); });
       input.on("blur", (_e, cx) => {
         if (this.focusedIn === input) this.focusedIn = null;
@@ -173,6 +189,12 @@ export default class Presets extends View {
     const knobs = KNOBS[programIn(this.cmdIn.value())];
     if (knobs) this.cmdIn.set_value(joinWords(withFlag(words(this.cmdIn.value()), knobs.model, model)));
   }
+  // What's typed in the small Model box, only while that box is drawn (the agent has knobs and
+  // a short list); past SHORT_LIST the typeahead takes its place and leftover text doesn't count.
+  typedModel() {
+    const { knobs, models } = this.modelList();
+    return knobs && models.length <= SHORT_LIST ? this.modelIn.value().trim() : "";
+  }
   // The command's program, its knobs, the models to offer and the model it sets.
   modelList() {
     const program = programIn(this.cmdIn.value());
@@ -216,10 +238,7 @@ export default class Presets extends View {
       this.findScroll.scroll_to_item(this.findHi);
     } else if (e.key === "tab" && r && r.kind !== "typed") {
       this.findSet(r.kind === "provider" ? `${r.provider}/` : r.id);
-    } else if (e.key === "escape") {
-      this.findSet("");
-      this.findIn.blur();
-    } else return;
+    } else return; // Esc comes as overlay.close: the screen's handler closes the list first.
     cx.stop_propagation();
     cx.notify();
   }
@@ -244,7 +263,8 @@ export default class Presets extends View {
     if (!this.snap) return false;
     return (this.sel?.isNew && this.nameIn.value().trim() !== this.snap.name)
       || this.descIn.value() !== this.snap.description || this.cmdIn.value() !== this.snap.command
-      || this.bodyIn.value().trim() !== this.snap.body || this.guideIn !== (this.snap.guide ?? true);
+      || this.bodyIn.value().trim() !== this.snap.body || this.guideIn !== (this.snap.guide ?? true)
+      || Boolean(this.typedModel()); // a model typed but not Enter'd yet: Save sets it
   }
 
   // Opens a preset (or a new one) in the editor; unsaved edits ask for a second click.
@@ -260,6 +280,7 @@ export default class Presets extends View {
     this.error = null;
     this.notice = null;
     this.confirming = false;
+    this.escAsked = false;
     // `cx` is passed in: the click's own is gone by the time the file has been read.
     const load = (snap, cx) => {
       this.sel = sel;
@@ -269,6 +290,7 @@ export default class Presets extends View {
       this.cmdIn.set_value(snap.command);
       this.bodyIn.set_value(snap.body);
       this.guideIn = snap.guide ?? true;
+      this.modelIn.set_value(""); // a model half typed for the last one isn't this one's
       this.swapNote = null;
       cx.notify();
     };
@@ -298,6 +320,11 @@ export default class Presets extends View {
   save(cx) {
     const sel = this.sel;
     if (!sel || this.busy) return;
+    this.escAsked = false;
+    // A model typed in the small box and not Enter'd counts: set it, as Hand off's Start does.
+    const typed = this.typedModel();
+    if (typed) this.setModel(typed);
+    this.modelIn.set_value("");
     const name = sel.isNew ? this.nameIn.value().trim() : sel.name;
     const description = this.descIn.value(), command = this.cmdIn.value(), body = this.bodyIn.value();
     if (!NAME.test(name)) { this.error = "A name is letters, digits, dots, dashes or underscores, starting with a letter or digit."; cx.notify(); return; }
@@ -328,10 +355,14 @@ export default class Presets extends View {
     });
   }
 
+  // Delete asks in the footer (Settings > Secrets' Uninstall): the first press arms it, and the
+  // footer then holds only Cancel, Delete "name" and where it goes. A press on either less
+  // than 500 ms after arming is the first press's double-click, and does nothing.
   remove(cx) {
     const sel = this.sel;
     if (!sel || sel.isNew || this.busy) return;
-    if (!this.confirming) { this.confirming = true; cx.notify(); return; }
+    if (!this.confirming) { this.confirming = true; this.armedAt = Date.now(); cx.notify(); return; }
+    if (Date.now() - (this.armedAt ?? 0) < 500) return;
     this.busy = true;
     cx.spawn(async (cx) => {
       try {
@@ -348,6 +379,38 @@ export default class Presets extends View {
       this.confirming = false;
       cx.notify();
     });
+  }
+
+  // The armed Delete stands down: Cancel, a key, a click anywhere but the pair, another preset.
+  disarm(cx) {
+    if (!this.confirming || this.busy) return false;
+    if (cx && Date.now() - (this.armedAt ?? 0) < 500) return false; // Cancel under the double-click
+    this.confirming = false;
+    cx?.notify();
+    return true;
+  }
+
+  // Esc or the Close × (how: "esc" or "x"): with unsaved edits the first asks (the line
+  // over the buttons, in its own words), a second Esc or × closes; typing or clicking
+  // anything else resets it.
+  guardedClose(cx, how) {
+    if (this.busy) return; // Save or Delete is running: Esc, Cmd/Ctrl+W and × wait.
+    // An armed Delete steps back first: the footer as it was (Delete), with its line over it,
+    // so a second Esc or × still asks about unsaved edits instead of closing unasked.
+    if (this.confirming) { this.confirming = false; cx.notify(); return; }
+    if (this.dirty() && !this.escAsked) { this.escAsked = how; cx.notify(); return; }
+    closeOverlay(props().overlay);
+  }
+
+  // The dialog's way out with the mouse (a click beside it doesn't close it): the Files
+  // dialog's Close ×. Its press isn't "clicking anything else": the root's reset of a
+  // first Esc doesn't see it.
+  closeX(t, id, action) {
+    return div().id(id).size(26).flex_none().flex().items_center().justify_center().rounded(6).cursor_pointer()
+      .text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .tooltip("Close").on_click((_e, cx) => { cx.stop_propagation(); action(cx); })
+      .child(svg("mods/workspace-chrome/x.svg").size(14));
   }
 
   // Start: this screen makes way for the Start dialog.
@@ -374,14 +437,28 @@ export default class Presets extends View {
     const button = (id, text, primary, action) => h_flex().id(id).h(32).px(14).items_center().rounded(8).border_1()
       .border_color(primary ? t.solid : t.input).bg(primary ? t.solid : t.raised).text_color(primary ? t.solid_foreground : t.foreground)
       .text_size(12.5).font_medium().cursor_pointer().hover((s) => s.opacity(0.88)).on_click(action).child(text);
+    // Esc, and Cmd/Ctrl+W, reach a dialog as Herdr's actions, never as keys: claim them here.
+    // A task typed is lost on close: the first says so, the second closes.
+    const onClose = (_e, cx) => {
+      cx.stop_propagation();
+      if (this.taskIn.value().trim() && !this.escAsked) { this.escAsked = true; cx.notify(); return; }
+      closeOverlay(props().overlay);
+    };
     const shell = v_flex().id("start").track_focus(this.handle).size_full().min_h(0).p(18).gap(10).bg(t.popover).text_size(13).text_color(t.foreground)
+      .on_action("overlay.close", onClose)
+      .on_action("tab.close", onClose)
+      .on_action("pane.close", onClose)
+      .on_mouse_down("left", (_e, cx) => { if (this.escAsked) { this.escAsked = false; cx.notify(); } })
       .on_key_down((e, cx) => {
-        if (e.key === "escape") closeOverlay(props().overlay);
-        else if (e.key === "enter" && (e.modifiers?.platform || e.modifiers?.control) && preset) this.launch();
+        // Herdr's Esc comes as overlay.close (above), never here.
+        if (e.key === "enter" && (e.modifiers?.platform || e.modifiers?.control) && preset) this.launch();
         else return;
         cx.stop_propagation();
       });
-    if (!preset) return shell.child(div().text_color(t.muted).child(`There's no preset called “${name}” here any more.`));
+    // Nothing to start and no buttons: the Close × is the way out with the mouse.
+    if (!preset) return shell.child(h_flex().gap(10).items_center()
+      .child(div().flex_1().min_w(0).text_color(t.muted).child(`There's no preset called “${name}” here any more.`))
+      .child(this.closeX(t, "start-close", () => closeOverlay(props().overlay))));
     const known = shared("new-menu.agents")?.[""] ?? [];
     const program = agentFor(known, programIn(preset.command));
     const glyph = program?.icon ? (program.tint ? svg(program.icon) : image(program.icon)).size(20).flex_none().rounded(4)
@@ -400,6 +477,7 @@ export default class Presets extends View {
         : "Task: sent after its instructions, in the same first message."))
       .child(div().flex_1().min_h(80).child(Textarea.new(this.taskIn).size_full().p(10).rounded(8).border_1().border_color(t.accent)
         .bg(t.background).text_size(12.5).text_color(t.foreground)))
+      .when(Boolean(this.escAsked), (el) => el.child(div().text_size(11.5).text_color(t.working).child("Press Esc again to close and drop what you typed.")))
       .child(h_flex().gap(8).items_center()
         .child(div().flex_1().text_size(11).text_color(t.dim).child(`${modKey()}Enter starts it`))
         .child(button("start-cancel", "Cancel", false, () => closeOverlay(props().overlay)))
@@ -496,15 +574,35 @@ export default class Presets extends View {
         .children(global.map((p) => item(p, "global", p.error ? "error" : own.some((o) => o.name === p.name) ? "replaced here" : "")))
         .when(!global.length, (el) => el.child(div().px(14).text_size(12).text_color(t.dim).child("None yet."))));
 
+    // Esc, and Cmd/Ctrl+W, reach a dialog as Herdr's actions, never as keys: claim them here.
+    // With the model box's list open, Esc closes the list first (empty); then guardedClose().
+    const onClose = (_e, cx) => {
+      cx.stop_propagation();
+      if (this.focusedIn === this.findIn) { this.focusedIn = null; this.findSet(""); this.findIn.blur(); this.handle.focus(); cx.notify(); return; }
+      this.guardedClose(cx, "esc"); // an armed Delete steps back first (guardedClose())
+    };
     return v_flex().id("presets").track_focus(this.handle).size_full().min_h(0).bg(t.popover).text_size(13).text_color(t.foreground)
+      .on_action("overlay.close", onClose)
+      .on_action("tab.close", onClose)
+      .on_action("pane.close", onClose)
+      .on_mouse_down("left", (_e, cx) => {
+        if (this.escAsked) { this.escAsked = false; cx.notify(); }
+        if (this.confirming && !this.busy) { this.confirming = false; cx.notify(); }
+      })
       .on_key_down((e, cx) => {
-        if (e.key === "escape") { closeOverlay(props().overlay); cx.stop_propagation(); }
+        const m = e.modifiers ?? {};
+        if (this.confirming && !this.busy) { this.confirming = false; cx.notify(); }
+        // ⌘S (Ctrl+S elsewhere) is Save, when Save is offered. Herdr's Esc comes as overlay.close (above).
+        if ((m.platform || m.control) && !m.shift && !m.alt && e.key === "s") {
+          cx.stop_propagation();
+          if (this.sel && (this.sel.isNew || this.dirty())) this.save(cx);
+        }
       })
       .child(h_flex().h(50).flex_none().px(18).gap(8).items_center().border_b(1).border_color(t.border)
         .child(div().text_size(15).font_semibold().child("Agent presets"))
         .when(Boolean(def), (el) => el.child(div().text_size(12.5).text_color(t.dim).child(`for ${def.name}`)))
         .child(div().flex_1())
-        .child(div().text_size(11).text_color(t.dim).child("Esc")))
+        .child(this.closeX(t, "p-close", (cx) => this.guardedClose(cx, "x"))))
       .child(h_flex().flex_1().min_h(0).items_stretch().child(list)
         .child(this.editor(t, def, own, iconOf)));
   }
@@ -517,7 +615,7 @@ export default class Presets extends View {
         .child(div().child("A preset is an agent you can start by name: a command (the program, model and flags) and its instructions."))
         .child(div().child(`Presets for every workspace are herdr-core templates in ${tilde(templatesDir())}, so agents can start them too, with hc run <name>.`))
         .when(Boolean(def), (el) => el.child(div().child(`${def.name}'s own are in ${tilde(def.dir)}/agents, and replace a global one with the same name.`)))
-        .child(div().child("Start them from the switcher's New agent…, or pick one in a task's Agent row on the board."))
+        .child(div().child("Start them from the + in the tab bar or the Agents header, under Agent presets, or pick one in a task's Agent row on the board."))
         .child(div().child("The switches for every agent (the Herdr guide, bringing agents back after a restart, and which agents show in the + menu) are in Settings > Agents."));
     }
     const sel = this.sel;
@@ -527,11 +625,12 @@ export default class Presets extends View {
     const label = (text) => div().pt(14).pb(6).text_size(11.5).text_color(t.dim).child(text);
     const box = (state, mono) => Input.new(state).h(34).px(10).rounded(8).border_1().border_color(this.focusedIn === state ? t.accent : t.input).bg(t.background)
       .text_size(12.8).text_color(t.foreground).when(mono, (el) => el.font_family("JetBrains Mono"));
-    const button = (id, text, kind, action, enabled = true) => h_flex().id(id).h(32).px(13).items_center().rounded(8).border_1()
+    const button = (id, text, kind, action, enabled = true, why = null) => h_flex().id(id).h(32).px(13).items_center().rounded(8).border_1()
       .border_color(kind === "primary" ? t.solid : t.input).bg(kind === "primary" ? t.solid : t.raised)
       .text_color(kind === "primary" ? t.solid_foreground : kind === "danger" ? t.blocked : t.foreground)
       .text_size(12.5).font_medium().when(!enabled || this.busy, (el) => el.opacity(0.45))
-      .when(enabled, (el) => el.cursor_pointer().hover((s) => s.opacity(0.88)).on_click(action)).child(text);
+      .when(enabled, (el) => el.cursor_pointer().hover((s) => s.opacity(0.88)).on_click(action))
+      .when(!enabled && Boolean(why), (el) => el.tooltip(why)).child(text);
     const chip = (id, text, action) => div().id(id).h(24).px(9).flex().items_center().rounded(12).border_1().border_color(t.input)
       .text_size(11.5).text_color(t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground).bg(t.hover))
       .on_click((_e, cx) => { action(); cx.notify(); }).child(text);
@@ -614,19 +713,45 @@ export default class Presets extends View {
         : "Instructions: sent as the agent's first message, before any task"))
       .child(div().h(260).flex_none().child(Textarea.new(this.bodyIn).size_full().p(10).rounded(8).border_1().border_color(this.focusedIn === this.bodyIn ? t.accent : t.input)
         .bg(t.background).text_size(12.5).text_color(t.foreground)));
+    // The armed Delete (remove()): Cancel where Delete was, Delete "name" in the danger fill
+    // beside it, then where it goes. The other buttons step aside; Deleting… dims both.
+    const armed = this.confirming && !sel.isNew;
+    const danger = (id, text, action) => h_flex().id(id).h(32).px(13).min_w(0).items_center().rounded(8).border_1()
+      .border_color(t.blocked).bg(t.blocked).text_color(t.solid_foreground).text_size(12.5).font_medium()
+      .when(this.busy, (el) => el.opacity(0.45))
+      .when(!this.busy, (el) => el.cursor_pointer().hover((s) => s.opacity(0.88)).on_click(action))
+      .when(text.length > 33, (el) => el.tooltip(text)).child(div().min_w(0).truncate().child(text));
+    const question = h_flex().gap(8).items_center()
+      // The pair's own presses aren't "a click outside the pair" (the root's disarm).
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .child(button("p-delete-cancel", "Cancel", "plain", (_e, cx) => this.disarm(cx)))
+      .child(div().flex_shrink_1().min_w(0).max_w(260).child(danger("p-delete-go", this.busy ? "Deleting…" : `Delete “${sel.name}”`, (_e, cx) => this.remove(cx))))
+      .child(div().flex_1().min_w(0).text_size(11.5).text_color(t.muted).child(`It goes to the ${trashName()}.`));
     return pane
       .child(form)
       .child(v_flex().flex_none().px(18).pb(14).pt(8).border_t(1).border_color(t.border)
-        .when(Boolean(this.error), (el) => el.child(div().pb(8).text_size(11.5).text_color(t.blocked).child(this.error)))
-        .when(!this.error && Boolean(this.notice), (el) => el.child(div().pb(8).text_size(11.5).text_color(t.done).child(this.notice)))
+        .when(armed, (el) => el.child(question))
+        .when(!armed, (el) => el.child(this.footer(t, sel, def, own, file, dirty, button))));
+  }
+
+  // The footer as it rests: the line over the buttons (Esc's question, an error, Saved.), then
+  // Delete, Duplicate, Change for…, the file, Start and Save.
+  footer(t, sel, def, own, file, dirty, button) {
+    return v_flex()
+        .when(Boolean(this.escAsked) && dirty, (el) => el.child(div().pb(8).text_size(11.5).text_color(t.working)
+          .child(this.escAsked === "x" ? "Click × again to close and drop what you typed." : "Press Esc again to close and drop what you typed.")))
+        .when(!(this.escAsked && dirty) && Boolean(this.error), (el) => el.child(div().pb(8).text_size(11.5).text_color(t.blocked).child(this.error)))
+        // "Saved." only while nothing has changed since.
+        .when(!this.escAsked && !this.error && Boolean(this.notice) && !dirty, (el) => el.child(div().pb(8).text_size(11.5).text_color(t.done).child(this.notice)))
         .child(h_flex().gap(8).items_center()
           .when(!sel.isNew, (el) => el
-            .child(button("p-delete", this.confirming ? "Click again to delete" : "Delete", "danger", (_e, cx) => this.remove(cx)))
+            .child(button("p-delete", "Delete", "danger", (_e, cx) => this.remove(cx)))
             .child(button("p-dup", "Duplicate", "plain", (_e, cx) => this.copy(sel.scope, `${sel.name}-copy`, cx)))
             .when(sel.scope === "global" && Boolean(def) && !own.some((o) => o.name === sel.name), (el) => el
               .child(button("p-custom", `Change for ${def.name}`, "plain", (_e, cx) => this.copy("workspace", sel.name, cx)))))
           .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(file ? tilde(file) : ""))
-          .when(!sel.isNew, (el) => el.child(button("p-start", "Start", "plain", () => this.start(), !dirty)))
-          .child(button("p-save", sel.isNew ? "Create" : "Save", "primary", (_e, cx) => this.save(cx), sel.isNew || dirty))));
+          .when(!sel.isNew, (el) => el.child(button("p-start", "Start", "plain", () => this.start(), !dirty, "Save your changes first")))
+          .child(div().flex_none().text_size(11).text_color(t.dim).child(`${modKey()}S`))
+          .child(button("p-save", sel.isNew ? "Create" : "Save", "primary", (_e, cx) => this.save(cx), sel.isNew || dirty)));
   }
 }

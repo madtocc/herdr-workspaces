@@ -15,7 +15,7 @@
 // (ws-status). While Agent numbers is off in Settings > Features (settingsfacts.js, shared
 // "workspaces.settings": numbersOn()) a row has its name and status only, at its one-line
 // height, and nothing reads the records on a timer; the right-click menu still needs its
-// conversation (Fork, Copy session id, Wipe), so a right-click reads that one agent's
+// conversation (Fork, Copy conversation id, Wipe), so a right-click reads that one agent's
 // records first (menuAt()). Turned on again, the numbers come at the next read.
 // A sub-agent's row in the tree gets the same second line (subRow(); statAgents() adds the
 // live sub-agents without a pane, which agents() leaves out), and its tree lines run the
@@ -26,8 +26,8 @@
 // Also: History's own right-click Wipe hands an Antigravity conversation that's open in no
 // terminal to the Wipe dialog here (props wipe with no address: nothing to close first).
 // Also: a right-click on an agent's row (a sub-agent's too, and on the rail) opens its
-// menu: Peek, Send a message, Interrupt, Compact, Fork session, Hand off, Rename, Pin, Copy
-// terminal id, Copy session id, Close session, Wipe session (menufacts.js says which a
+// menu: Peek, Send a message, Interrupt, Compact, Fork conversation, Hand off, Rename, Pin, Copy
+// terminal id, Copy conversation id, Close session, Wipe conversation (menufacts.js says which a
 // row gets), with the Send a message, Hand off and Wipe dialogs (agentMenu(), act(),
 // sendDialog(), handoffDialog(), wipeDialog()). Antigravity's Wipe is experimental, offered while "antigravity-wipe" is
 // on in ~/.herdr/settings.jsonc (settingsfacts.js, read by readSettings() into shared
@@ -35,13 +35,34 @@
 // process's (stats.js: fresh); agywipe.js checks it before the agent is closed, then
 // wipes the conversation's tree (out of Antigravity's lists, checked, then its files to
 // the Trash), and agyPending() finishes a wipe left for when no Antigravity runs.
+// Also (UX fixes, 2026-11-26): Close session and Wipe on an agent with live helpers ask
+// first and say how many end with it (menuFacts() helpers, menufacts.js helpersLine());
+// Send a message, Hand off and Wipe open modal (a click beside them doesn't close them),
+// and Esc on Send a message or Hand off with something typed or picked asks once
+// (escClose()); while Wipe says "Wiping…", Esc and Cancel do nothing; Send a message takes
+// several lines (⌘Enter sends); Hand off's part above Task scrolls once Task would go under 140 px; a Pre-fill
+// that didn't paste puts the task on the clipboard and says so (prefillFailed()); hover
+// shows a cut name (rows, helper rows, the rail); and from Herdr 0.1.17's agents, a kept
+// sub-agent shows its own status, done included, without a helper's done pulling its
+// parent out of Working (kidStatus(), kidRank).
+// Also (picked D3-1): a hovered row, a helper's too, shows a ⋯ after its pin (more()), which
+// opens the same menu as a right-click, under the button (moreAt()).
+// Also (small round, 2026-11-27): from Herdr's agents, clean() (0.1.17: a title keeps a leading
+// bracket, quote or emoji), title()'s path test on the raw title (0.1.15), the guarded saved
+// values (0.1.16) and the rail's mark on the agent you're on (0.1.17); the Sort popup takes
+// ↑ ↓ Enter; one highlight in both popups follows the keys and the pointer; a quick menu item
+// says what it's doing while it runs (BUSY_WORDS); a right-click's menu that waits for a read
+// opens where the press was (pressAt()); the ⋯, Sort and + drop their tooltip once clicked
+// (quietTip()); Hand off's Agent row says why it has none (menufacts.js agentsCheckLine()).
+// Esc, and Cmd/Ctrl+W, reach these dialogs as Herdr's actions (overlay.close, tab.close,
+// pane.close), never as keys: dialogFrame() and handoffDialog() claim them on the root.
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, Popup, ScrollHandle } from "gpui-base";
 import { agents, terminals, panes, focused, spaces, knownAgents, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, hc, appHome, home, notify, checking, readTextFile, writeTextFile } from "herdr";
 import { exec } from "./posix.js";
 import { tokens } from "./statfacts.js";
-import { kindOf as menuKind, menuItems, menuHeight, closeAsks, forkArgv, wipeTargets, agyDir, handoffChoices, firstHandoffPick, handoffLaunch, commandProgram, choiceArgv } from "./menufacts.js";
+import { kindOf as menuKind, menuItems, menuHeight, closeAsks, helpersLine, forkArgv, wipeTargets, agyDir, handoffChoices, firstHandoffPick, handoffLaunch, commandProgram, choiceArgv, moreAt, agentsCheckLine } from "./menufacts.js";
 import { KNOBS, knobsIn, configModels, listable, keptModels, listModels, SHORT_LIST, typeahead, markSegments } from "./knobs.js";
 import { SETTINGS_FILE, parseSettings, experimentOn, featureOn } from "./settingsfacts.js";
 // The system's trash by its name: the Recycle Bin on Windows, the Trash elsewhere.
@@ -90,7 +111,9 @@ function toggleSidebar() {
   run("layout.resize", { id: "sidebar", px: narrow() ? (shared("sidebar.width") ?? 268) : window()?.platform === "macos" ? 76 : 44 });
 }
 
-const clean = (s) => (s ?? "").replace(/^[^\p{L}\p{N}]+/u, "").trim();
+// Herdr 0.1.17's: drops a status glyph or spinner and its separator, and Codex's "[ ! ] ", but
+// stops at an opening bracket or quote ("[web] login") and at an emoji ("🔴 deploy").
+const clean = (s) => (s ?? "").replace(/^(?:\[ [!.] \] |[✋⏳]\uFE0F?(?=\s)|(?!(?:\p{Emoji}\uFE0F|[#*]\u20E3))[^\p{L}\p{N}\p{Ps}\p{Pi}\p{Emoji_Presentation}])+/u, "").trim();
 
 function leadPanes(all) {
   const leads = new Map();
@@ -106,14 +129,19 @@ function leadPanes(all) {
 function title(tab, l) {
   const prog = l?.program?.name;
   const live = clean(l?.title);
-  const telling = live && live !== prog && !/^[~/]|^[A-Za-z]:\\/.test(live) && !live.includes("@") && live.toLowerCase() !== l?.program?.key;
+  // Herdr 0.1.15's: clean() would strip a path's leading ~ or /, so the title is tested with only
+  // its status glyph gone; a title that is the terminal's own id doesn't count either.
+  const path = /^[~/]|^[A-Za-z]:\\/.test((l?.title ?? "").replace(/^[^\p{L}\p{N}~/]+/u, ""));
+  const telling = live && live !== (l?.terminal ?? l?.address) && live !== prog && !path && !live.includes("@") && live.toLowerCase() !== l?.program?.key;
   return (tab.name === prog || !tab.named) && telling ? live : tab.name;
 }
 const RANK = { blocked: 4, done: 3, working: 2, idle: 1 };
 // A sub-agent without a pane isn't in agents(): its raw word, error counting as
 // blocked. It's never done: it reports to its parent, and the parent's done is the news.
+// A kept sub-agent (one with a pane) is in agents() too: it keeps its own status, done included.
 const kidStatus = (k, listed) => {
-  const s = listed.get(k.address) ?? k.status;
+  if (listed.has(k.address)) return listed.get(k.address);
+  const s = k.status;
   return s === "error" ? "blocked" : s === "done" ? "idle" : s;
 };
 const SORTS = [
@@ -228,6 +256,15 @@ function statDetail(s) {
 }
 
 // --- The right-click menu (menufacts.js) ---
+// A pointer position as a key ("x,y"), or undefined when there is none.
+const pointKey = (p) => (p && Number.isFinite(p.x) && Number.isFinite(p.y) ? `${p.x},${p.y}` : undefined);
+// Where a press was, in window points (a popup's `at`), or null.
+const pressAt = (e) => {
+  const x = e?.position?.x, y = e?.position?.y;
+  return typeof x === "number" && typeof y === "number" && isFinite(x) && isFinite(y) ? { x: Math.max(0, x), y: Math.max(0, y) } : null;
+};
+// A quick item's words while it runs (quick()): the popup stays until it's done.
+const BUSY_WORDS = { interrupt: "Interrupting…", compact: "Compacting…", address: "Copying…", copy: "Copying…" };
 const tilde = (p) => {
   const h = home();
   return p && h && (p === h || p.startsWith(`${h}/`)) ? `~${p.slice(h.length)}` : p ?? "";
@@ -245,12 +282,22 @@ for p in "$@"; do
 done`;
 
 // Puts $1 on the clipboard.
+// wl-copy and xclip stay behind to serve the clipboard: their output goes to /dev/null, or they'd
+// hold exec's pipe open and it would return only once another program takes the clipboard.
 const COPY = `
 if command -v pbcopy >/dev/null 2>&1; then printf %s "$1" | pbcopy
-elif command -v wl-copy >/dev/null 2>&1; then printf %s "$1" | wl-copy
-elif command -v xclip >/dev/null 2>&1; then printf %s "$1" | xclip -selection clipboard
+elif command -v wl-copy >/dev/null 2>&1; then printf %s "$1" | wl-copy >/dev/null 2>&1
+elif command -v xclip >/dev/null 2>&1; then printf %s "$1" | xclip -selection clipboard >/dev/null 2>&1
 elif command -v powershell >/dev/null 2>&1; then HERDR_CLIP=$1 powershell -NoProfile -NonInteractive -Command 'for ($i = 0; $i -lt 5; $i++) { try { Set-Clipboard -Value $env:HERDR_CLIP -ErrorAction Stop; exit 0 } catch { Start-Sleep -Milliseconds 150 } }; exit 1'
 else echo "no clipboard command (pbcopy, wl-copy, xclip, PowerShell)" >&2; exit 1; fi`;
+
+// The kit's Textarea takes Cmd/Ctrl+Enter itself: it puts a line break at the cursor, then
+// emits submit with `secondary`. That break isn't part of the text: take it out again
+// (offsets are UTF-16, as a JS string counts them).
+function dropEnterBreak(box) {
+  const at = box.selected_range()?.end ?? 0;
+  if (at > 0 && box.value()[at - 1] === "\n") { box.set_selected_range({ start: at - 1, end: at }); box.replace(""); }
+}
 
 // What hc (or a shell step) said went wrong, in its words.
 function failure(r) {
@@ -283,13 +330,23 @@ function pendingToasts(out) {
 export default class Agents extends View {
   init(_props, cx) {
     const p = props();
-    if (p?.sortMenu) return;
+    if (p?.sortMenu) {
+      // ↑ ↓ Enter, as the agent menu beside it; the highlight starts on the current sort.
+      this.handle = cx.focus_handle();
+      this.handle.focus();
+      this.at = Math.max(0, SORTS.findIndex((s) => s.id === sortOf().id));
+      this.pointerLast = pointKey(p.pointer);
+      return;
+    }
     if (p?.agentMenu || p?.send || p?.wipe || p?.handoff) return this.initOverlay(p, cx);
     this.folded = new Set();
     this.widths = new Map();
     // Each agent's last state and when it changed (ms), kept across restarts.
-    this.changed = JSON.parse(localStorage.getItem("changed") ?? "{}");
-    this.pendingPins = JSON.parse(localStorage.getItem("pins") ?? "[]");
+    // Herdr 0.1.16's guards: a damaged saved value is dropped instead of taking the list away.
+    try { this.changed = JSON.parse(localStorage.getItem("changed") ?? "{}"); } catch { this.changed = {}; }
+    if (!this.changed || typeof this.changed !== "object" || Array.isArray(this.changed)) this.changed = {};
+    try { this.pendingPins = JSON.parse(localStorage.getItem("pins") ?? "[]"); } catch { this.pendingPins = []; }
+    if (!Array.isArray(this.pendingPins)) this.pendingPins = [];
     if (!this.pendingPins.length) localStorage.removeItem("pins");
     this.migratingPins = new Set();
     cx.timer.every(30000, (cx) => cx.notify());
@@ -494,6 +551,7 @@ export default class Agents extends View {
   // The menu and its dialogs take the keyboard; Send a message starts in its box.
   initOverlay(p, cx) {
     this.at = 0;
+    this.pointerLast = pointKey(p.pointer);
     this.busy = false;
     this.error = null;
     this.handle = cx.focus_handle();
@@ -535,6 +593,9 @@ export default class Agents extends View {
       this.syncHoKnobs(p.handoff);
       cx.spawn(async (cx) => {
         const known = await knownAgents().catch(() => null);
+        // What the Agent row says while it has none to offer (agentsCheckLine()).
+        this.hoCheck = known ? { checked: true } : { failed: true };
+        if (!known) cx.notify();
         if (known) {
           this.hoAgents = known;
           if (!this.hoChosen) {
@@ -562,15 +623,20 @@ export default class Agents extends View {
         rows: 5,
         placeholder: "What should it do? Leave empty to inspect and wait.",
       });
-      this.hoText.on("change", (_e, cx) => { this.error = null; cx.notify(); });
+      this.hoText.on("change", (_e, cx) => { this.error = null; this.escAsked = false; cx.notify(); });
+      // ⌘Enter (Ctrl+Enter) in the box starts it: the box keeps that key, so it's read here.
+      // ⇧⌘Enter isn't the box's, so it still reaches the dialog's on_key_down.
+      this.hoText.on("submit", (e, cx) => { if (!e?.secondary) return; dropEnterBreak(this.hoText); this.doHandoff(cx, Boolean(e.shift)); });
       this.hoText.focus();
       cx.timer.after(350, () => this.hoText.focus());
       return;
     }
     if (!p.send) return;
-    this.sendIn = InputState.new({ value: "", placeholder: `What to tell ${p.send.name}` });
-    this.sendIn.on("change", (_e, cx) => { this.error = null; cx.notify(); });
-    this.sendIn.on("submit", (_e, cx) => this.doSend(cx));
+    // Several lines, as Hand off's task box: hc send pastes it, then presses Enter.
+    this.sendIn = TextareaState.new({ value: "", rows: 4, placeholder: `What to tell ${p.send.name}` });
+    this.sendIn.on("change", (_e, cx) => { this.error = null; this.escAsked = false; cx.notify(); });
+    // ⌘Enter (Ctrl+Enter) in the box sends: the box keeps that key, so it's read here.
+    this.sendIn.on("submit", (e, cx) => { if (!e?.secondary) return; dropEnterBreak(this.sendIn); this.doSend(cx); });
     this.sendIn.focus();
     cx.timer.after(600, () => this.sendIn.focus());
   }
@@ -583,6 +649,18 @@ export default class Agents extends View {
     const s = this.stats?.[a.address] ?? {};
     const pane = a.pane ? panes().find((p) => p.pane === a.pane) : null;
     const tab = a.tab ? spaces().flatMap((sp) => sp.tabs).find((x) => x.id === a.tab) : null;
+    // Its live helpers, at any depth, that end with it (menufacts.js: helpers, wipeHelpers).
+    // Closing its pane leaves one started to outlive it running, with what's under that
+    // one; terminal.kill (Wipe, Close on a sub-agent without a pane) ends them all.
+    const kids = this.tree(terminals(), a.address);
+    const byAddr = new Map(kids.map((k) => [k.t.address, k.t]));
+    const stays = (k) => [k.t, ...k.up.map((x) => byAddr.get(x))].some((t) => t?.die_with_parent === false);
+    const tally = (list) => {
+      const sts = list.map((k) => kidStatus(k.t, this.listed ?? new Map()));
+      return { count: sts.length, working: sts.filter((x) => x === "working").length, blocked: sts.filter((x) => x === "blocked").length };
+    };
+    const wipeHelpers = tally(kids);
+    const helpers = pane ? tally(kids.filter((k) => !stays(k))) : wipeHelpers;
     return {
       address: a.address, name: name || a.address, pane: pane ? a.pane : null, tab: tab ? a.tab : null, space: a.space ?? null,
       tabName: tab?.named ? tab.name : null, program: a.program?.name ?? null,
@@ -590,22 +668,74 @@ export default class Agents extends View {
       remote: a.address.includes("/"),
       session: s.session ?? null, file: s.file ?? null, cwd: s.cwd ?? pane?.cwd ?? a.cwd ?? null, cmd: s.cmd ?? null,
       agyWipe: experimentOn(shared("workspaces.settings"), "antigravity-wipe"), agyFresh: s.fresh === true, pid: this.pids?.get(a.address)?.pid ?? null,
+      helpers, wipeHelpers,
     };
   }
 
   // A right-click's menu. While the numbers are off nothing keeps this.stats current,
-  // so that agent's records are read first (its conversation, for Fork, Copy session id, Wipe).
-  menuAt(cx, a, name, status, top) {
+  // so that agent's records are read first (its conversation, for Fork, Copy conversation id, Wipe).
+  // `at`: where the popup goes (the ⋯'s place, moreAt()); without one, at the pointer.
+  // `press`: where the opening press was (window points): the popup's pointerRow() starts there,
+  // and a menu that opens only after that read goes there, as the pointer may have moved on.
+  menuAt(cx, a, name, status, top, at, press) {
     const one = numbersOn() ? [] : this.statAgents().filter((x) => x.address === a.address);
-    if (!one.length) return this.openMenu(this.menuFacts(a, name, status, top));
+    if (!one.length) return this.openMenu(this.menuFacts(a, name, status, top), at, press);
     cx.spawn(async (cx) => {
       await this.readStats(cx, one);
-      this.openMenu(this.menuFacts(a, name, status, top));
+      this.openMenu(this.menuFacts(a, name, status, top), at ?? press, press);
     });
   }
 
-  openMenu(f) {
-    openOverlay({ mod: "ws-agents", kind: "popup", width: 220, height: menuHeight(menuItems(f)), props: { agentMenu: f } });
+  // press: where the press that opened it was (pointerRow()'s first place).
+  openMenu(f, at, press = null) {
+    openOverlay({ mod: "ws-agents", kind: "popup", width: 220, height: menuHeight(menuItems(f)), ...(at ? { at } : {}), props: { agentMenu: f, pointer: press } });
+  }
+
+  // The hovered row's ⋯ (drawn like its pin): the same menu as a right-click, opened under
+  // the button. Its press keeps the button's place (window points, as a popup's `at` wants);
+  // Herdr keeps the popup inside the window. No place yet (not painted): at the pointer.
+  // Drawn only while the row is hovered, like the pin: a click that comes in the same frame as
+  // the pointer, before the ⋯ is drawn, lands on the row (known and accepted).
+  more(t, id, open, row = null) {
+    return this.quietTip(div()
+      .id(id)
+      .flex_none()
+      .p(2)
+      .rounded(4)
+      .text_color(t.dim)
+      .cursor_pointer()
+      .hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .on_mouse_down("left", (e) => { this.moreBounds = e.bounds ?? null; this.morePress = pressAt(e); })
+      .on_click((_e, cx) => {
+        cx.stop_propagation();
+        this.tipOff = id;
+        open(cx, moreAt(this.moreBounds), this.morePress);
+        this.moreBounds = null;
+        cx.notify();
+      }), id, "More", row)
+      .child(svg("mods/ws-agents/dots.svg").size(13));
+  }
+
+  // A button that opens a popup beside itself (⋯, Sort, +), or a row's name under its right-click
+  // menu: its tooltip goes once it's clicked (the click sets tipOff), so it doesn't sit over the
+  // popup, and comes back once the pointer has left it.
+  // `row`: the row it's in, whose right-click menu quiets it too.
+  quietTip(el, id, text, row = null) {
+    return el
+      .when(this.tipOff !== id && (!row || this.tipOff !== row), (e) => e.tooltip(text))
+      .on_hover((over, cx) => { if (!over && this.tipOff === id) { this.tipOff = null; cx.notify(); } });
+  }
+
+  // A row under a pointer that moves becomes the keys' row. pointerLast starts at the press that
+  // opened the menu (props.pointer) and follows every move; a move at the same place as the last
+  // one is no move (a resting pointer, or one re-sent with no movement), so it never takes the row.
+  pointerRow(i, e, cx) {
+    const here = pointKey(e?.position);
+    if (here === undefined || here === this.pointerLast) return;
+    const first = this.pointerLast === undefined;
+    this.pointerLast = here;
+    if (first) return; // no press known: the first move is only where it rests
+    if (this.at !== i) { this.at = i; cx.notify(); }
   }
 
   // A menu item. Quick ones run here and the popup closes after (its tasks end when it
@@ -615,13 +745,14 @@ export default class Agents extends View {
     const f = p.agentMenu;
     const done = () => closeOverlay(p.overlay);
     if (!it || this.busy) return;
+    this.acting = it.id;
     switch (it.id) {
       case "peek":
         done();
         return run("terminal.peek", { terminal: f.address });
       case "send":
         done();
-        return openOverlay({ mod: "ws-agents", kind: "dialog", width: 460, height: 216, props: { send: f } });
+        return openOverlay({ mod: "ws-agents", kind: "dialog", modal: true, width: 460, height: 300, props: { send: f } });
       case "interrupt":
         return this.quick(cx, () => hc(["keys", f.address, "esc"]), "Couldn't interrupt it");
       case "compact":
@@ -635,7 +766,7 @@ export default class Agents extends View {
       }
       case "handoff":
         done();
-        return openOverlay({ mod: "ws-agents", kind: "dialog", width: 580, height: 610, props: { handoff: f } });
+        return openOverlay({ mod: "ws-agents", kind: "dialog", modal: true, width: 580, height: 610, props: { handoff: f } });
       case "rename":
         done();
         return run("tab.rename", { id: f.tab });
@@ -646,29 +777,32 @@ export default class Agents extends View {
         return this.quick(cx, () => exec("sh", ["-c", COPY, "sh", f.address]), "Couldn't copy the terminal id",
           () => notify({ title: "Terminal id copied", body: `${f.address}: hc read ${f.address}, hc send ${f.address} "…"`, level: "success", timeout: 2500 }));
       case "copy":
-        return this.quick(cx, () => exec("sh", ["-c", COPY, "sh", f.session]), "Couldn't copy the session id",
-          () => notify({ title: "Session id copied", body: f.session, level: "success", timeout: 2500 }));
+        return this.quick(cx, () => exec("sh", ["-c", COPY, "sh", f.session]), "Couldn't copy the conversation id",
+          () => notify({ title: "Conversation id copied", body: f.session, level: "success", timeout: 2500 }));
       case "close": {
         done();
         const command = f.pane ? { name: "pane.close", args: { pane: f.pane } } : { name: "terminal.kill", args: { terminal: f.address } };
         if (!closeAsks(f)) return run(command.name, command.args);
-        return openOverlay({ mod: "confirm", kind: "dialog", width: 420, height: 176, props: {
+        const own = f.status === "working" ? "It's working: closing it stops what it's doing."
+          : f.status === "blocked" ? "It's waiting on you. Closing it ends it there." : "";
+        const kids = helpersLine(f.helpers);
+        return openOverlay({ mod: "confirm", kind: "dialog", width: 420, height: kids ? 196 : 176, props: {
           title: `Close ${f.name}?`,
-          detail: f.status === "working"
-            ? "It's working: closing it stops what it's doing. Its conversation stays in History."
-            : "It's waiting on you. Closing it ends it there; its conversation stays in History.",
+          detail: [own, kids, "Its conversation stays in History."].filter(Boolean).join(" "),
           command } });
       }
       case "wipe":
         done();
-        return openOverlay({ mod: "ws-agents", kind: "dialog", width: 480, height: f.kind === "agy" ? 410 : 226, props: { wipe: f } });
+        return openOverlay({ mod: "ws-agents", kind: "dialog", modal: true, width: 480, height: (f.kind === "agy" ? 410 : 226) + (helpersLine(f.wipeHelpers) ? 20 : 0), props: { wipe: f } });
     }
   }
 
   // Runs one quick step (hc, a shell line), then closes the popup; a toast says when it failed.
   quick(cx, step, failed, after) {
     const overlay = props().overlay;
-    this.busy = true;
+    // The clicked row says so while it runs (hc send waits while a draft sits in the prompt).
+    this.busy = this.acting ?? true;
+    cx.notify();
     cx.spawn(async () => {
       const r = await step().catch((e) => ({ code: 1, stderr: String(e?.message ?? e) }));
       if (r?.code !== 0) notify({ title: failed, body: failure(r), level: "error" });
@@ -692,7 +826,7 @@ export default class Agents extends View {
         if (e.key === "down") this.at = (this.at + 1) % items.length;
         else if (e.key === "up") this.at = (this.at + items.length - 1) % items.length;
         else if (e.key === "enter") return this.act(items[this.at], cx);
-        else if (e.key === "escape") return closeOverlay(props().overlay);
+        // Esc never comes here: Herdr's Esc closes a popup as its action overlay.close.
         else return;
         cx.notify();
       })
@@ -708,19 +842,42 @@ export default class Agents extends View {
           .items_center()
           .text_color(it.danger ? t.blocked : t.foreground)
           .when(i === this.at, (el) => el.bg(t.selected))
-          .hover((el) => el.bg(t.hover))
+          // The pointer moves the keys' row too, so one row is lit and Enter runs it (pointerRow());
+          // no hover fill of its own, or a menu under a resting pointer would show two.
+          .on_mouse_move((e, cx) => this.pointerRow(i, e, cx))
           .on_click((_e, cx) => this.act(it, cx))
           .child(svg(it.icon).size(14).flex_none().text_color(it.danger ? t.blocked : t.muted))
-          .child(div().flex_1().min_w(0).truncate().child(it.label))
+          .child(div().flex_1().min_w(0).truncate().child(this.busy === it.id ? (BUSY_WORDS[it.id] ?? it.label) : it.label))
           .when(Boolean(it.hint), (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(it.hint))))));
   }
 
+  // Esc on a dialog with something typed or changed (`unsaved`): the first press says
+  // so (escLine()), the second closes; typing or clicking anything else resets it.
+  // While a wipe runs (`locked`) it does nothing: closing then would leave it half done.
+  escClose(cx, unsaved, locked = false) {
+    if (locked) return;
+    if (unsaved && !this.escAsked) { this.escAsked = true; cx.notify(); return; }
+    closeOverlay(props().overlay);
+  }
+
+  escLine(t) {
+    return div().pt(8).text_size(11.5).text_color(t.working).child("Press Esc again to close and drop what you typed.");
+  }
+
   // The dialogs' frame, title, buttons and error line, as the switcher's dialogs look.
-  dialogFrame(t, id, title, enter) {
+  // enter: what Enter does (with ⌘ or Ctrl when `o.modEnter`); o.unsaved, o.locked: escClose().
+  dialogFrame(t, id, title, enter, o = {}) {
+    // Esc, and Cmd/Ctrl+W, reach a dialog as Herdr's actions, never as keys: claim them here.
+    // A handler that returns without closing keeps the dialog open.
+    const onClose = (_e, cx) => { cx.stop_propagation(); this.escClose(cx, o.unsaved?.(), o.locked?.()); };
     return v_flex().id(id).track_focus(this.handle).size_full().min_h(0).p(18).bg(t.popover).text_size(13)
+      .on_action("overlay.close", onClose)
+      .on_action("tab.close", onClose)
+      .on_action("pane.close", onClose)
+      .on_mouse_down("left", (_e, cx) => { if (this.escAsked) { this.escAsked = false; cx.notify(); } })
       .on_key_down((e, cx) => {
-        if (e.key === "escape") closeOverlay(props().overlay);
-        else if (e.key === "enter" && enter) enter(cx);
+        // Herdr's Esc comes as overlay.close (above), never here.
+        if (e.key === "enter" && enter && (!o.modEnter || e.modifiers?.platform || e.modifiers?.control)) enter(cx);
         else return;
         cx.stop_propagation();
       })
@@ -729,27 +886,32 @@ export default class Agents extends View {
         .child(div().text_size(11).text_color(t.dim).child("Esc")));
   }
 
-  button(t, id, label, kind, action) {
+  // dead: drawn dimmed and does nothing (Cancel while a wipe runs).
+  button(t, id, label, kind, action, dead = false) {
     const bg = kind === "danger" ? t.blocked : kind === "primary" ? t.solid : t.raised;
     const fg = kind === "danger" ? "#ffffff" : kind === "primary" ? t.solid_foreground : t.foreground;
     return h_flex().id(id).h(32).px(14).items_center().rounded(8)
       .border_1().border_color(kind ? bg : t.input).bg(bg)
-      .text_color(fg).text_size(12.5).font_medium().cursor_pointer()
-      .when(this.busy && Boolean(kind), (el) => el.opacity(0.5)).hover((s) => s.opacity(0.88)).on_click(action).child(label);
+      .text_color(fg).text_size(12.5).font_medium()
+      .when(!dead, (el) => el.cursor_pointer().hover((s) => s.opacity(0.88)).on_click(action))
+      .when((this.busy && Boolean(kind)) || dead, (el) => el.opacity(0.5)).child(label);
   }
 
   // Send a message: typed into the agent's prompt and sent, without going to it.
   sendDialog(t) {
     const f = props().send;
-    return this.dialogFrame(t, "agent-send", `Message ${f.name}`, null)
-      .child(div().pt(14).pb(7).text_size(11.5).text_color(t.dim).child("Message"))
-      .child(Input.new(this.sendIn).h(36).px(10).rounded(9).border_1().border_color(t.input).bg(t.background).text_size(12.8).text_color(t.foreground))
+    const modKey = window()?.platform === "macos" ? "⌘" : "Ctrl+";
+    return this.dialogFrame(t, "agent-send", `Message ${f.name}`, (cx) => this.doSend(cx),
+      { modEnter: true, unsaved: () => this.sendIn.value().trim() !== "" })
+      .child(div().mt(14).flex_1().min_h(76).child(Textarea.new(this.sendIn).size_full().p(10).rounded(8).border_1().border_color(t.accent)
+        .bg(t.background).text_size(12.5).text_color(t.foreground)))
       .child(div().pt(10).text_size(11.5).text_color(t.dim).child(this.busy
         ? "Sending… (if you left a draft in its prompt, it waits until that's sent or cleared)"
         : "Typed into its prompt and sent, as if you'd typed it there."))
       .when(Boolean(this.error), (el) => el.child(div().pt(8).text_size(11.5).text_color(t.blocked).child(this.error)))
-      .child(div().flex_1())
-      .child(h_flex().pt(14).gap(8).justify_end()
+      .when(Boolean(this.escAsked), (el) => el.child(this.escLine(t)))
+      .child(h_flex().pt(14).gap(8).items_center()
+        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(`${modKey}Enter sends`))
         .child(this.button(t, "agent-send-cancel", "Cancel", null, () => closeOverlay(props().overlay)))
         .child(this.button(t, "agent-send-go", this.busy ? "Sending…" : "Send", "primary", (_e, cx) => this.doSend(cx))));
   }
@@ -834,10 +996,7 @@ export default class Agents extends View {
       this.hoFindScroll.scroll_to_item(this.hoFindHi);
     } else if (e.key === "tab" && r && r.kind !== "typed") {
       this.hoFindSet(r.kind === "provider" ? `${r.provider}/` : r.id);
-    } else if (e.key === "escape") {
-      this.hoFindSet("");
-      this.hoFindIn.blur();
-    } else return;
+    } else return; // Esc comes as overlay.close: the dialog's handler closes the list first.
     cx.stop_propagation();
     cx.notify();
   }
@@ -932,16 +1091,32 @@ export default class Agents extends View {
       .on_click((_e, cx) => { action(); this.hoKnobEdited = true; cx.notify(); }).child(label);
     const providerName = allAgents.find((a) => a.key === program)?.name ?? program;
     const refMeta = [f.program || f.kind, `terminal ${f.address}`].filter(Boolean).join(" · ");
+    // Anything typed or picked is lost on close: Esc asks once (escClose()). With the model
+    // box's list open, Esc closes the list first (empty) and the dialog stays.
+    const unsaved = () => this.hoText.value().trim() !== "" || this.hoChosen || this.hoKnobEdited || this.hoModelIn.value().trim() !== "";
+    // Esc, and Cmd/Ctrl+W, reach a dialog as Herdr's actions, never as keys: claim them here.
+    const onClose = (_e, cx) => {
+      cx.stop_propagation();
+      if (this.hoFocusedIn === this.hoFindIn) { this.hoFocusedIn = null; this.hoFindSet(""); this.hoFindIn.blur(); this.handle.focus(); cx.notify(); return; }
+      this.escClose(cx, unsaved());
+    };
     return v_flex().id("agent-handoff").track_focus(this.handle).size_full().min_h(0).p(18).bg(t.popover).text_size(13).text_color(t.foreground)
+      .on_action("overlay.close", onClose)
+      .on_action("tab.close", onClose)
+      .on_action("pane.close", onClose)
+      .on_mouse_down("left", (_e, cx) => { if (this.escAsked) { this.escAsked = false; cx.notify(); } })
       .on_key_down((e, cx) => {
-        if (e.key === "escape") close();
-        else if (e.key === "enter" && (e.modifiers?.platform || e.modifiers?.control)) this.doHandoff(cx, Boolean(e.modifiers?.shift));
+        // Herdr's Esc comes as overlay.close (above), never here.
+        if (e.key === "enter" && (e.modifiers?.platform || e.modifiers?.control)) this.doHandoff(cx, Boolean(e.modifiers?.shift));
         else return;
         cx.stop_propagation();
       })
       .child(h_flex().gap(10).items_center()
         .child(div().flex_1().min_w(0).truncate().text_size(15).font_semibold().child(`Hand off ${f.name}`))
         .child(div().text_size(11).text_color(t.dim).child("Esc")))
+      // Everything above Task keeps its height while it fits and scrolls once the Task box
+      // would go under 140, so many agents or presets never squeeze it or push the buttons out.
+      .child(v_flex().id("ho-top").flex_shrink_1().min_h(0).overflow_y_scrollbar()
       .child(v_flex().mt(10).p(10).gap(3).rounded(8).bg(t.background).border_1().border_color(t.border).text_size(11.5)
         .child(h_flex().gap(8).items_center()
           .child(div().text_color(t.foreground).truncate().child(`Reference: ${refMeta}`))
@@ -951,7 +1126,7 @@ export default class Agents extends View {
         .when(Boolean(folder), (el) => el.child(div().text_color(t.dim).truncate().child(`Folder: ${tilde(folder)}`))))
       .child(section("Agent"))
       .when(agentChoices.length > 0, (el) => el.child(h_flex().gap(6).flex_wrap().children(agentChoices.map(chip))))
-      .when(agentChoices.length === 0, (el) => el.child(div().text_size(12).text_color(t.dim).child("Checking installed agents…")))
+      .when(agentChoices.length === 0, (el) => el.child(div().text_size(12).text_color(t.dim).child(agentsCheckLine(this.hoCheck))))
       .when(presetChoices.length > 0, (el) => el
         .child(section("Presets"))
         .child(h_flex().gap(6).flex_wrap().children(presetChoices.map(chip))))
@@ -968,13 +1143,14 @@ export default class Agents extends View {
           .child(section("Effort"))
           .child(h_flex().gap(6).flex_wrap()
             .child(knobChip("ho-effort-default", "Default", !this.hoEffort, () => { this.hoEffort = null; }))
-            .children((knobs.effort?.levels ?? []).map((l) => knobChip(`ho-effort-${l}`, l, this.hoEffort === l, () => { this.hoEffort = l; }))))))
+            .children((knobs.effort?.levels ?? []).map((l) => knobChip(`ho-effort-${l}`, l, this.hoEffort === l, () => { this.hoEffort = l; })))))))
       .child(section(pick?.kind === "preset"
         ? "Task (sent with reference; preset instructions included)"
         : "Task (sent with reference)"))
-      .child(div().flex_1().min_h(76).child(Textarea.new(this.hoText).size_full().p(10).rounded(8).border_1().border_color(t.accent)
+      .child(div().flex_1().min_h(140).child(Textarea.new(this.hoText).size_full().p(10).rounded(8).border_1().border_color(t.accent)
         .bg(t.background).text_size(12.5).text_color(t.foreground)))
       .when(Boolean(this.error), (el) => el.child(div().pt(8).text_size(11.5).text_color(t.blocked).child(this.error)))
+      .when(Boolean(this.escAsked), (el) => el.child(this.escLine(t)))
       .child(h_flex().pt(12).gap(8).items_center()
         .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(`${modKey}Enter sends · ⇧${modKey}Enter pre-fills`))
         .child(this.button(t, "agent-handoff-cancel", "Cancel", null, close))
@@ -990,7 +1166,7 @@ export default class Agents extends View {
     const choices = this.hoChoices(f);
     const choice = choices.find((c) => c.id === this.hoPick) ?? null;
     if (!choice) {
-      this.error = choices.length ? "Pick an agent or preset first." : "No agents yet: still checking which are installed.";
+      this.error = choices.length ? "Pick an agent or preset first." : agentsCheckLine(this.hoCheck, true);
       cx.notify();
       return;
     }
@@ -1019,6 +1195,14 @@ export default class Agents extends View {
     closeOverlay(p.overlay);
   }
 
+  // A Pre-fill that didn't paste: the task goes to the clipboard, so it's never lost, and a
+  // toast says why and where it is.
+  async prefillFailed(req, who, why) {
+    const r = await exec("sh", ["-c", COPY, "sh", req.text]).catch((e) => ({ code: 1, stderr: String(e?.message ?? e) }));
+    notify({ title: `Couldn't pre-fill ${who}`, level: "error",
+      body: r?.code === 0 ? `${why} Your task is on the clipboard.` : `${why} Copying your task failed too: ${failure(r)}` });
+  }
+
   // Finds the terminal just opened by a Pre-fill handoff, waits until the agent reports
   // idle, and pastes the reference + task into its prompt via bracketed paste without Enter.
   async runPrefill(req) {
@@ -1034,31 +1218,23 @@ export default class Agents extends View {
       addr = (exact ?? pool[0])?.address ?? null;
       if (!addr) await sleep(200);
     }
-    if (!addr) {
-      notify({ title: `Couldn't pre-fill ${req.name || "agent"}`, body: "The new terminal wasn't found.", level: "error" });
-      return;
-    }
+    if (!addr) return this.prefillFailed(req, req.name || "agent", "The new terminal wasn't found.");
     const readyEnd = Date.now() + 45000;
     let ready = false;
     while (Date.now() < readyEnd) {
       const live = terminals().find((t) => t.address === addr && t.state === "live");
-      if (!live) return;
+      if (!live) return this.prefillFailed(req, req.name || addr, "Its terminal ended before it was ready.");
       const ag = agents().find((a) => a.address === addr);
       if (ag?.status === "idle") { ready = true; break; }
       await sleep(250);
     }
-    if (!ready) {
-      notify({ title: `Couldn't pre-fill ${req.name || addr}`, body: "It didn't report ready in time.", level: "error" });
-      return;
-    }
+    if (!ready) return this.prefillFailed(req, req.name || addr, "It didn't report ready in time.");
     await sleep(350);
     const agNow = agents().find((a) => a.address === addr);
-    if (!agNow || agNow.status !== "idle") return;
+    if (!agNow || agNow.status !== "idle") return this.prefillFailed(req, req.name || addr, "It got busy before the task could be pasted.");
     const r = await exec("python3", [`${appHome()}/mods/ws-agents/prefill.py`, addr, req.text], { timeout: 15000 })
       .catch((e) => ({ code: 1, stderr: String(e?.message ?? e) }));
-    if (r.code !== 0) {
-      notify({ title: `Couldn't pre-fill ${req.name || addr}`, body: failure(r), level: "error" });
-    }
+    if (r.code !== 0) return this.prefillFailed(req, req.name || addr, `${failure(r).replace(/\.$/, "")}.`);
   }
 
   // Wipe: closes the agent and moves its conversation to the Trash (menufacts.js:
@@ -1069,14 +1245,15 @@ export default class Agents extends View {
     const f = props().wipe;
     const targets = wipeTargets(f);
     const working = f.status === "working" ? "; it's working, so this also stops what it's doing" : "";
+    const helpers = helpersLine(f.wipeHelpers) ? ` ${helpersLine(f.wipeHelpers)}` : "";
     if (f.kind !== "agy") {
-      return this.dialogFrame(t, "agent-wipe", `Wipe ${f.name}?`, (cx) => this.doWipe(cx))
-        .child(div().pt(12).text_color(t.muted).child(`Closes it and moves its conversation to the ${trashName()}. History won't list it and it can't be resumed${working}.`))
-        .child(div().pt(10).text_size(11.5).text_color(t.dim).truncate().child(tilde(targets[0])))
+      return this.dialogFrame(t, "agent-wipe", `Wipe ${f.name}?`, (cx) => this.doWipe(cx), { locked: () => this.busy })
+        .child(div().pt(12).text_color(t.muted).child(`Closes it and moves its conversation to the ${trashName()}. History won't list it and it can't be resumed${working}.${helpers}`))
+        .child(div().id("agent-wipe-file").pt(10).text_size(11.5).text_color(t.dim).truncate().tooltip(tilde(targets[0])).child(tilde(targets[0])))
         .when(Boolean(this.error), (el) => el.child(div().pt(8).text_size(11.5).text_color(t.blocked).child(this.error)))
         .child(div().flex_1())
         .child(h_flex().pt(14).gap(8).justify_end()
-          .child(this.button(t, "agent-wipe-cancel", "Cancel", null, () => closeOverlay(props().overlay)))
+          .child(this.button(t, "agent-wipe-cancel", "Cancel", null, () => closeOverlay(props().overlay), this.busy))
           .child(this.button(t, "agent-wipe-go", this.busy ? "Wiping…" : "Wipe", "danger", (_e, cx) => this.doWipe(cx))));
     }
     const c = this.agyCheck;
@@ -1094,8 +1271,8 @@ export default class Agents extends View {
       `It takes ${c.tree.length} conversations: this one and ${kids === 1 ? "its sub-agent" : `its ${kids} sub-agents`}${c.subs?.length ? ` (${c.subs.map((x) => x.title ? `“${x.title}”` : x.id.slice(0, 8)).join(", ")}${kids > c.subs.length ? ", …" : ""})` : ""}. Press Wipe all ${c.tree.length} to go on.`,
     ].filter(Boolean).join(" ") : "";
     const go = this.busy ? "Wiping…" : this.agyClosed ? "Try again" : this.agyConfirm && c ? `Wipe all ${c.tree.length}` : "Wipe";
-    return this.dialogFrame(t, "agent-wipe", `Wipe ${f.name}?`, (cx) => this.doWipe(cx))
-      .child(div().pt(12).text_color(t.muted).child(`${f.address ? "Closes it, takes" : "Takes"} this conversation out of Antigravity's own lists and moves its files into ~/.herdr/trash, so History and /resume won't show it${working}. Experimental: what it removes is kept there too, and agywipe.js restore puts it back.`))
+    return this.dialogFrame(t, "agent-wipe", `Wipe ${f.name}?`, (cx) => this.doWipe(cx), { locked: () => this.busy })
+      .child(div().pt(12).text_color(t.muted).child(`${f.address ? "Closes it, takes" : "Takes"} this conversation out of Antigravity's own lists and moves its files into ~/.herdr/trash, so History and /resume won't show it${working}.${helpers} Experimental: what it removes is kept there too, and agywipe.js restore puts it back.`))
       .child(facts)
       .when(Boolean(ask) && !this.error, (el) => el.child(div().pt(8).text_size(11.5).text_color(t.ansi3).child(ask)))
       .when(Boolean(others) && !this.error && !ask, (el) => el.child(div().pt(8).text_size(11.5).text_color(t.muted).child(others)))
@@ -1103,7 +1280,7 @@ export default class Agents extends View {
       .when(Boolean(this.error), (el) => el.child(div().pt(8).text_size(11.5).text_color(t.blocked).child(this.error)))
       .child(div().flex_1())
       .child(h_flex().pt(14).gap(8).justify_end()
-        .child(this.button(t, "agent-wipe-cancel", this.agyClosed ? "Close" : "Cancel", null, () => closeOverlay(props().overlay)))
+        .child(this.button(t, "agent-wipe-cancel", this.agyClosed ? "Close" : "Cancel", null, () => closeOverlay(props().overlay), this.busy))
         .child(this.button(t, "agent-wipe-go", go, "danger", (_e, cx) => this.doWipe(cx))));
   }
 
@@ -1190,7 +1367,8 @@ export default class Agents extends View {
       return stop(`It still didn't finish: ${e.error ?? "it's waiting"}. It tries again each minute while no Antigravity runs, and says if it gives up.`, "failed");
     }
     // Its program now (it may have changed since the menu opened).
-    const got = f.address ? await hc(["get", f.address, "--json"]).catch(() => null) : null;
+    // 3 s at most (as History's Wipe asks it): the dialog can't be closed while it waits.
+    const got = f.address ? await exec("hc", ["get", f.address, "--json"], { timeout: 3000 }).catch(() => null) : null;
     let pid = f.pid;
     try { pid = JSON.parse(got?.stdout ?? "")?.foreground?.pid ?? pid; } catch { /* the menu's */ }
     let family = this.agyFamily ?? [];
@@ -1231,7 +1409,16 @@ export default class Agents extends View {
 
   sortMenu(t) {
     const on = sortOf().id;
+    const pick = (s) => { setShared("agents.sort", s.id); closeOverlay(props().overlay); };
     return v_flex()
+      .id("sort-menu")
+      .track_focus(this.handle)
+      .on_key_down((e, cx) => {
+        if (e.key === "down" || e.key === "up") this.at = (this.at + (e.key === "down" ? 1 : SORTS.length - 1)) % SORTS.length;
+        else if (e.key === "enter") return pick(SORTS[this.at]);
+        else return;
+        cx.notify();
+      })
       .w_full()
       .p(5)
       .bg(t.popover)
@@ -1245,11 +1432,9 @@ export default class Agents extends View {
         .rounded(7)
         .items_center()
         .text_color(t.foreground)
-        .hover((el) => el.bg(t.hover))
-        .on_click(() => {
-          setShared("agents.sort", s.id);
-          closeOverlay(props().overlay);
-        })
+        .when(SORTS[this.at] === s, (el) => el.bg(t.selected))
+        .on_mouse_move((e, cx) => this.pointerRow(SORTS.indexOf(s), e, cx))
+        .on_click(() => pick(s))
         .child(svg(`mods/workspace-chrome/${s.icon}.svg`).size(14).flex_none().text_color(t.muted))
         .child(div().flex_1().child(s.label))
         .when(s.id === on, (el) => el.child(svg("mods/workspace-chrome/check.svg").size(14).flex_none().text_color(t.foreground)))));
@@ -1342,7 +1527,9 @@ export default class Agents extends View {
     const on = k.address === shown;
     // Its numbers (as a top row's, statLine) on a second line, when there are any.
     const stat = numbersOn() ? this.stats[k.address] : null;
-    const nameEl = div().flex_1().min_w(0).truncate().text_color(on ? t.foreground : t.muted).child(k.name || k.template || k.program?.name || k.address);
+    const subName = k.name || k.template || k.program?.name || k.address;
+    const nameEl = div().id(`sub-name-${k.address}`).flex_1().min_w(0).truncate().text_color(on ? t.foreground : t.muted)
+      .when(this.tipOff !== `sub-${k.address}`, (el) => el.tooltip(subName)).child(subName); // not under its own menu
     return h_flex()
       .id(`sub-${k.address}`)
       .pl(9)
@@ -1355,10 +1542,17 @@ export default class Agents extends View {
       .text_size(12.5)
       .when(on, (el) => el.bg(t.raised))
       .hover((s) => s.bg(t.hover))
+      .on_hover((over, cx) => {
+        if (over) this.hovered = k.address;
+        else if (this.hovered === k.address) { this.hovered = null; this.tipOff = null; } // its ⋯ goes, and its tooltip's back next time
+        cx.notify();
+      })
       .on_click((e) => this.open(k, root, e))
-      .on_mouse_down("right", (_e, cx) => {
+      .on_mouse_down("right", (e, cx) => {
         cx.stop_propagation();
-        this.menuAt(cx, this.agentsBy?.get(k.address) ?? k, k.name || k.template || k.program?.name || k.address, st, false);
+        this.tipOff = `sub-${k.address}`; // the row's tooltips go while its menu is up, back once the pointer leaves the row
+        cx.notify();
+        this.menuAt(cx, this.agentsBy?.get(k.address) ?? k, subName, st, false, null, pressAt(e));
       })
       .children(s.lines.map((l) => this.treeLine(t, l, stat ? 38 : 26, stat ? 23 : 17)))
       .when(Boolean(pic), el => el.child(div().id(`sub-fold-${k.address}`).mr(6)
@@ -1369,6 +1563,8 @@ export default class Agents extends View {
           .child(nameEl).child(this.statLine(t, k, stat, `sub-stat-${k.address}`, this.short(k.address, stat)))
         : nameEl)
       .when(kids.length > 0, (el) => el.child(div().mr(4).child(this.fold(t, k.address, kids))))
+      .when(this.hovered === k.address, (el) => el.child(div().mr(6).child(this.more(t, `sub-more-${k.address}`,
+        (cx, at, press) => this.menuAt(cx, this.agentsBy?.get(k.address) ?? k, subName, st, false, at, press), `sub-${k.address}`))))
       .child(this.status(t, { status: st }, compact));
   }
 
@@ -1426,7 +1622,9 @@ export default class Agents extends View {
     const tabCounts = new Map();
     for (const a of list) tabCounts.set(a.tab, (tabCounts.get(a.tab) ?? 0) + 1);
     const byPriority = sort.id === "priority";
-    const urgency = new Map(list.map((a) => [a.address, Math.max(this.rank(a), ...this.tree(all, a.address).map((s) => RANK[kidStatus(s.t, this.listed)] ?? 0))]));
+    // A helper's done is its own row's news: it doesn't pull a working parent out of Working.
+    const kidRank = (k) => { const s = kidStatus(k, this.listed); return RANK[s === "done" ? "idle" : s] ?? 0; };
+    const urgency = new Map(list.map((a) => [a.address, Math.max(this.rank(a), ...this.tree(all, a.address).map((s) => kidRank(s.t)))]));
     const rankOf = (a) => urgency.get(a.address);
     if (byPriority) list = [...list].sort((x, y) => rankOf(y) - rankOf(x) || this.since(y) - this.since(x) || y.seq - x.seq);
     const pinned = list.filter((a) => a.pinned);
@@ -1469,22 +1667,30 @@ export default class Agents extends View {
       // An agent on another machine (`vps/t7`) says which.
       const machine = a.address.includes("/") ? a.address.split("/")[0] : null;
       if (collapsed) {
-        return h_flex()
+        return this.quietTip(h_flex()
           .id(`ag-${a.address}`)
           .h(26)
-          .px(8)
+          .mx(6)
+          .px(2)
+          .rounded(6)
           .flex_none()
           .items_center()
           .gap(4)
+          .when(Boolean(a.focused), (el) => el.bg(t.selected))
           .hover((s) => s.bg(t.hover))
           .on_click(() => { showTabs(); run("pane.focus", { pane: a.pane }); })
-          .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.menuAt(cx, a, label(a) || a.space_name, a.status, true); })
-          .child(div().flex_1().min_w(0).whitespace_nowrap().text_right().text_color(t.muted).child(String(i + 1)))
-          .child(h_flex().w(14).flex_none().items_center().justify_center().child(this.status(t, a, true)));
+          // Its tooltip goes while its own menu is open (quietTip()), until the pointer leaves the row.
+          .on_mouse_down("right", (e, cx) => { cx.stop_propagation(); this.tipOff = `ag-${a.address}`; cx.notify(); this.menuAt(cx, a, label(a) || a.space_name, a.status, true, null, pressAt(e)); })
+          .child(div().flex_1().min_w(0).whitespace_nowrap().text_right().text_color(a.focused ? t.foreground : t.muted).child(String(i + 1)))
+          .child(h_flex().w(14).flex_none().items_center().justify_center().child(this.status(t, a, true))),
+          // The rail's number says nothing about which agent it is: hover names it.
+          `ag-${a.address}`, more ? `${a.space_name} · ${more}` : a.space_name || label(a) || a.address);
       }
       const when = this.since(a);
       const idle = a.status === "idle" && !a.focused;
       const isPinned = a.pinned;
+      // Its tooltips stay off while the row's own right-click menu is up (tipOff: the row's id).
+      const quiet = this.tipOff === `ag-${a.address}`;
       const pin = div()
         .id(`pin-${a.address}`)
         .flex_none()
@@ -1493,7 +1699,7 @@ export default class Agents extends View {
         .text_color(t.dim)
         .cursor_pointer()
         .hover((s) => s.bg(t.hover).text_color(t.foreground))
-        .tooltip(isPinned ? "Unpin" : "Pin to the top")
+        .when(!quiet, (el) => el.tooltip(isPinned ? "Unpin" : "Pin to top"))
         .on_click((_e, cx) => {
           cx.stop_propagation();
           run("terminal.pin", { terminal: a.address, pinned: !isPinned });
@@ -1507,7 +1713,8 @@ export default class Agents extends View {
       const full = byPriority || isPinned;
       const name = full ? a.space_name || label(a) : more ?? (/^\d+$/.test(label(a)) ? a.program?.name || label(a) : label(a));
       const stat = numbersOn() ? this.stats[a.address] : null;
-      const nameLine = h_flex().min_w(0).gap(5).items_center()
+      const nameLine = h_flex().id(`name-${a.address}`).min_w(0).gap(5).items_center()
+        .when(!quiet, (el) => el.tooltip(full && more ? `${name} · ${more}` : String(name || a.address)))
         .child(div().min_w(0).max_w(full && more ? 120 : 200).truncate().text_color(idle ? t.muted : t.foreground).child(name))
         .when(full && Boolean(more), el => el.child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(`· ${more}`)));
       return h_flex()
@@ -1523,11 +1730,11 @@ export default class Agents extends View {
         .hover((s) => s.bg(t.hover))
         .on_hover((on, cx) => {
           if (on) this.hovered = a.address;
-          else if (this.hovered === a.address) this.hovered = null;
+          else if (this.hovered === a.address) { this.hovered = null; this.tipOff = null; } // its ⋯ goes, and its tooltip's back next time
           cx.notify();
         })
         .on_click(() => { showTabs(); run("pane.focus", { pane: a.pane }); })
-        .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.menuAt(cx, a, full && more ? `${name} · ${more}` : name, a.status, true); })
+        .on_mouse_down("right", (e, cx) => { cx.stop_propagation(); this.tipOff = `ag-${a.address}`; cx.notify(); this.menuAt(cx, a, full && more ? `${name} · ${more}` : name, a.status, true, null, pressAt(e)); })
         .when(Boolean(pic), el => el.child(div().id(`agent-fold-${a.address}`)
           .when(subs.length > 0, el => el.on_click((_e, cx) => {
             cx.stop_propagation();
@@ -1539,7 +1746,8 @@ export default class Agents extends View {
           : nameLine.flex_1())
         .when(Boolean(machine), el => el.child(div().text_size(10).text_color(t.dim).child(machine)))
         .when(subs.length > 0, el => el.child(this.fold(t, a.address, subs)))
-        .when(this.hovered === a.address, el => el.child(pin))
+        .when(this.hovered === a.address, el => el.child(pin)
+          .child(this.more(t, `more-${a.address}`, (cx, at, press) => this.menuAt(cx, a, full && more ? `${name} · ${more}` : name, a.status, true, at, press), `ag-${a.address}`)))
         .when(this.hovered !== a.address && Boolean(when), el => el.child(div().flex_none().text_size(11).text_color(t.dim).child(duration(now - when))))
         .child(this.status(t, a, byPriority && !isPinned));
     };
@@ -1603,28 +1811,27 @@ export default class Agents extends View {
             .items_center()
             .justify_between()
             .child(div().flex_1().text_size(11.5).font_medium().text_color(t.dim).child("Agents"))
-            .child(
+            .child(this.quietTip(
               div()
                 .id("ag-sort")
                 .text_size(11)
                 .text_color(t.dim)
                 .hover((s) => s.text_color(t.foreground))
-                .on_click(() => openOverlay({ mod: "ws-agents", kind: "popup", width: 200, height: 140, props: { sortMenu: true } }))
-                .tooltip(`Sort agents: ${sort.label}`)
+                .on_mouse_down("left", (e) => { this.sortPress = pressAt(e); })
+                .on_click((_e, cx) => { this.tipOff = "ag-sort"; openOverlay({ mod: "ws-agents", kind: "popup", width: 200, height: 140, props: { sortMenu: true, pointer: this.sortPress ?? null } }); cx.notify(); })
                 .child(svg(`mods/workspace-chrome/${sort.icon}.svg`).size(14)),
-            )
+              "ag-sort", `Sort agents: ${sort.label}`))
             // + : the + menu with only the agents and presets, starting in the shown space.
             // Not while the workspace has no space: the tab bar's + makes one.
-            .when(!shared("workspaces.covered"), (el) => el.child(
+            .when(!shared("workspaces.covered"), (el) => el.child(this.quietTip(
               div()
                 .id("ag-new")
                 .ml(10)
                 .text_color(t.dim)
                 .hover((s) => s.text_color(t.foreground))
-                .on_click(() => openOverlay({ mod: "ws-new-menu", kind: "popup", width: 250, height: 0.85, props: { agentsOnly: true } }))
-                .tooltip("Start an agent")
+                .on_click((_e, cx) => { this.tipOff = "ag-new"; openOverlay({ mod: "ws-new-menu", kind: "popup", width: 250, height: 0.85, props: { agentsOnly: true } }); cx.notify(); })
                 .child(svg("mods/workspace-chrome/plus.svg").size(14)),
-            )),
+              "ag-new", "Start an agent"))),
         ),
       )
       .when(list.length === 0 && !collapsed, (el) =>

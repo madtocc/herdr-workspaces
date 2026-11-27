@@ -66,7 +66,7 @@
   <text x="418.1" y="29" fill="#e8e9eb" font-size="13">Worktrees</text>
   <g transform="translate(491.54 18.5) scale(0.4583)" fill="none" stroke="#7d8089" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18" /> <path d="m6 6 12 12" /></g>
   <rect x="522.54" y="16" width="1" height="16" fill="#2f3137"/>
-  <text x="541.54" y="29" fill="#a5a8ae" font-size="13">1</text>
+  <text x="541.54" y="29" fill="#a5a8ae" font-size="13">zsh</text>
   <g transform="translate(950 17) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g>
   <!-- Beside (while a view is shown full size): moves it into a pane beside the tab's terminals -->
   <g transform="translate(985 17) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M12 3v18"/></g>
@@ -107,8 +107,8 @@
   <rect x="1129.38" y="248" width="46.52" height="24" rx="6" fill="none" stroke="#2f3137"/><text x="1138.38" y="264.14" fill="#e8e9eb" font-size="11.5">Go to</text>
   <text x="1115.38" y="264" fill="#7d8089" font-size="12" text-anchor="end">2h</text>
   <rect x="1013.76" y="250" width="61.61" height="20" rx="5" fill="#2c2e34"/><text x="1020.76" y="264.14" fill="#d9a441" font-size="11.5">#12 open</text>
-  <rect x="969.845" y="250" width="37.92" height="20" rx="5" fill="#2c2e34"/><text x="976.845" y="264.14" fill="#8ab4f8" font-size="11.5">open</text>
-  <rect x="914.195" y="250" width="49.65" height="20" rx="5" fill="#2c2e34"/><text x="921.195" y="264.14" fill="#a5a8ae" font-size="11.5">ACM-3</text>
+  <rect x="941.765" y="250" width="66" height="20" rx="5" fill="#2c2e34"/><text x="948.765" y="264.14" fill="#8ab4f8" font-size="11.5">in a space</text>
+  <rect x="886.115" y="250" width="49.65" height="20" rx="5" fill="#2c2e34"/><text x="893.115" y="264.14" fill="#a5a8ae" font-size="11.5">ACM-3</text>
   <rect x="324.5" y="293" width="15" height="15" rx="4" fill="none" stroke="#3a3c42"/>
   <text x="368" y="304.5" fill="#e8e9eb" font-size="13.5">fix/login-redirect</text>
   <text x="494.48" y="304.5" fill="#7d8089" font-size="11.5">~/.herdr/worktrees/api/login</text>

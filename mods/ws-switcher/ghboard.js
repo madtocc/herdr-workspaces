@@ -21,6 +21,7 @@ import { exec } from "./posix.js";
 import * as fs from "fs/promises";
 import { wsDir, message, boardOf, split, field, withFields, Store } from "./automations.js";
 import { ITEM_ID, itemsQuery, shape, chip, step, refOf, ghError } from "./ghfacts.js";
+import { cardAt } from "./prs.js";
 
 const EVERY = 300e3;  // how often the taken items are read
 const RETRY = 120e3;  // … after gh couldn't read them
@@ -173,7 +174,7 @@ export class GhWatcher {
       t.last = true;
       notify({
         title: `${t.id}: ${f.state === "merged" ? "merged" : "closed"} on GitHub`, level: "info",
-        body: `${refOf(f)} was ${f.state === "merged" ? "merged" : "closed"}, so its card moved to ${label(moved)}.`,
+        body: `${refOf(f)} was ${f.state === "merged" ? "merged" : "closed"}, so its card moved to ${label(moved)}.`, ...cardAt(t),
       });
     }
     Object.assign(e, { ws: t.ws, item: t.item, s: out.s, f, at: now });

@@ -80,13 +80,38 @@ export function labelOf(tree) {
 // means not looked at yet), and nothing open or running in it.
 export const finished = (tree, inUse) => kindOf(tree) === "merged" && tree.dirty === 0 && !inUse;
 
+// The one rule every screen keeps: round down; "1m" under a minute (never "now" here),
+// minutes under an hour, hours under a day, days under 60, months (days/30) under 730 days, then years.
 export function ago(unix, now = Date.now() / 1000) {
   if (!unix) return "";
-  const d = Math.max(0, now - unix);
-  if (d < 3600) return `${Math.max(1, Math.round(d / 60))}m`;
-  if (d < 86400) return `${Math.round(d / 3600)}h`;
-  if (d < 86400 * 60) return `${Math.round(d / 86400)}d`;
-  return `${Math.round(d / 86400 / 30)}mo`;
+  const s = Math.max(0, now - unix);
+  if (s < 3600) return `${Math.max(1, Math.floor(s / 60))}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h`;
+  const d = Math.floor(s / 86400);
+  if (d < 60) return `${d}d`;
+  return d < 730 ? `${Math.floor(d / 30)}mo` : `${Math.floor(d / 365)}y`;
 }
 
 export const inside = (p, dir) => Boolean(p && dir) && (p === dir || p.startsWith(dir + "/"));
+
+// A repo's Scripts panel holds lines that weren't saved: typed and saved are { setup, archive }.
+// Saving trims each line, so the spaces around one don't count.
+export const unsaved = (typed, saved) => ["setup", "archive"].some((k) => String(typed?.[k] ?? "").trim() !== String(saved?.[k] ?? "").trim());
+
+// The dot before a worktree's branch, in words: the most urgent agent there, or that
+// something is open in it.
+const DOT = { blocked: "An agent here needs you", working: "An agent here is working", done: "An agent here has finished", idle: "An agent here is idle" };
+export const dotTip = (status, inUse) => (status ? DOT[status] ?? `An agent here: ${status}` : inUse ? "Open, with no agent in it" : null);
+
+// The Remove dialog's red button: its words in each state, and every label it can come to show
+// in this dialog. The button is as wide as the widest of those from the start, so a label that
+// changes never pushes Cancel aside or puts red where Cancel was. "Remove anyway" follows a
+// failed removal of one worktree (forced), or asks for several with changes to lose.
+const changes = (n) => `${n} change${n === 1 ? "" : "s"}`;
+export function removeLabel({ working, force, armed, one, lost }) {
+  if (working) return "Removing…";
+  if (force) return "Remove anyway";
+  if (armed) return one ? `Remove and lose ${changes(lost)}` : "Remove anyway";
+  return "Remove";
+}
+export const removeReserve = ({ one, lost }) => ["Remove", "Removing…", ...(one || lost > 0 ? ["Remove anyway"] : []), ...(one && lost > 0 ? [`Remove and lose ${changes(lost)}`] : [])];

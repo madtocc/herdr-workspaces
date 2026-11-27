@@ -66,9 +66,9 @@
   <text x="418.1" y="29.0" fill="#e8e9eb" font-size="13">Notes</text>
   <g transform="translate(463.1 18.5) scale(0.4583)" fill="none" stroke="#7d8089" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18" /> <path d="m6 6 12 12" /></g>
   <rect x="494.1" y="16.0" width="1.0" height="16" fill="#2f3137"/>
-  <text x="513.1" y="29.0" fill="#a5a8ae" font-size="13">1</text>
-  <text x="540.1" y="29.0" fill="#a5a8ae" font-size="13">implementer</text>
-  <circle cx="619.6" cy="25" r="3" fill="#5b8def"/>
+  <text x="513.1" y="29.0" fill="#a5a8ae" font-size="13">zsh</text>
+  <text x="555.1" y="29.0" fill="#a5a8ae" font-size="13">implementer</text>
+  <circle cx="634.6" cy="25" r="3" fill="#5b8def"/>
   <g transform="translate(950 17) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g>
   <!-- Beside (while a view is shown full size): moves it into a pane beside the tab's terminals -->
   <g transform="translate(985 17) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M12 3v18"/></g>
@@ -104,10 +104,10 @@
   <text x="561.0" y="234.0" fill="#7d8089" font-size="11.5" text-anchor="end">3d</text>
   <text x="307.0" y="253.0" fill="#7d8089" font-size="11.5">settings.py is 2,000 lines: one file per section.</text>
   <text x="307.0" y="288.0" fill="#e8e9eb" font-size="13" font-weight="500">A docs page per endpoint</text>
-  <text x="561.0" y="288.0" fill="#7d8089" font-size="11.5" text-anchor="end">1w</text>
+  <text x="561.0" y="288.0" fill="#7d8089" font-size="11.5" text-anchor="end">7d</text>
   <text x="307.0" y="307.0" fill="#7d8089" font-size="11.5">Generate them from the OpenAPI file?</text>
   <text x="307.0" y="342.0" fill="#e8e9eb" font-size="13" font-weight="500">Offline mode for the web app</text>
-  <text x="561.0" y="342.0" fill="#7d8089" font-size="11.5" text-anchor="end">2w</text>
+  <text x="561.0" y="342.0" fill="#7d8089" font-size="11.5" text-anchor="end">14d</text>
   <text x="307.0" y="361.0" fill="#7d8089" font-size="11.5">A service worker? Ask what breaks first.</text>
   <!-- the open note: its file, saved, and its actions -->
   <text x="596.0" y="125.0" fill="#7d8089" font-size="11.5">notes/2026-11-21-1105-cache-the-web-build.md</text>

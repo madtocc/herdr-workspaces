@@ -64,7 +64,7 @@
   <text x="333" y="29" fill="#e8e9eb" font-size="13">Board</text>
   <g transform="translate(378.1 18.5) scale(0.4583)" fill="none" stroke="#7d8089" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18" /> <path d="m6 6 12 12" /></g>
   <rect x="409.1" y="16" width="1" height="16" fill="#2f3137"/>
-  <text x="428.1" y="29" fill="#a5a8ae" font-size="13">1</text>
+  <text x="428.1" y="29" fill="#a5a8ae" font-size="13">zsh</text>
   <g transform="translate(950 17) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></g>
   <!-- Beside (while a view is shown full size): moves it into a pane beside the tab's terminals -->
   <g transform="translate(985 17) scale(0.5833)" fill="none" stroke="#a5a8ae" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M12 3v18"/></g>
@@ -86,7 +86,7 @@
   <rect x="1155.56" y="104" width="93.44" height="26" rx="6" fill="none" stroke="#2f3137"/><text x="1165.56" y="121.32" fill="#a5a8ae" font-size="12">Change board</text>
   <rect x="1044.52" y="104" width="103.04" height="26" rx="6" fill="none" stroke="#2f3137"/><text x="1054.52" y="121.32" fill="#a5a8ae" font-size="12">Open on GitHub</text>
   <rect x="971.64" y="104" width="64.88" height="26" rx="6" fill="none" stroke="#2f3137"/><text x="981.64" y="121.32" fill="#a5a8ae" font-size="12">Refresh</text>
-  <text x="959.64" y="122" fill="#7d8089" font-size="11.5" text-anchor="end">Read 4 min ago</text>
+  <text x="959.64" y="122" fill="#7d8089" font-size="11.5" text-anchor="end">Read 4m ago</text>
   <rect x="729.19" y="102" width="138.25" height="30" rx="8" fill="#17181b" stroke="#2f3137"/><rect x="732.19" y="105" width="70.75" height="24" rx="6" fill="#26272c"/><g transform="translate(741.19 110.5) scale(0.5417)" fill="none" stroke="#e8e9eb" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M15 3v18"/><path d="M5.5 7h1.5"/><path d="M11.5 7h1.5"/><path d="M11.5 11h1.5"/><path d="M17.5 7h1"/></g><text x="759.19" y="121.5" fill="#e8e9eb" font-size="12.5">Board</text><g transform="translate(811.94 110.5) scale(0.5417)" fill="none" stroke="#a5a8ae" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3.5 6h.01"/><path d="M3.5 12h.01"/><path d="M3.5 18h.01"/></g><text x="829.94" y="121.5" fill="#a5a8ae" font-size="12.5">List</text>
   <rect x="322" y="154" width="73.12" height="24" rx="12" fill="#26272c" stroke="#8ab4f8"/><text x="333" y="170.32" fill="#e8e9eb" font-size="12">Everyone</text>
   <rect x="402.12" y="154" width="46.72" height="24" rx="12" fill="none" stroke="#2f3137"/><text x="413.12" y="170.32" fill="#a5a8ae" font-size="12">Mine</text>

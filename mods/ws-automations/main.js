@@ -47,12 +47,26 @@ import { KNOBS, words, programOf, knobsIn, configModels, listable, keptModels, l
 import { runCheck, runShellScript, checkEnv } from "./check.js";
 import { splitFront, fieldValue, withFrontFields, normCheck, normScript, parseDuration, formatDuration, effectiveTimeout, effectiveNotify, SHELLS } from "./autofacts.js";
 import { DRAFTER_NAMES, DRAFT_MODEL, DRAFT_TIMEOUT, SCHEMA, GUIDE, buildDraftCommand, parseDraftOutput, pickDrafters } from "./drafter.js";
-import { automationSetting, parseSettings, SETTINGS_FILE, platformWords } from "./settingsfacts.js";
+import { automationSetting, parseSettings, SETTINGS_FILE, platformWords, featureOn } from "./settingsfacts.js";
+import { lookWord, noOutcome, soonAfter } from "./lookfacts.js";
 import * as fs from "fs/promises";
 // The system's trash by its name: the Recycle Bin on Windows, the Trash elsewhere.
 const trashName = () => (window()?.platform === "windows" ? "Recycle Bin" : "Trash");
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+// The first Esc or × with something typed or changed and not saved says this (in `working`); a second Esc or × closes.
+const LEAVE_ASK = { esc: "Press Esc again to close and drop what you typed.", x: "Click × again to close and drop what you typed." };
+// The same question before a run's Go to or Log leaves the screen (leaveAsk "go:<run id>" or "log:<run id>").
+const GO_ASK = "Click again to go there and drop what you typed.";
+// Delete's and Stop's question: a press on its pair this soon after the one that asked is the
+// rest of a double-click, so it's ignored (the second click lands on Cancel or Keep running).
+const SECOND_PRESS_MS = 500;
+// The switcher's sidebar copy says it's there every 5 s; missing or older than 15 s, it's away, and an ask
+// for it (Log's "open") would wait for nobody.
+const switcherHere = () => Date.now() - (shared("workspaces.switcher.alive")?.at ?? 0) < 15000;
+const AWAY = "Show the sidebar to do this";
+// The runner reads an agent's Outcome line only while Notifications are on (lookfacts.js).
+const notificationsOn = () => featureOn(shared("workspaces.settings"), "notifications");
 const MODEL_WORD = /^[A-Za-z0-9._:/@-]+$/;
 const COLUMNS = ["backlog", "todo", "doing", "review", "done"];
 const STATE = { working: "working", blocked: "needs you", done: "finished", idle: "finished" };
@@ -185,12 +199,20 @@ function runState(r, ag, tm) {
   // A script's run: how it ended (a tab one is followed like an agent's until it ends).
   if (r.kind === "shell" && r.closed) return r.outcome === "failed" ? (r.exitCode != null ? `exit ${r.exitCode}` : "failed") : r.outcome === "nothing to do" ? "nothing to do" : `exit ${r.exitCode ?? 0}`;
   // The runner closed its tab once its agent was done (automations.js: finished).
-  if (r.closed) return "finished, closed";
+  // How it went, when that needs a look (failed, or no Outcome line); else as it was.
+  if (r.closed) return r.outcome === "failed" ? "failed" : noOutcome(r, notificationsOn()) ? "no outcome" : "finished, closed";
   const a = ag.find((x) => x.address === r.terminal);
   if (a) return STATE[a.status] ?? a.status;
   // Not an agent (or not one that reports): its tab is still open, or it's gone.
   // `stuck`: an agent that reported nothing a minute in, so it's asking something first.
   return tm.some((x) => x.address === r.terminal && x.state === "live") ? (r.stuck ? "needs you" : "open") : "closed";
+}
+
+// A run's Stop is offered while its tab is open and it works, needs you, or is a program still open.
+function stoppableRun(r, ag, tm) {
+  const state = runState(r, ag, tm);
+  const live = state !== "closed" && !r.closed && r.status === "started" && r.tab;
+  return Boolean(live) && (state === "working" || state === "needs you" || state === "open");
 }
 
 // shared "workspaces.automations" with one changed or (null) gone, until the runner confirms it.
@@ -266,14 +288,15 @@ export default class Automations extends View {
     this.findHi = 0;
     this.findModels = [];
     this.findScroll = ScrollHandle.new();
+    this.formScroll = ScrollHandle.new(); // the editor's form: a new one per automation opened, and for Preview (freshForm)
     this.findIn.on("change", (_e, cx) => { this.findHi = 0; this.findScroll.scroll_to_item(0); cx.notify(); });
     this.findIn.on("submit", (_e, cx) => { this.findSubmit(); cx.notify(); });
     for (const input of [this.askIn, this.changeIn]) input.on("submit", (e, cx) => { if (!e.shift) this.draft(cx); });
     // The editor follows the fields as you type; the one being typed in has the accent border.
     this.focusedIn = null;
     for (const input of [this.nameIn, this.descIn, this.whenIn, this.checkIn, this.bodyIn, this.askIn, this.changeIn, this.modelIn, this.textIn, this.findIn]) {
-      input.on("change", (_e, cx) => cx.notify());
-      input.on("focus", (_e, cx) => { this.focusedIn = input; cx.notify(); });
+      input.on("change", (_e, cx) => { this.calm(); cx.notify(); });
+      input.on("focus", (_e, cx) => { this.focusedIn = input; this.leaveAsk = null; cx.notify(); });
       input.on("blur", (_e, cx) => {
         if (this.focusedIn === input) this.focusedIn = null;
         // The model box closes empty: what was half typed isn't a choice.
@@ -297,6 +320,7 @@ export default class Automations extends View {
     this.triedScript = null;   // { script, folder, code, timedOut, durationMs, combined }: what it did here
     this.preview = null;       // Preview's panel: { sel, loading, check: { out } | { error } | null, text, vars, folder }
     this.askText = false;      // Run now on a `link` one: the {{text}} strip is open
+    this.ranNow = null;        // { key, at }: the last Run now asked here; the same one again within SECOND_PRESS_MS is a double click
     // The settings file as read when the screen opened, for the Drafter when Settings hasn't shared it.
     this.fileSettings = null;
     cx.spawn(async () => {
@@ -400,8 +424,88 @@ export default class Automations extends View {
       || Object.keys(SHELL_DEFAULTS).some((k) => c[k] !== (s[k] ?? SHELL_DEFAULTS[k]));
   }
 
+  // Anything typed or changed here that closing would drop: unsaved edits, a draft being
+  // written or just arrived, words in the Describe, Change it or Run now text box.
+  unsaved() {
+    if (!this.sel) return false;
+    return this.dirty() || Boolean(this.drafting) || [this.askIn, this.changeIn, this.textIn].some((i) => i.value().trim());
+  }
+
+  // Typing or pressing anything else: Delete (unless keep is "delete") and Stop (unless "stop")
+  // aren't armed any more, and Esc asks again before it closes.
+  // While it deletes, the question ("Deleting…") stays.
+  calm(keep = null) {
+    if (keep !== "delete" && !this.busy) this.confirming = false;
+    if (keep !== "stop") this.stopping = null;
+    this.leaveAsk = null;
+    this.awayNote = null;
+  }
+
+  // The run Stop asks about can still be stopped (its pair is drawn).
+  stopAsks() {
+    const r = (shared("workspaces.automation.runs") ?? []).find((x) => x.id === this.stopping);
+    return Boolean(r) && stoppableRun(r, agents(), terminals());
+  }
+
+  // Delete or Stop asked (armedAt is when) and a press on its pair came too soon after: ignored.
+  tooSoon() { return Date.now() - (this.armedAt ?? 0) < SECOND_PRESS_MS; }
+
+  // Esc and Cmd/Ctrl+W, as Herdr sends them to a dialog (overlay.close, tab.close, pane.close; never
+  // as keys): with the model list open, Esc closes the list and the dialog stays; otherwise leave().
+  closeAction(action, cx) {
+    cx.stop_propagation();
+    if (action === "overlay.close" && this.focusedIn === this.findIn) {
+      this.findSet("");
+      this.findIn.blur();
+      this.handle.focus();
+      cx.notify();
+      return;
+    }
+    // Stop asking about a run that has ended by itself: its pair isn't drawn, so there's no question left.
+    if (this.stopping && !this.stopAsks()) this.stopping = null;
+    // Delete or Stop asking: Esc, or Cmd/Ctrl+W, takes the question back and the dialog stays.
+    if (!this.busy && (this.confirming || this.stopping)) {
+      this.confirming = false;
+      this.stopping = null;
+      cx.notify();
+      return;
+    }
+    this.leave(cx, "esc");
+  }
+
+  // Esc (how "esc") and the header's × ("x"): with something unsaved, the first asks and a second
+  // Esc or × closes. Nothing while it's saving or deleting, which mustn't stop half way.
+  leave(cx, how) {
+    if (this.busy) return;
+    this.confirming = false;
+    this.stopping = null;
+    if (this.unsaved() && this.leaveAsk !== "esc" && this.leaveAsk !== "x") {
+      this.leaveAsk = how;
+      cx.notify();
+      return;
+    }
+    closeOverlay(props().overlay);
+  }
+
+  // A run's Go to (kind "go") and Log ("log") leave the screen: nothing while it saves or deletes,
+  // and with something unsaved the first click asks (GO_ASK) and a second on the same one goes.
+  // Log needs the switcher (it opens History): away, the footer line says so (in muted) and nothing is posted.
+  leaveFor(kind, r, cx) {
+    if (this.busy) return;
+    // Like any other press, it takes back Delete's and Stop's question (not this one's, so a second click goes).
+    this.confirming = false;
+    this.stopping = null;
+    if (kind === "log" && !switcherHere()) { this.awayNote = AWAY; cx.notify(); return; }
+    const key = `${kind}:${r.id}`;
+    if (this.unsaved() && this.leaveAsk !== key) { this.leaveAsk = key; cx.notify(); return; }
+    if (kind === "log") this.openLog(r); else this.goTo(r);
+  }
+
   // Opens an automation (or a new one) in the editor; unsaved edits ask for a second click.
   pick(sel, fill, cx) {
+    this.calm();
+    const discarded = Boolean(this.discarding);
+    this.discarding = false;
     const key = JSON.stringify(sel);
     if (this.dirty() && this.pending !== key) {
       this.pending = key;
@@ -414,7 +518,9 @@ export default class Automations extends View {
     this.notice = null;
     this.confirming = false;
     this.stopping = null;
+    this.leaveAsk = null;
     this.drafting = null;
+    this.draftStale = null;
     this.drafted = false;
     this.draftNote = null;
     this.draftError = null;
@@ -435,6 +541,8 @@ export default class Automations extends View {
       this.whenIn.set_value(snap.when);
       this.checkIn.set_value(snap.check);
       this.bodyIn.set_value(snap.body);
+      if (discarded) this.slidAt = Date.now();
+      else this.freshForm(); // opened: at its top (Discard keeps the place)
       this.choice = { agent: snap.agent, model: snap.model, effort: snap.effort, folder: snap.folder, card: snap.card, keep: snap.keep ?? false, enabled: snap.enabled, offHere: snap.offHere ?? false,
         ...Object.fromEntries(Object.keys(SHELL_DEFAULTS).map((k) => [k, snap[k] ?? SHELL_DEFAULTS[k]])) };
       cx.notify();
@@ -536,10 +644,11 @@ export default class Automations extends View {
   }
 
   // A draft from the first CLI that gives one; when none does, the first one's reason.
-  async askDraft(text) {
+  async askDraft(text, cx) {
     let first = null;
     for (const cli of this.drafters()) {
       this.drafter = cli;
+      cx?.notify(); // the busy line names the one asked now
       try { return await this.askDrafter(cli, text); }
       catch (e) { first ??= `${DRAFTER_NAMES[cli] ?? cli}: ${message(e)}`; }
     }
@@ -562,21 +671,29 @@ export default class Automations extends View {
     const input = this.askState();
     const ask = input.value().trim();
     if (!def || !sel || !ask || this.drafting) return;
+    this.calm();
     // A new one starts from nothing until it has been drafted or filled in; after that, a draft changes it.
     const current = this.blank() ? null : this.current();
+    // The fields as they were when it asked: changed meanwhile, the draft isn't used (it'd overwrite them).
+    const before = JSON.stringify(this.current());
     this.drafting = sel;
     this.draftError = null;
     this.draftNote = null;
+    this.draftStale = null;
     this.error = null;
     this.notice = null;
     cx.notify();
     cx.spawn(async (cx) => {
       try {
-        let d = await this.askDraft(this.request(def, ask, current, null));
+        let d = await this.askDraft(this.request(def, ask, current, null), cx);
         const w = parseWhen(oneLine(d.when));
-        if (w.kind === "error") d = await this.askDraft(this.request(def, ask, current, { when: d.when, problem: w.error }));
+        if (w.kind === "error") d = await this.askDraft(this.request(def, ask, current, { when: d.when, problem: w.error }), cx);
         // Opened another one meanwhile: this draft was for the one before.
         if (this.sel !== sel) return;
+        if (JSON.stringify(this.current()) !== before) {
+          this.draftStale = "You changed it while the draft was being written, so the draft wasn't used. Ask again.";
+          return;
+        }
         this.apply(def, d);
         this.drafted = true;
         this.draftNote = oneLine(d.note) || null;
@@ -637,6 +754,8 @@ export default class Automations extends View {
   save(cx) {
     const sel = this.sel, def = this.def();
     if (!sel || !def || this.busy) return;
+    this.calm();
+    this.draftStale = null;
     const name = sel.isNew ? this.nameIn.value().trim() : sel.name;
     const when = oneLine(this.whenIn.value());
     const trigger = parseWhen(when);
@@ -652,6 +771,8 @@ export default class Automations extends View {
     const check = normCheck(this.checkIn.value());
     const script = shell ? normScript(body) : null;
     if (shell && !script) return showDetails("A shell automation runs its script: write it in the Script box.");
+    // The Prompt box is above Details, so this one doesn't open them. (herdr-ws-run --add refuses it too.)
+    if (!shell && !body.replace(/<!--[\s\S]*?-->/g, "").trim()) { this.error = "Write the agent's task in the Prompt box."; cx.notify(); return; }
     if (c.timeout && parseDuration(c.timeout) === null) return showDetails(`"${c.timeout}" isn't a length of time: 30s, 2m, 1h or none.`);
     // A global one's `off:` line: the other workspaces as they were, and this one as chosen.
     const off = global ? [...(this.snap.off ?? []).filter((w) => w !== def.id), ...(c.offHere ? [def.id] : [])] : [];
@@ -706,7 +827,8 @@ export default class Automations extends View {
   remove(cx) {
     const sel = this.sel;
     if (!sel || sel.isNew || this.busy) return;
-    if (!this.confirming) { this.confirming = true; cx.notify(); return; }
+    if (!this.confirming) { this.confirming = true; this.armedAt = Date.now(); cx.notify(); return; }
+    if (this.tooSoon()) return;
     this.busy = true;
     cx.spawn(async (cx) => {
       try {
@@ -726,11 +848,47 @@ export default class Automations extends View {
     });
   }
 
+  // Discard, beside Save while there are unsaved edits: the saved automation again, as picking
+  // it does, with no question (what it drops is on screen).
+  discard(cx) {
+    if (!this.sel || this.sel.isNew || this.busy) return;
+    const s = { scope: this.sel.scope, name: this.sel.name, isNew: false };
+    this.pending = JSON.stringify(s);
+    this.discarding = true;
+    this.pick(s, null, cx);
+  }
+
+  // Discard leaves the row once the saved one is back, and Run now or Preview slides under the
+  // pointer: a press on them that soon after is the rest of a double-click, so it's ignored.
+  // The form's scroll position lives in its handle: a new handle starts at the very top (pt included,
+  // which scroll_to_item(0) leaves out). The kit keeps its own copy while it draws, so releasing is safe.
+  freshForm() { this.formScroll.release(); this.formScroll = ScrollHandle.new(); }
+
+  justSlid() { return soonAfter(this.slidAt, Date.now(), SECOND_PRESS_MS); }
+
+  // Cancel, beside Create on a new one: it isn't made, and the editor goes back to its first words.
+  cancelNew(cx) {
+    if (!this.sel?.isNew || this.busy) return;
+    this.calm();
+    this.sel = null;
+    this.snap = null;
+    this.pending = null;
+    this.error = null;
+    this.notice = null;
+    this.drafting = null;
+    this.draftStale = null;
+    this.preview = null;
+    this.askText = false;
+    for (const i of [this.askIn, this.changeIn, this.textIn]) i.set_value("");
+    cx.notify();
+  }
+
   // A row's switch: turns it on or off at once, rewriting only its `enabled` line.
   // A global one's row is about this workspace: it rewrites the `off:` line. One that's
   // off everywhere, turned on here, comes on here alone (off in each other workspace).
   // With no workspace shown, a global one's row is about them all: its `enabled` line.
   toggle(a, cx) {
+    this.calm();
     const open = this.same(a);
     if (open && this.dirty()) { this.error = "Save or discard this automation's changes first."; cx.notify(); return; }
     const none = this.none();
@@ -776,8 +934,10 @@ export default class Automations extends View {
     if (had) cx.notify(); else this.save(cx);
   }
 
+  // The first press asks (Keep running / Stop it in the row); Stop it, not too soon after, closes the tab.
   stop(r, cx) {
-    if (this.stopping !== r.id) { this.stopping = r.id; cx.notify(); return; }
+    if (this.stopping !== r.id) { this.calm(); this.stopping = r.id; this.armedAt = Date.now(); cx.notify(); return; }
+    if (this.tooSoon()) return;
     this.stopping = null;
     run("tab.close", { id: r.tab, confirmed: true });
     cx.notify();
@@ -874,6 +1034,8 @@ export default class Automations extends View {
   previewRun(cx) {
     const def = this.def(), sel = this.sel, c = this.choice;
     if (!def || !sel || def.none) return;
+    this.calm();
+    this.freshForm(); // its panel is near the top
     const saved = this.lookup(sel);
     const check = normCheck(this.checkIn.value());
     const waits = Boolean(check) && saved?.checkAllowed === false && check === saved.check;
@@ -930,12 +1092,16 @@ export default class Automations extends View {
   // go: from the {{text}} strip (a `link` one), which the first click opens.
   runNow(cx, go = false) {
     if (!this.sel || this.sel.isNew || this.none()) return;
+    this.calm();
     if (this.dirty()) { this.error = "Save it first: Run now starts what's saved."; cx.notify(); return; }
     const saved = this.lookup(this.sel);
     if (saved?.replaced) { this.error = `${this.def()?.name ?? "This workspace"} has its own "${saved.name}", which is the one that runs here. Open that one to run it.`; cx.notify(); return; }
     if (saved?.allowed === false) { this.error = `Allow its ${saved.scriptAllowed === false ? "script" : "check"} first: it doesn't start until then.`; cx.notify(); return; }
     if (saved?.trigger?.kind === "link" && !go) { this.askText = true; this.textIn.focus(); cx.notify(); return; }
     const text = go ? this.textIn.value().trim() : "";
+    const key = `${this.workspace}/${this.sel.scope}/${this.sel.name}\n${text}`, now = Date.now();
+    if (this.ranNow?.key === key && soonAfter(this.ranNow.at, now, SECOND_PRESS_MS)) return;
+    this.ranNow = { key, at: now };
     setShared("workspaces.automation.run", { workspace: this.workspace, name: this.sel.name, ...(text ? { text } : {}), at: Date.now() });
     this.askText = false;
     this.textIn.set_value("");
@@ -977,7 +1143,8 @@ export default class Automations extends View {
     if (r) this.findPick(r);
   }
   // Keys while the model box is open: arrows move the highlight, Tab fills in the
-  // highlighted name, Escape closes it (and the dialog stays). Enter is the box's submit.
+  // highlighted name. Enter is the box's submit. Esc never arrives here: Herdr sends it to the
+  // dialog as overlay.close, and closeAction() closes the list first (the dialog stays).
   findKey(e, cx) {
     if (this.focusedIn !== this.findIn) return;
     const { rows } = typeahead(this.findModels, this.findIn.value());
@@ -987,9 +1154,6 @@ export default class Automations extends View {
       this.findScroll.scroll_to_item(this.findHi);
     } else if (e.key === "tab" && r && r.kind !== "typed") {
       this.findSet(r.kind === "provider" ? `${r.provider}/` : r.id);
-    } else if (e.key === "escape") {
-      this.findSet("");
-      this.findIn.blur();
     } else return;
     cx.stop_propagation();
     cx.notify();
@@ -1014,7 +1178,7 @@ export default class Automations extends View {
         .on_click((_e, cx) => { this.findIn.focus(); cx.notify(); })
         .child(h_flex().size_full().px(10).gap(6).items_center().rounded(13).border_1().border_color(t.accent).bg(t.selected)
           .text_size(12).text_color(t.foreground)
-          .child(div().flex_1().min_w(0).truncate().child(model))
+          .child(div().id(`${id}-find-model`).flex_1().min_w(0).truncate().tooltip(model).child(model))
           .child(div().id(`${id}-find-clear`).size(18).flex_none().flex().items_center().justify_center().rounded(9).text_color(t.dim).cursor_pointer()
             .hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip("Back to Default")
             .on_click((_e, cx) => { cx.stop_propagation(); clear(); cx.notify(); }).child("×")))));
@@ -1027,7 +1191,7 @@ export default class Automations extends View {
         .child(div().flex_1().min_w(0).truncate().child(`${r.provider}/`))
         .child(div().flex_none().text_size(11.5).text_color(t.dim).child(`${r.count} models`)))
       .when(r.kind === "typed", (el) => el
-        .child(div().flex_1().min_w(0).truncate().child(`Use “${r.text}” as typed`))
+        .child(div().id(`${id}-find-typed-${i}`).flex_1().min_w(0).truncate().tooltip(r.text).child(`Use “${r.text}” as typed`))
         .child(div().flex_none().text_size(11.5).text_color(t.dim).child(`not in ${who}'s list`)))
       .when(r.kind === "model", (el) => el
         .child(div().w(12).flex_none().text_size(11).text_color(t.accent).child(r.id === model ? "✓" : ""))
@@ -1051,15 +1215,41 @@ export default class Automations extends View {
     const t = theme();
     const def = this.def();
     const shell = v_flex().id("automations").track_focus(this.handle).size_full().min_h(0).bg(t.popover).text_size(13).text_color(t.foreground)
+      // A press anywhere takes the closing question back (the ×, Go to and Log keep theirs, so a second click goes),
+      // and Delete's and Stop's (their pairs keep theirs). Not while deleting.
+      .on_mouse_down("left", (_e, cx) => {
+        const armed = !this.busy && (this.confirming || this.stopping);
+        if (!this.leaveAsk && !armed) return;
+        this.leaveAsk = null;
+        if (armed) { this.confirming = false; this.stopping = null; }
+        cx.notify();
+      })
+      // Esc, and Cmd/Ctrl+W, reach a dialog as Herdr's actions, never as keys: claimed here, so the
+      // dialog asks, waits or closes the model list first. (It's only ever opened as a dialog.)
+      .on_action("overlay.close", (_e, cx) => this.closeAction("overlay.close", cx))
+      .on_action("tab.close", (_e, cx) => this.closeAction("tab.close", cx))
+      .on_action("pane.close", (_e, cx) => this.closeAction("pane.close", cx))
       .on_key_down((e, cx) => {
-        if (e.key === "escape") { closeOverlay(props().overlay); cx.stop_propagation(); }
+        const m = e.modifiers ?? {};
+        // Any key typed takes Delete's and Stop's question back.
+        if (!this.busy && (this.confirming || this.stopping)) { this.confirming = false; this.stopping = null; cx.notify(); }
+        // No Esc branch: Herdr's Esc comes as overlay.close (above), never as a key here.
+        // ⌘S (Ctrl+S elsewhere) is Save, or Create, when that button would take a click.
+        if ((m.platform || m.control) && !m.shift && !m.alt && e.key === "s") {
+          cx.stop_propagation();
+          if (this.sel && !this.blank() && (this.sel.isNew || this.dirty())) this.save(cx);
+        }
       })
       .child(h_flex().h(50).flex_none().px(18).gap(8).items_center().border_b(1).border_color(t.border)
         .child(svg("mods/ws-automations/automations.svg").size(16).text_color(t.muted))
         .child(div().text_size(15).font_semibold().child("Automations"))
         .child(div().text_size(12.5).text_color(t.dim).child(def.none ? "for every workspace" : `for ${def.name}`))
         .child(div().flex_1())
-        .child(div().text_size(11).text_color(t.dim).child("Esc")));
+        // Close, the Files dialog's icon button: Esc's guarded close (unsaved edits ask first).
+        .child(div().id("a-close").size(26).flex_none().flex().items_center().justify_center().rounded(6).cursor_pointer()
+          .text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground))
+          .tooltip("Close").on_mouse_down("left", (_e, cx) => cx.stop_propagation()).on_click((_e, cx) => this.leave(cx, "x"))
+          .child(svg("mods/workspace-chrome/x.svg").size(14))));
     const autos = this.list();
     const own = autos.filter((a) => scopeOf(a) === "workspace");
     // Those for every workspace: the ones that run here, then the ones this workspace replaces.
@@ -1087,12 +1277,12 @@ export default class Automations extends View {
       const now = a.replaced ? null : runState(runs.find((r) => r.name === a.name && (r.status === "started" || r.status === "running" || r.status === "queued")), ag, tm);
       const busy = now === "working" || now === "needs you" || now === "running" || now === "queued" ? now : null;
       // Missed while the Mac was off, and nothing has run since; or its last run hit its timeout.
-      const missed = newest?.status === "missed";
-      const timedOut = Boolean(newest?.timedOut);
+      // Its newest run needs a look (lookfacts.js): failed, timed out, check failed, missed, no outcome.
+      const look = lookWord(newest, notificationsOn());
       if (a.replaced) {
         return h_flex().id(`a-global-${a.name}`).h(46).mx(6).px(8).gap(9).rounded(7).items_center().cursor_pointer()
           .when(on, (el) => el.bg(t.selected)).when(!on, (el) => el.hover((s) => s.bg(t.hover)))
-          .tooltip(`${def.name} has its own "${a.name}", which is the one that runs here`)
+          .tooltip(`${a.name}: ${a.summary}. ${def.name} has its own "${a.name}", which is the one that runs here`)
           .on_click((_e, cx) => this.pick({ scope: "global", name: a.name, isNew: false }, null, cx))
           .child(div().size(7).flex_none().rounded_full().bg(t.dim))
           .child(v_flex().flex_1().min_w(0).gap(2)
@@ -1105,10 +1295,12 @@ export default class Automations extends View {
         .on_click((_e, cx) => this.pick({ scope: scopeOf(a), name: a.name, isNew: false }, null, cx))
         .child(mark)
         .child(v_flex().flex_1().min_w(0).gap(2)
-          .child(div().truncate().text_color(a.enabled ? t.foreground : t.muted).child(a.name))
-          .child(div().truncate().text_size(11).text_color(a.error ? t.blocked : t.dim).child(a.error ? "Can't read it: open it to see why" : a.summary)))
-        .child(div().flex_none().text_size(11).text_color(busy === "working" || busy === "running" ? t.working : busy === "queued" ? t.dim : busy || missed || timedOut || a.allowed === false ? t.blocked : t.dim)
-          .child(busy ?? (a.allowed === false ? "allow?" : !a.enabled ? "off" : timedOut ? "timed out" : missed ? "missed" : a.next ? shortTime(a.next) : "")))
+          .child(div().id(`a-nm-${scopeOf(a)}-${a.name}`).truncate().text_color(a.enabled ? t.foreground : t.muted).tooltip(a.name).child(a.name))
+          .child(div().id(`a-sm-${scopeOf(a)}-${a.name}`).truncate().text_size(11).text_color(a.error ? t.blocked : t.dim)
+            .tooltip(a.error ? `Won't run: ${a.error}` : a.summary)
+            .child(a.error ? "Won't run: open it to see why" : a.summary)))
+        .child(div().flex_none().text_size(11).text_color(busy === "working" || busy === "running" ? t.working : busy === "queued" ? t.dim : busy || look || a.allowed === false ? t.blocked : t.dim)
+          .child(busy ?? (a.allowed === false ? "allow?" : !a.enabled ? "off" : look ?? (a.next ? shortTime(a.next) : ""))))
         .child(toggle(a));
     };
     // The ready-made ones nobody has made yet, here or for every workspace.
@@ -1126,7 +1318,7 @@ export default class Automations extends View {
           .child(div().truncate().text_size(11).text_color(t.dim).child(s.summary)))
         .child(div().flex_none().text_size(11).text_color(t.dim).child("add"));
     };
-    const group = (text) => div().px(14).pb(4).text_size(11).text_color(t.dim).truncate().child(text);
+    const group = (text) => div().id(`a-group-${text}`).px(14).pb(4).text_size(11).text_color(t.dim).truncate().tooltip(text).child(text);
     // A new one each time: an element can only be added once.
     const none = () => div().px(14).pb(2).text_size(12).text_color(t.dim).child("None yet.");
     const list = v_flex().w(260).flex_none().min_h(0).border_r(1).border_color(t.border).bg(t.chrome)
@@ -1181,25 +1373,36 @@ export default class Automations extends View {
     const label_ = (text) => div().pt(14).pb(6).text_size(11.5).text_color(t.dim).child(text);
     const box = (state, mono) => Input.new(state).h(34).px(10).rounded(8).border_1().border_color(this.focusedIn === state ? t.accent : t.input).bg(t.background)
       .text_size(12.8).text_color(t.foreground).when(mono, (el) => el.font_family("JetBrains Mono"));
-    const button = (id, text, kind_, action, enabled = true) => h_flex().id(id).h(32).px(13).flex_none().items_center().rounded(8).border_1()
+    // A press on any of these disarms Delete and Stop and resets Esc's question (calm), Delete's own aside.
+    // hint: its key, dim after the words (Save's ⌘S).
+    // why: a greyed one's reason, in its tooltip.
+    const button = (id, text, kind_, action, enabled = true, hint = null, why = null) => h_flex().id(id).h(32).px(13).gap(6).flex_none().items_center().rounded(8).border_1()
       .border_color(kind_ === "primary" ? t.solid : t.input).bg(kind_ === "primary" ? t.solid : t.raised)
       .text_color(kind_ === "primary" ? t.solid_foreground : kind_ === "danger" ? t.blocked : t.foreground)
       .text_size(12.5).font_medium().when(!enabled || this.busy, (el) => el.opacity(0.45))
-      .when(enabled, (el) => el.cursor_pointer().hover((st) => st.opacity(0.88)).on_click(action)).child(text);
+      .when(enabled, (el) => el.cursor_pointer().hover((st) => st.opacity(0.88)).on_click((e, cx) => { this.calm(id === "a-delete" ? "delete" : null); action(e, cx); }))
+      .when(!enabled && Boolean(why), (el) => el.tooltip(why))
+      .child(text)
+      .when(Boolean(hint), (el) => el.child(div().text_size(11).opacity(0.6).child(hint)));
     // A small quiet button beside a label (Try it, Close).
     const small = (id, text, action, enabled = true) => div().id(id).flex_none().px(9).h(24).flex().items_center().rounded(6).border_1().border_color(t.input)
       .text_size(11.5).text_color(t.muted).when(!enabled, (el) => el.opacity(0.45))
-      .when(enabled, (el) => el.cursor_pointer().hover((st) => st.bg(t.hover).text_color(t.foreground)).on_click(action)).child(text);
+      .when(enabled, (el) => el.cursor_pointer().hover((st) => st.bg(t.hover).text_color(t.foreground)).on_click((e, cx) => { this.calm(); action(e, cx); })).child(text);
     // A choice chip: highlighted when it's the one chosen.
     const pick = (id, text, on, action) => div().id(id).h(26).px(10).flex().items_center().rounded(13).border_1()
       .border_color(on ? t.accent : t.input).bg(on ? t.selected : t.background).text_size(12)
       .text_color(on ? t.foreground : t.muted).cursor_pointer().hover((st) => st.text_color(t.foreground))
-      .on_click((_e, cx) => { action(); cx.notify(); }).child(text);
+      .on_click((_e, cx) => { this.calm(); action(); cx.notify(); }).child(text);
     const chips = (...kids) => h_flex().gap(6).flex_wrap().items_center().children(kids);
     // A label and its chips on one line (Safety & delivery).
     const row = (text, ...kids) => h_flex().pt(6).gap(8).items_center().child(div().w(96).flex_none().text_size(11.5).text_color(t.dim).child(text)).child(chips(...kids));
-    const mono = (lines, color) => v_flex().px(10).py(8).rounded(6).bg(t.raised).font_family("JetBrains Mono").text_size(11.5).text_color(color ?? t.muted)
-      .children(lines.map((line) => div().truncate().child(line || " ")));
+    // A line cut at the box's edge, with the whole of it in its tooltip.
+    const cut = (id, line) => div().id(id).truncate().when(Boolean(line), (el) => el.tooltip(line)).child(line || " ");
+    const mono = (id, lines, color) => v_flex().px(10).py(8).rounded(6).bg(t.raised).font_family("JetBrains Mono").text_size(11.5).text_color(color ?? t.muted)
+      .children(lines.map((line, i) => cut(`${id}-${i}`, line)));
+    // A command to read before it's allowed: every line whole, wrapped, in a box that scrolls when it's long.
+    const whole = (id, lines, color) => v_flex().id(id).max_h(220).overflow_y_scrollbar().px(10).py(8).rounded(6).bg(t.raised).font_family("JetBrains Mono").text_size(11.5)
+      .text_color(color ?? t.muted).children(lines.map((line) => div().w_full().child(line || " ")));
     const setWhen = (v) => this.whenIn.set_value(v);
     // The github line with one part changed, the rest kept. ev: opened, review-requested, merged, labeled, ci.
     const evNow = w.kind === "github" ? (w.what === "ci" ? "ci" : w.event ?? "opened") : null;
@@ -1297,22 +1500,39 @@ export default class Automations extends View {
     const took = (ms) => (ms < 1000 ? `${ms} ms` : ms < 60e3 ? `${(ms / 1000).toFixed(ms < 10e3 ? 1 : 0)} s` : `${Math.round(ms / 60e3)} min`);
     const runRow = (r) => {
       const state = runState(r, ag, tm);
-      const bad = state === "needs you" || state === "failed" || state === "missed" || state === "waiting" || state === "timed out" || /^exit [1-9]/.test(state ?? "");
+      const bad = state === "needs you" || state === "failed" || state === "no outcome" || state === "missed" || state === "waiting" || state === "timed out" || /^exit [1-9]/.test(state ?? "");
       const color = state === "working" || state === "running" ? t.working : bad ? t.blocked : r.kind === "shell" && /^exit 0$/.test(state ?? "") ? t.done : t.dim;
       const live = state !== "closed" && !r.closed && r.status === "started" && r.tab;
       const text = r.note ? `${r.why}. ${r.note}` : r.kind === "shell" && r.durationMs != null ? `${r.why} · ${took(r.durationMs)}` : r.why;
+      const stoppable = stoppableRun(r, ag, tm);
+      const asking = stoppable && this.stopping === r.id;
       return h_flex().id(`a-run-${r.id}`).h(26).gap(10).items_center().text_size(12)
         .child(div().w(70).flex_none().text_color(t.dim).child(shortTime(r.at)))
-        .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(text))
+        .child(div().id(`a-run-text-${r.id}`).flex_1().min_w(0).truncate().text_color(t.muted).tooltip(text).child(text))
         .child(div().flex_none().text_color(color).child(state))
-        .when(Boolean(live) && (state === "working" || state === "needs you" || state === "open"), (el) => el.child(div().id(`a-stop-${r.id}`).flex_none().px(8).h(22).flex().items_center()
+        .when(stoppable && !asking, (el) => el.child(div().id(`a-stop-${r.id}`).flex_none().px(8).h(22).flex().items_center()
           .rounded(6).border_1().border_color(t.input).text_size(11.5).text_color(t.blocked).cursor_pointer().hover((st) => st.bg(t.hover))
-          .on_click((_e, cx) => this.stop(r, cx)).child(this.stopping === r.id ? "Click again to stop" : "Stop")))
-        .when(Boolean(live), (el) => el.child(div().id(`a-go-${r.id}`).flex_none().px(8).h(22).flex().items_center().rounded(6).border_1().border_color(t.input)
-          .text_size(11.5).cursor_pointer().hover((st) => st.bg(t.hover)).on_click(() => this.goTo(r)).child("Go to")))
+          .on_click((_e, cx) => this.stop(r, cx)).child("Stop")))
+        // Stop asked: the row holds only the question ("Cancel" beside a running job would read as cancelling it).
+        .when(stoppable && asking, (el) => el
+          .child(div().id(`a-stop-keep-${r.id}`).flex_none().px(9).h(24).flex().items_center().rounded(6).border_1().border_color(t.input)
+            .text_size(11.5).text_color(t.muted).cursor_pointer().hover((st) => st.bg(t.hover).text_color(t.foreground))
+            .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+            .on_click((_e, cx) => { if (this.tooSoon()) return; this.stopping = null; cx.notify(); }).child("Keep running"))
+          .child(div().id(`a-stop-yes-${r.id}`).flex_none().px(9).h(24).flex().items_center().rounded(6).border_1().border_color(t.blocked)
+            .text_size(11.5).text_color(t.blocked).cursor_pointer().hover((st) => st.bg(t.hover))
+            .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+            .on_click((_e, cx) => this.stop(r, cx)).child("Stop it")))
+        .when(Boolean(live) && !asking, (el) => el.child(div().id(`a-go-${r.id}`).flex_none().px(8).h(22).flex().items_center().rounded(6).border_1().border_color(t.input)
+          .text_size(11.5).cursor_pointer().hover((st) => st.bg(t.hover)).on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+          .on_click((_e, cx) => this.leaveFor("go", r, cx)).child("Go to")))
         // A script's run that ended: what it printed is in History.
         .when(r.kind === "shell" && Boolean(r.closed) && !live, (el) => el.child(div().id(`a-log-${r.id}`).flex_none().px(8).h(22).flex().items_center().rounded(6).border_1().border_color(t.input)
-          .text_size(11.5).cursor_pointer().hover((st) => st.bg(t.hover)).tooltip("Open this run in History, with what it printed").on_click(() => this.openLog(r)).child("Log")));
+          .text_size(11.5).cursor_pointer().hover((st) => st.bg(t.hover))
+          // The switcher away: still Log, dimmed, and a click says why in the footer line instead.
+          .when(!switcherHere(), (el) => el.opacity(0.45)).tooltip(switcherHere() ? "Open this run in History, with what it printed" : AWAY)
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+          .on_click((_e, cx) => this.leaveFor("log", r, cx)).child("Log")));
     };
 
     // Describe it: a box for a new one (Draft it), or one line to change what's there (Change it).
@@ -1323,13 +1543,13 @@ export default class Automations extends View {
     const canDraft = !drafting && Boolean(ask.value().trim());
     const askBox = blank
       ? v_flex().pt(4)
-        .child(div().pb(8).text_size(12.5).text_color(t.muted).child(`Say what it should do and when, in your own words. ${drafterName} drafts it (an agent, or a shell script when no agent is needed), and you read the draft before it's saved.`))
+        .child(div().pb(8).text_size(12.5).text_color(t.muted).child(`Say what it should do and when, in your own words. ${drafterName} drafts it (an agent, or a shell script when no agent is needed), and you read the draft before it's saved. Enter drafts it; Shift+Enter starts a new line.`))
         .child(div().h(92).flex_none().child(Textarea.new(ask).size_full().p(10).rounded(8).border_1()
           .border_color(this.focusedIn === ask ? t.accent : t.input).bg(t.background).text_size(12.5).text_color(t.foreground)))
         .child(h_flex().pt(8).gap(8).items_center()
           .when(drafting, (el) => el.child(working))
           .when(!drafting, (el) => el.child(div().id("a-manual").text_size(11.5).text_color(t.dim).cursor_pointer().hover((st) => st.text_color(t.foreground))
-            .on_click((_e, cx) => { this.manual = true; this.details = true; cx.notify(); }).child("Or fill it in yourself")))
+            .on_click((_e, cx) => { this.calm(); this.manual = true; this.details = true; cx.notify(); }).child("Or fill it in yourself")))
           .child(div().flex_1())
           .child(button("a-draft", "Draft it", "primary", (_e, cx) => this.draft(cx), canDraft)))
       : v_flex().pt(12)
@@ -1339,6 +1559,7 @@ export default class Automations extends View {
         .when(drafting, (el) => el.child(div().pt(8).child(working)));
     const askNotes = v_flex()
       .when(Boolean(this.draftError), (el) => el.child(div().pt(8).text_size(11.5).text_color(t.blocked).child(this.draftError)))
+      .when(Boolean(this.draftStale), (el) => el.child(div().pt(8).text_size(11.5).text_color(t.working).child(this.draftStale)))
       .when(Boolean(this.draftNote), (el) => el.child(div().pt(8).text_size(11.5).text_color(t.working).child(`Before you save: ${this.draftNote}`)));
 
     // What it does, in words: when, what it runs and where, then its check; and what waits for you.
@@ -1346,9 +1567,14 @@ export default class Automations extends View {
       .child(div().text_size(13).text_color(w.kind === "error" ? t.blocked : t.foreground)
         .child(w.kind === "error" ? w.error : `${describe(w)}${next ? ` · next ${shortTime(next)}` : ""}${w.kind === "github" ? " · looks every 2 minutes, with your gh login" : ""}`))
       .child(div().text_size(12).text_color(t.muted).child(runsText))
+      // Why the saved one won't run, as the runner said. A when line it can't read is the first line above, from the form.
+      .when(Boolean(saved?.error) && saved?.trigger?.kind !== "error", (el) => el.child(div().text_size(12).text_color(t.blocked).child(`It won't run: ${saved.error}`)))
       .when(Boolean(checkCmd), (el) => el
         .child(div().pt(2).text_size(12).text_color(t.muted).child(`First, Herdr runs this in ${where}. Nothing ${shell ? "runs" : "starts"} unless it prints something${kind === "schedule" && w.kind !== "once" && c.dedupe !== "always" ? " new" : ""}:`))
-        .child(div().mt(2).child(mono([...checkLines.slice(0, 4), ...(checkLines.length > 4 ? [`… ${checkLines.length - 4} more lines`] : [])], t.foreground))))
+        // Waiting to be allowed (Allow, or Save with edits, allows it as shown): whole, since that's what
+        // you're asked to read. Otherwise its first lines.
+        .child(div().mt(2).child(waitsCheck ? whole("a-check-whole", checkLines, t.foreground)
+          : mono("a-check-lines", [...checkLines.slice(0, 4), ...(checkLines.length > 4 ? [`… ${checkLines.length - 4} more lines`] : [])], t.foreground))))
       .when(Boolean(noKnobs), (el) => el.child(div().text_size(11.5).text_color(t.working).child(knobs ? `${who} doesn't take an effort, so it's left out when it runs.` : `${who} doesn't take a model or effort here, so they're left out when it runs.`)))
       // The cap, from the form as it is now, with its two fixes; the saved copy of that warning is left out.
       .when(capped && !waits, (el) => el.child(v_flex().pt(2).gap(6)
@@ -1383,21 +1609,22 @@ export default class Automations extends View {
       .when(Boolean(pv.check?.error), (el) => el.child(div().text_size(11.5).text_color(t.blocked).child(pv.check.error)))
       .when(!pv.loading, (el) => el
         .child(div().text_size(11.5).text_color(t.dim).child(pv.shell ? `The ${c.shell} script, in ${tilde(pv.folder)}` : `The prompt, filled in for ${def.name} (${tilde(pv.folder)})`))
-        .child(mono([...pvLines.slice(0, 24), ...(pvLines.length > 24 ? [`… ${pvLines.length - 24} more lines`] : [])], t.foreground))
+        .child(mono("a-pv-lines", [...pvLines.slice(0, 24), ...(pvLines.length > 24 ? [`… ${pvLines.length - 24} more lines`] : [])], t.foreground))
         .when(pv.shell, (el) => el
           .child(div().text_size(11.5).text_color(t.dim).child("With these variables (as data, never put into the script)"))
-          .child(mono(pv.env.map((e) => (e.length > 110 ? `${e.slice(0, 109)}…` : e)))))
+          .child(mono("a-pv-env", pv.env)))
         // secret_env: each variable by its secret's name; herdr-ws-secret hands the value over, never this screen.
         .when((pv.secrets ?? []).length > 0, (el) => el
-          .child(div().text_size(11.5).text_color(t.dim).child(pv.shell ? "Secrets from Vault for the script and its check, handed over by herdr-ws-secret (their values never show here)"
-            : "Secrets from Vault for its check only, handed over by herdr-ws-secret: the agent itself isn't given them (their values never show here)"))
-          .child(mono(pv.secrets.map((p) => `${p.env}=[secret:${p.name}]`))))
+          .child(div().text_size(11.5).text_color(t.dim).child(pv.shell ? "Secrets it gets as variables (their values never show here)"
+            : "Secrets its check gets as variables; the agent itself isn't given them (their values never show here)"))
+          .child(mono("a-pv-secrets", pv.secrets.map((p) => `${p.env}=[secret:${p.name}]`))))
         .when(!isSchedule(w), (el) => el.child(div().text_size(11).text_color(t.dim).child("What sets it off has example values here."))));
 
     // The body: the agent's prompt, or the script with its own Try it.
     const vars = ["WORKSPACE", "FOLDER", "DATE", "TIME", "EVENT", ...(checkCmd ? ["CHECK"] : []), ...(VARS[kind] ?? []), ...(kind === "github" && w.what === "ci" ? ["WORKFLOW"] : [])];
     const ts = this.triedScript && this.triedScript.script === script ? this.triedScript : null;
     const tsLines = ts ? String(ts.combined ?? "").split("\n").filter((l, i, all) => i < all.length - 1 || l) : [];
+    const tsFailed = ts?.outcome === "failed";
     const bodyField = shell
       ? v_flex()
         .child(h_flex().pt(14).pb(6).items_center()
@@ -1411,9 +1638,12 @@ export default class Automations extends View {
         .when(Boolean(ts), (el) => el.child(v_flex().mt(8).px(10).py(8).gap(4).rounded(6).bg(t.raised)
           .child(div().text_size(11.5).text_color(ts.outcome === "failed" ? t.blocked : t.done)
             .child(`Ran in ${tilde(ts.folder)} · ${ts.timedOut ? "timed out" : `exit ${ts.code ?? "?"}`} · ${took(ts.durationMs ?? 0)}${tsLines.length ? "" : " · it printed nothing"}`))
+          // Failed: why, in its own words, then the last lines (stderr comes after stdout); otherwise the first.
+          .when(tsFailed && Boolean(ts.summary), (el) => el.child(cut("a-ts-why", ts.summary)))
           .when(tsLines.length > 0, (el) => el.child(v_flex().font_family("JetBrains Mono").text_size(11.5).text_color(t.muted)
-            .children(tsLines.slice(0, 8).map((line) => div().truncate().child(line || " ")))
-            .when(tsLines.length > 8, (el) => el.child(div().text_color(t.dim).child(`… and ${tsLines.length - 8} more lines`)))))))
+            .when(tsFailed && tsLines.length > 8, (el) => el.child(div().text_color(t.dim).child(`… ${tsLines.length - 8} lines before these`)))
+            .children((tsFailed ? tsLines.slice(-8) : tsLines.slice(0, 8)).map((line, i) => cut(`a-ts-${i}`, line)))
+            .when(!tsFailed && tsLines.length > 8, (el) => el.child(div().text_color(t.dim).child(`… and ${tsLines.length - 8} more lines`)))))))
       : v_flex()
         .child(label_("Prompt: the agent's task"))
         .child(div().h(150).flex_none().child(Textarea.new(this.bodyIn).size_full().p(10).rounded(8).border_1().border_color(this.focusedIn === this.bodyIn ? t.accent : t.input)
@@ -1445,11 +1675,11 @@ export default class Automations extends View {
         .child("What set it off is in variables, not {{…}}: $HERDR_NUMBER, $HERDR_TITLE, $HERDR_TASK_ID, $HERDR_FILES, $HERDR_OUTPUT and so on. Try it runs with those empty.")))
       .when(Boolean(triedText), (el) => el.child(div().pt(6).text_size(11.5).text_color(tried.error ? t.blocked : tried.out ? t.done : t.muted).child(triedText)))
       .when(triedLines.length > 0, (el) => el.child(v_flex().mt(4).px(8).py(6).rounded(6).bg(t.raised).font_family("JetBrains Mono").text_size(11.5).text_color(t.muted)
-        .children(triedLines.slice(0, 6).map((line) => div().truncate().child(line || " ")))
+        .children(triedLines.slice(0, 6).map((line, i) => cut(`a-tried-${i}`, line)))
         .when(triedLines.length > 6, (el) => el.child(div().text_color(t.dim).child(`… and ${triedLines.length - 6} more`)))));
 
     const detailsRow = h_flex().id("a-details").mt(16).h(30).gap(6).items_center().cursor_pointer().border_t(1).border_color(t.border).pt(12)
-      .on_click((_e, cx) => { this.details = !this.details; cx.notify(); })
+      .on_click((_e, cx) => { this.calm(); this.details = !this.details; cx.notify(); })
       .child(svg(`mods/workspace-chrome/chevron-${this.details ? "down" : "right"}.svg`).size(13).text_color(t.muted))
       .child(div().text_size(12.5).font_medium().child("Details"))
       .child(div().text_size(11.5).text_color(t.dim).child(`${sel.isNew ? "name, " : ""}runs as, when, ${shell ? "shell" : "agent, model"}, folder, check, timeout, notifications`));
@@ -1475,6 +1705,7 @@ export default class Automations extends View {
       .child(chips(...KINDS.map(([k, text]) => pick(`a-k-${k}`, text, kind === k, () => { if (kind !== k) setWhen(firstOf[k]); }))))
       .child(div().pt(8).child(box(this.whenIn, true)))
       .when(quick.length > 0, (el) => el.child(div().pt(8).child(chips(...quick))))
+      .when(w.kind === "error", (el) => el.child(div().pt(8).text_size(11.5).text_color(t.blocked).child(w.error)))
       .when(shell, (el) => el
         .child(label_("Shell"))
         .child(chips(...SHELLS.map((x) => pick(`a-sh-${x}`, x, c.shell === x, () => { c.shell = x; }))))
@@ -1531,9 +1762,9 @@ export default class Automations extends View {
     const typed = sel.isNew ? this.nameIn.value().trim() : sel.name;
     const replacedHere = global && typed && this.taken("workspace").has(typed);
     const replacesGlobal = !global && !blank && typed && this.globals().some((g) => g.name === typed) ? typed : null;
-    // Its own id per automation, so each opens scrolled to the top.
+    // Each opens at its top: the position is in formScroll, which freshForm() renews per automation opened.
     const title = sel.isNew ? (this.drafted || this.manual ? this.nameIn.value().trim() || "New automation" : "New automation") : sel.name;
-    const form = v_flex().id(`a-form-${sel.isNew ? "+new" : `${sel.scope}-${sel.name}`}`).flex_1().min_h(0).px(18).pt(18).pb(8).overflow_y_scrollbar()
+    const form = v_flex().id(`a-form-${sel.isNew ? "+new" : `${sel.scope}-${sel.name}`}`).flex_1().min_h(0).px(18).pt(18).pb(8).overflow_y_scrollbar().track_scroll(this.formScroll)
       .child(h_flex().gap(10).items_center()
         .child(div().text_size(16).font_semibold().child(title))
         .when(!sel.isNew || Boolean(def.none), (el) => el.child(div().px(8).h(22).flex().flex_none().items_center().rounded(11).bg(t.raised).text_size(11.5).text_color(t.muted)
@@ -1560,7 +1791,8 @@ export default class Automations extends View {
           pick("a-on", "On", c.enabled && !c.offHere, () => { c.enabled = true; c.offHere = false; }),
           !def.none && pick("a-off-here", `Off in ${def.name}`, c.enabled && c.offHere, () => { c.enabled = true; c.offHere = true; }),
           pick("a-off", "Off everywhere", !c.enabled, () => { c.enabled = false; })].filter(Boolean)))
-        .when(c.enabled && offElsewhere.length > 0, (el) => el.child(div().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(`${def.none ? "Off" : "Also off"} in ${offElsewhere.join(", ")}`)))))
+        .when(c.enabled && offElsewhere.length > 0, (el) => el.child(div().id("a-off-elsewhere").min_w(0).truncate().text_size(11.5).text_color(t.dim)
+          .tooltip(`${def.none ? "Off" : "Also off"} in ${offElsewhere.join(", ")}`).child(`${def.none ? "Off" : "Also off"} in ${offElsewhere.join(", ")}`)))))
       .when(Boolean(sel.isNew && sel.starter), (el) => el.child(div().pt(8).text_size(11.5).text_color(t.dim)
         .child("A ready-made automation. Nothing runs until you create it: read it, choose where it runs and change what you like.")))
       .when(Boolean(replacedHere), (el) => el.child(div().pt(8).text_size(11.5).text_color(t.working)
@@ -1584,22 +1816,54 @@ export default class Automations extends View {
           .child(div().text_size(11.5).text_color(t.muted).font_family("JetBrains Mono").child(`herdr-ws-run ${def.none ? "<workspace>" : def.id} ${saved.name} "optional text"`))));
     // Run now waits while something waits to be allowed; Save stays for an edit (saving allows what's written).
     const canRun = !saved?.replaced && saved?.allowed !== false;
+    // runNow()'s own words for why it waits.
+    const runWhy = saved?.replaced ? `${def.name} has its own "${saved.name}", which is the one that runs here`
+      : saved?.allowed === false ? `Allow its ${saved.scriptAllowed === false ? "script" : "check"} first: it doesn't start until then` : null;
+    // Log pressed while the switcher was away: said until the next press, typing, or the switcher's back.
+    const away = this.awayNote && !switcherHere() ? this.awayNote : null;
+    const fileLine = this.snap?.file ? tilde(this.snap.file) : sel.isNew && !blank ? `New · will save to ${tilde(`${this.dirOf(sel.scope)}/${typed || "…"}.md`)}` : "";
+    const saveKey = window()?.platform === "macos" ? "⌘S" : "Ctrl+S";
+    // Delete asked: the footer holds only the question. Cancel where Delete was, the delete itself
+    // in the danger fill beside it (the name cut, with a tooltip, when long), and where it goes.
+    const armed = this.confirming && !sel.isNew;
+    const delWords = `Delete “${sel.name}”`;
+    const askDelete = h_flex().gap(8).items_center()
+      .child(h_flex().id("a-del-cancel").h(32).px(13).flex_none().items_center().rounded(8).border_1().border_color(t.input).bg(t.raised)
+        .text_size(12.5).font_medium().text_color(t.foreground).when(this.busy, (el) => el.opacity(0.45))
+        .when(!this.busy, (el) => el.cursor_pointer().hover((st) => st.opacity(0.88)))
+        .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+        .on_click((_e, cx) => { if (this.busy || this.tooSoon()) return; this.confirming = false; cx.notify(); }).child("Cancel"))
+      .child(h_flex().id("a-del-yes").h(32).px(13).flex_none().max_w(300).items_center().rounded(8).border_1().border_color(t.blocked).bg(t.blocked)
+        .text_size(12.5).font_medium().text_color(t.solid_foreground).when(this.busy, (el) => el.opacity(0.45))
+        .when(!this.busy, (el) => el.cursor_pointer().hover((st) => st.opacity(0.88)))
+        .when(!this.busy && sel.name.length > 30, (el) => el.tooltip(delWords))
+        .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+        .on_click((_e, cx) => this.remove(cx)).child(div().min_w(0).truncate().child(this.busy ? "Deleting…" : delWords)))
+      .child(div().flex_1().min_w(0).text_size(11.5).text_color(t.muted).child(`${global ? "From every workspace. " : ""}It goes to the ${trashName()}.`));
     return pane
       .child(form)
       .child(v_flex().flex_none().px(18).pb(14).pt(8).border_t(1).border_color(t.border)
-        .when(Boolean(this.error), (el) => el.child(div().pb(8).text_size(11.5).text_color(t.blocked).child(this.error)))
-        .when(!this.error && Boolean(this.notice), (el) => el.child(div().pb(8).text_size(11.5).text_color(t.done).child(this.notice)))
+        .when(armed, (el) => el.child(askDelete))
+        .when(!armed, (el) => el
+        // Closing would drop something: the question, in place of any other line.
+        .when(Boolean(this.leaveAsk), (el) => el.child(div().pb(8).text_size(11.5).text_color(t.working).child(LEAVE_ASK[this.leaveAsk] ?? GO_ASK)))
+        .when(!this.leaveAsk && Boolean(away), (el) => el.child(div().pb(8).text_size(11.5).text_color(t.muted).child(away)))
+        .when(!this.leaveAsk && !away && Boolean(this.error), (el) => el.child(div().pb(8).text_size(11.5).text_color(t.blocked).child(this.error)))
+        .when(!this.leaveAsk && !away && !this.error && Boolean(this.notice), (el) => el.child(div().pb(8).text_size(11.5).text_color(t.done).child(this.notice)))
         // Run now on a `link` one: the {{text}} it gets, if any; Enter or Start runs it.
         .when(this.askText && !sel.isNew, (el) => el.child(h_flex().pb(8).gap(8).items_center()
           .child(div().flex_1().min_w(0).child(box(this.textIn)))
-          .child(button("a-run-go", "Start", "plain", (_e, cx) => this.runNow(cx, true), canRun))
+          .child(button("a-run-go", "Start", "plain", (_e, cx) => this.runNow(cx, true), canRun, null, runWhy))
           .child(small("a-run-cancel", "Cancel", (_e, cx) => { this.askText = false; this.textIn.set_value(""); cx.notify(); }))))
         .child(h_flex().gap(8).items_center()
-          .when(!sel.isNew, (el) => el.child(button("a-delete", this.confirming ? (global ? "Click again: gone from every workspace" : "Click again to delete") : "Delete", "danger", (_e, cx) => this.remove(cx))))
-          .when(!sel.isNew && global && !replacedHere && !def.none, (el) => el.child(button("a-custom", `Change for ${def.name}`, "plain", (_e, cx) => this.copyHere(cx), !dirty)))
-          .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(this.snap?.file ? tilde(this.snap.file) : sel.isNew && !blank ? `New · will save to ${tilde(`${this.dirOf(sel.scope)}/${typed || "…"}.md`)}` : ""))
-          .when(!blank && !def.none, (el) => el.child(button("a-preview", pv ? "Preview again" : "Preview", "plain", (_e, cx) => this.previewRun(cx), !pv?.loading)))
-          .when(!sel.isNew && !def.none && !this.askText, (el) => el.child(button("a-run", "Run now", "plain", (_e, cx) => this.runNow(cx), canRun)))
-          .child(button("a-save", sel.isNew ? "Create" : "Save", "primary", (_e, cx) => this.save(cx), !blank && (sel.isNew || dirty)))));
+          .when(!sel.isNew, (el) => el.child(button("a-delete", "Delete", "danger", (_e, cx) => this.remove(cx))))
+          .when(!sel.isNew && global && !replacedHere && !def.none, (el) => el.child(button("a-custom", `Change for ${def.name}`, "plain", (_e, cx) => this.copyHere(cx), !dirty, null, "Save or discard its changes first")))
+          .child(div().id("a-file").flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).when(Boolean(fileLine), (el) => el.tooltip(fileLine)).child(fileLine))
+          .when(!blank && !def.none, (el) => el.child(button("a-preview", pv ? "Preview again" : "Preview", "plain", (_e, cx) => { if (!this.justSlid()) this.previewRun(cx); }, !pv?.loading)))
+          .when(!sel.isNew && !def.none && !this.askText, (el) => el.child(button("a-run", "Run now", "plain", (_e, cx) => { if (!this.justSlid()) this.runNow(cx); }, canRun, null, runWhy)))
+          // Discard while there are unsaved edits, Cancel on a new one: directly left of Save.
+          .when(!sel.isNew && dirty, (el) => el.child(button("a-discard", "Discard", "plain", (_e, cx) => this.discard(cx))))
+          .when(sel.isNew, (el) => el.child(button("a-cancel", "Cancel", "plain", (_e, cx) => this.cancelNew(cx))))
+          .child(button("a-save", sel.isNew ? "Create" : "Save", "primary", (_e, cx) => this.save(cx), !blank && (sel.isNew || dirty), saveKey)))));
   }
 }

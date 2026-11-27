@@ -175,13 +175,25 @@ export function hoverLines(name, rows, now = Date.now()) {
   return lines;
 }
 
-// "just now", "7 min ago", "2h ago".
+// The one time-ago rule (as Notes' ago()), always rounded down, with " ago": "just now"
+// under a minute, then "7m ago", "3h ago", "12d ago" (under 60 days), "4mo ago" (days/30,
+// under 730 days), "2y ago" (days/365). Never "60m", "24h" or "27mo".
 export function agoText(ms, now = Date.now()) {
-  const m = Math.round((now - ms) / 60000);
-  if (m < 1) return "just now";
-  if (m < 60) return `${m} min ago`;
-  const h = Math.round(m / 60);
-  return h < 24 ? `${h}h ago` : `${Math.round(h / 24)}d ago`;
+  const s = Math.max(0, (now - ms) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  const d = Math.floor(s / 86400);
+  if (d < 60) return `${d}d ago`;
+  return d < 730 ? `${Math.floor(d / 30)}mo ago` : `${Math.floor(d / 365)}y ago`;
+}
+
+// A plan's numbers that the last ask couldn't refresh: its last try came more than a
+// minute after the rows were read. data: { rows, at, tried, away } (away: its agent said
+// it isn't signed in). Null while they're current; else { ago, why } for the words.
+export function staleOf(data, now = Date.now()) {
+  if (!data?.at || !data.tried || data.tried - data.at <= 60000) return null;
+  return { ago: agoText(data.at, now), why: data.away ? "not signed in" : "couldn't refresh" };
 }
 
 // Whether an add-on is on, for a copy that read ~/.herdr/settings.jsonc itself at start
