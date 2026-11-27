@@ -7,6 +7,9 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 
 ## [Unreleased]
 
+### New
+- **Status bar separates overall plan limits from model sub-limits.** Each plan in the status bar now shows 14px twin micro-bars (overall ceiling on top, hottest sub-limit or secondary pool underneath) beside its true governing overall percent (Claude: higher of 5-hour session and weekly all-models; Antigravity: higher of Gemini 5-hour and weekly, instead of staying at `0%` while weekly climbs). Whenever a sub-limit or secondary pool warms up (`≥ 70%`), it surfaces inline by name ("81% · Fable 97%", "41% · Claude/GPT 76%", or "84% · Fable 100% (11:00 PM)" when full). Inside the Plan usage limits popup, Claude's scoped sub-limits nest under their parent window on a left rail, Antigravity highlights its governing Gemini window, and untouched `0%` buckets read "Unused".
+
 ## [0.34.1] - 2026-11-27
 
 ### Fixed

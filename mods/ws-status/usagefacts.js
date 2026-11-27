@@ -86,22 +86,120 @@ export function blocksOf(rows) {
   return out;
 }
 
-// The row a plan shows in the bar: its most used limit (the first of equals).
+// Whether a limit is used up.
+export const full = (r) => typeof r?.pct === "number" && r.pct >= 100;
+
+// Whether a limit warrants attention in the bar (warning/critical severity or >= 70%).
+export const isWarm = (r) => Boolean(r) && (r.pct >= 70 || r.severity === "warning" || r.severity === "critical");
+
+// Whether an un-grouped row is a model/surface sub-limit (e.g. Claude's Fable, Sonnet)
+// rather than an overall plan ceiling (Current session, Weekly · all models).
+export function isSubLimit(r) {
+  if (!r || r.group) return false;
+  return r.kind !== "session" && r.kind !== "weekly_all" && r.short !== "5h" && r.short !== "week";
+}
+
+// The parent window kind for a Claude sub-limit row ("session" or "weekly_all").
+function parentKindOf(r) {
+  return /^session/i.test(String(r?.kind ?? r?.label ?? "")) ? "session" : "weekly_all";
+}
+
+// The most used limit in a set (the first of equals; when two limits are both full,
+// the one that resets later wins because it keeps the pool blocked longer).
 export function topRow(rows) {
   let top = null;
-  for (const r of rows ?? []) if (!top || r.pct > top.pct) top = r;
+  for (const r of rows ?? []) {
+    if (!r) continue;
+    if (!top) { top = r; continue; }
+    if (full(r) && full(top)) {
+      if ((r.resets ?? 0) > (top.resets ?? 0)) top = r;
+    } else if (r.pct > top.pct) {
+      top = r;
+    }
+  }
   return top;
 }
 
-// The row a plan shows in the bar. A plan with pools (Antigravity) is read by its first
-// pool, its own models (Gemini): another pool used up (Claude and GPT) doesn't stop it.
-// That pool's 5-hour limit, or one of its limits that's full; with no 5-hour limit, its
-// most used. A plan without pools: its most used limit (the first of equals).
+// Short readable label for a sub-limit or secondary pool in the status bar:
+// "Fable", "Claude/GPT", "Argon".
+export function subName(r) {
+  if (!r) return "";
+  if (!r.group) return String(r.short ?? r.label ?? "");
+  const clean = String(r.group).replace(/ models$/i, "").replace(/ and /gi, "/");
+  return clean.replace(/^Gemini\s+\d+\s+(?=\S)/i, "");
+}
+
+// What the status bar draws for one plan:
+//   main     the governing overall limit (Claude: max(session, weekly_all);
+//            Antigravity: max(first pool's 5-hour, weekly))
+//   sub      the hottest model sub-limit / secondary pool (for the bottom hairline), or null
+//   hotSubs  warm sub-limits (>= 70% / warning / critical) worth naming inline in the bar,
+//            sorted hottest-first (suppressed while `main` itself is full unless a sub-limit
+//            is also full until a later reset)
+export function barSummary(rows) {
+  const list = (rows ?? []).filter(Boolean);
+  if (!list.length) return { main: null, sub: null, hotSubs: [] };
+  const blocks = blocksOf(list);
+  const keepHot = (main, r) => isWarm(r) && (!full(main) || (full(r) && (r.resets ?? 0) > (main.resets ?? 0)));
+
+  if (blocks[0]?.group) {
+    const main = topRow(blocks[0].rows);
+    const secReps = blocks.slice(1).map((b) => topRow(b.rows)).filter(Boolean);
+    const sub = topRow(secReps);
+    const hotSubs = secReps.filter((r) => keepHot(main, r)).sort((a, b) => b.pct - a.pct);
+    return { main, sub, hotSubs };
+  }
+
+  const overall = list.filter((r) => !isSubLimit(r));
+  const subs = list.filter(isSubLimit);
+  if (!overall.length) return { main: topRow(list), sub: null, hotSubs: [] };
+  const main = topRow(overall);
+  const sub = topRow(subs);
+  const hotSubs = subs.filter((r) => keepHot(main, r)).sort((a, b) => b.pct - a.pct);
+  return { main, sub, hotSubs };
+}
+
+// The governing overall row a plan shows as its main percent in the bar.
 export function barRow(rows) {
+  return barSummary(rows).main;
+}
+
+// Structured blocks for the Plan usage limits panel:
+//   - Grouped pools (Antigravity): { kind: "pool", group, note, rows, governing }
+//     where `governing` is the bar's main row when this is the primary pool.
+//   - Un-grouped limits (Claude): { kind: "limit", row, children }
+//     where scoped sub-limits (e.g. Weekly · Fable) nest under their parent window
+//     (Weekly · all models), or stay standalone if that parent row isn't present.
+export function panelBlocks(rows) {
   const blocks = blocksOf(rows);
-  const main = blocks[0]?.group ? blocks[0].rows : null;
-  if (!main) return topRow(rows);
-  return main.find(full) ?? main.find((r) => r.span === "5-hour") ?? topRow(main);
+  const { main } = barSummary(rows);
+  const out = [];
+  const parents = new Map();
+  const pendingSubs = [];
+
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i];
+    if (b.group) {
+      out.push({ kind: "pool", group: b.group, note: b.note, rows: b.rows, governing: i === 0 ? main : null });
+      continue;
+    }
+    const r = b.rows[0];
+    if (isSubLimit(r)) {
+      pendingSubs.push(r);
+      continue;
+    }
+    const entry = { kind: "limit", row: r, children: [] };
+    const key = r.kind === "session" || r.short === "5h" ? "session" : r.kind === "weekly_all" || r.short === "week" ? "weekly_all" : null;
+    if (key && !parents.has(key)) parents.set(key, entry);
+    out.push(entry);
+  }
+
+  for (const r of pendingSubs) {
+    const parent = parents.get(parentKindOf(r));
+    if (parent) parent.children.push(r);
+    else out.push({ kind: "limit", row: r, children: [] });
+  }
+  return out;
 }
 
 // The newest Claude status line that has limits (the files herdr-ws-statusline saves,
@@ -148,18 +246,24 @@ export function backText(ms, now = Date.now()) {
   return t.replace(/^(Sun|Mon|Tue|Wed|Thu|Fri|Sat) (?=[A-Z][a-z]{2} \d)/, "");
 }
 
-// Whether a limit is used up.
-export const full = (r) => typeof r?.pct === "number" && r.pct >= 100;
-
-// The bar's text for a plan's most used limit: "52%", or "100% · 4:17 PM" once it's full.
+// The bar's text for a plan's main limit: "81%", or "100% · 4:17 PM" once it's full.
 export function barText(r, now = Date.now()) {
   const pct = `${Math.round(r.pct)}%`;
   const back = full(r) ? backText(r.resets, now) : "";
   return back ? `${pct} · ${back}` : pct;
 }
 
-// The hover's lines for one plan: "Claude: week 52%, Fable 47%", or a line per group,
-// "Antigravity, Gemini: 5h 39%, week 69%", a full limit with "until 4:17 PM".
+// The bar's inline callout for a warm sub-limit: "Fable 97%", or "Fable 100% (11:00 PM)"
+// once full (parentheses avoid double middle dots after "84% · ").
+export function subBarText(r, now = Date.now()) {
+  const name = subName(r);
+  const pct = `${Math.round(r.pct)}%`;
+  const back = full(r) ? backText(r.resets, now) : "";
+  return back ? `${name} ${pct} (${back})` : `${name} ${pct}`;
+}
+
+// The hover's lines for one plan: "Claude: week 81%, Fable 97%", or a line per group,
+// "Antigravity, Gemini: 5h 0%, week 41%", a full limit with "until 4:17 PM".
 export function hoverLines(name, rows, now = Date.now()) {
   const say = (r) => {
     const back = full(r) ? backText(r.resets, now) : "";
