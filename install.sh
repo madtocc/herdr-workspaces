@@ -45,7 +45,7 @@ main() {
   state=$HOME/.herdr/install
   stamp=$(date +%Y%m%d-%H%M%S)
   backup=$state/backup/$stamp
-  commands="herdr-ws-agent herdr-ws-run herdr-ws-runner herdr-ws-notify herdr-ws-secret herdr-ws-resume"
+  commands="herdr-ws-agent herdr-ws-run herdr-ws-runner herdr-ws-notify herdr-ws-secret herdr-ws-account herdr-ws-resume"
 
   yes=0 herdr=ask resume=ask presets=ask settingskey=ask switch=1 version='' from='' dry=0 uninstall=0
   while [ $# -gt 0 ]; do

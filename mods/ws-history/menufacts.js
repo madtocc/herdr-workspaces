@@ -7,6 +7,8 @@
 //     session, file, cwd, cmd, helpers }
 // kind: kindOf(); session, file, cwd, cmd: what stats.js read for it (its conversation's
 // id, transcript, folder, and the launcher's note of how it was started), when it knows;
+// switch: { known } when the row gets Switch account (acctfacts.js switchOffered(); known:
+// switchKnown(), else it's there dimmed, saying why), else null;
 // agyWipe: the experiment "antigravity-wipe" is on (settingsfacts.js); agyFresh: stats.js
 // found the Antigravity's note to be the running process's (not one left by an earlier one).
 // helpers: { count, working, blocked } of the live sub-agents that end when Close ends it;
@@ -29,7 +31,8 @@ const COMPACTS = new Set(["claude", "codex", "pi"]);
 const FORKS = new Set(["claude", "pi"]);
 
 // The menu, in groups: talk to it, more of it, end it. Each item is
-// { id, label, icon, hint?, danger?, sep? } (hint: dim text on the right; sep: a line above it).
+// { id, label, icon, hint?, danger?, sep?, disabled?, sub? } (hint: dim text on the right; sep: a line
+// above it; disabled: drawn dim and does nothing; sub: it opens a submenu, a chevron on the right).
 export function menuItems(a) {
   const known = !a.remote && Boolean(a.session);
   const forks = known && FORKS.has(a.kind);
@@ -44,6 +47,8 @@ export function menuItems(a) {
     [
       forks && { id: "fork", label: "Fork conversation", icon: "mods/ws-agents/fork.svg" },
       !a.remote && { id: "handoff", label: "Hand off…", icon: "mods/ws-agents/handoff.svg" },
+      Boolean(a.switch) && { id: "accounts", label: "Switch account", icon: "mods/ws-agents/account.svg",
+        ...(a.switch.known ? { sub: true } : { disabled: true, hint: "nothing to resume" }) },
       Boolean(a.tab) && { id: "rename", label: "Rename tab…", icon: "mods/workspace-chrome/square-pen.svg" },
       a.top && { id: "pin", label: a.pinned ? "Unpin" : "Pin to top", icon: `mods/workspace-chrome/${a.pinned ? "pin-off" : "pin"}.svg` },
       // Its Herdr address (t7, vps/t7), for hc read / hc send or another agent's task.

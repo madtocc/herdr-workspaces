@@ -296,11 +296,11 @@ guide tells agents to use it instead of asking you to paste a token into the cha
   secrets to its check or shell script with `secret_env:` (never to an agent's own
   process: an agent uses them by name).
 
-### Settings: Features, Agents, Automations, Files, Secrets and Experimental
+### Settings: Features, Agents, Accounts, Automations, Files, Secrets and Experimental
 
 ![Settings on its Agents section](previews/settings.png)
 
-The sidebar's Settings opens Herdr's own Settings window with six sections of
+The sidebar's Settings opens Herdr's own Settings window with seven sections of
 ours at the end, after Privacy:
 
 - **Features**: a switch for each of the package's add-ons (Board, Notes,
@@ -315,6 +315,15 @@ ours at the end, after Privacy:
   Claude and Antigravity agents back after a restart), **In the + menu** (which
   installed agents the tab bar's + menu lists; the menu's "Choose agents…" opens
   this page).
+- **Accounts**: more than one sign-in for Claude, Codex and Antigravity (a work
+  and a personal account, say). Each agent's accounts in one list with their plan,
+  how much of the most-used limit is gone and when it resets; Add account signs a
+  new one in from the page (the browser opens; Copy link takes the sign-in's link
+  to another browser, and Antigravity's sign-in gets a field for the code its page
+  shows); the ⋯ menu makes one the default, renames, signs out or removes it. New
+  agents start on the default, `herdr-ws-agent --account <id>` picks one, and the
+  Agents list's right-click menu has **Switch account ▸**, which restarts an agent
+  on another account and continues its conversation.
 - **Automations**: **While Herdr is closed** (Keep running for automations and
   board cards' pull requests, and Start at login), how many agent runs go at
   once, quiet hours for the desktop sound, and which CLI drafts automations.
@@ -338,7 +347,7 @@ file whenever Herdr updates it. The macOS menu's Settings… still opens Herdr's
 plain window; to have Cmd+, open this one (the installer asks once, or binds it
 with `--settings-key`), set `"cmd-,"` in the `global`
 section of your `~/.config/herdr-app/keys.json` to `"mod.open:ws-settings"`
-(or to `ws-switcher.settings/features`, `ws-switcher.settings/agents`,
+(or to `ws-switcher.settings/features`, `ws-switcher.settings/agents`, `ws-switcher.settings/accounts`,
 `ws-switcher.settings/automations`, `ws-switcher.settings/files`, `ws-switcher.settings/vault` or `ws-switcher.settings/experimental` to open it on a section; `ws-switcher.settings/extras` opens Agents). Herdr then
 leaves that file to you: new default shortcuts in its updates are added by hand.
 
@@ -428,13 +437,15 @@ says how), or by hand:
    apps and lets agents add them, and `herdr-ws-notify --off` / `--on` (or
    Settings > Features > Desktop notifications) is the switch for the desktop notifications (on macOS, `brew install terminal-notifier`
    makes a click on one go to Herdr). `herdr-ws-secret` is how agents use your
-   secrets (it needs Node 20 or newer):
+   secrets, and `herdr-ws-account` keeps each agent's accounts (Settings > Accounts;
+   both need Node 20 or newer):
    ```sh
    ln -s ~/.config/herdr-app/mods/ws-switcher/bin/herdr-ws-agent ~/.local/bin/
    ln -s ~/.config/herdr-app/mods/ws-switcher/bin/herdr-ws-run ~/.local/bin/
    ln -s ~/.config/herdr-app/mods/ws-switcher/bin/herdr-ws-runner ~/.local/bin/
    ln -s ~/.config/herdr-app/mods/ws-switcher/bin/herdr-ws-notify ~/.local/bin/
    ln -s ~/.config/herdr-app/mods/ws-switcher/bin/herdr-ws-secret ~/.local/bin/
+   ln -s ~/.config/herdr-app/mods/ws-switcher/bin/herdr-ws-account ~/.local/bin/
    ```
    ```json
    { "programs": { "claude": { "run": ["herdr-ws-agent", "claude"] },
@@ -715,6 +726,20 @@ folder under `$TMPDIR` for `--file` secrets and removes it when the command ends
 Settings > Secrets writes the `vault` block of `~/.herdr/settings.jsonc`.
 `herdr-ws-secret http` sends a request to the URL an agent (or you) gives it, with a
 secret only to the hosts that secret allows; nothing else in Secrets uses the network.
+Accounts keeps `~/.herdr/accounts.json`, each extra account's folder in
+`~/.herdr/accounts/<agent>/<id>/` (links to your `~/.claude`, `~/.codex` or home
+with its own sign-in files; for Antigravity a home of its own with its own
+keychain, made and unlocked with macOS's `security`, and `gh` and git-over-https
+shims that use your real home), `~/.herdr/accounts/on/` (which account each
+terminal's agent runs on) and `~/.herdr/cache/accounts.json` (who each account is
+and its top limit; never a token); while a sign-in waits, its folder holds
+`.signin`, `.signin-url` (the link) and `.signin-ask`. It runs `claude auth
+status|login|logout`, `codex app-server`, `codex login|logout`, `agy -p /usage`
+(with a do-nothing browser shim) and agy in a herdr-core terminal of its own for
+Antigravity's sign-in or to read its start banner; the code you paste goes only to
+that terminal. Answering agy's trust question for an account's folder adds that
+folder to agy's trusted folders. Remove moves an account's folder to
+`~/.herdr/trash/`. These CLIs reach their own providers with that account's login.
 Besides that, four things use the network: GitHub automations (`gh api` with your login, every
 2 minutes per watched repo), cards with a `pr:` or `branch:` line (`gh pr view`
 with your login, every minute per open pull request), the board's GitHub view

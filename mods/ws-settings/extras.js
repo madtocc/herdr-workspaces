@@ -1,4 +1,4 @@
-// The Workspaces package's own sections of ws-settings (Features, Agents, Automations, Files, Vault and Experimental), drawn inside
+// The Workspaces package's own sections of ws-settings (Features, Agents, Accounts, Automations, Files, Vault and Experimental), drawn inside
 // the Settings window that ws-switcher/settingsbuild.js builds from Herdr's (main.js here).
 // These are plain functions on that window's view, so they don't depend on Herdr's own methods;
 // their state lives on the view as `view.wsx`.
@@ -14,6 +14,7 @@
 //     the window closing first) and Bring agents back after a restart (herdr-ws-resume --on/--off).
 //   - IN THE + MENU: one row per installed agent (hidefacts.js: ~/.herdr/agent-menu.json,
 //     mirrored in shared "new-menu.hidden", knownAgents()).
+// - Accounts: the accounts each agent can start on (accounts.js; its rules in accountfacts.js).
 // - Automations: how automations run, all in one place:
 //   - WHILE HERDR IS CLOSED: Keep running and Start at login (shared "workspaces.runner", set
 //     through "workspaces.runner.set" { on } / { login }: the switcher runs herdr-ws-runner).
@@ -46,11 +47,14 @@ import { BROKER_OPS, STATUS_ARGS, parseBrokerStatus, actionError, brokerView, pr
 import { HIDDEN, hiddenFile, parseHidden, saveHidden, shownAgents, countLine, notInstalledLine } from "./hidefacts.js";
 import { DESK_TITLE, DESK_ABOUT, parseDeskStatus, deskLine } from "./deskfacts.js";
 import { resumeLine, COPY } from "./resumefacts.js";
+import { accountsInit, accountsShown, accountsPage } from "./accounts.js";
+import { USAGE_AGE } from "./accountfacts.js";
 
 // Our sections in the window's list, after Herdr's.
 export const PACKAGE_SECTIONS = [
   { id: "features", title: "Features", icon: "mods/ws-settings/features.svg" },
   { id: "agents", title: "Agents", icon: "mods/ws-settings/extras.svg" },
+  { id: "accounts", title: "Accounts", icon: "mods/ws-settings/accounts.svg" },
   { id: "automations", title: "Automations", icon: "mods/ws-settings/automations.svg" },
   { id: "files", title: "Files", icon: "mods/ws-settings/files.svg" },
   { id: "vault", title: "Secrets", icon: "mods/ws-settings/vault.svg" },
@@ -149,7 +153,11 @@ export function packageInit(view, cx) {
     input.on("change", (_e, cx) => cx.notify());
     input.on("submit", (_e, cx) => saveQuiet(view.wsx, cx));
   }
+  accountsInit(view, cx);
   if (checking()) return;
+  // Accounts (accounts.js): read when shown, and its usage again every USAGE_AGE while it stays shown.
+  if (view.section === "accounts") accountsShown(view, cx);
+  cx.timer.every(USAGE_AGE, (cx) => { if (view.section === "accounts") accountsShown(view, cx); });
   const refresh = (cx) => cx.spawn(async (cx) => {
     if (await load(view.wsx)) {
       // A file that can't be read closes Default external app's list (its choices are greyed).
@@ -169,6 +177,7 @@ export function packageInit(view, cx) {
     if (view.section === shownSection) return;
     shownSection = view.section;
     if (view.section === "features") cx.spawn(async (cx) => { if (await readDesk(view.wsx)) cx.notify(); });
+    if (view.section === "accounts") accountsShown(view, cx);
   });
   cx.spawn(async (cx) => {
     view.wsx.known = await knownAgents().catch(() => view.wsx.known);
@@ -1008,9 +1017,9 @@ function vaultPage(t, x, view) {
     .child(choiceRow("notify"));
 }
 
-// The page: the window's body shows it for our section ids ("features", "agents", "automations", "files", "vault" and "experimental").
+// The page: the window's body shows it for our section ids ("features", "agents", "accounts", "automations", "files", "vault" and "experimental").
 export function packagePage(view) {
   const t = theme();
   const x = view.wsx ?? (view.wsx = { text: null, settings: parseSettings(null), resume: null, guide: null, known: [], hidden: [], busy: false, gen: 0, hiding: 0, loading: null, apps: null, appsLoading: false, quietFrom: null, quietTo: null, broker: newBroker() });
-  return view.section === "features" ? featuresPage(t, x) : view.section === "automations" ? automationsPage(t, x, view) : view.section === "files" ? filesPage(t, x, view) : view.section === "vault" ? vaultPage(t, x, view) : view.section === "experimental" ? experimentalPage(t, x) : agentsPage(t, x);
+  return view.section === "features" ? featuresPage(t, x) : view.section === "automations" ? automationsPage(t, x, view) : view.section === "files" ? filesPage(t, x, view) : view.section === "vault" ? vaultPage(t, x, view) : view.section === "experimental" ? experimentalPage(t, x) : view.section === "accounts" ? accountsPage(t, view) : agentsPage(t, x);
 }

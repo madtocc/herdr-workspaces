@@ -72,6 +72,15 @@
 // workspaces.agents.alive every 5 s so the button knows the command can run.
 // Esc, and Cmd/Ctrl+W, reach these dialogs as Herdr's actions (overlay.close, tab.close,
 // pane.close), never as keys: dialogFrame() and handoffDialog() claim them on the root.
+// Also (accounts, 2026-11-27): Switch account ▸ on the menu of a Claude, Codex or Antigravity row
+// whose agent has more than one account (herdr-ws-account list --cached and the launcher's
+// ~/.herdr/accounts/on notes, read by accounts.js every 30 s while an accounts file exists:
+// lookAccounts()). Its submenu (accountMenu()) lists the accounts, the current one checked, and
+// Manage accounts…, which opens Settings > Accounts. A pick starts the agent again on that account
+// in a new tab where it was, continuing its conversation (acctfacts.js switchArgv()), and closes the
+// old one; one that works or waits asks first, as Close does. The list copy does it (doSwitch(),
+// through ws-agents.switch/<id>, as restore), so the menu closing can't cut it off halfway. A row on
+// an account that isn't its agent's default says which in a small dim word (accountMark()).
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, Popup, ScrollHandle } from "gpui-base";
@@ -80,6 +89,7 @@ import { exec } from "./posix.js";
 import { tokens, wipeLine } from "./statfacts.js";
 import { keptFolds, restoreCommand, lookStuck, wipeUndo, restoreKey, restoreOutcome, historyAt } from "./listfacts.js";
 import { kindOf as menuKind, menuItems, menuHeight, closeAsks, helpersLine, forkArgv, wipeTargets, agyDir, handoffChoices, firstHandoffPick, handoffLaunch, commandProgram, choiceArgv, moreAt, agentsCheckLine } from "./menufacts.js";
+import { ACCOUNT_KINDS, currentAccount, switchOffered, switchKnown, accountRows, accountsHeight, switchArgv, accountMark, switchAsk, sideAt } from "./acctfacts.js";
 import { KNOBS, knobsIn, configModels, listable, keptModels, listModels, SHORT_LIST, typeahead, markSegments } from "./knobs.js";
 import { SETTINGS_FILE, parseSettings, experimentOn, featureOn } from "./settingsfacts.js";
 // The system's trash by its name: the Recycle Bin on Windows, the Trash elsewhere.
@@ -334,6 +344,8 @@ function failure(r) {
 const UNDO_TIMEOUT = 600000;
 const RESTORES = "workspaces.agents.restores"; // { [backup folder name]: { state: running | done | failed, why, again, title, at } }
 const ALIVE = "workspaces.agents.alive"; // { at }, every 5 s from the list copies: whether ws-agents.restore/… can run
+// Switch account's asks, for the list copy that runs them (doSwitch()): { [id]: { f, to, label, state: asked | running, at } }.
+const SWITCHES = "workspaces.agents.switches";
 // History at that conversation, once it's put back (a click on the "Put back" toast and its bell row), while History is on.
 const opensAt = (id, ws) => (featureOn(shared("workspaces.settings"), "history") ? historyAt(id, ws) : null);
 const undoFor = (backup, ws, id) => (backup ? wipeUndo(backup, restoreCommand(`${appHome()}/mods/ws-agents/agywipe.js`, home(), backup, window()?.platform === "windows"), ws, opensAt(id, ws)) : null);
@@ -373,7 +385,7 @@ export default class Agents extends View {
       this.pointerLast = pointKey(p.pointer);
       return;
     }
-    if (p?.agentMenu || p?.send || p?.wipe || p?.handoff) return this.initOverlay(p, cx);
+    if (p?.agentMenu || p?.accountMenu || p?.send || p?.wipe || p?.handoff) return this.initOverlay(p, cx);
     // Folds, kept across restarts as pins are (listfacts.js keptFolds()).
     try { this.foldSeen = keptFolds(JSON.parse(localStorage.getItem("folds") ?? "{}"), null, Date.now()); } catch { this.foldSeen = {}; }
     this.folded = new Set(Object.keys(this.foldSeen));
@@ -399,10 +411,11 @@ export default class Agents extends View {
     // Put it back: whether the command can run (ws-toast and the bell read it first), and the command.
     setShared(ALIVE, { at: Date.now() });
     cx.timer.every(5000, () => setShared(ALIVE, { at: Date.now() }));
-    cx.spawn(async () => {
+    cx.spawn(async (cx) => {
       for (;;) {
         const c = String((await nextCommand().catch(() => null)) ?? "");
         if (c.startsWith("restore/")) this.restore(c.slice("restore/".length));
+        else if (c.startsWith("switch/")) this.doSwitch(c.slice("switch/".length), cx);
       }
     });
     // Watch for Hand off "Pre-fill only" requests published by the dialog.
@@ -427,6 +440,11 @@ export default class Agents extends View {
       cx.spawn(async () => this.readSettings());
       cx.spawn(async () => this.agyPending());
     });
+    // The accounts and which one each agent is on (Switch account, the row's mark).
+    this.accounts = null;
+    this.accountsOn = {};
+    cx.spawn(async (cx) => this.lookAccounts(cx));
+    cx.timer.every(30000, (cx) => cx.spawn(async (cx) => this.lookAccounts(cx)));
     cx.timer.every(STATS_WORKING, (cx) => {
       if (this.statsBusy || !numbersOn()) return;
       const list = this.statAgents();
@@ -434,6 +452,89 @@ export default class Agents extends View {
       const wait = list.some((a) => a.status === "working") ? STATS_WORKING : STATS_IDLE;
       if (key !== this.statsFor || Date.now() - this.statsAt >= wait - 500) cx.spawn(async (cx) => this.readStats(cx));
     });
+  }
+
+  // The accounts (herdr-ws-account list --cached, no agent CLI runs) and which one each Claude, Codex
+  // and Antigravity here was started on (accounts.js look). Nothing runs while there's no accounts
+  // file: every agent is then on its own sign-in, and Switch account isn't offered.
+  async lookAccounts(cx) {
+    if (this.accountsBusy || checking()) return;
+    if ((await readTextFile(`${home()}/.herdr/accounts.json`).catch(() => null)) == null) {
+      if (this.accounts) { this.accounts = null; this.accountsOn = {}; this.accountsRaw = ""; cx.notify(); }
+      return;
+    }
+    this.accountsBusy = true;
+    try {
+      const args = [`${appHome()}/mods/ws-agents/accounts.js`, "look", `${appHome()}/mods/ws-switcher/accounts/cli.js`];
+      const seen = new Set();
+      for (const a of [...agents(), ...terminals().filter((k) => k.state === "live")]) {
+        if (a.address.includes("/") || seen.has(a.address) || !ACCOUNT_KINDS.has(menuKind(a.app ?? a.agent, a.program?.key))) continue;
+        seen.add(a.address);
+        args.push("--t", a.address);
+      }
+      const r = await node(args, { timeout: 20000 });
+      if (r.code !== 0 || r.stdout === this.accountsRaw) return;
+      let data = null;
+      try { data = JSON.parse(r.stdout); } catch { return; }
+      this.accountsRaw = r.stdout;
+      this.accounts = data?.list ?? null;
+      this.accountsOn = data?.on ?? {};
+      cx.notify();
+    } finally { this.accountsBusy = false; }
+  }
+
+  // Switch account's pick (ws-agents.switch/<id>, from the submenu or its confirm). Every list copy
+  // gets it: the first marks it running, so the others leave it. The restart note (Antigravity's,
+  // Codex's) and the conversation a running Codex has open are looked up here (accounts.js restart),
+  // then the agent starts again on the account in a new tab where it was (same space, folder and tab
+  // name) and the old one closes: Claude and Codex once the new tab is there, Antigravity first (it
+  // holds its conversation's presence lock while it runs).
+  async doSwitch(id, cx) {
+    const all = shared(SWITCHES) ?? {};
+    const ask = all[id];
+    if (!ask || ask.state !== "asked" || Date.now() - (ask.at ?? 0) > 600000) return;
+    setShared(SWITCHES, { ...all, [id]: { ...ask, state: "running" } });
+    const { f, to, label } = ask;
+    const failed = (why) => notify({ title: `Couldn't switch ${f.name} to ${label}`, body: why, level: "error" });
+    try {
+      let pid = null;
+      if (f.kind === "codex") {
+        const r = await hc(["get", f.address, "--json"]).catch(() => null);
+        try { pid = JSON.parse(r?.stdout ?? "")?.foreground?.pid ?? null; } catch { pid = null; }
+      }
+      const r = await node([`${appHome()}/mods/ws-agents/accounts.js`, "restart", f.address, f.kind, ...(pid ? [String(pid)] : [])], { timeout: 20000 });
+      let look = {};
+      try { look = JSON.parse(r.stdout) ?? {}; } catch { look = {}; }
+      // Claude's note is the one stats.js checked is this Claude's; Antigravity's only with a note of
+      // its conversation that's provably the running one's (agyFresh); Codex's launcher writes none.
+      const a = {
+        ...f,
+        cmd: f.kind === "claude" ? f.cmd : f.kind === "agy" ? (f.agyFresh ? look.cmd : null) : look.cmd,
+        session: f.kind === "codex" ? look.session ?? null : f.session,
+      };
+      const argv = switchArgv(a, to);
+      if (!argv) return failed(r.code === 127 ? "It needs Node, which wasn't found." : "It has no conversation to continue.");
+      const open = { ...(f.space ? { space: f.space } : {}), ...(f.tabName ? { name: f.tabName } : {}), ...(f.cwd ? { folder: f.cwd } : {}), argv };
+      const close = f.pane ? ["pane.close", { pane: f.pane }] : ["terminal.kill", { terminal: f.address }];
+      showTabs();
+      if (f.kind === "agy") {
+        run(...close);
+        await exec("sleep", ["1.5"]).catch(() => {});
+        run("tab.new", open);
+      } else {
+        run("tab.new", open);
+        run(...close);
+      }
+      if (f.kind === "codex" && !a.session) notify({ title: `${f.name} continues its latest conversation`, level: "info", timeout: 8000,
+        body: `Codex didn't say which one it had open, so it picks up its latest in that folder, on ${label}.` });
+    } catch (e) {
+      failed(String(e?.message ?? e));
+    } finally {
+      const now = Date.now();
+      setShared(SWITCHES, Object.fromEntries(Object.entries(shared(SWITCHES) ?? {}).filter(([k, x]) => k !== id && now - (x?.at ?? 0) < 600000)));
+      // The new one's note: its row's mark.
+      cx.timer.after(4000, (cx) => cx.spawn(async (cx) => this.lookAccounts(cx)));
+    }
   }
 
   // ~/.herdr/settings.jsonc into shared "workspaces.settings", when it differs from what's there.
@@ -709,15 +810,21 @@ export default class Agents extends View {
     };
     const wipeHelpers = tally(kids);
     const helpers = pane ? tally(kids.filter((k) => !stays(k))) : wipeHelpers;
-    return {
+    const kind = menuKind(a.app ?? a.agent, a.program?.key);
+    // Switch account: the kind's accounts (lookAccounts()) and the one it's on.
+    const accounts = ACCOUNT_KINDS.has(kind) && this.accounts?.agents?.[kind] ? { agents: { [kind]: this.accounts.agents[kind] } } : null;
+    const f = {
       address: a.address, name: name || a.address, pane: pane ? a.pane : null, tab: tab ? a.tab : null, space: a.space ?? null,
       tabName: tab?.named ? tab.name : null, program: a.program?.name ?? null,
-      status, kind: menuKind(a.app ?? a.agent, a.program?.key), pinned: Boolean(a.pinned), top, focused: Boolean(a.focused),
+      status, kind, pinned: Boolean(a.pinned), top, focused: Boolean(a.focused),
       remote: a.address.includes("/"),
       session: s.session ?? null, file: s.file ?? null, cwd: s.cwd ?? pane?.cwd ?? a.cwd ?? null, cmd: s.cmd ?? null,
       agyWipe: experimentOn(shared("workspaces.settings"), "antigravity-wipe"), agyFresh: s.fresh === true, pid: this.pids?.get(a.address)?.pid ?? null,
       helpers, wipeHelpers, facts: wipeLine(s),
+      accounts, account: currentAccount(kind, this.accountsOn?.[a.address]),
     };
+    f.switch = switchOffered(f, accounts) ? { known: switchKnown(f) } : null;
+    return f;
   }
 
   // A right-click's menu. While the numbers are off nothing keeps this.stats current,
@@ -737,6 +844,12 @@ export default class Agents extends View {
   // press: where the press that opened it was (pointerRow()'s first place).
   openMenu(f, at, press = null) {
     openOverlay({ mod: "ws-agents", kind: "popup", width: 220, height: menuHeight(menuItems(f)), ...(at ? { at } : {}), props: { agentMenu: f, pointer: press } });
+  }
+
+  // The row's account mark: the account's label, small and dim like a machine's name, cut short.
+  accountWord(t, address, label, quiet) {
+    return div().id(`acct-${address}`).flex_none().max_w(76).truncate().text_size(10).text_color(t.dim)
+      .when(!quiet, (el) => el.tooltip(`On the account ${label}`)).child(label);
   }
 
   // The hovered row's ⋯ (drawn like its pin): the same menu as a right-click, opened under
@@ -792,7 +905,7 @@ export default class Agents extends View {
     const p = props();
     const f = p.agentMenu;
     const done = () => closeOverlay(p.overlay);
-    if (!it || this.busy) return;
+    if (!it || this.busy || it.disabled) return;
     this.acting = it.id;
     switch (it.id) {
       case "peek":
@@ -815,6 +928,12 @@ export default class Agents extends View {
       case "handoff":
         done();
         return openOverlay({ mod: "ws-agents", kind: "dialog", modal: true, width: 580, height: 610, props: { handoff: f } });
+      case "accounts": {
+        // Its submenu, beside the item (the press's place), else where the menu was opened.
+        const rows = accountRows(f, f.accounts);
+        const at = sideAt(this.itemBounds) ?? p.pointer ?? null;
+        return openOverlay({ mod: "ws-agents", kind: "popup", width: 230, height: accountsHeight(rows), ...(at ? { at } : {}), props: { accountMenu: f, parent: p.overlay } });
+      }
       case "rename":
         done();
         return run("tab.rename", { id: f.tab });
@@ -873,7 +992,7 @@ export default class Agents extends View {
       .on_key_down((e, cx) => {
         if (e.key === "down") this.at = (this.at + 1) % items.length;
         else if (e.key === "up") this.at = (this.at + items.length - 1) % items.length;
-        else if (e.key === "enter") return this.act(items[this.at], cx);
+        else if (e.key === "enter" || (e.key === "right" && items[this.at]?.sub)) return this.act(items[this.at], cx);
         // Esc never comes here: Herdr's Esc closes a popup as its action overlay.close.
         else return;
         cx.notify();
@@ -888,15 +1007,84 @@ export default class Agents extends View {
           .gap(9)
           .rounded(7)
           .items_center()
-          .text_color(it.danger ? t.blocked : t.foreground)
+          .text_color(it.danger ? t.blocked : it.disabled ? t.dim : t.foreground)
           .when(i === this.at, (el) => el.bg(t.selected))
           // The pointer moves the keys' row too, so one row is lit and Enter runs it (pointerRow());
           // no hover fill of its own, or a menu under a resting pointer would show two.
           .on_mouse_move((e, cx) => this.pointerRow(i, e, cx))
+          // Where it was pressed: a submenu opens beside it (sideAt()).
+          .on_mouse_down("left", (e) => { this.itemBounds = e.bounds ?? null; })
           .on_click((_e, cx) => this.act(it, cx))
-          .child(svg(it.icon).size(14).flex_none().text_color(it.danger ? t.blocked : t.muted))
+          .child(svg(it.icon).size(14).flex_none().text_color(it.danger ? t.blocked : it.disabled ? t.dim : t.muted))
           .child(div().flex_1().min_w(0).truncate().child(this.busy === it.id ? (BUSY_WORDS[it.id] ?? it.label) : it.label))
-          .when(Boolean(it.hint), (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(it.hint))))));
+          .when(Boolean(it.hint), (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(it.hint)))
+          .when(Boolean(it.sub), (el) => el.child(svg("mods/workspace-chrome/chevron-right.svg").size(12).flex_none().text_color(t.dim))))));
+  }
+
+  // Switch account's submenu: the agent's accounts, the current one checked, Manage accounts… last.
+  // ← closes it (back to the menu, when Herdr keeps that open), Esc both.
+  accountMenu(t) {
+    const p = props();
+    const f = p.accountMenu;
+    const rows = accountRows(f, f.accounts);
+    const title = { claude: "Claude", codex: "Codex", agy: "Antigravity" }[f.kind] ?? "Agent";
+    return v_flex()
+      .id("account-menu")
+      .track_focus(this.handle)
+      .w_full()
+      .min_h(0)
+      .p(5)
+      .bg(t.popover)
+      .text_size(12.8)
+      .on_key_down((e, cx) => {
+        if (e.key === "down") this.at = (this.at + 1) % rows.length;
+        else if (e.key === "up") this.at = (this.at + rows.length - 1) % rows.length;
+        else if (e.key === "enter") return this.actAccount(rows[this.at], cx);
+        else if (e.key === "left") return closeOverlay(p.overlay);
+        else return;
+        cx.notify();
+      })
+      .child(div().px(8).pt(4).pb(6).text_size(11).text_color(t.dim).truncate().child(`${title} accounts`))
+      .children(rows.map((r, i) => v_flex()
+        .when(Boolean(r.sep), (el) => el.child(div().mx(7).my(4).h(1).bg(t.border)))
+        .child(h_flex()
+          .id(`acm-${r.id}`)
+          .h(31)
+          .px(8)
+          .gap(9)
+          .rounded(7)
+          .items_center()
+          .text_color(r.disabled ? t.dim : t.foreground)
+          .when(i === this.at, (el) => el.bg(t.selected))
+          .on_mouse_move((e, cx) => this.pointerRow(i, e, cx))
+          .on_click((_e, cx) => this.actAccount(r, cx))
+          .child(div().size(14).flex_none().when(Boolean(r.current) || r.id === "manage", (el) => el.child(r.id === "manage"
+            ? svg("mods/workspace-chrome/settings.svg").size(14).text_color(t.muted)
+            : svg("mods/workspace-chrome/check.svg").size(14).text_color(t.foreground))))
+          .child(div().flex_1().min_w(0).truncate().child(r.label))
+          .when(Boolean(r.hint), (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(r.hint))))));
+  }
+
+  // A pick in that submenu. The switch itself is the list copy's (doSwitch()): this one closes now.
+  actAccount(r, cx) {
+    const p = props();
+    const f = p.accountMenu;
+    if (!r || r.disabled) return;
+    const closeAll = () => { closeOverlay(p.overlay); if (p.parent) closeOverlay(p.parent); };
+    if (r.id === "manage") { closeAll(); return run("ws-switcher.settings/accounts", {}); }
+    if (r.current) return closeAll();
+    const now = Date.now();
+    const id = `${f.address}-${now}`;
+    const kept = Object.entries(shared(SWITCHES) ?? {}).filter(([, x]) => now - (x?.at ?? 0) < 600000);
+    setShared(SWITCHES, { ...Object.fromEntries(kept), [id]: { f, to: r.account, label: r.label, state: "asked", at: now } });
+    closeAll();
+    const command = { name: `ws-agents.switch/${id}`, args: {} };
+    if (!closeAsks(f)) return run(command.name, command.args);
+    const kids = helpersLine(f.helpers);
+    return openOverlay({ mod: "confirm", kind: "dialog", width: 420, height: kids ? 196 : 176, props: {
+      title: `Switch ${f.name} to ${r.label}?`,
+      detail: [switchAsk(f, r.label), kids].filter(Boolean).join(" "),
+      command } });
   }
 
   // Esc on a dialog with something typed or changed (`unsaved`): the first press says
@@ -1689,6 +1877,7 @@ export default class Agents extends View {
     // Its numbers (as a top row's, statLine) on a second line, when there are any.
     const stat = numbersOn() ? this.stats[k.address] : null;
     const subName = k.name || k.template || k.program?.name || k.address;
+    const mark = k.address.includes("/") ? null : accountMark(menuKind(k.app ?? k.agent, k.program?.key), this.accountsOn?.[k.address], this.accounts);
     const nameEl = div().id(`sub-name-${k.address}`).flex_1().min_w(0).truncate().text_color(on ? t.foreground : t.muted)
       .when(this.tipOff !== `sub-${k.address}`, (el) => el.tooltip(subName)).child(subName); // not under its own menu
     return h_flex()
@@ -1723,6 +1912,7 @@ export default class Agents extends View {
         ? this.measured(v_flex().id(`sub-col-${k.address}`).flex_1().min_w(0).mr(6).gap(1), k.address)
           .child(nameEl).child(this.statLine(t, k, stat, `sub-stat-${k.address}`, this.short(k.address, stat)))
         : nameEl)
+      .when(Boolean(mark), (el) => el.child(div().mr(6).child(this.accountWord(t, k.address, mark, this.tipOff === `sub-${k.address}`))))
       .when(kids.length > 0, (el) => el.child(div().mr(4).child(this.fold(t, k.address, kids))))
       .when(this.hovered === k.address, (el) => el.child(div().mr(6).child(this.more(t, `sub-more-${k.address}`,
         (cx, at, press) => this.menuAt(cx, this.agentsBy?.get(k.address) ?? k, subName, st, false, at, press), `sub-${k.address}`))))
@@ -1759,6 +1949,7 @@ export default class Agents extends View {
     const t = theme();
     if (props()?.sortMenu) return this.sortMenu(t);
     if (props()?.agentMenu) return this.agentMenu(t);
+    if (props()?.accountMenu) return this.accountMenu(t);
     if (props()?.send) return this.sendDialog(t);
     if (props()?.handoff) return this.handoffDialog(t);
     if (props()?.wipe) return this.wipeDialog(t);
@@ -1828,6 +2019,8 @@ export default class Agents extends View {
       const more = detail.get(a.address);
       // An agent on another machine (`vps/t7`) says which.
       const machine = a.address.includes("/") ? a.address.split("/")[0] : null;
+      // One on an account that isn't its agent's default says which (acctfacts.js accountMark()).
+      const mark = machine ? null : accountMark(menuKind(a.app ?? a.agent, a.program?.key), this.accountsOn?.[a.address], this.accounts);
       if (collapsed) {
         return this.quietTip(h_flex()
           .id(`ag-${a.address}`)
@@ -1910,6 +2103,7 @@ export default class Agents extends View {
             .child(nameLine).child(this.statLine(t, a, stat, undefined, this.short(a.address, stat)))
           : nameLine.flex_1())
         .when(Boolean(machine), el => el.child(div().text_size(10).text_color(t.dim).child(machine)))
+        .when(Boolean(mark), el => el.child(this.accountWord(t, a.address, mark, quiet)))
         .when(subs.length > 0, el => el.child(this.fold(t, a.address, subs)))
         .when(this.hovered === a.address, el => el.child(pin)
           .child(this.more(t, `more-${a.address}`, (cx, at, press) => this.menuAt(cx, a, full && more ? `${name} · ${more}` : name, a.status, true, at, press), `ag-${a.address}`)))

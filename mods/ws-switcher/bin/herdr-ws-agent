@@ -1,12 +1,13 @@
 #!/bin/sh
 # Start an agent with its Herdr workspace's instructions.
 #
-#   herdr-ws-agent [--instructions FILE]... [--task TEXT] <agent> [args...]
-#   herdr-ws-agent --preset NAME [task...]     start a preset here (as Herdr's UI does)
+#   herdr-ws-agent [--account ID] [--instructions FILE]... [--task TEXT] <agent> [args...]
+#   herdr-ws-agent [--account ID] --preset NAME [task...]   start a preset here (as Herdr's UI does)
 #   herdr-ws-agent --presets                   list the presets this folder's workspace offers
 #   herdr-ws-agent --guide on|off|status       give agents the global guide, or not
 #
 # Options:
+#   --account ID          start Claude, Codex or Antigravity on that account (herdr-ws-account list)
 #   --instructions FILE   add a preset's instructions after the workspace's (repeatable)
 #   --task TEXT           the agent's first message
 #   HERDR_WS_AGENT_DRY=1  print the command, one word per line, instead of running it
@@ -106,13 +107,24 @@
 # --parent note which terminal started it, in the background, so the History screen
 # can fold the helper's conversation under the one that started it.
 #
+# Claude, Codex and Antigravity start on an account: the one --account names, else the
+# agent's default in ~/.herdr/accounts.json (Settings > Accounts; herdr-ws-account, beside
+# this script, keeps it). The main account is the agent's own sign-in and changes nothing.
+# Any other one sets the agent's folder (Claude: CLAUDE_CONFIG_DIR, Codex: CODEX_HOME,
+# Antigravity: HOME, a shadow of yours) as herdr-ws-account env says, and clears the
+# CLAUDECODE / CLAUDE_CODE_* variables a Claude session hands its children (with them a
+# Claude is signed in as that session, whatever its folder). The account goes into the
+# restart note (so a restart and History's Resume come back on it), and in a herdr-core
+# terminal into ~/.herdr/accounts/on/<core>/<terminal> ("<agent> <id>", then the restart
+# note's words), which the Agents list reads. No accounts file and no --account: nothing changes.
+#
 # HERDR_WS_AGENT_DRY=1 prints the command, one word per line, instead of running it.
 
-usage="usage: herdr-ws-agent [--instructions FILE]... [--task TEXT] <agent> [args...]
-       herdr-ws-agent --preset NAME [task...]
+usage="usage: herdr-ws-agent [--account ID] [--instructions FILE]... [--task TEXT] <agent> [args...]
+       herdr-ws-agent [--account ID] --preset NAME [task...]
        herdr-ws-agent --presets
        herdr-ws-agent --guide on|off|status"
-presets= mode= pname= agent= task=
+presets= mode= pname= agent= task= account=
 # The global guide's switch: off is "off" in ~/.herdr/guide/switch; anything else is on.
 guide=$HOME/.herdr/AGENTS.md
 switch=$HOME/.herdr/guide/switch
@@ -128,6 +140,10 @@ if [ "${1:-}" = --guide ]; then
   else echo "On: Claude, Codex, Antigravity and Pi get $guide ($(wc -c < "$guide" | tr -d ' ') bytes), except presets with guide: off."; fi
   exit 0
 fi
+while [ "${1:-}" = --account ]; do
+  [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }
+  account=$2; shift 2
+done
 case "${1:-}" in
   -h | --help)
     # This file's opening comment, without its "# ".
@@ -137,9 +153,9 @@ case "${1:-}" in
   --preset) [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }; mode=preset; pname=$2; shift 2 ;;
 esac
 if [ -z "$mode" ]; then
-  while [ "${1:-}" = --instructions ] || [ "${1:-}" = --task ]; do
+  while [ "${1:-}" = --instructions ] || [ "${1:-}" = --task ] || [ "${1:-}" = --account ]; do
     [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }
-    if [ "$1" = --task ]; then task=$2; else presets="$presets$2
+    if [ "$1" = --task ]; then task=$2; elif [ "$1" = --account ]; then account=$2; else presets="$presets$2
 "; fi
     shift 2
   done
@@ -190,7 +206,30 @@ fi
 bare=" --allow-dangerously-skip-permissions --ax-screen-reader --bg --background --bare --brief --chrome --no-chrome --dangerously-skip-permissions --desktop --disable-slash-commands --exclude-dynamic-system-prompt-sections --forward-subagent-text --ide --include-hook-events --include-partial-messages --no-session-persistence -p --print --replay-user-messages --restricted --safe-mode --strict-mcp-config --verbose "
 many=" --add-dir --allowedTools --allowed-tools --betas --disallowedTools --disallowed-tools --file --mcp-config --tools "
 q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+# The account it starts on (Claude, Codex, Antigravity): asked of herdr-ws-account, beside
+# this script (following its symlink), else on PATH. Its variables are set just before the
+# agent starts (Antigravity's HOME would change where everything below looks).
+acctid= acctenv=
+acct=$0
+[ -L "$acct" ] && link=$(readlink "$acct") && case "$link" in /*) acct=$link ;; *) acct=$(dirname "$acct")/$link ;; esac
+acct=$(dirname "$acct")/herdr-ws-account
+[ -x "$acct" ] || acct=$(command -v herdr-ws-account 2>/dev/null) || acct=
+case "${agent##*/}" in
+  claude | codex | agy)
+    if [ -n "$account" ] || [ -f "$HOME/.herdr/accounts.json" ]; then
+      if [ -z "$acct" ]; then
+        [ -z "$account" ] || { echo "herdr-ws-agent: --account needs herdr-ws-account (it's beside this script in the ws-switcher mod)" >&2; exit 1; }
+      elif out=$("$acct" env "${agent##*/}" "${account:-default}"); then
+        acctid=$(printf '%s\n' "$out" | sed -n 's/^id //p' | sed -n 1p)
+        acctenv=$(printf '%s\n' "$out" | sed '/^id /d')
+      elif [ -n "$account" ]; then exit 1
+      else echo "herdr-ws-agent: couldn't read the default account; starting on the agent's own sign-in" >&2
+      fi
+    fi
+    ;;
+esac
 note=herdr-ws-agent skip= take=
+[ -n "$acctid" ] && note="$note --account $(q "$acctid")"
 while IFS= read -r f; do
   [ -n "$f" ] && note="$note --instructions $(q "$f")"
 done <<EOF
@@ -353,9 +392,12 @@ if [ "$mode" = preset ]; then
     case "$1" in [A-Za-z_]*=*) export "${1%%=*}=${1#*=}"; shift ;; *) break ;; esac
   done
   [ "${1##*/}" = herdr-ws-agent ] && shift
+  # The preset's own --account counts when this start named none.
+  while [ "${1:-}" = --account ] && [ $# -ge 2 ]; do [ -n "$account" ] || account=$2; shift 2; done
   [ $# -ge 1 ] || { echo "herdr-ws-agent: $file's command names no program" >&2; exit 1; }
   case "${1##*/}" in
     claude|codex|agy|pi)
+      [ -n "$account" ] && set -- --account "$account" "$@"
       [ -n "$task" ] && exec "$0" --task "$task" --instructions "$file" "$@"
       exec "$0" --instructions "$file" "$@"
       ;;
@@ -751,9 +793,41 @@ fi
 
 if [ -n "${HERDR_WS_AGENT_DRY:-}" ]; then
   printf 'workspace: %s\n' "${ws:-none}"
+  [ -n "$acctid" ] && printf 'account: %s\n%s\n' "$acctid" "$acctenv" | sed '/^$/d'
   printf '%s\n' "$agent" "$@"
   exit 0
 fi
+# Which account this terminal's agent is on, for the Agents list.
+if [ -n "${HC_TERMINAL_ID:-}" ] && [ -n "${HC_TERMINAL_SOCKET:-}" ]; then
+  case "$name" in
+    claude | codex | agy)
+      core=${HC_TERMINAL_SOCKET##*[/\\]}
+      core=${core%.sock}
+      case $HC_TERMINAL_SOCKET in '\\.\pipe\'*) core=${core#herdr-core-*-} ;; esac
+      on=$HOME/.herdr/accounts/on/$core
+      # Line 2: the launcher's words (the restart note's), which Codex has no other note of.
+      if [ -n "$acctid" ]; then mkdir -p "$on" 2>/dev/null && printf '%s %s\n%s\n' "$name" "$acctid" "$note" > "$on/$HC_TERMINAL_ID" 2>/dev/null
+      else rm -f "$on/$HC_TERMINAL_ID" 2>/dev/null
+      fi
+      ;;
+  esac
+fi
+# Antigravity on an account in a herdr-core terminal: herdr-ws-account reads its start banner
+# from the screen in the background (who's signed in and the plan, which agy says nowhere
+# else) and keeps it for Settings > Accounts. It gives up after 90 s; the agent never waits.
+if [ "$name" = agy ] && [ -n "$acctid" ] && [ -n "$acct" ] && [ -z "$oneshot" ] && [ -n "${HC_TERMINAL_ID:-}" ] && [ -n "${HC_TERMINAL_SOCKET:-}" ] && command -v hc >/dev/null 2>&1; then
+  "$acct" banner agy "$acctid" "$HC_TERMINAL_ID" </dev/null >/dev/null 2>&1 &
+fi
+# The account's variables (herdr-ws-account env): "unset NAME" and "set NAME VALUE" lines.
+while IFS=' ' read -r op var val; do
+  case "$var" in '' | *[!A-Za-z0-9_]* | [0-9]*) continue ;; esac
+  case "$op" in
+    unset) unset "$var" ;;
+    set) export "$var=$val" ;;
+  esac
+done <<EOF
+$acctenv
+EOF
 # Its preset: the last --instructions file's name.
 last=$(printf '%s' "$presets" | sed '/^$/d' | tail -n 1)
 last=${last##*/}

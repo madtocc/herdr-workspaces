@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800" font-family="Geist, -apple-system, 'Helvetica Neue', sans-serif">
-  <!-- Settings (ws-settings: Herdr's Settings window with the package's Features, Agents, Automations, Files, Vault and Experimental sections), open on Agents. Demo names only (the main drawing's Acme). -->
+  <!-- Settings (ws-settings: Herdr's Settings window with the package's Features, Agents, Accounts, Automations, Files, Vault and Experimental sections), open on Agents. Demo names only (the main drawing's Acme). -->
   <defs>
     <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
       <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000" flood-opacity="0.45"/>
@@ -100,7 +100,7 @@
   <!-- dimmed behind the dialog -->
   <rect width="1280" height="800" fill="#000" opacity="0.45"/>
 
-  <!-- the Settings dialog, 880 wide like Herdr's: its sections, then Features, Agents, Automations, Files, Vault and Experimental -->
+  <!-- the Settings dialog, 880 wide like Herdr's: its sections, then Features, Agents, Accounts, Automations, Files, Vault and Experimental -->
   <g filter="url(#shadow)"><rect x="200" y="90" width="880" height="620" rx="12" fill="#202125" stroke="#303237"/></g>
   <clipPath id="st-dialog"><rect x="200" y="90" width="880" height="620" rx="12"/></clipPath>
   <g clip-path="url(#st-dialog)">
@@ -124,14 +124,16 @@
   <rect x="210" y="395" width="170" height="32" rx="7" fill="#2a2b30"/>
   <g transform="translate(220 403.5) scale(0.625)" fill="none" stroke="#5b8def" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/></g>
   <text x="245" y="416" fill="#e8e9eb" font-size="13.5">Agents</text>
-  <g transform="translate(220 437.5) scale(0.625)" fill="none" stroke="#7d8089" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4.5 13.5H12L11 22l8.5-11.5H12z"/></g>
-  <text x="245" y="450" fill="#a5a8ae" font-size="13.5">Automations</text>
-  <g transform="translate(220 471.5) scale(0.625)" fill="none" stroke="#7d8089" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></g>
-  <text x="245" y="484" fill="#a5a8ae" font-size="13.5">Files</text>
-  <g transform="translate(220 505.5) scale(0.625)" fill="none" stroke="#7d8089" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4"/><path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/></g>
-  <text x="245" y="518" fill="#a5a8ae" font-size="13.5">Secrets</text>
-  <g transform="translate(220 539.5) scale(0.625)" fill="none" stroke="#7d8089" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2"/><path d="M6.453 15h11.094"/><path d="M8.5 2h7"/></g>
-  <text x="245" y="552" fill="#a5a8ae" font-size="13.5">Experimental</text>
+  <g transform="translate(220 437.5) scale(0.625)" fill="none" stroke="#7d8089" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></g>
+  <text x="245" y="450" fill="#a5a8ae" font-size="13.5">Accounts</text>
+  <g transform="translate(220 471.5) scale(0.625)" fill="none" stroke="#7d8089" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4.5 13.5H12L11 22l8.5-11.5H12z"/></g>
+  <text x="245" y="484" fill="#a5a8ae" font-size="13.5">Automations</text>
+  <g transform="translate(220 505.5) scale(0.625)" fill="none" stroke="#7d8089" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></g>
+  <text x="245" y="518" fill="#a5a8ae" font-size="13.5">Files</text>
+  <g transform="translate(220 539.5) scale(0.625)" fill="none" stroke="#7d8089" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4"/><path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/></g>
+  <text x="245" y="552" fill="#a5a8ae" font-size="13.5">Secrets</text>
+  <g transform="translate(220 573.5) scale(0.625)" fill="none" stroke="#7d8089" stroke-width="2.00" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2"/><path d="M6.453 15h11.094"/><path d="M8.5 2h7"/></g>
+  <text x="245" y="586" fill="#a5a8ae" font-size="13.5">Experimental</text>
   <rect x="210" y="662" width="170" height="32" rx="7" fill="#2a2b30" stroke="#303237"/><text x="222" y="683" fill="#e8e9eb" font-size="13">Send feedback</text>
   <text x="419" y="128" fill="#e8e9eb" font-size="18" font-weight="600">Agents</text>
   <text x="419" y="154" fill="#7d8089" font-size="12.5">What agents started through the launcher get, and which agents the + menu lists.</text>
