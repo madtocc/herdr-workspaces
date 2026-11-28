@@ -654,12 +654,15 @@ restart note says which. It reads only the newest reply's model and token counts
 compactions and the cost, keeps where it stopped in each transcript in
 `~/.herdr/cache/agentstats.json`, asks `hc get` which program each agent's terminal runs, and
 removes its files of terminals gone two days. For the plan usage in the status bar it runs
-`claude -p /usage` (no session kept, hooks and MCP servers off) and `agy -p /usage` (no
+`claude -p /usage` (no session kept, hooks and MCP servers off), `agy -p /usage` (no
 conversation kept, its log to `/dev/null`, and a do-nothing `open` first on its PATH so a signed-out
-Antigravity can't open a sign-in page) every 10 minutes: each agent's own usage report,
-which it asks Anthropic or Google for with your sign-in; the package never reads a sign-in
-itself. Until that answers, the status bar reads the limits from the status line
-files in `~/.herdr/agents/`. Notes writes each note to `~/.herdr/workspaces/<id>/notes/` as you
+Antigravity can't open a sign-in page) and `codex app-server` (stdin JSON-RPC `initialize` and
+`account/rateLimits/read`, quitting as soon as it answers, with the same do-nothing `open`) every
+10 minutes: each agent's own usage report, which it asks Anthropic, Google or OpenAI for with your
+sign-in; the package never reads a sign-in itself. Until those answer, the status bar reads the
+limits from Claude's status line files in `~/.herdr/agents/` and the end of the newest Codex
+session log in `~/.codex/sessions/` (or `$CODEX_HOME`). Clicking Customize in the usage panel
+writes your `"usage"` switches into `~/.herdr/settings.jsonc`. Notes writes each note to `~/.herdr/workspaces/<id>/notes/` as you
 type (a new note's file is renamed while its first line is being written) and a task file from
 Move to the board; that and Delete move the note to the Trash. On its first run it makes
 the Scratch workspace (`~/.herdr/workspaces/scratch/`); New scratch space makes folders in

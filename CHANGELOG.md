@@ -7,6 +7,12 @@ version you have (`mods/ws-switcher/VERSION` in your copy). To update, see
 
 ## [Unreleased]
 
+### New
+- **Codex plan usage and customizable status-bar limits.** Codex's plan limits (`5-hour` and `Weekly`, or Free's `Monthly`, queried live via `codex app-server` with rollout-log fallback) join Claude and Antigravity in the status bar and usage popup. Clicking **Customize** in the Plan usage limits header lets you switch any plan and any Claude limit or Antigravity/Codex pool on or off for the status bar (saved in `~/.herdr/settings.jsonc`'s `"usage"` block, keeping at least one limit visible so the panel stays reachable; hidden plans remain visible inside the popup). The popup body now scrolls when three plans exceed the space above the status bar. Existing installs: copy `mods/ws-status` and the updated `settingsfacts.js` in `ws-settings`, `ws-agents`, `ws-switcher`, `ws-files`, `ws-automations` and `ws-vault`.
+
+### Fixed
+- **Antigravity status bar tracks Gemini's 5-hour and weekly limits alone by default.** Antigravity's twin micro-bars now show Gemini's 5-hour (top) and weekly (bottom) limits instead of secondary model pools like Claude and GPT (which stay in the popup and tooltip unless turned on in Customize). When both Gemini windows are warm (`≥ 70%`), the second shows inline ("86% · week 73%").
+
 ## [0.35.0] - 2026-11-27
 
 ### New

@@ -7,10 +7,12 @@
 // and how automations run (Settings > Automations, the "automations" block: how many agents at once,
 // quiet hours for desktop sounds, which agent drafts one from words),
 // and Vault's defaults (Settings > Vault, the "vault" block: a new secret's tier and expiry, and
-// when a secret's use shows in the bell).
+// when a secret's use shows in the bell),
+// and which plans and limits the status bar's Plan usage shows (the "usage" block, written by the
+// Plan usage limits panel's Customize in ws-status: only what someone turned on or off).
 // Copied in ws-settings (the screen), ws-agents (which reads it into shared "workspaces.settings"
 // for the mods that only draw), ws-switcher (its runners, in the sidebar and the background
-// runner), ws-status (its timed usage asks) and ws-files (Files and its Cmd-click handler read
+// runner), ws-status (its timed usage asks, and Customize's "usage" block) and ws-files (Files and its Cmd-click handler read
 // the file themselves, so a change reaches them in seconds); change them together.
 
 export const SETTINGS_FILE = ".herdr/settings.jsonc"; // under home
@@ -57,7 +59,7 @@ export const FEATURES = [
     what: "Agents that run on a schedule or when something happens, such as a card moving or a pull request opening.",
     off: null },
   { key: "usage", group: "Status bar and agent rows", title: "Plan usage",
-    what: "Claude's and Antigravity's plan limits at the right of the status bar, asked from each agent every 10 minutes.",
+    what: "Claude's, Antigravity's and Codex's plan limits at the right of the status bar, asked from each agent every 10 minutes.",
     off: "Off: nothing is asked." },
   { key: "numbers", group: "Status bar and agent rows", title: "Agent numbers",
     what: "The model, how full the context is and how often it was compacted, on each agent's row and in History.",
@@ -300,6 +302,23 @@ const vaultLines = (v, value) => [
 ].join("\n");
 
 // The comment above "files" in the file.
+// What the status bar's Plan usage shows (the "usage" block): "<plan>" (claude, agy, codex) false
+// leaves a whole plan out of the bar, "<plan>/<part>" turns one of its limits or pools on or off
+// ("claude/weekly-fable", "agy/claude-and-gpt-models", "codex/codex"). Only booleans, only what
+// someone changed: a key that isn't there keeps the bar's default (ws-status/usagefacts.js).
+export const USAGE_KEY = /^[a-z0-9][a-z0-9-]*(\/[a-z0-9][a-z0-9-]*)?$/;
+const USAGE_NOTE = [
+  "  // What the status bar's Plan usage shows (its panel's Customize): \"<plan>\" for a whole plan,",
+  "  // \"<plan>/<limit or pool>\" for one part of it, each true or false. Missing ones keep their defaults.",
+];
+function readUsagePrefs(raw) {
+  const out = {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
+  for (const [k, v] of Object.entries(raw)) if (USAGE_KEY.test(k) && typeof v === "boolean") out[k] = v;
+  return out;
+}
+const sameUsage = (a, b) => JSON.stringify(a?.usage ?? {}) === JSON.stringify(b?.usage ?? {});
+
 const FILES_NOTE = [
   "  // Files' defaults (Settings > Files); a missing or unknown value is the default.",
 ];
@@ -451,7 +470,8 @@ function stripJsonc(text) {
 }
 
 // The settings: { experimental: { <key>: true|false }, features: { <key>: true|false },
-// files: { <key>: value }, automations: { <key>: value }, vault: { <key>: value } } with every
+// files: { <key>: value }, automations: { <key>: value }, vault: { <key>: value },
+// usage: { <plan or plan/part>: true|false } (only the keys the file gives) } with every
 // experiment present (off unless the file says true), every feature present (on unless the file
 // says false) and every Files, automations and Vault setting present (its default unless the file
 // gives one of its values),
@@ -460,14 +480,14 @@ function stripJsonc(text) {
 export function parseSettings(text) {
   const experimental = Object.fromEntries(EXPERIMENTS.map((e) => [e.key, false]));
   const features = Object.fromEntries(FEATURE_KEYS.map((k) => [k, true]));
-  if (text == null || !String(text).trim()) return { experimental, features, files: { ...FILES_DEFAULTS }, automations: { ...AUTOMATIONS_DEFAULTS }, vault: { ...VAULT_DEFAULTS } };
+  if (text == null || !String(text).trim()) return { experimental, features, files: { ...FILES_DEFAULTS }, automations: { ...AUTOMATIONS_DEFAULTS }, vault: { ...VAULT_DEFAULTS }, usage: {} };
   try {
     const raw = JSON.parse(stripJsonc(String(text)));
     for (const e of EXPERIMENTS) experimental[e.key] = raw?.experimental?.[e.key] === true;
     for (const k of FEATURE_KEYS) features[k] = raw?.features?.[k] !== false;
-    return { experimental, features, files: readFiles(raw?.files), automations: readAutomations(raw?.automations), vault: readVault(raw?.vault) };
+    return { experimental, features, files: readFiles(raw?.files), automations: readAutomations(raw?.automations), vault: readVault(raw?.vault), usage: readUsagePrefs(raw?.usage) };
   } catch (err) {
-    return { experimental, features: Object.fromEntries(FEATURE_KEYS.map((k) => [k, true])), files: { ...FILES_DEFAULTS }, automations: { ...AUTOMATIONS_DEFAULTS }, vault: { ...VAULT_DEFAULTS }, error: String(err?.message ?? err) };
+    return { experimental, features: Object.fromEntries(FEATURE_KEYS.map((k) => [k, true])), files: { ...FILES_DEFAULTS }, automations: { ...AUTOMATIONS_DEFAULTS }, vault: { ...VAULT_DEFAULTS }, usage: {}, error: String(err?.message ?? err) };
   }
 }
 
@@ -556,6 +576,7 @@ export function withFeature(text, key, on) {
   if (FILES_KEYS.some((k) => now.files[k] !== was.files[k])) return null;
   if (AUTOMATIONS_KEYS.some((k) => now.automations[k] !== was.automations[k])) return null;
   if (VAULT_KEYS.some((k) => now.vault[k] !== was.vault[k])) return null;
+  if (!sameUsage(now, was)) return null;
   return next;
 }
 
@@ -619,6 +640,7 @@ export function withFileSetting(text, key, value) {
   if (EXPERIMENTS.some((e) => now.experimental[e.key] !== was.experimental[e.key])) return null;
   if (AUTOMATIONS_KEYS.some((k) => now.automations[k] !== was.automations[k])) return null;
   if (VAULT_KEYS.some((k) => now.vault[k] !== was.vault[k])) return null;
+  if (!sameUsage(now, was)) return null;
   return next;
 }
 
@@ -667,6 +689,7 @@ export function withAutomationSetting(text, key, value) {
   if (FEATURE_KEYS.some((k) => now.features[k] !== was.features[k])) return null;
   if (EXPERIMENTS.some((e) => now.experimental[e.key] !== was.experimental[e.key])) return null;
   if (VAULT_KEYS.some((k) => now.vault[k] !== was.vault[k])) return null;
+  if (!sameUsage(now, was)) return null;
   return next;
 }
 
@@ -712,6 +735,7 @@ export function withVaultSetting(text, key, value) {
   const was = parseSettings(text), now = parseSettings(next);
   if (now.error || now.vault[key] !== value) return null;
   if (VAULT_KEYS.some((k) => k !== key && now.vault[k] !== was.vault[k])) return null;
+  if (!sameUsage(now, was)) return null;
   if (AUTOMATIONS_KEYS.some((k) => now.automations[k] !== was.automations[k])) return null;
   if (FILES_KEYS.some((k) => now.files[k] !== was.files[k])) return null;
   if (FEATURE_KEYS.some((k) => now.features[k] !== was.features[k])) return null;
@@ -744,6 +768,54 @@ function editVaultSetting(text, key, value) {
   const vv = { ...VAULT_DEFAULTS, [key]: value };
   const empty = /^\s*\}/.test(b.slice(root + 1));
   return `${s.slice(0, root + 1)}\n${VAULT_NOTE.join("\n")}\n  "vault": {\n${VAULT_SETTINGS.map((x) => vaultLines(x, vv[x.key])).join(",\n\n")}\n  }${empty ? "\n" : ",\n"}${s.slice(root + 1)}`;
+}
+
+// The file's text with one of Plan usage's parts turned on or off for the status bar (the panel's
+// Customize), its comments kept, the same way as withFeature(): only that value changes; a file
+// without the key gets it at the top of "usage"; one without "usage" gets the block (with a comment
+// saying what it is) at the top; no file gets the starter with the block. Unlike a feature, the
+// value is always written (a part's default isn't known here). Null when the key isn't one
+// (USAGE_KEY) or the text can't be changed safely (not JSONC, not an object, "usage" or the key's
+// value isn't a plain value, or the edit wouldn't read back as asked with everything else as it was).
+export function withUsageSetting(text, key, on) {
+  if (typeof key !== "string" || !USAGE_KEY.test(key)) return null;
+  on = on !== false;
+  const next = editUsageSetting(text == null || !String(text).trim() ? starter() : text, key, on);
+  if (next == null) return null;
+  const was = parseSettings(text), now = parseSettings(next);
+  if (now.error || now.usage[key] !== on) return null;
+  const rest = (u) => JSON.stringify(Object.entries(u).filter(([k]) => k !== key).sort());
+  if (rest(now.usage) !== rest(was.usage)) return null;
+  if (VAULT_KEYS.some((k) => now.vault[k] !== was.vault[k])) return null;
+  if (AUTOMATIONS_KEYS.some((k) => now.automations[k] !== was.automations[k])) return null;
+  if (FILES_KEYS.some((k) => now.files[k] !== was.files[k])) return null;
+  if (FEATURE_KEYS.some((k) => now.features[k] !== was.features[k])) return null;
+  if (EXPERIMENTS.some((e) => now.experimental[e.key] !== was.experimental[e.key])) return null;
+  return next;
+}
+
+// withUsageSetting()'s edit, before it's read back.
+function editUsageSetting(s, key, on) {
+  s = String(s);
+  if (parseSettings(s).error) return null;
+  const b = blankComments(s);
+  const root = b.search(/\S/);
+  if (root < 0 || b[root] !== "{") return null;
+  const block = topBlock(b, "usage");
+  if (block === "other") return null;
+  if (block) {
+    const [open, close] = block;
+    const has = directKey(b, open, close, key);
+    if (has) {
+      if (has[2] === "{" || has[2] === "[") return null;
+      const at = open + 1 + has.index;
+      return s.slice(0, at) + has[1] + on + s.slice(at + has[0].length);
+    }
+    const empty = /^\s*\}/.test(b.slice(open + 1));
+    return `${s.slice(0, open + 1)}\n    ${JSON.stringify(key)}: ${on}${empty ? "\n  " : ","}${s.slice(open + 1)}`;
+  }
+  const empty = /^\s*\}/.test(b.slice(root + 1));
+  return `${s.slice(0, root + 1)}\n${USAGE_NOTE.join("\n")}\n  "usage": {\n    ${JSON.stringify(key)}: ${on}\n  }${empty ? "\n" : ",\n"}${s.slice(root + 1)}`;
 }
 
 // How deep `at` is inside nested objects and arrays of the (comment-blanked) text.
